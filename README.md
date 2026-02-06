@@ -28,6 +28,12 @@ Contratos publicados en [Tenders Electronic Daily](https://ted.europa.eu/) corre
 
 ```
 ted/
+├── ted_module.py                    # Script de descarga TED
+├── run_ted_crossvalidation.py       # Cross-validation PLACSP↔TED
+├── matching_avanzado_ted.py         # Matching avanzado (5 estrategias)
+├── diagnostico_missing_ted.py       # Diagnóstico de missing
+├── analisis_sector_salud.py         # Deep dive sector salud
+├── cross-validation_ted_placsp.py   # Exploración inicial
 ├── ted_can_2010_ES.parquet          # 2010 (CSV bulk)
 ├── ted_can_2011_ES.parquet
 ├── ...
