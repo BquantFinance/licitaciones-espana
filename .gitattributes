@@ -4,3 +4,4 @@
 nacional/*.parquet filter=lfs diff=lfs merge=lfs -text
 # Catalunya
 catalunya/**/*.parquet filter=lfs diff=lfs merge=lfs -text
+ted/*.parquet filter=lfs diff=lfs merge=lfs -text
