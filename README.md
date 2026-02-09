@@ -428,6 +428,10 @@ df_madrid.groupby(['categoria', 'anio'])['importe_adjudicacion_iva_inc'].sum().u
 form = df_madrid[df_madrid['categoria'] == 'contratos_formalizados']
 form.groupby('razon_social_adjudicatario')['importe_adjudicacion_iva_inc'].sum().nlargest(10)
 
+# Ayuntamiento Madrid: evolución contratos menores
+menores = df_madrid[df_madrid['categoria'] == 'contratos_menores']
+menores.groupby('anio').agg(n=('objeto_contrato','count'), total=('importe_adjudicacion_iva_inc','sum'))
+
 # Contratos SARA no publicados en TED
 df_sara = pd.read_parquet('ted/crossval_sara_v2.parquet')
 missing = df_sara[df_sara['_ted_missing']]
