@@ -277,8 +277,8 @@ Contratación pública completa de la [Comunidad de Madrid](https://contratos-pu
 
 ```
 comunidad_madrid/
-├── contratacion_comunidad_madrid_completo.csv     # Dataset unificado (884 MB)
-└── csv_originales/                                # 765 CSVs individuales
+├── descarga_contratacion_comunidad_madrid_v1.py   # Script de descarga
+└── contratacion_comunidad_madrid_completo.csv     # Dataset unificado (884 MB)
 ```
 
 ### Campos principales (18 columnas)
@@ -452,7 +452,7 @@ df_regia['sector'].value_counts()
 | Script | Fuente | Descripción |
 |--------|--------|-------------|
 | `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML |
-| `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
+| `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
 | `scripts/ccaa_catalunya.py` | Socrata | Descarga datos Catalunya |
