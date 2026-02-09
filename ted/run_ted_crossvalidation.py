@@ -194,6 +194,16 @@ def load_placsp(path):
     if n_con > 0:
         print(f"  Excluidas consultas: {n_con:,}")
 
+    # Excluir tipos que NO son SARA (art. 25-27 LCSP)
+    tipos_no_sara = ['Privado', 'Patrimonial', 'Administrativo Especial',
+                     '22', '999', '32']
+    _tc = df['tipo_contrato'].astype(str).replace('nan', '')
+    mask_no_sara = _tc.isin(tipos_no_sara)
+    n_no_sara = mask_no_sara.sum()
+    df = df[~mask_no_sara].copy()
+    if n_no_sara > 0:
+        print(f"  Excluidos tipos no SARA (Privado/Patrimonial/otros): {n_no_sara:,}")
+
     print(f"  Registros tras exclusiones: {len(df):,}")
 
     # -- Campos auxiliares --
@@ -237,6 +247,46 @@ def load_placsp(path):
 
     # Candidato SARA? (compara importe_sin_iva / VEC proxy contra umbral)
     df['_es_sara'] = df['_umbral_sara'].notna() & (df['_imp_sara'] >= df['_umbral_sara'])
+
+    # -- Suma de lotes por expediente (VEC = suma de todos los lotes) --
+    # Si un procedimiento tiene N lotes individuales bajo el umbral pero
+    # la suma supera el umbral, TODOS los lotes son SARA
+    n_sara_before_lots = df['_es_sara'].sum()
+    
+    # Solo considerar contratos no-SARA con expediente válido
+    non_sara = df[~df['_es_sara'] & (df['_expediente'].str.len() > 3)].copy()
+    
+    if len(non_sara) > 0:
+        # Agrupar por expediente: sumar importes + tomar umbral del primer lote
+        lot_sums = non_sara.groupby('_expediente').agg(
+            imp_total=('_imp_sara', 'sum'),
+            n_lotes=('_imp_sara', 'count'),
+            umbral=('_umbral_sara', 'first'),
+        )
+        
+        # Filtrar: ≥2 lotes y suma >= umbral
+        lot_sums = lot_sums[
+            (lot_sums['n_lotes'] >= 2) & 
+            lot_sums['umbral'].notna() &
+            (lot_sums['imp_total'] >= lot_sums['umbral'])
+        ]
+        
+        # Marcar todos los lotes de esos expedientes como SARA
+        sara_expedientes = set(lot_sums.index)
+        lot_mask = (~df['_es_sara']) & (df['_expediente'].isin(sara_expedientes))
+        df.loc[lot_mask, '_es_sara'] = True
+        df.loc[lot_mask, '_sara_por_lotes'] = True
+        
+        n_sara_lots = lot_mask.sum()
+        n_exp_lots = len(sara_expedientes)
+        print(f"\n  Suma de lotes por expediente:")
+        print(f"    Expedientes con lotes que suman >= umbral: {n_exp_lots:,}")
+        print(f"    Contratos adicionales marcados SARA:       {n_sara_lots:,}")
+        print(f"    SARA antes de lotes: {n_sara_before_lots:,} → después: {df['_es_sara'].sum():,}")
+    
+    if '_sara_por_lotes' not in df.columns:
+        df['_sara_por_lotes'] = False
+    df['_sara_por_lotes'] = df['_sara_por_lotes'].fillna(False)
 
     # Negociado sin publicidad
     df['_es_neg_sin_pub'] = df['_procedimiento'].str.contains(
@@ -441,7 +491,72 @@ def cross_validate(df_placsp, df_ted):
 
     elapsed = time.time() - t0
 
-    # -- Aplicar resultados --
+    # -- E2b: Match a nivel EXPEDIENTE para contratos SARA por lotes --
+    # Si un expediente tiene lotes marcados como SARA por suma, intentar
+    # matchear el expediente completo contra TED (sin filtro de importe)
+    # Si el expediente aparece en TED → todos sus lotes se validan
+    
+    n_match_exp_lot = 0
+    sara_lot_not_matched = df_placsp[
+        df_placsp['_es_sara'] &
+        df_placsp['_sara_por_lotes'] &
+        ~df_placsp.index.isin(matched_idx)
+    ]
+    
+    if len(sara_lot_not_matched) > 0:
+        # Agrupar por expediente
+        lot_expedientes = sara_lot_not_matched.groupby('_expediente').agg(
+            indices=('_expediente', lambda x: list(x.index)),
+            n_lotes=('_expediente', 'count'),
+            imp_total=('_imp_sara', 'sum'),
+            nif_organo=('nif_organo', 'first'),
+            organo=('organo_contratante', 'first'),
+            ano=('_ano', 'first'),
+        )
+        
+        # Para cada expediente, buscar en TED por expediente (sin filtro importe)
+        for exp_id, grp in lot_expedientes.iterrows():
+            if not exp_id or len(exp_id) < 4:
+                continue
+            
+            exp_upper = exp_id.strip().upper()
+            entries = ted_lookup_exp.get(exp_upper, [])
+            
+            # Match sin filtro de importe — el expediente como unidad
+            ted_match = None
+            for i, entry in enumerate(entries):
+                if not entry['consumed']:
+                    ted_match = entry
+                    ted_match_i = i
+                    break
+            
+            if ted_match is not None:
+                # Validar todos los lotes de este expediente
+                ted_lookup_exp[exp_upper][ted_match_i]['consumed'] = True
+                for lot_idx in grp['indices']:
+                    if lot_idx not in matched_idx:
+                        matched_idx.append(lot_idx)
+                        df_placsp.loc[lot_idx, '_ted_validated'] = True
+                        match_data[lot_idx] = {
+                            'ted_id': ted_match['ted_id'],
+                            'ted_importe': ted_match['importe'],
+                            'ted_n_ofertas': ted_match['n_ofertas'],
+                            'ted_cpv': ted_match['cpv_ted'],
+                            'ted_cae': ted_match['cae_ted'],
+                            'ted_win_size': ted_match['win_size'],
+                            'ted_direct_award': ted_match['direct_award'],
+                            'ted_sme_part': ted_match['sme_part'],
+                            'ted_buyer_legal_type': ted_match['buyer_legal_type'],
+                            'ted_duration': ted_match['duration_lot'],
+                            'ted_award_criterion': ted_match['award_criterion_type'],
+                            'ted_internal_id': ted_match['internal_id'],
+                            'match_diff_euros': 0,
+                        }
+                        n_match_exp_lot += 1
+        
+        print(f"\n  E2b - Match expediente (lotes SARA): {n_match_exp_lot:,} lotes validados")
+
+    elapsed = time.time() - t0
     df_placsp['_ted_validated'] = False
     df_placsp.loc[matched_idx, '_ted_validated'] = True
 
@@ -494,8 +609,9 @@ def cross_validate(df_placsp, df_ted):
     print(f"    Neg. sin publicidad: {n_neg_sin_pub:,}")
 
     print(f"\n  VALIDADOS POR TED: {n_matched:,} ({n_matched/max(n_sara,1)*100:.1f}%)")
-    print(f"    Por NIF + importe: {n_match_nif:,}")
-    print(f"    Por expediente:    {n_match_exp:,}")
+    print(f"    Por NIF + importe (E1): {n_match_nif:,}")
+    print(f"    Por expediente (E2):    {n_match_exp:,}")
+    print(f"    Por expediente lotes (E2b): {n_match_exp_lot:,}")
 
     print(f"\n  MISSING IN TED (excl. neg s/p): {n_missing_strict:,} "
           f"({n_missing_strict/max(n_sara - n_neg_sin_pub,1)*100:.1f}%)")
@@ -547,6 +663,26 @@ def cross_validate(df_placsp, df_ted):
         ]:
             n = ((df_missing['_imp_adj'] >= lo) & (df_missing['_imp_adj'] < hi)).sum()
             print(f"    {label:<35}: {n:>6,}")
+    
+    # -- Missing a nivel EXPEDIENTE (no individual) --
+    # Un expediente = 1 procedimiento en TED, independientemente de N lotes
+    sara_all = df_placsp[df_placsp['_es_sara']].copy()
+    exp_stats = sara_all.groupby('_expediente').agg(
+        n_lotes=('_es_sara', 'count'),
+        any_matched=('_ted_validated', 'any'),
+        imp_total=('_imp_sara', 'sum'),
+        es_lotes=('_sara_por_lotes', 'any'),
+    )
+    n_exp_total = len(exp_stats)
+    n_exp_matched = exp_stats['any_matched'].sum()
+    n_exp_missing = n_exp_total - n_exp_matched
+    n_exp_lotes_missing = ((~exp_stats['any_matched']) & exp_stats['es_lotes']).sum()
+    
+    print(f"\n  MISSING A NIVEL EXPEDIENTE (1 expediente = 1 procedimiento TED):")
+    print(f"    Expedientes SARA totales:    {n_exp_total:,}")
+    print(f"    Expedientes con match TED:   {n_exp_matched:,} ({n_exp_matched/max(n_exp_total,1)*100:.1f}%)")
+    print(f"    Expedientes missing:         {n_exp_missing:,} ({n_exp_missing/max(n_exp_total,1)*100:.1f}%)")
+    print(f"    De los cuales SARA por lotes:{n_exp_lotes_missing:,}")
 
     return df_placsp, df_missing
 
@@ -569,7 +705,7 @@ if __name__ == "__main__":
         'nif_adjudicatario', 'adjudicatario', 'importe_adjudicacion',
         'importe_sin_iva', 'ano', 'estado', 'conjunto', 'tipo_contrato',
         'procedimiento', 'cpv_principal', 'fecha_adjudicacion',
-        '_es_sara', '_umbral_sara', '_imp_sara', '_is_age', '_is_sector',
+        '_es_sara', '_umbral_sara', '_imp_sara', '_sara_por_lotes', '_is_age', '_is_sector',
         '_es_neg_sin_pub', '_tipo_contrato', '_procedimiento',
         '_ted_validated', '_ted_missing', '_ted_missing_incl_neg',
         '_ted_id', '_ted_n_ofertas', '_ted_cpv', '_ted_win_size',
