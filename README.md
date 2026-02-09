@@ -1,6 +1,6 @@
 # 🇪🇸 Datos Abiertos de Contratación Pública - España
 
-Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Catalunya, Valencia) + cruce europeo (TED).
+Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Catalunya, Valencia, Madrid) + cruce europeo (TED).
 
 ## 📊 Resumen de Datos
 
@@ -9,8 +9,10 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | Nacional (PLACSP) | 8.7M | 2012-2026 | 780 MB |
 | Catalunya | 20.6M | 2014-2025 | ~180 MB |
 | Valencia | 8.5M | 2000-2026 | 156 MB |
-| 🆕 TED (España) | 591K | 2010-2025 | 57 MB |
-| **TOTAL** | **38.4M** | **2000-2026** | **~1.2 GB** |
+| 🆕 Madrid – Comunidad | 2.56M | 2017-2025 | 884 MB |
+| Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
+| TED (España) | 591K | 2010-2025 | 57 MB |
+| **TOTAL** | **~41M** | **2000-2026** | **~2.1 GB** |
 
 ---
 
@@ -29,11 +31,9 @@ Contratos publicados en [Tenders Electronic Daily](https://ted.europa.eu/) corre
 ```
 ted/
 ├── ted_module.py                    # Script de descarga TED
-├── run_ted_crossvalidation.py       # Cross-validation PLACSP↔TED
-├── matching_avanzado_ted.py         # Matching avanzado (5 estrategias)
+├── run_ted_crossvalidation.py       # Cross-validation PLACSP↔TED + matching avanzado
 ├── diagnostico_missing_ted.py       # Diagnóstico de missing
 ├── analisis_sector_salud.py         # Deep dive sector salud
-├── cross-validation_ted_placsp.py   # Exploración inicial
 ├── ted_can_2010_ES.parquet          # 2010 (CSV bulk)
 ├── ted_can_2011_ES.parquet
 ├── ...
@@ -124,11 +124,9 @@ Top órganos missing: Servicio Andaluz de Salud (4,833), FREMAP (2,410), IB-Salu
 | Script | Descripción |
 |--------|-------------|
 | `ted/ted_module.py` | Descarga TED: CSV bulk (2010-2019) + API v3 eForms (2020-2025) |
-| `ted/run_ted_crossvalidation.py` | Cross-validation con reglas SARA por bienio/tipo/comprador |
-| `ted/matching_avanzado_ted.py` | Matching avanzado: 5 estrategias (E1-E5) |
+| `ted/run_ted_crossvalidation.py` | Cross-validation PLACSP↔TED con reglas SARA + matching avanzado (5 estrategias) |
 | `ted/diagnostico_missing_ted.py` | Diagnóstico de missing: falsos positivos vs gaps reales |
 | `ted/analisis_sector_salud.py` | Deep dive sector salud: lotes, acuerdos marco, CPV, CCAA |
-| `ted/cross-validation_ted_placsp.py` | Script de exploración inicial |
 
 ---
 
@@ -261,6 +259,121 @@ valencia/
 
 ---
 
+## 🆕 Madrid – Comunidad Autónoma
+
+Contratación pública completa de la [Comunidad de Madrid](https://contratos-publicos.comunidad.madrid), incluyendo todas las consejerías, hospitales, organismos autónomos y empresas públicas. Extraído mediante web scraping del buscador avanzado con resolución del módulo antibot de Drupal.
+
+| Tipo de publicación | Registros | Presupuesto licitación | Importe adjudicación |
+|---------------------|-----------|----------------------|---------------------|
+| Contratos menores | 2,529,049 | 487M € | 487M € |
+| Convocatoria anunciada a licitación | 21,070 | 39,551M € | — |
+| Contratos adjudicados sin publicidad | 10,035 | 8,466M € | — |
+| Encargos a medios propios | 2,178 | 173M € | — |
+| Anuncio de información previa | 1,166 | 327M € | — |
+| Consultas preliminares del mercado | 28 | — | — |
+| **Total** | **2,563,527** | **49,004M €** | **487M €** |
+
+### Archivos
+
+```
+comunidad_madrid/
+├── contratacion_comunidad_madrid_completo.csv     # Dataset unificado (884 MB)
+└── csv_originales/                                # 765 CSVs individuales
+```
+
+### Campos principales (18 columnas)
+
+| Categoría | Campos |
+|-----------|--------|
+| Identificación | Nº Expediente, Referencia, Título del contrato |
+| Clasificación | Tipo de Publicación, Estado, Tipo de contrato |
+| Entidad | Entidad Adjudicadora |
+| Proceso | Procedimiento de adjudicación, Presupuesto de licitación, Nº de ofertas |
+| Adjudicación | Resultado, NIF del adjudicatario, Adjudicatario, Importe de adjudicación |
+| Incidencias | Importe de las modificaciones, Importe de las prórrogas, Importe de la liquidación |
+| Temporal | Fecha del contrato |
+
+### Estrategia de descarga
+
+El portal de la Comunidad de Madrid usa un módulo antibot de Drupal y tiene restricciones complejas en los filtros de búsqueda que requirieron ingeniería inversa:
+
+- **Antibot key**: El JavaScript del portal transforma la clave de autenticación invirtiendo pares de 2 caracteres desde el final. El script replica esta transformación.
+- **CAPTCHA matemático**: Cada descarga CSV requiere resolver una operación aritmética (ej. `3 + 8 =`).
+- **Contratos menores** (~99% del volumen): El filtro `fecha_hasta` es incompatible con este tipo de publicación, y `fecha_desde` no funciona combinado con `entidad_adjudicadora`. Solución: descargar por **entidad adjudicadora** (125 entidades) sin filtro de fecha.
+- **Subdivisión recursiva**: Las entidades con >50K registros (hospitales grandes) se subdividen automáticamente por **rango de presupuesto de licitación**, partiendo rangos por la mitad recursivamente hasta que cada segmento queda por debajo del límite de truncamiento.
+- **Otros tipos** (licitaciones, adjudicaciones, etc.): Se descargan por **mes + tipo de publicación** con filtros de fecha, que sí funcionan para estos tipos.
+
+### Entidades incluidas (125)
+
+Todas las consejerías, organismos autónomos, empresas públicas y fundaciones de la CAM, incluyendo:
+
+- 10 Consejerías (Sanidad, Educación, Digitalización, Economía, etc.)
+- 30+ Hospitales del SERMAS (Gregorio Marañón, La Paz, 12 de Octubre, Ramón y Cajal, etc.)
+- Canal de Isabel II y filiales
+- Fundaciones IMDEA (7)
+- Fundaciones de investigación biomédica (12)
+- Consorcios urbanísticos, agencias y entes públicos
+
+---
+
+## 🏛️ Madrid – Ayuntamiento
+
+Actividad contractual completa del [Ayuntamiento de Madrid](https://datos.madrid.es), unificando 67 ficheros CSV con 12 estructuras distintas en un único dataset normalizado.
+
+| Categoría | Registros | Importe total |
+|-----------|-----------|---------------|
+| Contratos menores | 68,626 | 407M € |
+| Contratos formalizados | 17,991 | 16,606M € |
+| Acuerdo marco / sist. dinámico | 24,621 | 2,549M € |
+| Prorrogados | 4,441 | 2,967M € |
+| Modificados | 1,789 | 718M € |
+| Cesiones | 30 | 80M € |
+| Resoluciones | 225 | 62M € |
+| Penalidades | 483 | 13M € |
+| Homologación | 1,047 | 1M € |
+| **Total** | **119,253** | **~23,400M €** |
+
+### Archivos
+
+El script `ccaa_madrid_ayuntamiento.py` genera:
+
+### Campos principales (70+ columnas)
+
+| Categoría | Campos |
+|-----------|--------|
+| Identificación | n_registro_contrato, n_expediente, fuente_fichero, categoria |
+| Organización | centro_seccion, organo_contratacion, organismo_contratante |
+| Objeto | objeto_contrato, tipo_contrato, subtipo_contrato, codigo_cpv |
+| Licitación | importe_licitacion_iva_inc, n_licitadores_participantes, n_lotes |
+| Adjudicación | importe_adjudicacion_iva_inc, nif_adjudicatario, razon_social_adjudicatario, pyme |
+| Fechas | fecha_adjudicacion, fecha_formalizacion, fecha_inicio, fecha_fin |
+| Derivados (A.M.) | n_contrato_derivado, objeto_derivado, fecha_aprobacion_derivado |
+| Incidencias | tipo_incidencia, importe_modificacion, importe_prorroga, importe_penalidad |
+| Cesiones | adjudicatario_cedente, cesionario, importe_cedido |
+| Resoluciones | causas_generales, causas_especificas, fecha_acuerdo_resolucion |
+| Homologación | n_expediente_sh, objeto_sh, duracion_procedimiento |
+
+### Estructuras detectadas
+
+El script detecta y unifica automáticamente 12 estructuras de CSV distintas:
+
+| Estructura | Período | Categorías |
+|------------|---------|------------|
+| A, B, C, D | 2015-2020 | Contratos menores |
+| E, F | 2021-2025 | Contratos menores |
+| AC_OLD | 2015-2020 | Formalizados, acuerdo marco |
+| AC_OLD_MOD | 2015-2020 | Modificados |
+| AC_HOMOLOGACION | 2022-2024 | Homologación |
+| AC_NEW | 2021-2024 | Todas las categorías |
+| AC_2025 | 2025 | Todas las categorías |
+
+### Fuentes
+
+- [Contratos menores](https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=9e42c176aab90410VgnVCM1000000b205a0aRCRD) — 12 ficheros (2015-2025)
+- [Actividad contractual](https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=7449f3b0a4699510VgnVCM1000001d4a900aRCRD) — 55 ficheros (2015-2025)
+
+---
+
 ## 📥 Uso
 
 ```python
@@ -271,6 +384,13 @@ df_nacional = pd.read_parquet('nacional/licitaciones_espana.parquet')
 
 # TED - España (consolidado)
 df_ted = pd.read_parquet('ted/ted_es_can.parquet')
+
+# Comunidad de Madrid - Contratación completa
+df_cam = pd.read_csv('comunidad_madrid/contratacion_comunidad_madrid_completo.csv',
+                      sep=';', encoding='utf-8-sig')
+
+# Madrid Ayuntamiento - Actividad contractual
+df_madrid = pd.read_parquet('madrid/actividad_contractual_madrid_completo.parquet')
 
 # Catalunya - Contratos menores
 df_cat_menors = pd.read_parquet('catalunya/contratacion/contractacio_menors.parquet')
@@ -294,8 +414,22 @@ df_nacional.groupby('adjudicatario')['importe_sin_iva'].sum().nlargest(10)
 # Contratos España publicados en TED por año
 df_ted.groupby('year').size().plot(kind='bar', title='Contratos TED España')
 
+# Comunidad de Madrid: contratos menores por hospital
+cam_menores = df_cam[df_cam['Tipo de Publicación'] == 'Contratos menores']
+cam_menores['Entidad Adjudicadora'].value_counts().head(20)
+
+# Comunidad de Madrid: gasto por tipo de publicación
+df_cam.groupby('Tipo de Publicación')['Importe de adjudicación'].sum().sort_values()
+
+# Ayuntamiento Madrid: gasto por categoría y año
+df_madrid.groupby(['categoria', 'anio'])['importe_adjudicacion_iva_inc'].sum().unstack(0).plot()
+
+# Ayuntamiento Madrid: top adjudicatarios en contratos formalizados
+form = df_madrid[df_madrid['categoria'] == 'contratos_formalizados']
+form.groupby('razon_social_adjudicatario')['importe_adjudicacion_iva_inc'].sum().nlargest(10)
+
 # Contratos SARA no publicados en TED
-df_sara = pd.read_parquet('ted/crossval_sara_v2.parquet')  # generado por el pipeline
+df_sara = pd.read_parquet('ted/crossval_sara_v2.parquet')
 missing = df_sara[df_sara['_ted_missing']]
 missing.groupby('organo_contratante').size().nlargest(10)
 
@@ -318,12 +452,13 @@ df_regia['sector'].value_counts()
 | Script | Fuente | Descripción |
 |--------|--------|-------------|
 | `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML |
+| `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
+| `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
 | `scripts/ccaa_catalunya.py` | Socrata | Descarga datos Catalunya |
 | `scripts/ccaa_valencia.py` | CKAN | Descarga datos Valencia |
 | `ted/ted_module.py` | TED | Descarga CSV bulk + API v3 eForms |
-| `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED (reglas SARA) |
-| `ted/matching_avanzado_ted.py` | — | Matching avanzado (5 estrategias) |
+| `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED + matching avanzado (5 estrategias) |
 | `ted/diagnostico_missing_ted.py` | — | Diagnóstico de missing |
 | `ted/analisis_sector_salud.py` | — | Deep dive sector salud |
 
@@ -335,6 +470,8 @@ df_regia['sector'].value_counts()
 |--------|------------|
 | PLACSP | Mensual |
 | TED | Trimestral (API) / Anual (CSV bulk) |
+| Madrid – Comunidad | Trimestral (re-ejecutar script) |
+| Madrid – Ayuntamiento | Anual (nuevos CSVs por año) |
 | Catalunya | Variable (depende del dataset) |
 | Valencia | Diaria/Mensual (depende del dataset) |
 
@@ -343,7 +480,7 @@ df_regia['sector'].value_counts()
 ## 📋 Requisitos
 
 ```bash
-pip install pandas pyarrow requests
+pip install pandas pyarrow requests beautifulsoup4
 ```
 
 ---
@@ -365,6 +502,8 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 | TED | https://ted.europa.eu/ |
 | TED API v3 | https://ted.europa.eu/api/docs/ |
 | TED CSV Bulk | https://data.europa.eu/data/datasets/ted-csv |
+| Madrid – Comunidad | https://contratos-publicos.comunidad.madrid/ |
+| Madrid – Ayuntamiento | https://datos.madrid.es/ |
 | Catalunya | https://analisi.transparenciacatalunya.cat/ |
 | Valencia | https://dadesobertes.gva.es/ |
 | BQuant Finance | https://bquantfinance.com |
@@ -375,7 +514,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 
 - [ ] Euskadi
 - [ ] Andalucía
-- [ ] Madrid
+- [x] Madrid ✅
 
 ---
 
