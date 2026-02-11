@@ -274,8 +274,10 @@ Contratación pública de la [Junta de Andalucía](https://www.juntadeandalucia.
 
 ```
 ccaa_Andalucia/
-├── licitaciones_all.csv                    # Dataset completo (316 MB)
-└── licitaciones_andalucia.parquet          # Comprimido (47 MB, snappy)
+└── licitaciones_andalucia.parquet          # 808K registros (47 MB, snappy)
+
+scripts/
+└── ccaa_andalucia.py                       # Scraper ES proxy 8D + multi-sort
 ```
 
 ### Campos principales (34 columnas)
