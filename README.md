@@ -1,18 +1,19 @@
 # 🇪🇸 Datos Abiertos de Contratación Pública - España
 
-Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Catalunya, Valencia, Madrid) + cruce europeo (TED).
+Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Catalunya, Valencia, Madrid) + cruce europeo (TED).
 
 ## 📊 Resumen de Datos
 
 | Fuente | Registros | Período | Tamaño |
 |--------|-----------|---------|--------|
 | Nacional (PLACSP) | 8.7M | 2012-2026 | 780 MB |
+| 🆕 Andalucía | 808K | 2016-2026 | 47 MB |
 | Catalunya | 20.6M | 2014-2025 | ~180 MB |
 | Valencia | 8.5M | 2000-2026 | 156 MB |
-| 🆕 Madrid – Comunidad | 2.56M | 2017-2025 | 884 MB |
+| Madrid – Comunidad | 2.56M | 2017-2025 | 90 MB |
 | Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
-| **TOTAL** | **~41M** | **2000-2026** | **~2.1 GB** |
+| **TOTAL** | **~42M** | **2000-2026** | **~1.4 GB** |
 
 ---
 
@@ -259,7 +260,64 @@ valencia/
 
 ---
 
-## 🆕 Madrid – Comunidad Autónoma
+## 🆕 Andalucía
+
+Contratación pública de la [Junta de Andalucía](https://www.juntadeandalucia.es/haciendayadministracionpublica/apl/pdc-front-publico/perfiles-licitaciones/buscador-general), incluyendo licitaciones regulares y contratos menores de todos los organismos y empresas públicas andaluzas. Extraído mediante ingeniería inversa del proxy Elasticsearch del portal, con estrategia de subdivión recursiva en 8 dimensiones para superar el límite de 10K resultados por consulta.
+
+| Tipo | Registros | Cobertura |
+|------|-----------|-----------|
+| Licitaciones regulares (estándar) | 72,165 | 92% |
+| Contratos menores | 736,276 | 95% |
+| **Total** | **808,441** | **95%** |
+
+### Archivos
+
+```
+ccaa_Andalucia/
+├── licitaciones_all.csv                    # Dataset completo (316 MB)
+└── licitaciones_andalucia.parquet          # Comprimido (47 MB, snappy)
+```
+
+### Campos principales (34 columnas)
+
+| Categoría | Campos |
+|-----------|--------|
+| Identificación | id_expediente, numero_expediente, titulo |
+| Clasificación | tipo_contrato, estado, procedimiento, tramitacion |
+| Órgano | perfil_contratante, provincia |
+| Importes | importe_licitacion, valor_estimado, importe_adjudicacion |
+| Adjudicación | adjudicatario, nif_adjudicatario |
+| Fechas | fecha_publicacion, fecha_limite_presentacion |
+| Otros | forma_presentacion, clausulas_sociales, clausulas_ambientales |
+
+### Estrategia de descarga
+
+El portal de la Junta de Andalucía usa un proxy frontend que limita a 10.000 resultados por consulta Elasticsearch. Con 850K registros totales, se requirió una estrategia de subdivisión recursiva en **8 dimensiones** + multi-sort para cobertura completa:
+
+1. **codigoProcedimiento**: Estándar vs Menores
+2. **tipoContrato.codigo**: 21 tipos (SERV, SUM, OBRA, PRIV...)
+3. **estado.codigo**: 14 estados (RES, ADJ, PUB, EVA...)
+4. **codigoTipoTramitacion**: 5 valores + null (295K registros sin tramitación)
+5. **perfilContratante.codigo**: 372 organismos
+6. **provinciasEjecucion**: 8 provincias + null
+7. **formaPresentacion**: 6 valores + null
+8. **numeroExpediente (año)**: match por texto "2018"-"2026" + null
+
+Para los chunks que aún superan 10K tras las 8 dimensiones (ej. SYBS03/Servicio Andaluz de Salud con 290K registros), se usa **multi-sort con 12 órdenes** distintas (idExpediente, importeLicitacion, numeroExpediente, titulo, fechaLimitePresentacion, adjudicaciones.importeAdjudicacion — cada una asc/desc) que acceden a ventanas diferentes de 10K registros con 0% de solapamiento.
+
+### Perfiles incluidos (372)
+
+Todas las consejerías, agencias, hospitales del SAS, universidades, diputaciones provinciales, empresas públicas y fundaciones de la Junta de Andalucía, incluyendo:
+
+- Servicio Andaluz de Salud — SYBS03 (290K contratos, mayor organismo)
+- 8 Diputaciones provinciales
+- 10 Universidades públicas
+- Consejerías (Salud, Educación, Fomento, Economía, etc.)
+- Agencias (IDEA, AEPSA, ADE, etc.)
+
+---
+
+## 🏛️ Madrid – Comunidad Autónoma
 
 Contratación pública completa de la [Comunidad de Madrid](https://contratos-publicos.comunidad.madrid), incluyendo todas las consejerías, hospitales, organismos autónomos y empresas públicas. Extraído mediante web scraping del buscador avanzado con resolución del módulo antibot de Drupal.
 
@@ -277,8 +335,8 @@ Contratación pública completa de la [Comunidad de Madrid](https://contratos-pu
 
 ```
 comunidad_madrid/
-├── descarga_contratacion_comunidad_madrid_v1.py   # Script de descarga
-└── contratacion_comunidad_madrid_completo.csv     # Dataset unificado (884 MB)
+├── contratacion_comunidad_madrid_completo.parquet   # Dataset unificado (90 MB, snappy)
+└── csv_originales/                                  # 765 CSVs individuales
 ```
 
 ### Campos principales (18 columnas)
@@ -385,9 +443,11 @@ df_nacional = pd.read_parquet('nacional/licitaciones_espana.parquet')
 # TED - España (consolidado)
 df_ted = pd.read_parquet('ted/ted_es_can.parquet')
 
+# Andalucía - Contratación completa
+df_and = pd.read_parquet('ccaa_Andalucia/licitaciones_andalucia.parquet')
+
 # Comunidad de Madrid - Contratación completa
-df_cam = pd.read_csv('comunidad_madrid/contratacion_comunidad_madrid_completo.csv',
-                      sep=';', encoding='utf-8-sig')
+df_cam = pd.read_parquet('comunidad_madrid/contratacion_comunidad_madrid_completo.parquet')
 
 # Madrid Ayuntamiento - Actividad contractual
 df_madrid = pd.read_parquet('madrid/actividad_contractual_madrid_completo.parquet')
@@ -414,6 +474,14 @@ df_nacional.groupby('adjudicatario')['importe_sin_iva'].sum().nlargest(10)
 # Contratos España publicados en TED por año
 df_ted.groupby('year').size().plot(kind='bar', title='Contratos TED España')
 
+# Andalucía: contratos menores por perfil contratante
+and_menores = df_and[df_and['procedimiento'] == 'Contrato menor']
+and_menores['perfil_contratante'].value_counts().head(20)
+
+# Andalucía: gasto del SAS por provincia
+sas = df_and[df_and['perfil_contratante'] == 'SYBS03']
+sas.groupby('provincia')['importe_licitacion'].sum().sort_values()
+
 # Comunidad de Madrid: contratos menores por hospital
 cam_menores = df_cam[df_cam['Tipo de Publicación'] == 'Contratos menores']
 cam_menores['Entidad Adjudicadora'].value_counts().head(20)
@@ -427,10 +495,6 @@ df_madrid.groupby(['categoria', 'anio'])['importe_adjudicacion_iva_inc'].sum().u
 # Ayuntamiento Madrid: top adjudicatarios en contratos formalizados
 form = df_madrid[df_madrid['categoria'] == 'contratos_formalizados']
 form.groupby('razon_social_adjudicatario')['importe_adjudicacion_iva_inc'].sum().nlargest(10)
-
-# Ayuntamiento Madrid: evolución contratos menores
-menores = df_madrid[df_madrid['categoria'] == 'contratos_menores']
-menores.groupby('anio').agg(n=('objeto_contrato','count'), total=('importe_adjudicacion_iva_inc','sum'))
 
 # Contratos SARA no publicados en TED
 df_sara = pd.read_parquet('ted/crossval_sara_v2.parquet')
@@ -456,7 +520,8 @@ df_regia['sector'].value_counts()
 | Script | Fuente | Descripción |
 |--------|--------|-------------|
 | `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML |
-| `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
+| `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x |
+| `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
 | `scripts/ccaa_catalunya.py` | Socrata | Descarga datos Catalunya |
@@ -474,6 +539,7 @@ df_regia['sector'].value_counts()
 |--------|------------|
 | PLACSP | Mensual |
 | TED | Trimestral (API) / Anual (CSV bulk) |
+| Andalucía | Trimestral (re-ejecutar script) |
 | Madrid – Comunidad | Trimestral (re-ejecutar script) |
 | Madrid – Ayuntamiento | Anual (nuevos CSVs por año) |
 | Catalunya | Variable (depende del dataset) |
@@ -506,6 +572,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 | TED | https://ted.europa.eu/ |
 | TED API v3 | https://ted.europa.eu/api/docs/ |
 | TED CSV Bulk | https://data.europa.eu/data/datasets/ted-csv |
+| Andalucía | https://www.juntadeandalucia.es/contratacion/ |
 | Madrid – Comunidad | https://contratos-publicos.comunidad.madrid/ |
 | Madrid – Ayuntamiento | https://datos.madrid.es/ |
 | Catalunya | https://analisi.transparenciacatalunya.cat/ |
@@ -517,7 +584,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 ## 📈 Próximas CCAA
 
 - [ ] Euskadi
-- [ ] Andalucía
+- [x] Andalucía ✅
 - [x] Madrid ✅
 
 ---
