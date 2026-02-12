@@ -1,19 +1,20 @@
 # 🇪🇸 Datos Abiertos de Contratación Pública - España
 
-Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Catalunya, Valencia, Madrid) + cruce europeo (TED).
+Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Catalunya, Euskadi, Valencia, Madrid) + cruce europeo (TED).
 
 ## 📊 Resumen de Datos
 
 | Fuente | Registros | Período | Tamaño |
 |--------|-----------|---------|--------|
 | Nacional (PLACSP) | 8.7M | 2012-2026 | 780 MB |
-| 🆕 Andalucía | 808K | 2016-2026 | 47 MB |
+| Andalucía | 808K | 2016-2026 | 47 MB |
 | Catalunya | 20.6M | 2014-2025 | ~180 MB |
+| 🆕 Euskadi | 704K | 2005-2026 | ~160 MB |
 | Valencia | 8.5M | 2000-2026 | 156 MB |
 | Madrid – Comunidad | 2.56M | 2017-2025 | 90 MB |
 | Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
-| **TOTAL** | **~42M** | **2000-2026** | **~1.4 GB** |
+| **TOTAL** | **~42M** | **2000-2026** | **~1.5 GB** |
 
 ---
 
@@ -207,6 +208,73 @@ Dataset nuevo con **3.024.000 registros** de contratos menores del sector públi
 - Incluye **histórico completo** con todas las actualizaciones de estado de cada contrato
 - Extraído mediante paginación con sub-segmentación automática (72K requests API)
 - Fuente: [Transparència Catalunya - Contractació Pública](https://analisi.transparenciacatalunya.cat)
+
+---
+
+## 🆕 Euskadi
+
+Contratación pública del [País Vasco / Euskadi](https://www.contratacion.euskadi.eus/), combinando la API REST de KontratazioA con exports XLSX históricos de Open Data Euskadi y portales municipales independientes (Bilbao, Vitoria-Gasteiz). Arquitectura API-first con fallback a XLSX para series históricas.
+
+| Dataset | Registros | Período | Fuente |
+|---------|-----------|---------|--------|
+| Contratos sector público | 664,545 | 2011-2026 | XLSX anual + JSON 2011-2013 |
+| Poderes adjudicadores | ~919 | Actual | API REST KontratazioA |
+| Empresas licitadoras | ~9,042 | Actual | API REST KontratazioA |
+| REVASCON histórico | 34,523 | 2013-2018 | CSV/XLSX agregado anual |
+| Bilbao contratos | 4,823 | 2005-2026 | Portal municipal Bilbao |
+| Vitoria contratos menores | — | Actual | Open Data Euskadi |
+| **Total** | **~704K** | **2005-2026** | — |
+
+### Archivos
+
+```
+euskadi_parquet/
+├── contratos_master.parquet             # 664K contratos (138 MB)
+├── poderes_adjudicadores.parquet        # 919 poderes adjudicadores
+├── empresas_licitadoras.parquet         # 9K empresas del registro
+├── revascon_historico.parquet           # 34K registros 2013-2018
+└── bilbao_contratos.parquet            # 4.8K contratos Bilbao
+
+ccaa_euskadi.py                          # Scraper principal v4 (descarga)
+consolidar_euskadi_v4.py                 # Consolidación → Parquet
+```
+
+### Campos principales (56 columnas — contratos_master)
+
+| Categoría | Campos |
+|-----------|--------|
+| Identificación | codigo_contrato, numero_expediente, objeto |
+| Órgano | poder_adjudicador, codigo_organismo, ambito |
+| Tipo | tipo_contrato, procedimiento, tramitacion |
+| Importes | importe_adjudicacion, importe_licitacion, valor_estimado |
+| Adjudicación | adjudicatario, nif_adjudicatario |
+| Fechas | fecha_adjudicacion, fecha_formalizacion, duracion |
+| CPV | codigo_cpv |
+
+### Arquitectura de fuentes
+
+El scraper sigue una arquitectura **API-first** con múltiples capas de fallback:
+
+**Módulo A — API REST KontratazioA** (fuente principal para catálogos)
+- A1/A2: Contratos y anuncios (muestra 1K registros — bulk inviable: 655K items × 10/pág = 65K peticiones ~27h)
+- A3: Poderes adjudicadores — 919 registros completos (92 páginas)
+- A4: Empresas licitadoras — 9,042 registros completos (905 páginas)
+- Paginación: `?currentPage=N` (1-based, 10 items/pág fijo)
+
+**Módulo B — XLSX/CSV Históricos** (fuente principal para contratos)
+- B1: XLSX anuales 2011-2026 (655K registros) + JSON fallback 2011-2013 (9.5K registros de XLSX vacíos)
+- B2: REVASCON agregado 2013-2018 (formato más rico que B1 para ese período)
+- B3: Snapshot últimos 90 días (ventana móvil)
+
+**Módulo C — Portales municipales** (datos no centralizados)
+- C1: Bilbao — contratos adjudicados 2005-2026 (CSV por año + tipo)
+- C2: Vitoria-Gasteiz — contratos menores formalizados
+
+### Notas técnicas
+
+- La API de KontratazioA usa `?currentPage=N` para paginación (no `page`, `_page`, ni HATEOAS). El parámetro `_pageSize` se ignora (fijo a 10).
+- Los XLSX de 2011-2013 se publican vacíos (solo cabeceras), pero los JSON del mismo endpoint de Open Data sí contienen los datos completos (9,482 registros combinados).
+- El consolidador convierte columnas con listas/dicts a JSON string antes de deduplicar, necesario para los campos anidados de la API (clasificaciones, categorías).
 
 ---
 
@@ -448,6 +516,15 @@ df_ted = pd.read_parquet('ted/ted_es_can.parquet')
 # Andalucía - Contratación completa
 df_and = pd.read_parquet('ccaa_Andalucia/licitaciones_andalucia.parquet')
 
+# Euskadi - Contratos sector público
+df_eus = pd.read_parquet('euskadi_parquet/contratos_master.parquet')
+
+# Euskadi - Poderes adjudicadores
+df_poderes = pd.read_parquet('euskadi_parquet/poderes_adjudicadores.parquet')
+
+# Euskadi - Empresas licitadoras
+df_empresas = pd.read_parquet('euskadi_parquet/empresas_licitadoras.parquet')
+
 # Comunidad de Madrid - Contratación completa
 df_cam = pd.read_parquet('comunidad_madrid/contratacion_comunidad_madrid_completo.parquet')
 
@@ -480,23 +557,21 @@ df_ted.groupby('year').size().plot(kind='bar', title='Contratos TED España')
 and_menores = df_and[df_and['procedimiento'] == 'Contrato menor']
 and_menores['perfil_contratante'].value_counts().head(20)
 
-# Andalucía: gasto del SAS por provincia
-sas = df_and[df_and['perfil_contratante'] == 'SYBS03']
-sas.groupby('provincia')['importe_licitacion'].sum().sort_values()
+# Euskadi: gasto anual por tipo de contrato
+df_eus.groupby(['anio', 'tipo_contrato'])['importe_adjudicacion'].sum().unstack().plot()
+
+# Euskadi: top poderes adjudicadores por volumen
+df_eus.groupby('poder_adjudicador')['importe_adjudicacion'].sum().nlargest(20)
+
+# Euskadi: empresas más activas en el Registro de Licitadores
+df_empresas['officialname'].value_counts().head(10)
 
 # Comunidad de Madrid: contratos menores por hospital
 cam_menores = df_cam[df_cam['Tipo de Publicación'] == 'Contratos menores']
 cam_menores['Entidad Adjudicadora'].value_counts().head(20)
 
-# Comunidad de Madrid: gasto por tipo de publicación
-df_cam.groupby('Tipo de Publicación')['Importe de adjudicación'].sum().sort_values()
-
 # Ayuntamiento Madrid: gasto por categoría y año
 df_madrid.groupby(['categoria', 'anio'])['importe_adjudicacion_iva_inc'].sum().unstack(0).plot()
-
-# Ayuntamiento Madrid: top adjudicatarios en contratos formalizados
-form = df_madrid[df_madrid['categoria'] == 'contratos_formalizados']
-form.groupby('razon_social_adjudicatario')['importe_adjudicacion_iva_inc'].sum().nlargest(10)
 
 # Contratos SARA no publicados en TED
 df_sara = pd.read_parquet('ted/crossval_sara_v2.parquet')
@@ -509,10 +584,6 @@ df_cat_menors.groupby('organContractant')['pressupostAdjudicacio'].sum().nlarges
 # Evolución ERE/ERTE Valencia (2000-2025)
 df_erte = pd.read_parquet('valencia/empleo/')
 df_erte.groupby('año')['expedientes'].sum().plot()
-
-# Lobbies por sector
-df_regia = pd.read_parquet('valencia/lobbies/')
-df_regia['sector'].value_counts()
 ```
 
 ---
@@ -523,6 +594,8 @@ df_regia['sector'].value_counts()
 |--------|--------|-------------|
 | `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML |
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x |
+| `ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4: API REST + XLSX anuales + portales municipales |
+| `consolidar_euskadi_v4.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
 | `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
@@ -542,6 +615,7 @@ df_regia['sector'].value_counts()
 | PLACSP | Mensual |
 | TED | Trimestral (API) / Anual (CSV bulk) |
 | Andalucía | Trimestral (re-ejecutar script) |
+| Euskadi | Trimestral (re-ejecutar ccaa_euskadi.py + consolidar) |
 | Madrid – Comunidad | Trimestral (re-ejecutar script) |
 | Madrid – Ayuntamiento | Anual (nuevos CSVs por año) |
 | Catalunya | Variable (depende del dataset) |
@@ -575,6 +649,9 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 | TED API v3 | https://ted.europa.eu/api/docs/ |
 | TED CSV Bulk | https://data.europa.eu/data/datasets/ted-csv |
 | Andalucía | https://www.juntadeandalucia.es/contratacion/ |
+| Euskadi — KontratazioA | https://www.contratacion.euskadi.eus/ |
+| Euskadi — Open Data | https://opendata.euskadi.eus/ |
+| Euskadi — API REST | https://api.euskadi.eus/procurements/ |
 | Madrid – Comunidad | https://contratos-publicos.comunidad.madrid/ |
 | Madrid – Ayuntamiento | https://datos.madrid.es/ |
 | Catalunya | https://analisi.transparenciacatalunya.cat/ |
@@ -585,9 +662,11 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 
 ## 📈 Próximas CCAA
 
-- [ ] Euskadi
+- [x] Euskadi ✅
 - [x] Andalucía ✅
 - [x] Madrid ✅
+- [ ] Galicia
+- [ ] Castilla y León
 
 ---
 
