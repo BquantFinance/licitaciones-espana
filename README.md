@@ -18,6 +18,33 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 
 ---
 
+## 📥 Descarga de datos
+
+> ⚠️ Los ficheros `.parquet` y `.csv` de este repo usan **Git LFS**. Si haces fork o descargas el ZIP del repo, solo obtendrás punteros (~130 bytes), no los datos reales.
+
+### 👉 [Descarga directa (sin LFS) → GitHub Releases](https://github.com/BquantFinance/licitaciones-espana/releases/latest)
+
+| ZIP | Contenido | Tamaño |
+|-----|-----------|--------|
+| `nacional.zip` | Licitaciones PLACSP | 1.34 GB |
+| `catalunya.zip` | Datos Catalunya (contratación, subvenciones, RRHH...) | 1.06 GB |
+| `ted.zip` | Tenders Electronic Daily — España | 217 MB |
+| `valencia.zip` | Datos Valencia (14 categorías) | 120 MB |
+| `andalucia.zip` | Contratación Junta de Andalucía | 114 MB |
+| `euskadi.zip` | Contratación Euskadi | 109 MB |
+| `comunidad_madrid.zip` | Contratación Comunidad de Madrid | ~90 MB |
+| `madrid_ayuntamiento.zip` | Actividad contractual Ayuntamiento de Madrid | ~40 MB |
+
+### Cómo obtener los datos
+
+| Método | Instrucciones |
+|--------|---------------|
+| **Descarga directa** (recomendado) | Ir a [Releases](https://github.com/BquantFinance/licitaciones-espana/releases/latest) y descargar los ZIP |
+| **Git clone + LFS** | `git clone` + `git lfs pull` (requiere [Git LFS](https://git-lfs.github.com/) instalado) |
+| **Fork** | Tras hacer fork, ejecutar `git lfs pull` en tu copia, o descargar desde Releases |
+
+---
+
 ## 🇪🇺 TED — Diario Oficial de la UE
 
 Contratos publicados en [Tenders Electronic Daily](https://ted.europa.eu/) correspondientes a España. Los contratos públicos que superan cierto importe (contratos SARA) deben publicarse obligatoriamente en el DOUE.
