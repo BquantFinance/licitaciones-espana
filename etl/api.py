@@ -75,7 +75,17 @@ def _serialize_row(row: dict) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    db_url = get_database_url()
+    db_ok = False
+    if db_url:
+        try:
+            with psycopg2.connect(db_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+            db_ok = True
+        except Exception:
+            pass
+    return {"status": "ok", "db": db_ok}
 
 
 @app.get(
