@@ -1,6 +1,6 @@
 # 🇪🇸 Datos Abiertos de Contratación Pública - España
 
-Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Catalunya, Euskadi, Valencia, Madrid) + cruce europeo (TED) + Registro Mercantil (BORME).
+Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Catalunya, Euskadi, Galicia, Valencia, Madrid) + cruce europeo (TED) + Registro Mercantil (BORME).
 
 ## 📊 Resumen de Datos
 
@@ -13,9 +13,10 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | Valencia | 8.5M | 2000-2026 | 156 MB |
 | Madrid – Comunidad | 2.56M | 2017-2025 | 90 MB |
 | Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
+| 🆕 Galicia | 1.7M | 2000-2026 | 36 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
 | 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | 750 MB |
-| **TOTAL** | **~42M + BORME** | **2000-2026** | **~2.2 GB** |
+| **TOTAL** | **~44M + BORME** | **2000-2026** | **~2.3 GB** |
 
 ---
 
@@ -35,6 +36,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | `euskadi.zip` | Contratación Euskadi | 109 MB |
 | `comunidad_madrid.zip` | Contratación Comunidad de Madrid | ~90 MB |
 | `madrid_ayuntamiento.zip` | Actividad contractual Ayuntamiento de Madrid | ~40 MB |
+| `galicia.zip` | Contratación pública Xunta de Galicia (CM + LIC) | ~35 MB |
 | `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | 750 MB |
 
 ### Cómo obtener los datos
@@ -585,6 +587,61 @@ El script detecta y unifica automáticamente 12 estructuras de CSV distintas:
 
 ---
 
+## 🆕 Galicia
+
+Contratación pública completa de la [Xunta de Galicia](https://www.contratosdegalicia.gal) y todos sus organismos dependientes, extraída mediante ingeniería inversa de la API jQuery DataTables del portal. Incluye contratos menores (adjudicación directa) y licitaciones formales de 418 organismos, con barrido temporal completo desde el año 2000.
+
+| Tipo | Registros | Período |
+|------|-----------|---------|
+| Contratos menores | 1,635,407 | 2000-2026 |
+| Licitaciones | 50,382 | 2000-2026 |
+| **Total** | **1,685,789** | **2000-2026** |
+
+### Archivos
+
+```
+galicia/
+├── contratos_galicia.parquet              # 1.7M registros (36 MB, snappy)
+└── scripts/
+    └── scraper_contratos_galicia.py       # Scraper con discovery automático
+```
+
+### Campos principales (12 columnas)
+
+| Categoría | Campos | CM | LIC |
+|-----------|--------|:--:|:---:|
+| Identificación | id, objeto | ✅ | ✅ |
+| Importes | importe | ✅ | ✅ |
+| Fechas | publicado, modificado | ✅/❌ | ✅/✅ |
+| Estado | estado, estadoDesc | ❌ | ✅ |
+| Adjudicación | nif, adjudicatario, duracion | ✅ | ❌ |
+| Meta | _organismo_id, _tipo | ✅ | ✅ |
+
+### Estrategia de descarga
+
+El portal usa jQuery DataTables con server-side processing y dos endpoints separados:
+
+- **Licitaciones**: `/api/v1/organismos/{id}/licitaciones/table` — paginación estándar, sin restricciones temporales
+- **Contratos menores**: `/api/v1/organismos/{id}/contratosmenores/table` — requiere header `Referer` dinámico por organismo y rechaza rangos de fecha >3 meses
+
+**Discovery automático**: El scraper prueba IDs de organismo 1–2000 contra ambos endpoints (licitaciones en paralelo, CM secuencial por la restricción del Referer) para descubrir los 418 organismos activos.
+
+**Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01, sin parar antes. El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
+
+**No existe endpoint de detalle JSON** — los campos adicionales (tipo de tramitación, procedimiento, valor estimado, documentos) solo están en páginas HTML renderizadas por JSP, lo que haría inviable el scraping masivo (~1.7M peticiones individuales).
+
+### Estadísticas de extracción
+
+| Métrica | Valor |
+|---------|-------|
+| Organismos descubiertos | 418 |
+| Requests totales | 29,084 |
+| Errores | 0 |
+| Tiempo de ejecución | 7h 42min |
+| Mayor organismo | Org 11 (SERGAS) — ~300K CM |
+
+---
+
 ## 📥 Uso
 
 ```python
@@ -631,6 +688,9 @@ df_borme = pd.read_parquet('borme/data/borme_empresas_pub.parquet')
 
 # BORME - Cargos con persona hasheada
 df_cargos = pd.read_parquet('borme/data/borme_cargos_pub.parquet')
+
+# Galicia - Contratación completa (CM + LIC)
+df_gal = pd.read_parquet('galicia/contratos_galicia.parquet')
 ```
 
 ### Ejemplos de análisis
@@ -684,6 +744,19 @@ df_cargos = pd.read_parquet('borme/data/borme_cargos_pub.parquet')
 nombramientos = df_cargos[df_cargos['tipo_acto'] == 'nombramiento']
 multi = nombramientos.groupby('persona_hash')['empresa_norm'].nunique()
 print(f"Admins en >1 empresa: {(multi > 1).sum():,}")
+
+# Galicia: top 10 adjudicatarios por importe (contratos menores)
+df_gal_cm = df_gal[df_gal['_tipo'] == 'CM']
+df_gal_cm.groupby('adjudicatario')['importe'].sum().nlargest(10)
+
+# Galicia: evolución del gasto en contratos menores por año
+df_gal_cm['año'] = df_gal_cm['publicado'].dt.year
+df_gal_cm.groupby('año')['importe'].sum().plot(kind='bar', title='Contratos menores Galicia')
+
+# Galicia: concentración — adjudicatarios que acumulan el 50% del gasto
+top = df_gal_cm.groupby('nif')['importe'].sum().sort_values(ascending=False)
+n_50 = (top.cumsum() / top.sum() <= 0.5).sum() + 1
+print(f"{n_50} adjudicatarios concentran el 50% del gasto en CM Galicia")
 ```
 
 ---
@@ -699,6 +772,7 @@ print(f"Admins en >1 empresa: {(multi > 1).sum():,}")
 | `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
+| `galicia/scripts/scraper_contratos_galicia.py` | contratosdegalicia.gal | Scraper jQuery DataTables con discovery automático + barrido CM 3 meses |
 | `scripts/ccaa_catalunya.py` | Socrata | Descarga datos Catalunya |
 | `scripts/ccaa_valencia.py` | CKAN | Descarga datos Valencia |
 | `ted/ted_module.py` | TED | Descarga CSV bulk + API v3 eForms |
@@ -724,6 +798,7 @@ print(f"Admins en >1 empresa: {(multi > 1).sum():,}")
 | Madrid – Ayuntamiento | Anual (nuevos CSVs por año) |
 | Catalunya | Variable (depende del dataset) |
 | Valencia | Diaria/Mensual (depende del dataset) |
+| Galicia | Trimestral (re-ejecutar scraper, ~8h) |
 | BORME | Trimestral (re-ejecutar scraper + parser + anonymize) |
 
 ---
@@ -731,7 +806,7 @@ print(f"Admins en >1 empresa: {(multi > 1).sum():,}")
 ## 📋 Requisitos
 
 ```bash
-pip install pandas pyarrow requests beautifulsoup4 pdfplumber
+pip install pandas pyarrow requests beautifulsoup4 pdfplumber python-dateutil
 ```
 
 ---
@@ -741,6 +816,7 @@ pip install pandas pyarrow requests beautifulsoup4 pdfplumber
 Datos públicos del Gobierno de España, Unión Europea y CCAA.
 
 - España: [Licencia de Reutilización](https://datos.gob.es/es/aviso-legal)
+- Galicia: [Ley 1/2016 de transparencia y buen gobierno de Galicia](https://www.contratosdegalicia.gal)
 - TED: [EU Open Data Licence](https://data.europa.eu/eli/dec_impl/2011/833/oj)
 - BORME: [Condiciones de Reutilización BOE](https://www.boe.es/informacion/aviso_legal/index.php#reutilizacion) — Fuente: Agencia Estatal Boletín Oficial del Estado
 
@@ -762,6 +838,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 | Madrid – Ayuntamiento | https://datos.madrid.es/ |
 | Catalunya | https://analisi.transparenciacatalunya.cat/ |
 | Valencia | https://dadesobertes.gva.es/ |
+| Galicia | https://www.contratosdegalicia.gal/ |
 | BORME | https://www.boe.es/diario_borme/ |
 | BQuant Finance | https://bquantfinance.com |
 
@@ -772,7 +849,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 - [x] Euskadi ✅
 - [x] Andalucía ✅
 - [x] Madrid ✅
-- [ ] Galicia
+- [x] Galicia ✅
 - [ ] Castilla y León
 
 ---
