@@ -163,7 +163,7 @@ Top órganos missing: Servicio Andaluz de Salud (4,833), FREMAP (2,410), IB-Salu
 
 ## 🏢 BORME — Registro Mercantil
 
-Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_borme/) parseados desde ~64.000 PDFs (2009-2026). Permite cruzar relaciones societarias con contratación pública para detectar anomalías.
+Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_borme/) parseados desde ~126.000 PDFs (2009-2026). Permite cruzar relaciones societarias con contratación pública para detectar anomalías.
 
 | Conjunto | Registros | Contenido |
 |----------|-----------|-----------|
@@ -200,7 +200,7 @@ borme/
 ### Pipeline
 
 ```bash
-# 1. Descargar PDFs (~64K, ~3 GB)
+# 1. Descargar PDFs (~126K, ~6 GB)
 python borme/scripts/borme_scraper.py --start 2009-01-01 --output ./borme_pdfs
 
 # 2. Parsear → borme_empresas.parquet + borme_cargos.parquet (PRIVADOS)
@@ -705,7 +705,7 @@ print(f"Admins en >1 empresa: {(multi > 1).sum():,}")
 | `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED + matching avanzado (5 estrategias) |
 | `ted/diagnostico_missing_ted.py` | — | Diagnóstico de missing |
 | `ted/analisis_sector_salud.py` | — | Deep dive sector salud |
-| `borme/scripts/borme_scraper.py` | BOE/BORME | Descarga ~64K PDFs del Registro Mercantil |
+| `borme/scripts/borme_scraper.py` | BOE/BORME | Descarga ~126K PDFs del Registro Mercantil |
 | `borme/scripts/borme_batch_parser.py` | — | Parser de actos mercantiles (constituciones, cargos...) |
 | `borme/scripts/borme_anonymize.py` | — | Genera datasets públicos sin datos personales |
 | `borme/scripts/borme_placsp_match.py` | — | Detector de anomalías BORME × PLACSP (5 flags) |
