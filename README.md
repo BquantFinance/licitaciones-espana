@@ -14,8 +14,8 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | Madrid – Comunidad | 2.56M | 2017-2025 | 90 MB |
 | Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
-| 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | ~300 MB |
-| **TOTAL** | **~42M + BORME** | **2000-2026** | **~1.8 GB** |
+| 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | 750 MB |
+| **TOTAL** | **~42M + BORME** | **2000-2026** | **~2.2 GB** |
 
 ---
 
@@ -35,7 +35,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | `euskadi.zip` | Contratación Euskadi | 109 MB |
 | `comunidad_madrid.zip` | Contratación Comunidad de Madrid | ~90 MB |
 | `madrid_ayuntamiento.zip` | Actividad contractual Ayuntamiento de Madrid | ~40 MB |
-| `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | ~300 MB |
+| `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | 750 MB |
 
 ### Cómo obtener los datos
 
