@@ -1,6 +1,6 @@
 # 🇪🇸 Datos Abiertos de Contratación Pública - España
 
-Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Catalunya, Euskadi, Valencia, Madrid) + cruce europeo (TED).
+Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Catalunya, Euskadi, Valencia, Madrid) + cruce europeo (TED) + Registro Mercantil (BORME).
 
 ## 📊 Resumen de Datos
 
@@ -14,7 +14,8 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | Madrid – Comunidad | 2.56M | 2017-2025 | 90 MB |
 | Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
-| **TOTAL** | **~42M** | **2000-2026** | **~1.5 GB** |
+| 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | ~300 MB |
+| **TOTAL** | **~42M + BORME** | **2000-2026** | **~1.8 GB** |
 
 ---
 
@@ -34,6 +35,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | `euskadi.zip` | Contratación Euskadi | 109 MB |
 | `comunidad_madrid.zip` | Contratación Comunidad de Madrid | ~90 MB |
 | `madrid_ayuntamiento.zip` | Actividad contractual Ayuntamiento de Madrid | ~40 MB |
+| `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | ~300 MB |
 
 ### Cómo obtener los datos
 
@@ -156,6 +158,60 @@ Top órganos missing: Servicio Andaluz de Salud (4,833), FREMAP (2,410), IB-Salu
 | `ted/run_ted_crossvalidation.py` | Cross-validation PLACSP↔TED con reglas SARA + matching avanzado (5 estrategias) |
 | `ted/diagnostico_missing_ted.py` | Diagnóstico de missing: falsos positivos vs gaps reales |
 | `ted/analisis_sector_salud.py` | Deep dive sector salud: lotes, acuerdos marco, CPV, CCAA |
+
+---
+
+## 🏢 BORME — Registro Mercantil
+
+Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_borme/) parseados desde ~64.000 PDFs (2009-2026). Permite cruzar relaciones societarias con contratación pública para detectar anomalías.
+
+| Conjunto | Registros | Contenido |
+|----------|-----------|-----------|
+| Empresas | 9.2M filas, 3.3M únicas | Actos mercantiles: constituciones, disoluciones, fusiones, ampliaciones de capital... |
+| Cargos | 17M filas, 3.8M personas | Nombramientos, ceses, revocaciones — con persona hasheada (SHA-256) |
+
+> ⚠️ Los PDFs originales no se redistribuyen porque contienen nombres de personas físicas protegidos por RGPD. Se publica el scraper para descargarlos directamente desde boe.es y los datos derivados anonimizados.
+
+### Archivos
+
+```
+borme/
+├── data/
+│   ├── borme_empresas_pub.parquet     # 9.2M actos mercantiles por empresa
+│   └── borme_cargos_pub.parquet       # 17M cargos (persona_hash, no nombre real)
+└── scripts/
+    ├── borme_scraper.py               # Descarga PDFs desde boe.es
+    ├── borme_batch_parser.py          # Extrae actos mercantiles de los PDFs
+    ├── borme_validate.py              # Validación del parser
+    ├── borme_anonymize.py             # Genera datasets públicos sin datos personales
+    └── borme_placsp_match.py          # Cruza BORME × PLACSP → flags de anomalías
+```
+
+### Detector de anomalías (BORME × PLACSP)
+
+| Flag | Señal | Descripción |
+|------|-------|-------------|
+| 1 | Empresa recién creada | Constitución < 6 meses antes de adjudicación |
+| 2 | Capital ridículo | Capital social < 10K€ ganando contratos > 100K€ |
+| 3 | Administradores compartidos | Misma persona administrando empresas competidoras |
+| 4 | Disolución post-adjudicación | Disuelta < 12 meses después de cobrar |
+| 5 | Adjudicación en concurso | Empresa en situación concursal recibiendo contratos |
+
+### Pipeline
+
+```bash
+# 1. Descargar PDFs (~64K, ~3 GB)
+python borme/scripts/borme_scraper.py --start 2009-01-01 --output ./borme_pdfs
+
+# 2. Parsear → borme_empresas.parquet + borme_cargos.parquet (PRIVADOS)
+python borme/scripts/borme_batch_parser.py --input ./borme_pdfs --workers 8
+
+# 3. Anonimizar → versiones públicas con persona_hash
+python borme/scripts/borme_anonymize.py --input ./borme_pdfs --output borme/data
+
+# 4. Detectar anomalías cruzando con PLACSP
+python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp nacional/licitaciones_espana.parquet --output ./anomalias
+```
 
 ---
 
@@ -569,6 +625,12 @@ df_val = pd.read_parquet('valencia/contratacion/')
 
 # Valencia - Lobbies REGIA
 df_lobbies = pd.read_parquet('valencia/lobbies/')
+
+# BORME - Actos mercantiles (anonimizado)
+df_borme = pd.read_parquet('borme/data/borme_empresas_pub.parquet')
+
+# BORME - Cargos con persona hasheada
+df_cargos = pd.read_parquet('borme/data/borme_cargos_pub.parquet')
 ```
 
 ### Ejemplos de análisis
@@ -611,6 +673,17 @@ df_cat_menors.groupby('organContractant')['pressupostAdjudicacio'].sum().nlarges
 # Evolución ERE/ERTE Valencia (2000-2025)
 df_erte = pd.read_parquet('valencia/empleo/')
 df_erte.groupby('año')['expedientes'].sum().plot()
+
+# BORME: constituciones por año
+df_borme = pd.read_parquet('borme/data/borme_empresas_pub.parquet')
+constit = df_borme[df_borme['actos'].str.contains('Constitución', na=False)]
+constit.groupby(constit['fecha_borme'].dt.year).size().plot(title='Constituciones/año')
+
+# BORME: administradores compartidos entre empresas
+df_cargos = pd.read_parquet('borme/data/borme_cargos_pub.parquet')
+nombramientos = df_cargos[df_cargos['tipo_acto'] == 'nombramiento']
+multi = nombramientos.groupby('persona_hash')['empresa_norm'].nunique()
+print(f"Admins en >1 empresa: {(multi > 1).sum():,}")
 ```
 
 ---
@@ -632,6 +705,10 @@ df_erte.groupby('año')['expedientes'].sum().plot()
 | `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED + matching avanzado (5 estrategias) |
 | `ted/diagnostico_missing_ted.py` | — | Diagnóstico de missing |
 | `ted/analisis_sector_salud.py` | — | Deep dive sector salud |
+| `borme/scripts/borme_scraper.py` | BOE/BORME | Descarga ~64K PDFs del Registro Mercantil |
+| `borme/scripts/borme_batch_parser.py` | — | Parser de actos mercantiles (constituciones, cargos...) |
+| `borme/scripts/borme_anonymize.py` | — | Genera datasets públicos sin datos personales |
+| `borme/scripts/borme_placsp_match.py` | — | Detector de anomalías BORME × PLACSP (5 flags) |
 
 ---
 
@@ -647,13 +724,14 @@ df_erte.groupby('año')['expedientes'].sum().plot()
 | Madrid – Ayuntamiento | Anual (nuevos CSVs por año) |
 | Catalunya | Variable (depende del dataset) |
 | Valencia | Diaria/Mensual (depende del dataset) |
+| BORME | Trimestral (re-ejecutar scraper + parser + anonymize) |
 
 ---
 
 ## 📋 Requisitos
 
 ```bash
-pip install pandas pyarrow requests beautifulsoup4
+pip install pandas pyarrow requests beautifulsoup4 pdfplumber
 ```
 
 ---
@@ -664,6 +742,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 
 - España: [Licencia de Reutilización](https://datos.gob.es/es/aviso-legal)
 - TED: [EU Open Data Licence](https://data.europa.eu/eli/dec_impl/2011/833/oj)
+- BORME: [Condiciones de Reutilización BOE](https://www.boe.es/informacion/aviso_legal/index.php#reutilizacion) — Fuente: Agencia Estatal Boletín Oficial del Estado
 
 ---
 
@@ -683,6 +762,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 | Madrid – Ayuntamiento | https://datos.madrid.es/ |
 | Catalunya | https://analisi.transparenciacatalunya.cat/ |
 | Valencia | https://dadesobertes.gva.es/ |
+| BORME | https://www.boe.es/diario_borme/ |
 | BQuant Finance | https://bquantfinance.com |
 
 ---
