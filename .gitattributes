@@ -3,3 +3,4 @@
 comunidad_madrid/*.csv filter=lfs diff=lfs merge=lfs -text
 borme/data/borme_empresas_pub.parquet filter=lfs diff=lfs merge=lfs -text
 borme/data/borme_cargos_pub.parquet filter=lfs diff=lfs merge=lfs -text
+galicia/*.parquet filter=lfs diff=lfs merge=lfs -text
