@@ -13,7 +13,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | Valencia | 8.5M | 2000-2026 | 156 MB |
 | Madrid – Comunidad | 2.56M | 2017-2025 | 90 MB |
 | Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
-| 🆕 Galicia | 1.7M | 2000-2026 | 36 MB |
+| 🆕 Galicia | 1.7M | 2007-2026 | 36 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
 | 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | 750 MB |
 | **TOTAL** | **~44M + BORME** | **2000-2026** | **~2.3 GB** |
@@ -589,13 +589,13 @@ El script detecta y unifica automáticamente 12 estructuras de CSV distintas:
 
 ## 🆕 Galicia
 
-Contratación pública completa de la [Xunta de Galicia](https://www.contratosdegalicia.gal) y todos sus organismos dependientes, extraída mediante ingeniería inversa de la API jQuery DataTables del portal. Incluye contratos menores (adjudicación directa) y licitaciones formales de 418 organismos, con barrido temporal completo desde el año 2000.
+Contratación pública completa de la [Xunta de Galicia](https://www.contratosdegalicia.gal) y todos sus organismos dependientes, extraída mediante ingeniería inversa de la API jQuery DataTables del portal. Incluye contratos menores (adjudicación directa, desde 2018) y licitaciones formales (desde 2007) de 418 organismos.
 
 | Tipo | Registros | Período |
 |------|-----------|---------|
-| Contratos menores | 1,635,407 | 2000-2026 |
-| Licitaciones | 50,382 | 2000-2026 |
-| **Total** | **1,685,789** | **2000-2026** |
+| Contratos menores | 1,635,407 | 2018-2026 |
+| Licitaciones | 50,382 | 2007-2026 |
+| **Total** | **1,685,789** | **2007-2026** |
 
 ### Archivos
 
@@ -626,7 +626,7 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
 
 **Discovery automático**: El scraper prueba IDs de organismo 1–2000 contra ambos endpoints (licitaciones en paralelo, CM secuencial por la restricción del Referer) para descubrir los 418 organismos activos.
 
-**Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01, sin parar antes. El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
+**Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01 (rango de escaneo completo; los datos reales comienzan en 2018). El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
 
 **No existe endpoint de detalle JSON** — los campos adicionales (tipo de tramitación, procedimiento, valor estimado, documentos) solo están en páginas HTML renderizadas por JSP, lo que haría inviable el scraping masivo (~1.7M peticiones individuales).
 
