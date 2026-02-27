@@ -82,7 +82,6 @@ def cmd_status(_args: argparse.Namespace) -> int:
 
 def cmd_init_db(args: argparse.Namespace) -> int:
     """Aplica las migraciones de esquema y rellena dim. Requiere DB_SCHEMA en .env. Crea schemas dim y DB_SCHEMA si no existen."""
-    import hashlib
     from etl import schema_check
 
     if get_database_url() is None:
@@ -147,7 +146,7 @@ def cmd_init_db(args: argparse.Namespace) -> int:
                 print(f"Archivo de esquema no encontrado: {path}", file=sys.stderr)
                 conn.close()
                 return 1
-            checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+            checksum = schema_check.sha256(path)
             sql = path.read_text(encoding="utf-8")
             try:
                 with conn.cursor() as cur:
@@ -162,41 +161,17 @@ def cmd_init_db(args: argparse.Namespace) -> int:
                 skip_codes = ("42P07", "23505")
                 if pgcode in skip_codes or "already exists" in msg or "duplicate key" in msg:
                     print(f"[schema-apply] Ya existe ({filename}): objeto o datos ya presentes. Registrando como aplicado.", file=sys.stderr)
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO scheduler.schema_migrations (filename, checksum, applied_by) "
-                            "VALUES (%s, %s, %s) "
-                            "ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, "
-                            "applied_at = NOW(), applied_by = EXCLUDED.applied_by, success = TRUE, error_msg = NULL",
-                            (filename, checksum, version),
-                        )
-                    conn.commit()
+                    schema_check.record(conn, filename, checksum)
                     continue
                 print(f"[schema-apply] Error aplicando {filename}: {e}", file=sys.stderr)
                 try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO scheduler.schema_migrations (filename, checksum, applied_by, success, error_msg) "
-                            "VALUES (%s, %s, %s, FALSE, %s) "
-                            "ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, "
-                            "applied_at = NOW(), applied_by = EXCLUDED.applied_by, success = FALSE, error_msg = EXCLUDED.error_msg",
-                            (filename, checksum, version, str(e)),
-                        )
-                    conn.commit()
+                    schema_check.record(conn, filename, checksum, success=False, error_msg=str(e))
                 except Exception:
                     pass
                 conn.close()
                 return 1
 
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO scheduler.schema_migrations (filename, checksum, applied_by) "
-                    "VALUES (%s, %s, %s) "
-                    "ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, "
-                    "applied_at = NOW(), applied_by = EXCLUDED.applied_by, success = TRUE, error_msg = NULL",
-                    (filename, checksum, version),
-                )
-            conn.commit()
+            schema_check.record(conn, filename, checksum)
             print(f"[schema-apply] {version} — applied {filename} (SHA256: {checksum[:12]}) [OK]")
 
             if filename == "003_dim_dir3.sql":

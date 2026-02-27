@@ -90,15 +90,17 @@ def _startup_schema_check():
     try:
         conn = psycopg2.connect(url)
         conn.autocommit = True
-        schema_check.bootstrap(conn)
-        status = schema_check.check(conn)
-        schema_check.log_check(status)
-        app.state.migration_status = {
-            "pending": len(status.pending),
-            "applied": len(status.applied),
-            "tampered": len(status.tampered),
-        }
-        conn.close()
+        try:
+            schema_check.bootstrap(conn)
+            status = schema_check.check(conn)
+            schema_check.log_check(status)
+            app.state.migration_status = {
+                "pending": len(status.pending),
+                "applied": len(status.applied),
+                "tampered": len(status.tampered),
+            }
+        finally:
+            conn.close()
     except Exception:
         app.state.migration_status = None
 
@@ -138,10 +140,11 @@ def get_migrations():
     try:
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
-        schema_check.bootstrap(conn)
-        status = schema_check.check(conn)
-        rows = schema_check.get_rows(conn)
-        conn.close()
+        try:
+            status = schema_check.check(conn)
+            rows = schema_check.get_rows(conn)
+        finally:
+            conn.close()
         from etl import __version__
         return {
             "service": "etl",

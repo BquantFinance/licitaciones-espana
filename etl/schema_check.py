@@ -45,7 +45,7 @@ class MigrationStatus(NamedTuple):
     tampered: list[str]
 
 
-def _sha256(path: Path) -> str:
+def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -85,7 +85,7 @@ def check(conn, schemas_dir: Path | None = None) -> MigrationStatus:
     for f in files:
         if f not in applied_map:
             pending.append(f)
-        elif applied_map[f] != _sha256(d / f):
+        elif applied_map[f] != sha256(d / f):
             tampered.append(f)
         else:
             applied.append(f)
@@ -107,8 +107,26 @@ def log_check(status: MigrationStatus) -> None:
         logger.warning("[schema-check] WARNING %s — checksum mismatch: %s", version, f)
 
 
+def record(conn, filename: str, checksum: str, success: bool = True, error_msg: str | None = None) -> None:
+    """Record a migration result in scheduler.schema_migrations."""
+    version = _get_version()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO scheduler.schema_migrations (filename, checksum, applied_by, success, error_msg) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, "
+            "applied_at = NOW(), applied_by = EXCLUDED.applied_by, success = EXCLUDED.success, error_msg = EXCLUDED.error_msg",
+            (filename, checksum, version, success, error_msg),
+        )
+    conn.commit()
+
+
 def apply_pending(conn, schemas_dir: Path | None = None) -> list[dict]:
-    """Apply all pending migrations and record them. Returns list of result dicts."""
+    """Apply all pending migrations and record them.
+
+    Note: cmd_init_db uses its own apply loop to support pre/post hooks.
+    This function is for the simple case (API trigger, no hooks).
+    """
     d = schemas_dir or _schemas_dir()
     status = check(conn, d)
     version = _get_version()
@@ -116,40 +134,24 @@ def apply_pending(conn, schemas_dir: Path | None = None) -> list[dict]:
 
     for filename in status.pending:
         path = d / filename
-        checksum = _sha256(path)
+        checksum = sha256(path)
         sql = path.read_text(encoding="utf-8")
         try:
             with conn.cursor() as cur:
                 cur.execute(sql)
             conn.commit()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO scheduler.schema_migrations (filename, checksum, applied_by) "
-                    "VALUES (%s, %s, %s) "
-                    "ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, "
-                    "applied_at = NOW(), applied_by = EXCLUDED.applied_by, success = TRUE, error_msg = NULL",
-                    (filename, checksum, version),
-                )
-            conn.commit()
+            record(conn, filename, checksum)
             logger.info("[schema-apply] %s — applied %s (SHA256: %s) [OK]", version, filename, checksum[:12])
             results.append({"filename": filename, "checksum": checksum, "success": True})
         except Exception as e:
             conn.rollback()
-            error_msg = str(e)
+            err = str(e)
             try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO scheduler.schema_migrations (filename, checksum, applied_by, success, error_msg) "
-                        "VALUES (%s, %s, %s, FALSE, %s) "
-                        "ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, "
-                        "applied_at = NOW(), applied_by = EXCLUDED.applied_by, success = FALSE, error_msg = EXCLUDED.error_msg",
-                        (filename, checksum, version, error_msg),
-                    )
-                conn.commit()
+                record(conn, filename, checksum, success=False, error_msg=err)
             except Exception:
                 pass
-            logger.error("[schema-apply] %s — FAILED %s: %s", version, filename, error_msg)
-            results.append({"filename": filename, "checksum": checksum, "success": False, "error": error_msg})
+            logger.error("[schema-apply] %s — FAILED %s: %s", version, filename, err)
+            results.append({"filename": filename, "checksum": checksum, "success": False, "error": err})
 
     return results
 
