@@ -32,3 +32,14 @@ schemas/parquet_columns_report.json
 
 # LLM
 .llm/
+
+# Build artifacts
+*.egg-info/
+
+# Runtime data — never commit
+*.parquet
+borme/data/
+Euskadi/euskadi_parquet/
+galicia/*.parquet
+data/ted/
+data.untracked.bak/
