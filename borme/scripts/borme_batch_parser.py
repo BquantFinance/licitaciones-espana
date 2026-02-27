@@ -13,6 +13,7 @@ Uso:
 Basado en datos de la Agencia Estatal Boletin Oficial del Estado (https://www.boe.es)
 """
 
+import os
 import re
 import json
 import logging
@@ -35,6 +36,20 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 log = logging.getLogger(__name__)
+
+
+def _default_input_dir():
+    tmp = os.environ.get("LICITACIONES_TMP_DIR", "")
+    if tmp:
+        return os.path.join(tmp, "borme", "pdfs")
+    return "borme_pdfs"
+
+
+def _default_output_dir():
+    tmp = os.environ.get("LICITACIONES_TMP_DIR", "")
+    if tmp:
+        return os.path.join(tmp, "borme", "parsed")
+    return "borme_parsed"
 
 # =====================================================================
 # CONSTANTES
@@ -551,12 +566,14 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BORME Batch Parser v2")
-    parser.add_argument("--input", required=True, help="Carpeta raiz de borme_pdfs")
-    parser.add_argument("--output", default=None, help="Carpeta de salida (default: input)")
+    parser.add_argument("--input", default=_default_input_dir(),
+                        help="Carpeta raiz de borme_pdfs (default: $LICITACIONES_TMP_DIR/borme/pdfs or ./borme_pdfs)")
+    parser.add_argument("--output", default=None,
+                        help="Carpeta de salida (default: $LICITACIONES_TMP_DIR/borme/parsed or same as --input)")
     parser.add_argument("--workers", type=int, default=8, help="Procesos paralelos")
     parser.add_argument("--resume", action="store_true", help="Continuar desde ultimo progreso")
     args = parser.parse_args()
 
     base = Path(args.input)
-    out = Path(args.output) if args.output else base
+    out = Path(args.output) if args.output else Path(_default_output_dir())
     run_batch(base, out, workers=args.workers, resume=args.resume)

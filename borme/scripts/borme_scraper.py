@@ -53,6 +53,14 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+def _default_output_dir():
+    """Use LICITACIONES_TMP_DIR if set, otherwise cwd/borme_pdfs."""
+    tmp = os.environ.get("LICITACIONES_TMP_DIR", "")
+    if tmp:
+        return os.path.join(tmp, "borme", "pdfs")
+    return "borme_pdfs"
+
+
 # ─────────────────────────────────────────────
 #  CONFIG
 # ─────────────────────────────────────────────
@@ -563,8 +571,8 @@ def main():
         help="Fecha fin YYYY-MM-DD (default: hoy)"
     )
     parser.add_argument(
-        "--output", "-o", default="./borme_pdfs",
-        help="Directorio de salida (default: ./borme_pdfs)"
+        "--output", "-o", default=_default_output_dir(),
+        help="Directorio de salida (default: $LICITACIONES_TMP_DIR/borme/pdfs or ./borme_pdfs)"
     )
     parser.add_argument(
         "--delay", type=float, default=DEFAULT_DELAY,
