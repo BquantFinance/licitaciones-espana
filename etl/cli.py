@@ -1,7 +1,7 @@
 """
 CLI de este microservicio ETL. Punto de entrada: licitia-etl.
 
-Comandos: status, init-db, ingest, health, scheduler, db-info.
+Comandos: status, init-db, ingest, health, scheduler, db-info, borme.
 """
 
 import argparse
@@ -920,6 +920,31 @@ def cmd_db_info(_args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_borme(args: argparse.Namespace) -> int:
+    """BORME: ingest or anomaly detection."""
+    borme_cmd = getattr(args, "borme_cmd", None)
+    if not borme_cmd:
+        print("Indique un subcomando: ingest o anomalias. Use 'licitia-etl borme --help' para más info.", file=sys.stderr)
+        return 1
+    from etl.borme import run_scraper, run_parser, load_borme_to_db, run_anomalias
+    if borme_cmd == "ingest":
+        pdfs_dir = run_scraper(args.anos)
+        parsed_dir = run_parser(pdfs_dir)
+        ins_e, skip_e = load_borme_to_db(parsed_dir, "empresas")
+        ins_c, skip_c = load_borme_to_db(parsed_dir, "cargos")
+        print(f"BORME ingest: empresas inserted={ins_e} skipped={skip_e}, cargos inserted={ins_c} skipped={skip_c}")
+        return 0
+    elif borme_cmd == "anomalias":
+        pdfs_dir = run_scraper(args.anos)
+        parsed_dir = run_parser(pdfs_dir)
+        output = run_anomalias(parsed_dir, anonimizar=getattr(args, "anonimizar", False))
+        print(f"BORME anomalías completadas. Resultados en: {output}")
+        return 0
+    else:
+        print("Subcomando BORME no reconocido.", file=sys.stderr)
+        return 1
+
+
 _HELP_EPILOG = """
 Atribución
   Basado en: https://github.com/BquantFinance/licitaciones-espana
@@ -1149,6 +1174,22 @@ def main() -> int:
         help="Muestra el tamaño de los esquemas relevantes y la lista de tablas.",
         description="Muestra el tamaño de los esquemas relevantes y la lista de tablas (L0, dim, scheduler). Útil para operaciones y supervisión.",
     ).set_defaults(func=cmd_db_info)
+
+    borme_parser = subparsers.add_parser(
+        "borme",
+        help="BORME: scrape, ingest, anomaly detection (registro mercantil).",
+        description="BORME: scrape de datos del registro mercantil, ingest en schema borme, y detector de anomalías vs L0 nacional.",
+    )
+    borme_sub = borme_parser.add_subparsers(dest="borme_cmd", help="Subcomando BORME")
+
+    borme_ingest = borme_sub.add_parser("ingest", help="Scrape + parse + load into borme schema")
+    borme_ingest.add_argument("--anos", required=True, help="Year range: 2020-2026 or 2024")
+
+    borme_anomalias = borme_sub.add_parser("anomalias", help="Run anomaly detector vs L0 nacional")
+    borme_anomalias.add_argument("--anos", required=True, help="Year range: 2020-2026 or 2024")
+    borme_anomalias.add_argument("--anonimizar", action="store_true", help="Anonymize before matching")
+
+    borme_parser.set_defaults(func=cmd_borme)
 
     args = parser.parse_args()
     if not args.command:
