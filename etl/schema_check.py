@@ -121,18 +121,25 @@ def record(conn, filename: str, checksum: str, success: bool = True, error_msg: 
     conn.commit()
 
 
-def apply_pending(conn, schemas_dir: Path | None = None) -> list[dict]:
-    """Apply all pending migrations and record them.
+def apply_pending(conn, schemas_dir: Path | None = None, only_files: list[str] | None = None) -> list[dict]:
+    """Apply pending migrations and record them.
 
-    Note: cmd_init_db uses its own apply loop to support pre/post hooks.
-    This function is for the simple case (API trigger, no hooks).
+    If *only_files* is given, only those filenames are considered (intersection
+    with pending).  When None, applies ALL pending files.
+
+    cmd_init_db passes only_files=INIT_MIGRATIONS to restrict to infra DDL.
     """
     d = schemas_dir or _schemas_dir()
     status = check(conn, d)
     version = _get_version()
     results = []
 
-    for filename in status.pending:
+    candidates = status.pending
+    if only_files is not None:
+        allowed = set(only_files)
+        candidates = [f for f in candidates if f in allowed]
+
+    for filename in candidates:
         path = d / filename
         checksum = sha256(path)
         sql = path.read_text(encoding="utf-8")
@@ -154,6 +161,26 @@ def apply_pending(conn, schemas_dir: Path | None = None) -> list[dict]:
             results.append({"filename": filename, "checksum": checksum, "success": False, "error": err})
 
     return results
+
+
+def ensure_file(conn, filename: str, schemas_dir: Path | None = None) -> bool:
+    """Ensure a single SQL file is applied. Returns True if it was applied now, False if already applied."""
+    d = schemas_dir or _schemas_dir()
+    status = check(conn, d)
+    if filename not in status.pending:
+        return False
+    path = d / filename
+    if not path.exists():
+        raise FileNotFoundError(f"Migration file not found: {path}")
+    checksum = sha256(path)
+    sql = path.read_text(encoding="utf-8")
+    with conn.cursor() as cur:
+        cur.execute(sql)
+    conn.commit()
+    record(conn, filename, checksum)
+    version = _get_version()
+    logger.info("[schema-apply] %s — applied %s (SHA256: %s) [OK]", version, filename, checksum[:12])
+    return True
 
 
 def get_rows(conn) -> list[dict]:

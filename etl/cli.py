@@ -35,6 +35,18 @@ from etl.ingest_l0 import (
 )
 
 
+INIT_MIGRATIONS = (
+    "001_dim_cpv.sql",
+    "002_dim_ccaa.sql",
+    "002b_dim_provincia.sql",
+    "003_dim_dir3.sql",
+    "008_scheduler.sql",
+    "009_scheduler_runs_pid.sql",
+)
+
+BORME_MIGRATIONS = ("010_borme.sql",)
+
+
 def _load_env() -> None:
     """Carga el .env de este servicio (directorio actual y raíz de este workspace)."""
     workspace_root = Path(__file__).resolve().parent.parent
@@ -134,13 +146,17 @@ def cmd_init_db(args: argparse.Namespace) -> int:
         status = schema_check.check(conn, schema_dir)
         schema_check.log_check(status)
 
-        if not status.pending:
-            print("[schema-apply] No hay migraciones pendientes.")
+        init_pending = [f for f in status.pending if f in INIT_MIGRATIONS]
+        other_pending = [f for f in status.pending if f not in INIT_MIGRATIONS]
+        if other_pending:
+            print(f"[schema-apply] Ficheros no-infra detectados (se aplican bajo demanda): {', '.join(other_pending)}")
+        if not init_pending:
+            print("[schema-apply] No hay migraciones de infraestructura pendientes.")
             conn.close()
             print("init-db completado.")
             return 0
 
-        for filename in status.pending:
+        for filename in init_pending:
             path = schema_dir / filename
             if not path.exists():
                 print(f"Archivo de esquema no encontrado: {path}", file=sys.stderr)
@@ -941,12 +957,33 @@ def cmd_db_info(_args: argparse.Namespace) -> int:
         return 1
 
 
+def _ensure_borme_schema() -> None:
+    """Apply 010_borme.sql if not yet applied (on-demand DDL for BORME subsystem)."""
+    from etl import schema_check
+
+    url = get_database_url()
+    if not url:
+        return
+    schema_dir = _schema_dir()
+    with psycopg2.connect(url) as conn:
+        conn.autocommit = False
+        schema_check.bootstrap(conn)
+        for f in BORME_MIGRATIONS:
+            try:
+                applied = schema_check.ensure_file(conn, f, schema_dir)
+                if applied:
+                    print(f"[borme] DDL aplicado bajo demanda: {f}")
+            except Exception as e:
+                print(f"[borme] Error aplicando {f}: {e}", file=sys.stderr)
+
+
 def cmd_borme(args: argparse.Namespace) -> int:
     """BORME: ingest or anomaly detection."""
     borme_cmd = getattr(args, "borme_cmd", None)
     if not borme_cmd:
         print("Indique un subcomando: ingest o anomalias. Use 'licitia-etl borme --help' para más info.", file=sys.stderr)
         return 1
+    _ensure_borme_schema()
     from etl.borme import run_scraper, run_parser, load_borme_to_db, run_anomalias
     if borme_cmd == "ingest":
         pdfs_dir = run_scraper(args.anos)

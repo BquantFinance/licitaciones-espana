@@ -37,16 +37,36 @@ _(Run from repo root.)_
 
 ---
 
+## Tiered migration model
+
+Files in this directory follow three tiers aligned with the L0→L1→L2 data architecture:
+
+| Tier | Applied by | Files |
+|------|-----------|-------|
+| **Infrastructure** | `init-db` (always) | 001, 002, 002b, 003, 008, 009 |
+| **On-demand subsystem** | subsystem command (first use) | 010 (BORME) |
+| **Legacy / manual** | not auto-applied | 005, 006, 007 |
+
+- **Infrastructure** files create dimension tables (dim), scheduler objects, and the working schema. `init-db` applies only these.
+- **On-demand** files are applied automatically by their subsystem's CLI command (e.g. `licitia-etl borme ingest` ensures `010_borme.sql` is applied before loading data).
+- **Legacy** files (005–007) predate the dynamic `ensure_l0_table()` pattern used by the L0 ingest pipeline. L0 tables for all conjuntos are now created at ingest time; these files remain for reference but are not auto-applied.
+
+All files are tracked by `schema_check` for audit: `check()` scans every `*.sql` file and reports applied/pending status regardless of tier.
+
 ## Files
 
-| File | Contents |
-|------|----------|
-| `001_dim_cpv.sql` | dim schema, dim.cpv_dim (num_code, code, label) + ~9.45k CPV rows; source: cpv_code.sql, script: scripts/cpv_dim_convert.py |
-| `002_dim_ccaa.sql` | dim.dim_ccaa (CCAA) |
-| `002b_dim_provincia.sql` | dim.dim_provincia (provincias, FK to dim_ccaa) |
-| `003_dim_dir3.sql` | dim.dim_dir3 (unidades AGE); init-db also runs DIR3 ingest from XLSX |
-| `008_scheduler.sql` | scheduler schema, scheduler.tasks, scheduler.runs |
-| `009_scheduler_runs_pid.sql` | adds process_id to scheduler.runs |
+| File | Tier | Contents |
+|------|------|----------|
+| `001_dim_cpv.sql` | infra | dim schema, dim.cpv_dim (num_code, code, label) + ~9.45k CPV rows; source: cpv_code.sql, script: scripts/cpv_dim_convert.py |
+| `002_dim_ccaa.sql` | infra | dim.dim_ccaa (CCAA) |
+| `002b_dim_provincia.sql` | infra | dim.dim_provincia (provincias, FK to dim_ccaa) |
+| `003_dim_dir3.sql` | infra | dim.dim_dir3 (unidades AGE); init-db also runs DIR3 ingest from XLSX |
+| `005_catalunya.sql` | legacy | Catalunya static tables (superseded by dynamic L0 table creation) |
+| `006_valencia.sql` | legacy | Valencia static tables (superseded by dynamic L0 table creation) |
+| `007_views.sql` | legacy | Union views across CCAA tables |
+| `008_scheduler.sql` | infra | scheduler schema, scheduler.tasks, scheduler.runs |
+| `009_scheduler_runs_pid.sql` | infra | adds process_id to scheduler.runs |
+| `010_borme.sql` | on-demand | borme schema, borme.empresas, borme.cargos |
 
 **Parquet ↔ schema mapping:** See [docs/extraction-contract.md](../docs/extraction-contract.md) (section "Parquet ↔ schema column mapping") for column mapping from extraction Parquet to these tables. Phase 3 ETL uses that mapping to load Parquet into the database.
 
