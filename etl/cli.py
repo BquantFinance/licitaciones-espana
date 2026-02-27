@@ -651,7 +651,7 @@ def cmd_scheduler_register(args: argparse.Namespace) -> int:
         print("Falta configuración de base de datos (DB_HOST, DB_NAME, DB_USER).", file=sys.stderr)
         return 1
     conjuntos = getattr(args, "conjuntos", None) or []
-    valid = [c for c in CONJUNTOS_REGISTRY if c != "test"]
+    valid = [c for c in CONJUNTOS_REGISTRY if c != "test"] + ["borme"]
     if conjuntos:
         invalid = [c for c in conjuntos if c not in valid]
         if invalid:
@@ -1093,7 +1093,7 @@ def main() -> int:
     sched_sub = sched_parser.add_subparsers(dest="scheduler_cmd", help="Subcomando", required=True)
     _sched_registry_list = ", ".join(
         f"{c} ({len(r['subconjuntos'])})" for c, r in sorted(CONJUNTOS_REGISTRY.items()) if c != "test"
-    )
+    ) + ", borme (1)"
     reg_parser = sched_sub.add_parser(
         "register",
         help="Registra tareas por conjunto. Sin argumentos: todos; con argumentos: solo los indicados. Posibles: %s." % _sched_registry_list,
@@ -1102,7 +1102,7 @@ def main() -> int:
         "conjuntos",
         nargs="*",
         metavar="conjunto",
-        help="Conjunto(s) a registrar (por defecto: todos). Valores: %s." % ", ".join(sorted(c for c in CONJUNTOS_REGISTRY if c != "test")),
+        help="Conjunto(s) a registrar (por defecto: todos). Valores: %s." % ", ".join(sorted(c for c in CONJUNTOS_REGISTRY if c != "test") + ["borme"]),
     )
     reg_parser.set_defaults(func=cmd_scheduler_register)
     sched_sub.add_parser(

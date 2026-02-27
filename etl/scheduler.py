@@ -81,6 +81,8 @@ def _build_default_schedules() -> dict[tuple[str, str], str]:
                 out[(conjunto, sub)] = "Trimestral" if sub == "comunidad" else "Anual"
             else:
                 out[(conjunto, sub)] = "Trimestral"
+    # BORME ingest: separate from CONJUNTOS_REGISTRY (anomalías is on-demand only)
+    out[("borme", "ingest")] = "Trimestral"
     return out
 
 
@@ -389,14 +391,23 @@ def get_tasks_due(conn: "psycopg2.extensions.connection") -> list[dict[str, Any]
     return due
 
 
-def run_single_task(db_url: str, conjunto: str, subconjunto: str) -> int:
-    """Ejecuta una sola run de ingest para (conjunto, subconjunto). Devuelve el código de salida del ingest."""
-    import subprocess as sp
+def _build_task_cmd(conjunto: str, subconjunto: str) -> list[str]:
+    """Build the CLI command list for a scheduled task."""
     from datetime import date
+    if conjunto == "borme":
+        y = date.today().year
+        return [sys.executable, "-m", "etl.cli", "borme", "ingest", "--anos", f"{y}-{y}"]
     cmd = [sys.executable, "-m", "etl.cli", "ingest", conjunto, subconjunto]
     if conjunto in ("nacional", "ted"):
         y = date.today().year
         cmd.extend(["--anos", f"{y}-{y}"])
+    return cmd
+
+
+def run_single_task(db_url: str, conjunto: str, subconjunto: str) -> int:
+    """Ejecuta una sola run de ingest para (conjunto, subconjunto). Devuelve el código de salida del ingest."""
+    import subprocess as sp
+    cmd = _build_task_cmd(conjunto, subconjunto)
     try:
         rc = sp.run(cmd, check=False)
         return int(rc.returncode) if rc.returncode is not None else 0
@@ -454,11 +465,7 @@ def run_scheduler_loop(
                         break
                     conjunto = task["conjunto"]
                     subconjunto = task["subconjunto"]
-                    cmd = [sys.executable, "-m", "etl.cli", "ingest", conjunto, subconjunto]
-                    if conjunto in ("nacional", "ted"):
-                        from datetime import date
-                        y = date.today().year
-                        cmd.extend(["--anos", f"{y}-{y}"])
+                    cmd = _build_task_cmd(conjunto, subconjunto)
                     try:
                         p = subprocess.Popen(cmd)
                         p.wait()
