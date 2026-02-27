@@ -84,6 +84,7 @@ def _startup_recover_stale_runs():
 def _startup_schema_check():
     """Detect-only schema migration check on boot (no auto-apply)."""
     from etl import schema_check
+    from etl.cli import INIT_MIGRATIONS
     url = get_database_url()
     if not url:
         return
@@ -94,8 +95,10 @@ def _startup_schema_check():
             schema_check.bootstrap(conn)
             status = schema_check.check(conn)
             schema_check.log_check(status)
+            init_pending = [f for f in status.pending if f in INIT_MIGRATIONS]
             app.state.migration_status = {
                 "pending": len(status.pending),
+                "pending_infra": len(init_pending),
                 "applied": len(status.applied),
                 "tampered": len(status.tampered),
             }
@@ -134,6 +137,7 @@ def health():
 @app.get("/migrations", summary="Migration audit trail", description="Returns all recorded schema migrations.")
 def get_migrations():
     from etl import schema_check
+    from etl.cli import INIT_MIGRATIONS
     db_url = get_database_url()
     if not db_url:
         return JSONResponse(status_code=503, content={"detail": "Database not configured"})
@@ -146,11 +150,13 @@ def get_migrations():
         finally:
             conn.close()
         from etl import __version__
+        init_pending = [f for f in status.pending if f in INIT_MIGRATIONS]
         return {
             "service": "etl",
             "version": __version__,
             "status": {
                 "pending": len(status.pending),
+                "pending_infra": len(init_pending),
                 "applied": len(status.applied),
                 "tampered": len(status.tampered),
             },
@@ -160,6 +166,40 @@ def get_migrations():
         }
     except Exception as e:
         return JSONResponse(status_code=503, content={"detail": str(e)})
+
+
+@app.post("/init-db", summary="Apply init-db migrations", description="Applies infrastructure migrations (dim, scheduler). Returns results for dashboard.")
+def post_init_db():
+    """Run init-db logic and return JSON for the frontend migration apply flow."""
+    from etl import schema_check
+    from etl.cli import run_init_db, _schema_dir, INIT_MIGRATIONS
+    exit_code, results = run_init_db(schema_dir=_schema_dir())
+    # Refresh migration status so next /health reflects applied count
+    db_url = get_database_url()
+    if db_url:
+        try:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            try:
+                schema_check.bootstrap(conn)
+                status = schema_check.check(conn)
+                init_pending = [f for f in status.pending if f in INIT_MIGRATIONS]
+                app.state.migration_status = {
+                    "pending": len(status.pending),
+                    "pending_infra": len(init_pending),
+                    "applied": len(status.applied),
+                    "tampered": len(status.tampered),
+                }
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    failed = [r for r in results if not r.get("success")]
+    return {
+        "ok": exit_code == 0,
+        "message": f"Init-db: {len(results)} processed, {len(failed)} failed.",
+        "results": results,
+    }
 
 
 @app.get(

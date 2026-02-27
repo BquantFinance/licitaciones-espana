@@ -92,6 +92,90 @@ def cmd_status(_args: argparse.Namespace) -> int:
     return 0
 
 
+def run_init_db(url: str | None = None, schema_dir: Path | None = None) -> tuple[int, list[dict]]:
+    """Run init-db logic: create schemas, apply INIT_MIGRATIONS, run DIR3 hook. Returns (exit_code, results)."""
+    from etl import schema_check
+
+    url = url or get_database_url()
+    if not url:
+        return 1, [{"filename": "", "success": False, "error": "Database not configured"}]
+    db_schema = get_db_schema()
+    if not db_schema or not db_schema.replace("_", "").isalnum():
+        return 1, [{"filename": "", "success": False, "error": "DB_SCHEMA not set or invalid"}]
+    schema_dir = schema_dir or _schema_dir()
+    if not schema_dir.exists():
+        return 1, [{"filename": "", "success": False, "error": f"Schema dir not found: {schema_dir}"}]
+
+    etl_schemas_sql = f"CREATE SCHEMA IF NOT EXISTS dim; CREATE SCHEMA IF NOT EXISTS {db_schema};"
+    try:
+        with psycopg2.connect(url) as conn:
+            conn.autocommit = False
+            with conn.cursor() as cur:
+                for stmt in etl_schemas_sql.split(";"):
+                    stmt = stmt.strip()
+                    if stmt:
+                        cur.execute(stmt)
+            conn.commit()
+    except psycopg2.Error as e:
+        return 1, [{"filename": "", "success": False, "error": str(e)}]
+
+    conn = psycopg2.connect(url)
+    conn.autocommit = False
+    results: list[dict] = []
+    try:
+        schema_check.bootstrap(conn)
+        status = schema_check.check(conn, schema_dir)
+        init_pending = [f for f in status.pending if f in INIT_MIGRATIONS]
+        if not init_pending:
+            return 0, []
+
+        for filename in init_pending:
+            path = schema_dir / filename
+            if not path.exists():
+                conn.close()
+                return 1, results + [{"filename": filename, "success": False, "error": f"File not found: {path}"}]
+            checksum = schema_check.sha256(path)
+            sql = path.read_text(encoding="utf-8")
+            try:
+                with conn.cursor() as cur:
+                    if filename == "003_dim_dir3.sql":
+                        cur.execute("DROP TABLE IF EXISTS dim.dim_dir3 CASCADE")
+                    cur.execute(sql)
+                conn.commit()
+            except psycopg2.Error as e:
+                conn.rollback()
+                pgcode = getattr(e, "pgcode", None)
+                msg = str(e).lower()
+                skip_codes = ("42P07", "23505")
+                if pgcode in skip_codes or "already exists" in msg or "duplicate key" in msg:
+                    schema_check.record(conn, filename, checksum)
+                    results.append({"filename": filename, "success": True})
+                    continue
+                try:
+                    schema_check.record(conn, filename, checksum, success=False, error_msg=str(e))
+                except Exception:
+                    pass
+                results.append({"filename": filename, "success": False, "error": str(e)})
+                conn.close()
+                return 1, results
+
+            schema_check.record(conn, filename, checksum)
+            results.append({"filename": filename, "success": True})
+
+            if filename == "003_dim_dir3.sql":
+                try:
+                    from etl.dir3_ingest import run_dir3_ingest
+                    run_dir3_ingest(url)
+                except Exception as e:
+                    conn.close()
+                    return 1, results + [{"filename": "dir3_ingest", "success": False, "error": str(e)}]
+    finally:
+        if not conn.closed:
+            conn.close()
+
+    return 0, results
+
+
 def cmd_init_db(args: argparse.Namespace) -> int:
     """Aplica las migraciones de esquema y rellena dim. Requiere DB_SCHEMA en .env. Crea schemas dim y DB_SCHEMA si no existen."""
     from etl import schema_check
@@ -101,29 +185,18 @@ def cmd_init_db(args: argparse.Namespace) -> int:
         return 1
     db_schema = get_db_schema()
     if not db_schema:
-        print(
-            "Falta DB_SCHEMA. Defina la variable de entorno DB_SCHEMA en el .env de este servicio.",
-            file=sys.stderr,
-        )
-        print(
-            "DB_SCHEMA es el nombre del schema de trabajo donde el ETL creará objetos para ingesta (p. ej. raw, staging).",
-            file=sys.stderr,
-        )
+        print("Falta DB_SCHEMA. Defina la variable de entorno DB_SCHEMA en el .env de este servicio.", file=sys.stderr)
         print("Ejemplo: DB_SCHEMA=raw", file=sys.stderr)
         return 1
     if not db_schema.replace("_", "").isalnum():
-        print(
-            "DB_SCHEMA debe ser un identificador válido (letras, números y guión bajo). Ejemplo: raw, staging_raw.",
-            file=sys.stderr,
-        )
+        print("DB_SCHEMA debe ser un identificador válido (letras, números y guión bajo).", file=sys.stderr)
         return 1
     schema_dir = getattr(args, "schema_dir", None) or _schema_dir()
     if not schema_dir.exists():
         print(f"Directorio de esquemas no encontrado: {schema_dir}", file=sys.stderr)
         return 1
-    url = get_database_url()
-    version = f"etl:{__version__}"
 
+    url = get_database_url()
     etl_schemas_sql = f"CREATE SCHEMA IF NOT EXISTS dim; CREATE SCHEMA IF NOT EXISTS {db_schema};"
     try:
         with psycopg2.connect(url) as conn:
@@ -145,66 +218,23 @@ def cmd_init_db(args: argparse.Namespace) -> int:
         schema_check.bootstrap(conn)
         status = schema_check.check(conn, schema_dir)
         schema_check.log_check(status)
-
-        init_pending = [f for f in status.pending if f in INIT_MIGRATIONS]
         other_pending = [f for f in status.pending if f not in INIT_MIGRATIONS]
         if other_pending:
             print(f"[schema-apply] Ficheros no-infra detectados (se aplican bajo demanda): {', '.join(other_pending)}")
-        if not init_pending:
-            print("[schema-apply] No hay migraciones de infraestructura pendientes.")
-            conn.close()
-            print("init-db completado.")
-            return 0
-
-        for filename in init_pending:
-            path = schema_dir / filename
-            if not path.exists():
-                print(f"Archivo de esquema no encontrado: {path}", file=sys.stderr)
-                conn.close()
-                return 1
-            checksum = schema_check.sha256(path)
-            sql = path.read_text(encoding="utf-8")
-            try:
-                with conn.cursor() as cur:
-                    if filename == "003_dim_dir3.sql":
-                        cur.execute("DROP TABLE IF EXISTS dim.dim_dir3 CASCADE")
-                    cur.execute(sql)
-                conn.commit()
-            except psycopg2.Error as e:
-                conn.rollback()
-                pgcode = getattr(e, "pgcode", None)
-                msg = str(e).lower()
-                skip_codes = ("42P07", "23505")
-                if pgcode in skip_codes or "already exists" in msg or "duplicate key" in msg:
-                    print(f"[schema-apply] Ya existe ({filename}): objeto o datos ya presentes. Registrando como aplicado.", file=sys.stderr)
-                    schema_check.record(conn, filename, checksum)
-                    continue
-                print(f"[schema-apply] Error aplicando {filename}: {e}", file=sys.stderr)
-                try:
-                    schema_check.record(conn, filename, checksum, success=False, error_msg=str(e))
-                except Exception:
-                    pass
-                conn.close()
-                return 1
-
-            schema_check.record(conn, filename, checksum)
-            print(f"[schema-apply] {version} — applied {filename} (SHA256: {checksum[:12]}) [OK]")
-
-            if filename == "003_dim_dir3.sql":
-                try:
-                    from etl.dir3_ingest import run_dir3_ingest
-                    n = run_dir3_ingest(url)
-                    print(f"DIR3 ingerido: {n} filas.")
-                except Exception as e:
-                    print(f"Error insertando DIR3: {e}", file=sys.stderr)
-                    conn.close()
-                    return 1
     finally:
         if not conn.closed:
             conn.close()
 
-    print("init-db completado.")
-    return 0
+    exit_code, results = run_init_db(url=url, schema_dir=schema_dir)
+    version = f"etl:{__version__}"
+    for r in results:
+        if r.get("success"):
+            print(f"[schema-apply] {version} — applied {r['filename']} [OK]")
+        else:
+            print(f"[schema-apply] Error: {r.get('filename', '')} — {r.get('error', '')}", file=sys.stderr)
+    if exit_code == 0:
+        print("init-db completado.")
+    return exit_code
 
 
 def _parse_anos(anos_str: str) -> tuple[int, int]:
