@@ -53,6 +53,10 @@ class SchedulerRunsStopBody(BaseModel):
     run_ids: list[int]
 
 
+class SchedulerUnregisterBody(BaseModel):
+    tasks: list[dict]
+
+
 class BormeIngestBody(BaseModel):
     anos: str
 
@@ -446,6 +450,34 @@ def scheduler_recover():
     except psycopg2.Error as e:
         return JSONResponse(status_code=500, content={"ok": False, "message": str(e)})
     return {"ok": True, "recovered": count}
+
+
+@app.post(
+    "/scheduler/unregister",
+    summary="Unregister scheduler tasks",
+    description="Delete scheduled tasks by (conjunto, subconjunto) pairs. Runs are deleted by CASCADE. Running processes are NOT stopped.",
+)
+def scheduler_unregister(body: SchedulerUnregisterBody):
+    db_url = get_database_url()
+    if db_url is None:
+        return JSONResponse(status_code=503, content={"ok": False, "message": "Database not configured"})
+    if not body.tasks:
+        return JSONResponse(status_code=422, content={"ok": False, "message": "No tasks specified."})
+    try:
+        deleted = 0
+        with psycopg2.connect(db_url) as conn:
+            conn.autocommit = False
+            for t in body.tasks:
+                conjunto = t.get("conjunto", "")
+                subconjunto = t.get("subconjunto", "")
+                task_id = get_task_id(conn, conjunto, subconjunto)
+                if task_id is not None:
+                    delete_task(conn, task_id)
+                    deleted += 1
+            conn.commit()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "message": str(e)})
+    return {"ok": True, "deleted": deleted, "message": f"{deleted} tarea(s) eliminada(s)."}
 
 
 @app.get("/status", summary="Database status", description="Checks the database connection and returns availability.")
