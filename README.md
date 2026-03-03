@@ -83,9 +83,13 @@ Documentación interactiva disponible en `/docs` (Swagger UI). Referencia comple
 | `/ingest/run` | POST | Lanza una ingesta (mismo efecto que `licitia-etl ingest`) |
 | `/ingest/status` | GET | Estado de la ingesta en curso |
 | `/scheduler/tasks` | GET | Lista tareas programadas con estado |
-| `/scheduler/register` | POST | Registra tareas del scheduler |
+| `/scheduler/register` | POST | Registra tareas del scheduler (acepta `conjuntos[]` o `tasks[]`) |
 | `/scheduler/run` | POST | Arranca el scheduler |
 | `/scheduler/stop` | POST | Detiene el scheduler |
+| `/scheduler/status` | GET | Estado de tareas programadas y estado del bucle (`loop_running`) |
+| `/scheduler/running` | GET | Ejecuciones activas con metadatos de tarea |
+| `/scheduler/runs/stop` | POST | Detiene ejecuciones seleccionadas por `run_id` (SIGTERM) |
+| `/scheduler/unregister` | POST | Elimina tareas programadas por `(conjunto, subconjunto)` |
 | `/borme/ingest` | POST | Ingesta BORME (non-blocking) |
 | `/borme/anomalias` | POST | Detección de anomalías BORME (non-blocking) |
 | `/borme/jobs/{job_id}` | GET | Estado de un job BORME |
@@ -176,6 +180,14 @@ tests/               # Tests (unit + integration)
 - Limpieza de datos estáticos (todos los datos provienen de scrapers en runtime)
 - Documentación de la API en `/docs`
 - Uso de disco del host en el dashboard
+
+---
+
+## Últimos cambios (v1.2)
+
+- **Scheduler CRUD completo** — Nuevos endpoints: `POST /scheduler/register` acepta lista de `(conjunto, subconjunto)`, `GET /scheduler/running` (ejecuciones activas), `POST /scheduler/runs/stop` (detener por run_id), `POST /scheduler/unregister` (eliminar tareas programadas).
+- **Estado del bucle** — `GET /scheduler/status` incluye campo `loop_running` para conocer si el daemon del scheduler está activo.
+- **Fix get_next_run_at** — Corrección en la función de cálculo de próxima ejecución: la comparación ahora usa `last_finished_at` en lugar de `now` para determinar el próximo slot programado.
 
 ---
 
