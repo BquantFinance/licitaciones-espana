@@ -364,6 +364,48 @@ def get_current_running_run(conn: "psycopg2.extensions.connection") -> Optional[
         return dict(row) if row else None
 
 
+def stop_runs_by_ids(
+    conn: "psycopg2.extensions.connection", run_ids: list[int]
+) -> tuple[int, list[str]]:
+    """
+    Mark runs as failed (stopped by user). Optionally signal the process if process_id is set.
+    Returns (number of runs stopped, list of error messages for any failures).
+    """
+    if not run_ids:
+        return 0, []
+    stopped = 0
+    errors: list[str] = []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT run_id, process_id, status FROM scheduler.runs WHERE run_id = ANY(%s)",
+            (run_ids,),
+        )
+        rows = cur.fetchall()
+    for row in rows:
+        run_id = row["run_id"]
+        pid = row.get("process_id")
+        status = row.get("status")
+        if status != "running":
+            continue
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                errors.append(f"run_id={run_id}: cannot signal process {pid}")
+            except Exception as e:
+                errors.append(f"run_id={run_id}: {e}")
+        try:
+            update_run_finish(
+                conn, run_id, "failed", error_message="Stopped by user"
+            )
+            stopped += 1
+        except Exception as e:
+            errors.append(f"run_id={run_id}: {e}")
+    return stopped, errors
+
+
 def get_scheduler_pid_path() -> Path:
     """Ruta del PID file del scheduler (LICITACIONES_TMP_DIR o /tmp)."""
     base = os.environ.get("LICITACIONES_TMP_DIR", "")
