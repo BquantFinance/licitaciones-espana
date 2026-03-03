@@ -642,24 +642,3 @@ def run_scheduler_loop(
             path.unlink(missing_ok=True)
         except OSError:
             pass
-d} conjunto={conjunto} subconjunto={subconjunto} code={p.returncode}"
-                            )
-                    except Exception as e:
-                        _log_scheduler(
-                            f"Tarea falló. conjunto={conjunto} subconjunto={subconjunto}: {e}",
-                            detailed=True,
-                            exc=e,
-                        )
-                    if shutdown:
-                        break
-            except Exception as e:
-                _log_scheduler(f"Error en el bucle del scheduler: {e}", detailed=True, exc=e)
-            for _ in range(tick_seconds):
-                if shutdown:
-                    break
-                _time.sleep(1)
-    finally:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
