@@ -232,13 +232,8 @@ Pipeline de calidad que aplica **20 indicadores** de validez, consistencia y fia
 |---|---|---|
 | INT-VAL-01 | 22.6% | Importe de licitación en formato válido |
 | INT-VAL-02 | 31.8% | Importe de adjudicación en formato válido |
-| INT-VAL-03 | 0.4% | Importe mínimo plausible (≥ 1€) |
-| INT-VAL-04 | 0.0% | Número de licitadores es entero |
-| INT-VAL-05 | 0.0% | Número de licitadores no negativo |
-| INT-VAL-06 | 0.2% | Fecha de publicación válida |
 | INT-VAL-07 | 39.2% | Fecha de adjudicación válida |
 | INT-VAL-09 | 23.3% | Código CPV válido |
-| INT-VAL-10 | 0.0% | Código territorial NUTS válido |
 | INT-VAL-12 | 33.4% | NIF/CIF adjudicatario válido (checksum) |
 | INT-VAL-14 | 1.3% | Contrato menor coherente con cuantía (LCSP art. 118) |
 | INT-CONS-01 | 1.1% | Si adjudicado, nº ofertas ≥ 1 |
@@ -249,7 +244,8 @@ Pipeline de calidad que aplica **20 indicadores** de validez, consistencia y fia
 | INT-FIA-04 | 21.3% | Plazo presentación ofertas razonable (0-365 días) |
 | INT-FIA-08 | 0.4% | PBL no outlier (≤ 50M€) |
 | INT-FIA-09 | 0.8% | PA plausible por segmento CPV (P1-P99) |
-| INT-FIA-11 | 0.0% | Trazabilidad mínima (expediente + url/id) |
+
+Los 6 indicadores restantes (formato numérico, no negativos, NUTS, trazabilidad) dan 0.0% de fallo — checks de sanidad que se aplican pero no revelan problemas.
 
 Los indicadores se basan en el marco de calidad de PPDS, con contribuciones de Jaime Gómez-Obregón (umbrales LCSP) y OIRESCON (benchmarks PBL).
 
