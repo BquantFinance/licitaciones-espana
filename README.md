@@ -17,6 +17,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | 🆕 Asturias | 375K | 2019-2024 | 21 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
 | 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | 750 MB |
+| 🆕 Calidad (indicadores) | 8.7M contratos × 20 indicadores | 2012-2026 | 977 MB |
 | **TOTAL** | **~44.4M + BORME** | **2000-2026** | **~2.3 GB** |
 
 ---
@@ -215,6 +216,85 @@ python borme/scripts/borme_anonymize.py --input ./borme_pdfs --output borme/data
 
 # 4. Detectar anomalías cruzando con PLACSP
 python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp nacional/licitaciones_espana.parquet --output ./anomalias
+```
+
+---
+
+## 🆕 Calidad de Datos — 20 Indicadores
+
+Pipeline de calidad que aplica **20 indicadores** de validez, consistencia y fiabilidad sobre el dataset nacional (PLACSP), cruzando con TED y BORME.
+
+**8,693,891 contratos** evaluados | Score medio: **88.3** | Mediana: **89.5**
+
+### Resultados
+
+| Indicador | % Fallo | Descripción |
+|---|---|---|
+| INT-VAL-01 | 22.6% | Importe de licitación en formato válido |
+| INT-VAL-02 | 31.8% | Importe de adjudicación en formato válido |
+| INT-VAL-03 | 0.4% | Importe mínimo plausible (≥ 1€) |
+| INT-VAL-04 | 0.0% | Número de licitadores es entero |
+| INT-VAL-05 | 0.0% | Número de licitadores no negativo |
+| INT-VAL-06 | 0.2% | Fecha de publicación válida |
+| INT-VAL-07 | 39.2% | Fecha de adjudicación válida |
+| INT-VAL-09 | 23.3% | Código CPV válido |
+| INT-VAL-10 | 0.0% | Código territorial NUTS válido |
+| INT-VAL-12 | 33.4% | NIF/CIF adjudicatario válido (checksum) |
+| INT-VAL-14 | 1.3% | Contrato menor coherente con cuantía (LCSP art. 118) |
+| INT-CONS-01 | 1.1% | Si adjudicado, nº ofertas ≥ 1 |
+| INT-CONS-08 | 0.3% | Importe adjudicación ≤ licitación (+5%) |
+| INT-CONS-18 | 51.3% | Adjudicatario existe en BORME (3.3M empresas) |
+| INT-CONS-20 | 77.5% | Contrato SARA publicado en TED (5 estrategias matching) |
+| INT-FIA-01 | 0.6% | Nº ofertas en rango razonable (P99 por CPV) |
+| INT-FIA-04 | 21.3% | Plazo presentación ofertas razonable (0-365 días) |
+| INT-FIA-08 | 0.4% | PBL no outlier (≤ 50M€) |
+| INT-FIA-09 | 0.8% | PA plausible por segmento CPV (P1-P99) |
+| INT-FIA-11 | 0.0% | Trazabilidad mínima (expediente + url/id) |
+
+Los indicadores se basan en el marco de calidad de PPDS, con contribuciones de Jaime Gómez-Obregón (umbrales LCSP) y OIRESCON (benchmarks PBL).
+
+### Menores vs Regulares
+
+| Indicador | Menores (3.3M) | Regulares (5.4M) | Diferencia |
+|---|---|---|---|
+| NIF adjudicatario inválido | 2.7% | 52.1% | -49.5pp |
+| Sin CPV | 60.3% | 0.7% | +59.6pp |
+| Sin fecha adjudicación | 0.8% | 62.6% | -61.9pp |
+| Sin importe licitación | 53.1% | 4.1% | +49.0pp |
+| Score medio | 90.8 | 86.7 | +4.1 |
+
+### Archivos
+
+```
+calidad/
+├── calidad_licitaciones.py                  # Pipeline (429 líneas)
+└── calidad_licitaciones_resultado.parquet   # 8.7M × 70 cols (977 MB)
+```
+
+### Uso
+
+```bash
+# Solo indicadores base (17)
+python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
+
+# Completo con TED + BORME (20 indicadores)
+python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
+  --ted ted/crossval_sara_v2.parquet \
+  --borme borme_empresas.parquet
+```
+
+```python
+import pandas as pd
+df = pd.read_parquet('calidad/calidad_licitaciones_resultado.parquet')
+
+# Contratos SARA no publicados en TED
+df[df['INT-CONS-20'] == False].groupby('organo_contratante').size().nlargest(10)
+
+# Contratos menores que superan umbral LCSP
+df[df['INT-VAL-14'] == False][['expediente', 'organo_contratante', 'importe_adjudicacion']]
+
+# Score medio por órgano
+df.groupby('organo_contratante')['score_calidad'].mean().nlargest(20)
 ```
 
 ---
@@ -837,6 +917,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `borme/scripts/borme_batch_parser.py` | — | Parser de actos mercantiles (constituciones, cargos...) |
 | `borme/scripts/borme_anonymize.py` | — | Genera datasets públicos sin datos personales |
 | `borme/scripts/borme_placsp_match.py` | — | Detector de anomalías BORME × PLACSP (5 flags) |
+| `calidad/calidad_licitaciones.py` | — | 20 indicadores de calidad sobre PLACSP + TED + BORME |
 
 ---
 
