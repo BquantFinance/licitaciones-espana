@@ -17,6 +17,7 @@ Uso:
     python scraper_completo.py --anos 2024-2026 --conjunto menores
 """
 
+import html as _html_module
 import os
 import re
 import sys
@@ -298,6 +299,17 @@ def safe_attr(element, xpath, attr):
         pass
     return None
 
+
+def _sanitizar_url(url):
+    """Decodifica entidades HTML y limpia URLs de los atoms PLACSP."""
+    if url is None:
+        return None
+    url = _html_module.unescape(url)
+    while '&amp;' in url:
+        url = url.replace('&amp;', '&')
+    return url.strip()
+
+
 def parsear_entry(entry):
     """Parsea una entrada de licitación."""
     try:
@@ -305,6 +317,7 @@ def parsear_entry(entry):
         id_lic = safe_text(entry, 'atom:id')
         link = entry.find('atom:link', NS)
         url = link.get('href') if link is not None else None
+        url = _sanitizar_url(url)
         
         # Container principal
         status = entry.find('cac-place-ext:ContractFolderStatus', NS)

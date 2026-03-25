@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from nacional.licitaciones import parsear_entry
+from nacional.licitaciones import parsear_entry, _sanitizar_url
 
 
 def _parse_entry(filename):
@@ -61,3 +61,20 @@ class TestBudgetMissing:
         assert result["valor_estimado_contrato"] is None
         assert result["importe_sin_iva"] is None
         assert result["importe_con_iva"] is None
+
+
+class TestSanitizarUrl:
+    def test_decodes_html_entities(self):
+        assert _sanitizar_url("https://example.com?a=1&amp;b=2") == "https://example.com?a=1&b=2"
+
+    def test_double_encoded_entities(self):
+        assert _sanitizar_url("https://example.com?a=1&amp;amp;b=2") == "https://example.com?a=1&b=2"
+
+    def test_none_returns_none(self):
+        assert _sanitizar_url(None) is None
+
+    def test_strips_whitespace(self):
+        assert _sanitizar_url("  https://example.com  ") == "https://example.com"
+
+    def test_already_clean_url_unchanged(self):
+        assert _sanitizar_url("https://example.com?a=1&b=2") == "https://example.com?a=1&b=2"
