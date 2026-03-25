@@ -179,7 +179,7 @@ tests/               # Tests (unit + integration)
 - API REST y CLI para las nuevas fuentes de datos
 - Limpieza de datos estáticos (todos los datos provienen de scrapers en runtime)
 - Documentación de la API en `/docs`
-- Uso de disco del host en el dashboard
+- Uso de disco del host vía API (`/statfs-validation`)
 
 ---
 
