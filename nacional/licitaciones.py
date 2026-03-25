@@ -527,6 +527,51 @@ def parsear_entry(entry):
                         'peso': peso,
                     })
         criterios_adjudicacion = criterios_adjudicacion or None
+
+        # Requisitos de solvencia
+        requisitos_solvencia = None
+        qualification = terms.find('cac:TendererQualificationRequest', NS) if terms is not None else None
+        if qualification is not None:
+            groups = {}
+
+            tec_list = []
+            for tec in qualification.findall('cac:TechnicalEvaluationCriteria', NS):
+                tec_list.append({
+                    'tipo_code': safe_text(tec, 'cbc:EvaluationCriteriaTypeCode'),
+                    'descripcion': safe_text(tec, 'cbc:Description'),
+                })
+            if tec_list:
+                groups['solvencia_tecnica'] = {
+                    'nombre': 'Solvencia técnica',
+                    'criterios': tec_list,
+                }
+
+            eco_list = []
+            for eco in qualification.findall('cac:FinancialEvaluationCriteria', NS):
+                eco_list.append({
+                    'tipo_code': safe_text(eco, 'cbc:EvaluationCriteriaTypeCode'),
+                    'descripcion': safe_text(eco, 'cbc:Description'),
+                })
+            if eco_list:
+                groups['solvencia_economica'] = {
+                    'nombre': 'Solvencia económica',
+                    'criterios': eco_list,
+                }
+
+            esp_list = []
+            for esp in qualification.findall('cac:SpecificTendererRequirement', NS):
+                esp_list.append({
+                    'tipo_code': safe_text(esp, 'cbc:RequirementTypeCode'),
+                    'descripcion': safe_text(esp, 'cbc:Description'),
+                })
+            if esp_list:
+                groups['requisitos_especificos'] = {
+                    'nombre': 'Requisitos específicos',
+                    'criterios': esp_list,
+                }
+
+            if groups:
+                requisitos_solvencia = groups
         
         return {
             'id': id_lic,
@@ -573,6 +618,7 @@ def parsear_entry(entry):
             'doc_tecnico_url': doc_tecnico_url,
             'docs_adicionales': docs_adicionales,
             'criterios_adjudicacion': criterios_adjudicacion,
+            'requisitos_solvencia': requisitos_solvencia,
             'url': url,
         }
     

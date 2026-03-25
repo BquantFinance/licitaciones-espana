@@ -139,3 +139,41 @@ class TestAwardingCriteria:
         assert "propuesta técnica" in subj[0]["nota"]
         assert subj[0]["subtipo_code"] == "99"
         assert subj[0]["peso"] == 40
+
+
+class TestQualificationRequirements:
+    def test_structure_has_three_groups(self):
+        result = _parse_entry("entry_complete.xml")
+        req = result["requisitos_solvencia"]
+        assert isinstance(req, dict)
+        assert "solvencia_tecnica" in req
+        assert "solvencia_economica" in req
+        assert "requisitos_especificos" in req
+
+    def test_groups_have_nombre(self):
+        result = _parse_entry("entry_complete.xml")
+        req = result["requisitos_solvencia"]
+        assert req["solvencia_tecnica"]["nombre"] == "Solvencia técnica"
+        assert req["solvencia_economica"]["nombre"] == "Solvencia económica"
+        assert req["requisitos_especificos"]["nombre"] == "Requisitos específicos"
+
+    def test_technical_criteria(self):
+        result = _parse_entry("entry_complete.xml")
+        tec = result["requisitos_solvencia"]["solvencia_tecnica"]["criterios"]
+        assert len(tec) == 1
+        assert tec[0]["tipo_code"] == "ZZZ"
+        assert "servicios realizados" in tec[0]["descripcion"]
+
+    def test_financial_criteria(self):
+        result = _parse_entry("entry_complete.xml")
+        eco = result["requisitos_solvencia"]["solvencia_economica"]["criterios"]
+        assert len(eco) == 1
+        assert "500.000" in eco[0]["descripcion"]
+
+    def test_specific_requirements(self):
+        result = _parse_entry("entry_complete.xml")
+        esp = result["requisitos_solvencia"]["requisitos_especificos"]["criterios"]
+        assert len(esp) == 2
+        codes = [c["tipo_code"] for c in esp]
+        assert "1" in codes
+        assert "8" in codes

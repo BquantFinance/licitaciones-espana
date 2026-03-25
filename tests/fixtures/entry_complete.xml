@@ -44,6 +44,24 @@
                     <cbc:WeightNumeric>40</cbc:WeightNumeric>
                 </cac:AwardingCriteria>
             </cac:AwardingTerms>
+            <cac:TendererQualificationRequest>
+                <cac:TechnicalEvaluationCriteria>
+                    <cbc:EvaluationCriteriaTypeCode>ZZZ</cbc:EvaluationCriteriaTypeCode>
+                    <cbc:Description>Relación de principales servicios realizados</cbc:Description>
+                </cac:TechnicalEvaluationCriteria>
+                <cac:FinancialEvaluationCriteria>
+                    <cbc:EvaluationCriteriaTypeCode>ZZZ</cbc:EvaluationCriteriaTypeCode>
+                    <cbc:Description>Cifra anual de negocio mínima: 500.000 EUR</cbc:Description>
+                </cac:FinancialEvaluationCriteria>
+                <cac:SpecificTendererRequirement>
+                    <cbc:RequirementTypeCode>1</cbc:RequirementTypeCode>
+                    <cbc:Description>Capacidad de obrar</cbc:Description>
+                </cac:SpecificTendererRequirement>
+                <cac:SpecificTendererRequirement>
+                    <cbc:RequirementTypeCode>8</cbc:RequirementTypeCode>
+                    <cbc:Description>Prerregistro en ROLECE</cbc:Description>
+                </cac:SpecificTendererRequirement>
+            </cac:TendererQualificationRequest>
         </cac:TenderingTerms>
         <cac:TenderingProcess/>
         <cac:LegalDocumentReference>
