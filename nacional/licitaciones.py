@@ -632,6 +632,7 @@ def parsear_entry_cpm(entry):
         id_lic = safe_text(entry, 'atom:id')
         link = entry.find('atom:link', NS)
         url = link.get('href') if link is not None else None
+        url = _sanitizar_url(url)
 
         status = entry.find('cac-place-ext:PreliminaryMarketConsultationStatus', NS)
         if status is None:
@@ -710,6 +711,7 @@ def parsear_entry_cpm(entry):
             'procedimiento': PROCEDIMIENTOS.get(procedimiento_code, procedimiento_code) if procedimiento_code else None,
             'estado_code': estado_code,
             'estado': ESTADOS.get(estado_code, estado_code) if estado_code else None,
+            'valor_estimado_contrato': None,
             'importe_sin_iva': None,
             'importe_con_iva': None,
             'importe_adjudicacion': None,
@@ -731,6 +733,13 @@ def parsear_entry_cpm(entry):
             'fecha_adjudicacion': None,
             'fecha_publicacion': fecha_publicacion,
             'fecha_updated': fecha_updated,
+            'doc_legal_nombre': None,
+            'doc_legal_url': None,
+            'doc_tecnico_nombre': None,
+            'doc_tecnico_url': None,
+            'docs_adicionales': None,
+            'criterios_adjudicacion': None,
+            'requisitos_solvencia': None,
             'url': url,
         }
     except Exception:
