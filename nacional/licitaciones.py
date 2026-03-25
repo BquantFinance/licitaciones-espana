@@ -508,7 +508,7 @@ def parsear_entry(entry):
                 tipo = safe_text(crit, 'cbc:AwardingCriteriaTypeCode')
                 descripcion = safe_text(crit, 'cbc:Description')
                 nota = safe_text(crit, 'cbc:Note')
-                subtipo_code = safe_text(crit, 'cbc:AwardingCriteriaSubTypeCode')
+                crit_subtipo_code = safe_text(crit, 'cbc:AwardingCriteriaSubTypeCode')
                 peso_raw = safe_text(crit, 'cbc:WeightNumeric')
                 peso = None
                 if peso_raw:
@@ -523,7 +523,7 @@ def parsear_entry(entry):
                         'tipo': tipo,
                         'descripcion': descripcion,
                         'nota': nota,
-                        'subtipo_code': subtipo_code,
+                        'subtipo_code': crit_subtipo_code,
                         'peso': peso,
                     })
         criterios_adjudicacion = criterios_adjudicacion or None

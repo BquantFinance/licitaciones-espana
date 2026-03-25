@@ -21,6 +21,7 @@
         <cac:ProcurementProject>
             <cbc:Name>Proyecto de prueba para importes</cbc:Name>
             <cbc:TypeCode>1</cbc:TypeCode>
+            <cbc:SubTypeCode>1</cbc:SubTypeCode>
             <cac:BudgetAmount>
                 <cbc:EstimatedOverallContractAmount currencyID="EUR">7809917.35</cbc:EstimatedOverallContractAmount>
                 <cbc:TotalAmount currencyID="EUR">5670000.00</cbc:TotalAmount>

@@ -141,6 +141,13 @@ class TestAwardingCriteria:
         assert subj[0]["peso"] == 40
 
 
+class TestSubtipoCodeNotShadowed:
+    def test_subtipo_code_is_project_level(self):
+        """Ensure awarding criteria loop doesn't overwrite project-level subtipo_code."""
+        result = _parse_entry("entry_complete.xml")
+        assert result["subtipo_code"] == "1"
+
+
 class TestQualificationRequirements:
     def test_structure_has_three_groups(self):
         result = _parse_entry("entry_complete.xml")
