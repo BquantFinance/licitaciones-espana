@@ -499,6 +499,34 @@ def parsear_entry(entry):
                     'hash': doc_hash,
                 })
         docs_adicionales = docs_adicionales or None
+
+        # Criterios de adjudicación
+        criterios_adjudicacion = []
+        awarding_terms = terms.find('cac:AwardingTerms', NS) if terms is not None else None
+        if awarding_terms is not None:
+            for crit in awarding_terms.findall('cac:AwardingCriteria', NS):
+                tipo = safe_text(crit, 'cbc:AwardingCriteriaTypeCode')
+                descripcion = safe_text(crit, 'cbc:Description')
+                nota = safe_text(crit, 'cbc:Note')
+                subtipo_code = safe_text(crit, 'cbc:AwardingCriteriaSubTypeCode')
+                peso_raw = safe_text(crit, 'cbc:WeightNumeric')
+                peso = None
+                if peso_raw:
+                    try:
+                        peso = float(peso_raw)
+                        if peso == int(peso):
+                            peso = int(peso)
+                    except (ValueError, TypeError):
+                        pass
+                if tipo or descripcion:
+                    criterios_adjudicacion.append({
+                        'tipo': tipo,
+                        'descripcion': descripcion,
+                        'nota': nota,
+                        'subtipo_code': subtipo_code,
+                        'peso': peso,
+                    })
+        criterios_adjudicacion = criterios_adjudicacion or None
         
         return {
             'id': id_lic,
@@ -544,6 +572,7 @@ def parsear_entry(entry):
             'doc_tecnico_nombre': doc_tecnico_nombre,
             'doc_tecnico_url': doc_tecnico_url,
             'docs_adicionales': docs_adicionales,
+            'criterios_adjudicacion': criterios_adjudicacion,
             'url': url,
         }
     

@@ -29,6 +29,21 @@
         </cac:ProcurementProject>
         <cac:TenderingTerms>
             <cbc:FundingProgramCode/>
+            <cac:AwardingTerms>
+                <cac:AwardingCriteria>
+                    <cbc:AwardingCriteriaTypeCode>OBJ</cbc:AwardingCriteriaTypeCode>
+                    <cbc:Description>Oferta Económica</cbc:Description>
+                    <cbc:AwardingCriteriaSubTypeCode>1</cbc:AwardingCriteriaSubTypeCode>
+                    <cbc:WeightNumeric>60</cbc:WeightNumeric>
+                </cac:AwardingCriteria>
+                <cac:AwardingCriteria>
+                    <cbc:AwardingCriteriaTypeCode>SUBJ</cbc:AwardingCriteriaTypeCode>
+                    <cbc:Description>Memoria técnica</cbc:Description>
+                    <cbc:Note>Valoración de la propuesta técnica presentada</cbc:Note>
+                    <cbc:AwardingCriteriaSubTypeCode>99</cbc:AwardingCriteriaSubTypeCode>
+                    <cbc:WeightNumeric>40</cbc:WeightNumeric>
+                </cac:AwardingCriteria>
+            </cac:AwardingTerms>
         </cac:TenderingTerms>
         <cac:TenderingProcess/>
         <cac:LegalDocumentReference>

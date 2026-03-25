@@ -114,3 +114,28 @@ class TestDocumentReferences:
             val = result[url_field]
             if val:
                 assert "&amp;" not in val, f"{url_field} contains &amp;"
+
+
+class TestAwardingCriteria:
+    def test_criteria_parsed_as_list(self):
+        result = _parse_entry("entry_complete.xml")
+        assert isinstance(result["criterios_adjudicacion"], list)
+        assert len(result["criterios_adjudicacion"]) == 2
+
+    def test_obj_criterion(self):
+        result = _parse_entry("entry_complete.xml")
+        obj = [c for c in result["criterios_adjudicacion"] if c["tipo"] == "OBJ"]
+        assert len(obj) == 1
+        assert obj[0]["descripcion"] == "Oferta Económica"
+        assert obj[0]["nota"] is None
+        assert obj[0]["subtipo_code"] == "1"
+        assert obj[0]["peso"] == 60
+
+    def test_subj_criterion_with_note(self):
+        result = _parse_entry("entry_complete.xml")
+        subj = [c for c in result["criterios_adjudicacion"] if c["tipo"] == "SUBJ"]
+        assert len(subj) == 1
+        assert subj[0]["descripcion"] == "Memoria técnica"
+        assert "propuesta técnica" in subj[0]["nota"]
+        assert subj[0]["subtipo_code"] == "99"
+        assert subj[0]["peso"] == 40
