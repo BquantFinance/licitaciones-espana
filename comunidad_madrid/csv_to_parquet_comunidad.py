@@ -3,7 +3,7 @@
 Convierte el CSV unificado de contratación Comunidad de Madrid a Parquet.
 Entrada: comunidad_madrid/contratacion_comunidad_madrid_completo.csv
 Salida: comunidad_madrid/contratacion_comunidad_madrid_completo.parquet
-Ejecutar con cwd = services/etl.
+Ejecutar con cwd = raíz del repo.
 """
 
 import sys

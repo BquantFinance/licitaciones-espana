@@ -191,7 +191,7 @@ def get_parquet_path_andalucia(subconjunto: str) -> Path:
 
 
 def _etl_root() -> Path:
-    """Raíz del microservicio ETL (services/etl)."""
+    """Raíz del microservicio ETL."""
     return Path(__file__).resolve().parent.parent
 
 

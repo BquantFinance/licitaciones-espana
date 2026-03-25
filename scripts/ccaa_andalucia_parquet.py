@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-# Mismo directorio que el scraper (cwd = services/etl)
+# Mismo directorio que el scraper (cwd = raíz del repo)
 ETL_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ETL_ROOT / "ccaa_Andalucia"
 
