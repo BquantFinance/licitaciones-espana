@@ -2,6 +2,34 @@
 
 Todos los cambios notables del CLI y del microservicio ETL se documentan aquí.
 
+## [1.2.0] — 2026-03-25
+
+### Añadido
+
+- **Campo `valor_estimado_contrato`**: nueva columna NUMERIC(18,2) que almacena `EstimatedOverallContractAmount` del presupuesto UBL. Antes se mapeaba incorrectamente a `importe_sin_iva`.
+- **Referencias documentales**: columnas `doc_legal_nombre`, `doc_legal_url` (PCAP), `doc_tecnico_nombre`, `doc_tecnico_url` (PPT), y `docs_adicionales` (JSONB) para documentos adicionales con nombre, URL y hash.
+- **Criterios de adjudicación**: columna `criterios_adjudicacion` (JSONB) con tipo (OBJ/SUBJ), descripción, nota, subtipo y peso de cada criterio.
+- **Requisitos de solvencia**: columna `requisitos_solvencia` (JSONB) con solvencia técnica, económica y requisitos específicos, cada grupo con nombre en español.
+- **Sanitización de URLs**: función `_sanitizar_url()` que decodifica entidades HTML (`&amp;` → `&`) en todas las URLs extraídas de los atoms PLACSP.
+- **Migración 011**: `schemas/011_nacional_new_columns.sql` — ALTER TABLE para añadir las 8 columnas nuevas a tablas `nacional_*` existentes. Registrada en `INIT_MIGRATIONS`.
+- **Guía de arquitectura**: `docs/arquitectura-global.md` documenta el sistema de migraciones y cómo añadir cambios DDL futuros.
+
+### Corregido
+
+- **Mapeo de importes en `BudgetAmount`**: `EstimatedOverallContractAmount` se mapeaba a `importe_sin_iva` (incorrecto). Ahora: `EstimatedOverallContractAmount` → `valor_estimado_contrato`, `TaxExclusiveAmount` → `importe_sin_iva`, `TotalAmount` → `importe_con_iva` (sin cambio).
+- **Shadowing de `subtipo_code`**: el loop de criterios de adjudicación sobreescribía la variable `subtipo_code` a nivel de proyecto. Renombrado a `crit_subtipo_code`.
+
+### Upstream PR
+
+- Issue y PR en español a `BquantFinance/licitaciones-espana` con la corrección del mapeo de importes (solo WI-1).
+
+### Nota
+
+- Las filas ya ingestadas tendrán `NULL` en las columnas nuevas. Solo nuevas ingestas populan los campos.
+- `parsear_entry_cpm()` devuelve `None` para todos los campos nuevos (CPMs no tienen estos datos).
+
+---
+
 ## [1.1.2] — 2026-03-25
 
 ### Upstream sync (BquantFinance/licitaciones-espana)
@@ -43,7 +71,7 @@ No 500 errors. All endpoints returned expected codes.
 
 ---
 
-## [1.2.0] - 2026-03-03
+## [1.1.1] - 2026-03-03
 
 ### Añadido
 
