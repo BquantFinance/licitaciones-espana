@@ -48,3 +48,6 @@ data.untracked.bak/
 
 # Runtime cache
 ccaa_Andalucia/perfiles_cache.json
+
+# Asturias runtime output
+asturias_data/
