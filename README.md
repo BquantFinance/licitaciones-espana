@@ -183,7 +183,15 @@ tests/               # Tests (unit + integration)
 
 ---
 
-## Últimos cambios (v1.2)
+## Últimos cambios (v1.1.2 — 2026-03-25)
+
+- **Sync upstream**: Andalucía scraper refactorizado (11 nuevos tests), nuevo script `ccaa_asturias.py` para el portal open-data de Asturias (wiring de ingesta diferido a 1.2.0).
+- **Calidad analytics**: módulo `calidad/calidad_licitaciones.py` con 20 indicadores de calidad; herramienta standalone, no integrada en el pipeline de ingesta.
+- **8 conjuntos** disponibles vía `GET /ingest/conjuntos`; superficie de API sin cambios respecto a 1.1.1.
+- `requirements.txt`: añadido `requests>=2.31.0`; pin `numpy<2` preservado.
+- Ver [CHANGELOG.md](CHANGELOG.md) para el detalle completo de cambios.
+
+## Historial de cambios anterior (v1.2)
 
 - **Scheduler CRUD completo** — Nuevos endpoints: `POST /scheduler/register` acepta lista de `(conjunto, subconjunto)`, `GET /scheduler/running` (ejecuciones activas), `POST /scheduler/runs/stop` (detener por run_id), `POST /scheduler/unregister` (eliminar tareas programadas).
 - **Estado del bucle** — `GET /scheduler/status` incluye campo `loop_running` para conocer si el daemon del scheduler está activo.
