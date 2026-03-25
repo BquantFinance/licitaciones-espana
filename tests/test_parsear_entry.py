@@ -16,7 +16,7 @@ def _parse_entry(filename):
 class TestBudgetMapping:
     @pytest.fixture(autouse=True)
     def parsed(self):
-        self.result = _parse_entry("entry_budget.xml")
+        self.result = _parse_entry("entry_complete.xml")
 
     def test_valor_estimado_contrato(self):
         assert self.result["valor_estimado_contrato"] == 7809917.35
@@ -78,3 +78,39 @@ class TestSanitizarUrl:
 
     def test_already_clean_url_unchanged(self):
         assert _sanitizar_url("https://example.com?a=1&b=2") == "https://example.com?a=1&b=2"
+
+
+class TestDocumentReferences:
+    def test_legal_doc_parsed(self):
+        result = _parse_entry("entry_complete.xml")
+        assert result["doc_legal_nombre"] == "PCAP TEST EXP.pdf"
+        assert "DocumentIdParam=TEST_LEGAL" in result["doc_legal_url"]
+        assert "&amp;" not in result["doc_legal_url"]
+
+    def test_technical_doc_parsed(self):
+        result = _parse_entry("entry_complete.xml")
+        assert result["doc_tecnico_nombre"] == "PPT TEST EXP.pdf"
+        assert "DocumentIdParam=TEST_TECH" in result["doc_tecnico_url"]
+        assert "&amp;" not in result["doc_tecnico_url"]
+
+    def test_additional_docs_parsed(self):
+        result = _parse_entry("entry_complete.xml")
+        docs = result["docs_adicionales"]
+        assert isinstance(docs, list)
+        assert len(docs) == 2
+        assert docs[0]["nombre"] == "CUADRO PRECIOS 1.pdf"
+        assert "DocumentIdParam=TEST_ADD_1" in docs[0]["url"]
+        assert "&amp;" not in docs[0]["url"]
+        assert docs[0]["hash"] == "ghi789hash="
+
+    def test_additional_doc_without_hash(self):
+        result = _parse_entry("entry_complete.xml")
+        docs = result["docs_adicionales"]
+        assert docs[1]["hash"] is None
+
+    def test_urls_are_sanitized(self):
+        result = _parse_entry("entry_complete.xml")
+        for url_field in ("doc_legal_url", "doc_tecnico_url", "url"):
+            val = result[url_field]
+            if val:
+                assert "&amp;" not in val, f"{url_field} contains &amp;"

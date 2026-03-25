@@ -473,6 +473,33 @@ def parsear_entry(entry):
         valid_notice = status.find('cac-place-ext:ValidNoticeInfo', NS)
         fecha_publicacion = safe_text(valid_notice, './/cac-place-ext:AdditionalPublicationDocumentReference/cbc:IssueDate')
         
+        # Documentos
+        def _parse_doc_ref(ref_elem):
+            if ref_elem is None:
+                return None, None
+            nombre = safe_text(ref_elem, 'cbc:ID')
+            uri = safe_text(ref_elem, 'cac:Attachment/cac:ExternalReference/cbc:URI')
+            return nombre, _sanitizar_url(uri)
+
+        legal_ref = status.find('cac:LegalDocumentReference', NS)
+        doc_legal_nombre, doc_legal_url = _parse_doc_ref(legal_ref)
+
+        tech_ref = status.find('cac:TechnicalDocumentReference', NS)
+        doc_tecnico_nombre, doc_tecnico_url = _parse_doc_ref(tech_ref)
+
+        docs_adicionales = []
+        for add_ref in status.findall('cac:AdditionalDocumentReference', NS):
+            nombre = safe_text(add_ref, 'cbc:ID')
+            uri = safe_text(add_ref, 'cac:Attachment/cac:ExternalReference/cbc:URI')
+            doc_hash = safe_text(add_ref, 'cac:Attachment/cac:ExternalReference/cbc:DocumentHash')
+            if nombre or uri:
+                docs_adicionales.append({
+                    'nombre': nombre,
+                    'url': _sanitizar_url(uri),
+                    'hash': doc_hash,
+                })
+        docs_adicionales = docs_adicionales or None
+        
         return {
             'id': id_lic,
             'expediente': expediente,
@@ -512,6 +539,11 @@ def parsear_entry(entry):
             'fecha_adjudicacion': fecha_adjudicacion,
             'fecha_publicacion': fecha_publicacion,
             'fecha_updated': fecha_updated,
+            'doc_legal_nombre': doc_legal_nombre,
+            'doc_legal_url': doc_legal_url,
+            'doc_tecnico_nombre': doc_tecnico_nombre,
+            'doc_tecnico_url': doc_tecnico_url,
+            'docs_adicionales': docs_adicionales,
             'url': url,
         }
     

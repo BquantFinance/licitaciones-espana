@@ -27,8 +27,45 @@
                 <cbc:TaxExclusiveAmount currencyID="EUR">4685950.41</cbc:TaxExclusiveAmount>
             </cac:BudgetAmount>
         </cac:ProcurementProject>
-        <cac:TenderingTerms/>
+        <cac:TenderingTerms>
+            <cbc:FundingProgramCode/>
+        </cac:TenderingTerms>
         <cac:TenderingProcess/>
+        <cac:LegalDocumentReference>
+            <cbc:ID>PCAP TEST EXP.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/FileSystem/servlet/GetDocumentByIdServlet?cifrado=QUC1GjXXSiLkydRHJBmbpw%3D%3D&amp;DocumentIdParam=TEST_LEGAL</cbc:URI>
+                    <cbc:DocumentHash>abc123hash=</cbc:DocumentHash>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:LegalDocumentReference>
+        <cac:TechnicalDocumentReference>
+            <cbc:ID>PPT TEST EXP.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/FileSystem/servlet/GetDocumentByIdServlet?cifrado=QUC1GjXXSiLkydRHJBmbpw%3D%3D&amp;DocumentIdParam=TEST_TECH</cbc:URI>
+                    <cbc:DocumentHash>def456hash=</cbc:DocumentHash>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:TechnicalDocumentReference>
+        <cac:AdditionalDocumentReference>
+            <cbc:ID>CUADRO PRECIOS 1.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/FileSystem/servlet/GetDocumentByIdServlet?cifrado=QUC1GjXXSiLkydRHJBmbpw%3D%3D&amp;DocumentIdParam=TEST_ADD_1</cbc:URI>
+                    <cbc:DocumentHash>ghi789hash=</cbc:DocumentHash>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:AdditionalDocumentReference>
+        <cac:AdditionalDocumentReference>
+            <cbc:ID>CUADRO PRECIOS 2.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/FileSystem/servlet/GetDocumentByIdServlet?cifrado=QUC1GjXXSiLkydRHJBmbpw%3D%3D&amp;DocumentIdParam=TEST_ADD_2</cbc:URI>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:AdditionalDocumentReference>
         <cac-place-ext:ValidNoticeInfo>
             <cac-place-ext:AdditionalPublicationStatus>
                 <cac-place-ext:AdditionalPublicationDocumentReference>
