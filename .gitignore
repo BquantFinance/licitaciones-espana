@@ -1,5 +1,7 @@
 # Datos CSV originales (muy grandes, no subir)
 catalunya_datos_completos/
+# Doc-only folder removed from repo; Catalunya L0 uses tmp/catalunya_parquet at runtime
+catalunya/
 *.csv
 
 # Python
