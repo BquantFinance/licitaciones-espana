@@ -42,6 +42,7 @@ INIT_MIGRATIONS = (
     "003_dim_dir3.sql",
     "008_scheduler.sql",
     "009_scheduler_runs_pid.sql",
+    "011_nacional_new_columns.sql",
 )
 
 BORME_MIGRATIONS = ("010_borme.sql",)
