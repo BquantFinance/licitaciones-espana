@@ -15,9 +15,31 @@ Todos los cambios notables del CLI y del microservicio ETL se documentan aquí.
 - **No new HTTP API routes** added in this release; API surface unchanged from 1.1.1
 - **No new CLI subcommands** added; ingest catalog visible via `GET /ingest/conjuntos` (8 conjuntos)
 
+### QA performed (2026-03-25)
+
+**CLI / pytest**
+- 55 tests passed, 1 skipped (DB-dependent), 0 failed — full suite including 11 new upstream Andalucía tests
+- `python -m etl.cli --help` and `python -m etl.cli ingest --help` — exit 0, no import errors
+- `calidad.calidad_licitaciones` imports cleanly
+
+**API (ETL microservice at `http://localhost:8002`)**
+
+| Endpoint | HTTP | Notes |
+|----------|------|-------|
+| `GET /health` | 200 | `db: true`, 4 migrations pending |
+| `GET /status` | 200 | `database: connected` |
+| `GET /db-info` | 200 | 37 tables, 765 MB |
+| `GET /ingest/conjuntos` | 200 | 8 conjuntos returned |
+| `GET /migrations` | 200 | 6 applied, 4 pending |
+| `GET /scheduler/status` | 200 | 5 nacional tasks registered, `loop_running: false` |
+| `GET /scheduler/running` | 200 | No active runs |
+
+No 500 errors. All endpoints returned expected codes.
+
 ### Notes
 - API version string updated from 1.1.0 → 1.1.2
 - 4 schema migrations on disk pending application (`005_catalunya.sql`, `006_valencia.sql`, `007_views.sql`, `010_borme.sql`) — apply via `POST /init-db` or `licitia-etl init-db`
+- `etl/__init__.py` `__version__` remains `1.1.0`; full multi-file semver alignment planned for 1.2.0
 
 ---
 
