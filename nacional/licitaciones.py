@@ -358,6 +358,7 @@ def parsear_entry(entry):
         
         # Importes
         budget = project.find('cac:BudgetAmount', NS) if project else None
+        valor_estimado_contrato = None
         importe_sin_iva = None
         importe_con_iva = None
         
@@ -365,14 +366,20 @@ def parsear_entry(entry):
             val = safe_text(budget, 'cbc:EstimatedOverallContractAmount')
             if val:
                 try:
-                    importe_sin_iva = float(val)
-                except:
+                    valor_estimado_contrato = float(val)
+                except (ValueError, TypeError):
                     pass
             val = safe_text(budget, 'cbc:TotalAmount')
             if val:
                 try:
                     importe_con_iva = float(val)
-                except:
+                except (ValueError, TypeError):
+                    pass
+            val = safe_text(budget, 'cbc:TaxExclusiveAmount')
+            if val:
+                try:
+                    importe_sin_iva = float(val)
+                except (ValueError, TypeError):
                     pass
         
         # CPV
@@ -470,6 +477,7 @@ def parsear_entry(entry):
             'procedimiento': PROCEDIMIENTOS.get(procedimiento_code, procedimiento_code),
             'estado_code': estado_code,
             'estado': ESTADOS.get(estado_code, estado_code),
+            'valor_estimado_contrato': valor_estimado_contrato,
             'importe_sin_iva': importe_sin_iva,
             'importe_con_iva': importe_con_iva,
             'importe_adjudicacion': importe_adjudicacion,

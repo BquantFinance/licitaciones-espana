@@ -24,6 +24,7 @@ where = ["."]
 include = ["etl*"]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = [
     "integration: tests that require DB (run with licitia-etl ingest test --integration)",
 ]
