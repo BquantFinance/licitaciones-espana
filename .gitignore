@@ -45,3 +45,6 @@ Euskadi/euskadi_parquet/
 galicia/*.parquet
 data/ted/
 data.untracked.bak/
+
+# Runtime cache
+ccaa_Andalucia/perfiles_cache.json
