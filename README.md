@@ -2,7 +2,7 @@
 
 Fork de [BquantFinance/licitaciones-espana](https://github.com/BquantFinance/licitaciones-espana) que extiende el repositorio original de extracción de datos públicos de contratación con un **CLI** (`licitia-etl`) y una **API REST** (FastAPI) para su uso como microservicio conectable.
 
-Sincronizado con BquantFinance/licitaciones-espana (commit e594735, 2026-02-27).
+Última sincronización con upstream: commit `68e469b`, 2026-03-23 (rama `feat/upstream-sync-1.1.2`).
 
 ## Arquitectura
 
@@ -12,7 +12,7 @@ Sincronizado con BquantFinance/licitaciones-espana (commit e594735, 2026-02-27).
 │                                             │
 │  ┌──────────┐          ┌──────────────────┐ │
 │  │   CLI    │          │    API REST      │ │
-│  │licitia-etl│         │  FastAPI :8001   │ │
+│  │licitia-etl│         │  FastAPI :8000   │ │
 │  └────┬─────┘          └───────┬──────────┘ │
 │       │                        │            │
 │       ▼                        ▼            │
@@ -72,23 +72,28 @@ Orden recomendado: `status` → `init-db` → `ingest`. Para ejecución programa
 
 ### API REST (FastAPI)
 
-Puerto configurable (defecto: 8001). Expone las mismas operaciones que el CLI para integración programática.
+Puerto configurable (defecto: 8000). Expone las mismas operaciones que el CLI para integración programática.
 
 Documentación interactiva disponible en `/docs` (Swagger UI). Referencia completa en `docs/api-reference.md`.
 
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
-| `/health` | GET | Estado del servicio y conectividad BD |
+| `/health` | GET | Estado del servicio, conectividad BD y migraciones pendientes |
+| `/status` | GET | Disponibilidad de la BD (OK / 503) |
+| `/db-info` | GET | Schemas, tablas y tamaño total de la BD |
+| `/migrations` | GET | Historial de migraciones aplicadas |
+| `/init-db` | POST | Aplica migraciones de infraestructura pendientes |
 | `/ingest/conjuntos` | GET | Catálogo de conjuntos/subconjuntos disponibles |
 | `/ingest/run` | POST | Lanza una ingesta (mismo efecto que `licitia-etl ingest`) |
-| `/ingest/status` | GET | Estado de la ingesta en curso |
-| `/scheduler/tasks` | GET | Lista tareas programadas con estado |
-| `/scheduler/register` | POST | Registra tareas del scheduler (acepta `conjuntos[]` o `tasks[]`) |
-| `/scheduler/run` | POST | Arranca el scheduler |
-| `/scheduler/stop` | POST | Detiene el scheduler |
+| `/ingest/current-run` | GET | Ejecución de ingesta activa en el scheduler |
+| `/ingest/log` | GET | Tail del log del subproceso de ingesta |
 | `/scheduler/status` | GET | Estado de tareas programadas y estado del bucle (`loop_running`) |
 | `/scheduler/running` | GET | Ejecuciones activas con metadatos de tarea |
+| `/scheduler/register` | POST | Registra tareas del scheduler (acepta `conjuntos[]` o `tasks[]`) |
+| `/scheduler/run` | POST | Arranca el scheduler o ejecuta una tarea concreta |
+| `/scheduler/stop` | POST | Detiene el proceso del scheduler (SIGTERM) |
 | `/scheduler/runs/stop` | POST | Detiene ejecuciones seleccionadas por `run_id` (SIGTERM) |
+| `/scheduler/recover` | POST | Marca ejecuciones huérfanas como fallidas |
 | `/scheduler/unregister` | POST | Elimina tareas programadas por `(conjunto, subconjunto)` |
 | `/borme/ingest` | POST | Ingesta BORME (non-blocking) |
 | `/borme/anomalias` | POST | Detección de anomalías BORME (non-blocking) |
@@ -169,33 +174,25 @@ tests/               # Tests (unit + integration)
 
 ---
 
-## Changelog
+## Últimos cambios (v1.2.0 — 2026-03-25)
 
-### v1.1.0 (2026-02-27)
+- **DDL Nacional v2**: 8 nuevas columnas en tablas `nacional_*` — `valor_estimado_contrato` (corrección de mapeo de importes), referencias documentales PCAP/PPT (`doc_legal_*`, `doc_tecnico_*`, `docs_adicionales`), `criterios_adjudicacion` y `requisitos_solvencia` (ambas JSONB).
+- **Migración 011** aplicable vía `POST /init-db` o `licitia-etl init-db`.
+- **Fix importe**: `EstimatedOverallContractAmount` ya no se mapea a `importe_sin_iva` sino a `valor_estimado_contrato`.
+- **Sanitización de URLs**: entidades HTML (`&amp;` → `&`) normalizadas en todas las URLs extraídas de atoms PLACSP.
+- Ver [CHANGELOG.md](CHANGELOG.md) para el detalle completo.
 
-- Upstream sync con BquantFinance/licitaciones-espana (commit e594735)
-- **Galicia** como nuevo L0 conjunto
-- **BORME** integration (ingest + detección de anomalías)
-- API REST y CLI para las nuevas fuentes de datos
-- Limpieza de datos estáticos (todos los datos provienen de scrapers en runtime)
-- Documentación de la API en `/docs`
-- Uso de disco del host vía API (`/statfs-validation`)
+## Historial de versiones
 
----
+| Versión | Fecha | Resumen |
+|---------|-------|---------|
+| **1.2.0** | 2026-03-25 | DDL Nacional v2: 8 columnas nuevas, fix importe, criterios adjudicación, requisitos solvencia |
+| **1.1.2** | 2026-03-25 | Sync upstream: Andalucía refactor, Asturías script, calidad module; data hygiene |
+| **1.1.1** | 2026-03-03 | Scheduler CRUD, `loop_running`, `POST /scheduler/runs/stop`, `POST /scheduler/unregister` |
+| **1.1.0** | 2026-02-27 | Galicia L0, BORME ingest + anomalías, API REST completa |
+| **1.0.0** | 2026-02-17 | Scheduler, `init-db`, primera release de producción |
 
-## Últimos cambios (v1.1.2 — 2026-03-25)
-
-- **Sync upstream**: Andalucía scraper refactorizado (11 nuevos tests), nuevo script `ccaa_asturias.py` para el portal open-data de Asturias (wiring de ingesta diferido a 1.2.0).
-- **Calidad analytics**: módulo `calidad/calidad_licitaciones.py` con 20 indicadores de calidad; herramienta standalone, no integrada en el pipeline de ingesta.
-- **8 conjuntos** disponibles vía `GET /ingest/conjuntos`; superficie de API sin cambios respecto a 1.1.1.
-- `requirements.txt`: añadido `requests>=2.31.0`; pin `numpy<2` preservado.
-- Ver [CHANGELOG.md](CHANGELOG.md) para el detalle completo de cambios.
-
-## Historial de cambios anterior (v1.2)
-
-- **Scheduler CRUD completo** — Nuevos endpoints: `POST /scheduler/register` acepta lista de `(conjunto, subconjunto)`, `GET /scheduler/running` (ejecuciones activas), `POST /scheduler/runs/stop` (detener por run_id), `POST /scheduler/unregister` (eliminar tareas programadas).
-- **Estado del bucle** — `GET /scheduler/status` incluye campo `loop_running` para conocer si el daemon del scheduler está activo.
-- **Fix get_next_run_at** — Corrección en la función de cálculo de próxima ejecución: la comparación ahora usa `last_finished_at` en lugar de `now` para determinar el próximo slot programado.
+Ver [CHANGELOG.md](CHANGELOG.md) para el historial completo.
 
 ---
 
