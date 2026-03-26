@@ -68,3 +68,25 @@ def test_validate_schedule_expr_invalid():
 
 def test_validate_schedule_expr_none_returns_default():
     assert validate_schedule_expr(None, default="Trimestral") == "Trimestral"
+
+
+def test_next_run_diario_after_finish_before_hour():
+    """Finished at 01:00 on same day → same day 02:00."""
+    TZ = ZoneInfo("Europe/Madrid")
+    last = datetime(2026, 3, 25, 1, 0, 0, tzinfo=TZ)
+    result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=TZ))
+    assert result == datetime(2026, 3, 25, 2, 0, 0, tzinfo=TZ)
+
+def test_next_run_diario_after_finish_after_hour():
+    """Finished at 03:00 → next day 02:00."""
+    TZ = ZoneInfo("Europe/Madrid")
+    last = datetime(2026, 3, 25, 3, 0, 0, tzinfo=TZ)
+    result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=TZ))
+    assert result == datetime(2026, 3, 26, 2, 0, 0, tzinfo=TZ)
+
+def test_next_run_diario_none_returns_now():
+    """No last run → returns reference_now (task is immediately due)."""
+    TZ = ZoneInfo("Europe/Madrid")
+    now = datetime(2026, 3, 25, 10, 0, 0, tzinfo=TZ)
+    result = get_next_run_at("Diario", None, reference_now=now)
+    assert result == now

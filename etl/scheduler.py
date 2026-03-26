@@ -485,6 +485,14 @@ def get_next_run_at(
     year, month = ref.year, ref.month
     expr = (schedule_expr or "").strip().lower()
     # Next run = first scheduled slot *after* last_finished_at (not after "now"), so we don't skip the due slot
+    if expr == "diario":
+        cand = datetime(last_fin_tz.year, last_fin_tz.month, last_fin_tz.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+        if cand > last_fin_tz:
+            return cand
+        next_day = last_fin_tz.date() + timedelta(days=1)
+        return datetime(next_day.year, next_day.month, next_day.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
     if expr == "mensual":
         cand = datetime(year, month, 1, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
         if cand > last_fin_tz:
