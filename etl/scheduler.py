@@ -267,11 +267,14 @@ def register_tasks(
     conn: "psycopg2.extensions.connection",
     conjuntos: Optional[list[str]] = None,
     task_pairs: Optional[list[tuple[str, str]]] = None,
+    schedule_overrides: Optional[dict[tuple[str, str], str]] = None,
 ) -> tuple[int, int, list[tuple[str, str]]]:
     """
     Inserta o actualiza scheduler.tasks desde CONJUNTOS_REGISTRY y frecuencias por defecto.
     Si task_pairs es proporcionado, solo registra esos (conjunto, subconjunto) exactos.
     Si conjuntos no es None, solo se registran tareas de esos conjuntos.
+    Si schedule_overrides contiene una entrada para (conjunto, subconjunto), se usa ese valor
+    (validado con validate_schedule_expr) en lugar de la frecuencia por defecto.
     ON CONFLICT (conjunto, subconjunto) DO UPDATE schedule_expr, updated_at.
     Devuelve (insertadas, actualizadas, lista de (conjunto, subconjunto) registrados).
     """
@@ -286,7 +289,9 @@ def register_tasks(
     inserted, updated = 0, 0
     registered: list[tuple[str, str]] = []
     with conn.cursor() as cur:
-        for (conjunto, subconjunto), schedule_expr in pairs_to_register.items():
+        for (conjunto, subconjunto), default_schedule in pairs_to_register.items():
+            override = (schedule_overrides or {}).get((conjunto, subconjunto))
+            schedule_expr = validate_schedule_expr(override, default=default_schedule)
             cur.execute(
                 """INSERT INTO scheduler.tasks (conjunto, subconjunto, schedule_expr, enabled, updated_at)
                    VALUES (%s, %s, %s, true, NOW())
