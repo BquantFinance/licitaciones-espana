@@ -44,3 +44,31 @@ def test_next_run_none_returns_now():
     now = datetime(2026, 3, 2, 10, 0, 0, tzinfo=SCHEDULER_TZ)
     next_at = get_next_run_at("Trimestral", None, reference_now=now)
     assert next_at == now
+
+
+from etl.scheduler import VALID_SCHEDULE_EXPRS, validate_schedule_expr
+
+
+def test_valid_schedule_exprs_has_six_values():
+    assert len(VALID_SCHEDULE_EXPRS) == 6
+    assert "Diario" in VALID_SCHEDULE_EXPRS
+    assert "Semanal" in VALID_SCHEDULE_EXPRS
+    assert "Mensual" in VALID_SCHEDULE_EXPRS
+    assert "Trimestral" in VALID_SCHEDULE_EXPRS
+    assert "Semestral" in VALID_SCHEDULE_EXPRS
+    assert "Anual" in VALID_SCHEDULE_EXPRS
+
+
+def test_validate_schedule_expr_valid():
+    for expr in VALID_SCHEDULE_EXPRS:
+        assert validate_schedule_expr(expr) == expr
+
+
+def test_validate_schedule_expr_invalid():
+    import pytest
+    with pytest.raises(ValueError, match="Frecuencia no válida"):
+        validate_schedule_expr("Bimensual")
+
+
+def test_validate_schedule_expr_none_returns_default():
+    assert validate_schedule_expr(None, default="Trimestral") == "Trimestral"

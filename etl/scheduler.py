@@ -24,6 +24,19 @@ SCHEDULER_PID_FILENAME = "licitia-etl-scheduler.pid"
 SCHEDULER_LOG_FILENAME = "scheduler.log"
 MAX_RUN_DURATION_HOURS = int(os.environ.get("SCHEDULER_MAX_RUN_HOURS", "6"))
 
+VALID_SCHEDULE_EXPRS = ("Diario", "Semanal", "Mensual", "Trimestral", "Semestral", "Anual")
+
+
+def validate_schedule_expr(expr, default=None):
+    if expr is None:
+        if default is not None and default in VALID_SCHEDULE_EXPRS:
+            return default
+        raise ValueError(f"Frecuencia no válida: {expr}. Opciones: {VALID_SCHEDULE_EXPRS}")
+    if expr not in VALID_SCHEDULE_EXPRS:
+        raise ValueError(f"Frecuencia no válida: {expr}. Opciones: {VALID_SCHEDULE_EXPRS}")
+    return expr
+
+
 # Debug session log path (NDJSON). Set DEBUG_LOG_PATH to override; used when present.
 _DEBUG_LOG_PATH = os.environ.get("DEBUG_LOG_PATH", "")
 
