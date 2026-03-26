@@ -2,6 +2,31 @@
 
 Todos los cambios notables del CLI y del microservicio ETL se documentan aquí.
 
+## [1.2.1] — 2026-03-25
+
+### Añadido
+
+- **Intervalos de frecuencia personalizados en el scheduler**: las tareas pueden registrarse con cualquiera de los seis intervalos: `Diario`, `Semanal`, `Mensual`, `Trimestral`, `Semestral`, `Anual`.
+- **`VALID_SCHEDULE_EXPRS`**: constante pública con los seis valores válidos de frecuencia.
+- **`validate_schedule_expr(expr, default)`**: función auxiliar que valida una expresión de frecuencia y lanza `ValueError` si no es válida.
+- **`get_next_run_at` — ramas `Diario`, `Semanal`, `Semestral`**: lógica de cálculo de próxima ejecución para las nuevas frecuencias.
+  - `Diario`: misma día a las 02:00 si el slot no ha pasado, si no el día siguiente.
+  - `Semanal`: lunes de la misma semana a las 02:00 si el slot no ha pasado, si no el lunes siguiente.
+  - `Semestral`: 1 de enero o 1 de julio a las 02:00 (el siguiente en llegar).
+- **`GET /scheduler/defaults`**: nuevo endpoint que devuelve los intervalos válidos y el intervalo predeterminado por tarea.
+- **`POST /scheduler/register` — validación 422**: si `schedule_expr` es inválido (global o por tarea), devuelve HTTP 422.
+- **`register_tasks` — `schedule_overrides`**: parámetro opcional `dict[tuple[str,str], str]` para sobrescribir la frecuencia de tareas concretas.
+- **CLI `scheduler register --frecuencia`**: opción nueva que aplica una frecuencia global a todas las tareas registradas en esa llamada.
+- **`get_all_task_pairs()`**: función pública que devuelve el conjunto de pares `(conjunto, subconjunto)` del registro.
+
+### Pruebas
+
+- 98 pruebas unitarias + de API (de 87 en v1.2.0); 0 fallos.
+- Cobertura de ramas de `get_next_run_at` para cada una de las seis frecuencias.
+- Tests de frontera en `:00` para `Diario`, `Semanal` y `Semestral`.
+
+---
+
 ## [1.2.0] — 2026-03-25
 
 ### Añadido

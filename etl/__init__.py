@@ -5,4 +5,4 @@ Punto de entrada CLI: licitia-etl
 Comandos: status, init-db, ingest, health, scheduler, db-info.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
