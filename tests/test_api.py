@@ -59,3 +59,20 @@ def test_borme_anomalias_requires_anos():
     client = TestClient(app)
     r = client.post("/borme/anomalias", json={})
     assert r.status_code == 422
+
+
+def test_scheduler_defaults_returns_valid_structure():
+    client = TestClient(app)
+    resp = client.get("/scheduler/defaults")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "valid_exprs" in data
+    assert "defaults" in data
+    assert set(data["valid_exprs"]) == {"Diario", "Semanal", "Mensual", "Trimestral", "Semestral", "Anual"}
+    assert any(k == "nacional" or k.startswith("nacional_") for k in data["defaults"])
+
+
+def test_scheduler_register_invalid_schedule_expr_returns_422():
+    client = TestClient(app)
+    resp = client.post("/scheduler/register", json={"schedule_expr": "Quincenal"})
+    assert resp.status_code == 422
