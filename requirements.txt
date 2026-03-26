@@ -1,2 +1,4 @@
 pandas>=2.0.0
 pyarrow>=14.0.0
+python-dateutil>=2.9.0
+beautifulsoup4>=4.12.0
