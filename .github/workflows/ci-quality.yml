@@ -24,6 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e .
+          pip install httpx
 
       - name: Static sanity check
         run: python -m compileall etl
