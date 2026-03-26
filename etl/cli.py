@@ -737,13 +737,13 @@ def cmd_scheduler_register(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
-        from etl.scheduler import _build_default_schedules
-        all_schedules = _build_default_schedules()
+        from etl.scheduler import get_all_task_pairs
+        all_pairs = get_all_task_pairs()
         if conjuntos_filter:
             conjuntos_set = set(conjuntos_filter)
-            pairs = {k for k in all_schedules if k[0] in conjuntos_set}
+            pairs = {k for k in all_pairs if k[0] in conjuntos_set}
         else:
-            pairs = set(all_schedules.keys())
+            pairs = all_pairs
         schedule_overrides = {pair: frecuencia for pair in pairs}
     try:
         from etl.scheduler import ensure_scheduler_schema, register_tasks

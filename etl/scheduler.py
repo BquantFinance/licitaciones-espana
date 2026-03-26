@@ -124,6 +124,11 @@ def _build_default_schedules() -> dict[tuple[str, str], str]:
     return out
 
 
+def get_all_task_pairs() -> set[tuple[str, str]]:
+    """Return all registered (conjunto, subconjunto) pairs."""
+    return set(_build_default_schedules().keys())
+
+
 def get_default_schedule_expr(conjunto: str, subconjunto: str) -> str:
     if not DEFAULT_SCHEDULE_EXPR:
         DEFAULT_SCHEDULE_EXPR.update(_build_default_schedules())
