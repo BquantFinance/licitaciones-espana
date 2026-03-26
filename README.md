@@ -8,6 +8,14 @@ Fork de [BquantFinance/licitaciones-espana](https://github.com/BquantFinance/lic
 
 Consulta `CONTRIBUTING.md` para el flujo obligatorio de contribución (issue -> branch -> PR), políticas de revisión y criterios de bypass para owner/admin en casos excepcionales.
 
+## ¿Cómo contribuir?
+
+1. Crea una issue con contexto y propuesta.
+2. Crea una rama desde `main` con prefijo `feat/`, `fix/` o `chore/`.
+3. Implementa los cambios y valida con tests/checks.
+4. Abre una PR enlazando la issue (por ejemplo: `Closes #123`).
+5. Espera a que los checks obligatorios de CI estén en verde para hacer merge.
+
 ## Arquitectura
 
 ```
