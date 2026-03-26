@@ -1,0 +1,40 @@
+name: PR Requires Linked Issue
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  require-issue-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure PR body references an issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed("This workflow only supports pull_request events.");
+              return;
+            }
+
+            // Fetch the latest PR body from API to avoid stale rerun payloads.
+            const { data: latestPr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+
+            const body = latestPr.body || "";
+            const issueRefRegex =
+              /(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#([0-9]+)|#([0-9]+)/i;
+
+            if (!issueRefRegex.test(body)) {
+              core.setFailed("PR must reference an issue (e.g. 'Closes #123').");
+            } else {
+              core.info("Issue reference detected in PR body.");
+            }

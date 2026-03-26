@@ -6,14 +6,29 @@ from datetime import datetime
 from pathlib import Path
 
 import psycopg2
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from etl.cli import cmd_scheduler_register, cmd_scheduler_run, cmd_scheduler_stop, _comprobar_base_datos
 from etl.config import get_database_url
 from etl.ingest_l0 import CONJUNTOS_REGISTRY
-from etl.scheduler import delete_task, ensure_scheduler_schema, get_current_running_run, get_next_run_at, get_task_id, is_scheduler_loop_running, list_running_runs, list_tasks_with_last_run, recover_stale_runs, register_tasks, stop_runs_by_ids
+from etl.scheduler import (
+    VALID_SCHEDULE_EXPRS,
+    _build_default_schedules,
+    delete_task,
+    ensure_scheduler_schema,
+    get_current_running_run,
+    get_next_run_at,
+    get_task_id,
+    is_scheduler_loop_running,
+    list_running_runs,
+    list_tasks_with_last_run,
+    recover_stale_runs,
+    register_tasks,
+    stop_runs_by_ids,
+    validate_schedule_expr,
+)
 
 
 def _ingest_log_path() -> Path:
@@ -39,6 +54,7 @@ class SchedulerRegisterBody(BaseModel):
 
     conjuntos: list[str] = []
     tasks: list[dict] = []
+    schedule_expr: str | None = None
 
 
 class SchedulerRunBody(BaseModel):
@@ -67,7 +83,7 @@ class BormeAnomaliasBody(BaseModel):
 
 app = FastAPI(
     title="ETL API",
-    version="1.2.0",
+    version="1.2.1",
     description="Microservicio ETL: ingest L0, scheduler, BORME.",
 )
 
@@ -314,8 +330,25 @@ def ingest_run(body: IngestRunBody):
 )
 def scheduler_register(body: SchedulerRegisterBody | None = None):
     """Register scheduler tasks for given conjuntos or all."""
+    if body and body.schedule_expr is not None:
+        try:
+            validate_schedule_expr(body.schedule_expr)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
     if body and body.tasks:
         task_pairs = [(t["conjunto"], t["subconjunto"]) for t in body.tasks]
+        schedule_overrides: dict[tuple[str, str], str] = {}
+        global_expr = body.schedule_expr
+        for t in body.tasks:
+            key = (t["conjunto"], t["subconjunto"])
+            task_expr = t.get("schedule_expr") or global_expr
+            if task_expr:
+                try:
+                    validate_schedule_expr(task_expr)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e))
+                schedule_overrides[key] = task_expr
         url = get_database_url()
         if not url:
             return JSONResponse(status_code=503, content={"ok": False, "message": "Database not configured"})
@@ -324,7 +357,11 @@ def scheduler_register(body: SchedulerRegisterBody | None = None):
                 conn.autocommit = False
                 ensure_scheduler_schema(conn)
                 conn.commit()
-                inserted, updated, registered = register_tasks(conn, task_pairs=task_pairs)
+                inserted, updated, registered = register_tasks(
+                    conn,
+                    task_pairs=task_pairs,
+                    schedule_overrides=schedule_overrides,
+                )
                 conn.commit()
         except Exception as e:
             return JSONResponse(status_code=500, content={"ok": False, "message": str(e)})
@@ -344,6 +381,21 @@ def scheduler_register(body: SchedulerRegisterBody | None = None):
     if rc != 0:
         return JSONResponse(status_code=500, content={"ok": False, "message": "Register failed (see server logs)"})
     return {"ok": True, "message": "Tasks registered"}
+
+
+@app.get(
+    "/scheduler/defaults",
+    summary="Scheduler default schedule expressions",
+    description="Returns the list of valid schedule expressions and the default schedule_expr per known task.",
+)
+def scheduler_defaults():
+    """Return valid schedule expressions and per-task defaults from CONJUNTOS_REGISTRY."""
+    raw = _build_default_schedules()
+    defaults = [
+        {"conjunto": c, "subconjunto": s, "schedule_expr": expr}
+        for (c, s), expr in sorted(raw.items())
+    ]
+    return {"valid_exprs": list(VALID_SCHEDULE_EXPRS), "defaults": defaults}
 
 
 @app.post(

@@ -4,6 +4,10 @@ Fork de [BquantFinance/licitaciones-espana](https://github.com/BquantFinance/lic
 
 Última sincronización con upstream: commit `68e469b`, 2026-03-23 (rama `feat/upstream-sync-1.1.2`).
 
+## Contribución y gobernanza
+
+Consulta `CONTRIBUTING.md` para el flujo obligatorio de contribución (issue -> branch -> PR), políticas de revisión y criterios de bypass para owner/admin en casos excepcionales.
+
 ## Arquitectura
 
 ```

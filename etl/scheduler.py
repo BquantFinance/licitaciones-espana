@@ -2,7 +2,7 @@
 Configuración y registro de ejecuciones del scheduler ETL.
 Schema scheduler: tasks (conjunto, subconjunto, schedule_expr), runs (por ejecución).
 Poblado de tasks vía "licitia-etl scheduler register"; registro de runs desde cmd_ingest.
-Bucle de ejecución: scheduler run (próxima ejecución según Mensual/Trimestral/Anual, PID file, señales).
+Bucle de ejecución: scheduler run (próxima ejecución según VALID_SCHEDULE_EXPRS, PID file, señales).
 """
 
 import os
@@ -23,6 +23,19 @@ SCHEDULER_HOUR = 2  # 02:00 local
 SCHEDULER_PID_FILENAME = "licitia-etl-scheduler.pid"
 SCHEDULER_LOG_FILENAME = "scheduler.log"
 MAX_RUN_DURATION_HOURS = int(os.environ.get("SCHEDULER_MAX_RUN_HOURS", "6"))
+
+VALID_SCHEDULE_EXPRS = ("Diario", "Semanal", "Mensual", "Trimestral", "Semestral", "Anual")
+
+
+def validate_schedule_expr(expr: Optional[str], default: Optional[str] = None) -> str:
+    if expr is None:
+        if default is not None and default in VALID_SCHEDULE_EXPRS:
+            return default
+        raise ValueError(f"Frecuencia no válida: {expr}. Opciones: {VALID_SCHEDULE_EXPRS}")
+    if expr not in VALID_SCHEDULE_EXPRS:
+        raise ValueError(f"Frecuencia no válida: {expr}. Opciones: {VALID_SCHEDULE_EXPRS}")
+    return expr
+
 
 # Debug session log path (NDJSON). Set DEBUG_LOG_PATH to override; used when present.
 _DEBUG_LOG_PATH = os.environ.get("DEBUG_LOG_PATH", "")
@@ -109,6 +122,11 @@ def _build_default_schedules() -> dict[tuple[str, str], str]:
     # BORME ingest: separate from CONJUNTOS_REGISTRY (anomalías is on-demand only)
     out[("borme", "ingest")] = "Trimestral"
     return out
+
+
+def get_all_task_pairs() -> set[tuple[str, str]]:
+    """Return all registered (conjunto, subconjunto) pairs."""
+    return set(_build_default_schedules().keys())
 
 
 def get_default_schedule_expr(conjunto: str, subconjunto: str) -> str:
@@ -254,11 +272,14 @@ def register_tasks(
     conn: "psycopg2.extensions.connection",
     conjuntos: Optional[list[str]] = None,
     task_pairs: Optional[list[tuple[str, str]]] = None,
+    schedule_overrides: Optional[dict[tuple[str, str], str]] = None,
 ) -> tuple[int, int, list[tuple[str, str]]]:
     """
     Inserta o actualiza scheduler.tasks desde CONJUNTOS_REGISTRY y frecuencias por defecto.
     Si task_pairs es proporcionado, solo registra esos (conjunto, subconjunto) exactos.
     Si conjuntos no es None, solo se registran tareas de esos conjuntos.
+    Si schedule_overrides contiene una entrada para (conjunto, subconjunto), se usa ese valor
+    (validado con validate_schedule_expr) en lugar de la frecuencia por defecto.
     ON CONFLICT (conjunto, subconjunto) DO UPDATE schedule_expr, updated_at.
     Devuelve (insertadas, actualizadas, lista de (conjunto, subconjunto) registrados).
     """
@@ -273,7 +294,9 @@ def register_tasks(
     inserted, updated = 0, 0
     registered: list[tuple[str, str]] = []
     with conn.cursor() as cur:
-        for (conjunto, subconjunto), schedule_expr in pairs_to_register.items():
+        for (conjunto, subconjunto), default_schedule in pairs_to_register.items():
+            override = (schedule_overrides or {}).get((conjunto, subconjunto))
+            schedule_expr = validate_schedule_expr(override, default=default_schedule)
             cur.execute(
                 """INSERT INTO scheduler.tasks (conjunto, subconjunto, schedule_expr, enabled, updated_at)
                    VALUES (%s, %s, %s, true, NOW())
@@ -433,7 +456,7 @@ def get_next_run_at(
     reference_now: Optional[datetime] = None,
 ) -> datetime:
     """
-    Calcula la próxima ejecución según schedule_expr (Mensual/Trimestral/Anual) y la última finalización.
+    Calcula la próxima ejecución según schedule_expr (ver VALID_SCHEDULE_EXPRS) y la última finalización.
     Hora fija 02:00 Europe/Madrid. Si last_finished_at es None (nunca ejecutada), devuelve reference_now o now
     para que la comparación next_at <= now en get_tasks_due sea coherente (mismo instante).
     """
@@ -472,6 +495,25 @@ def get_next_run_at(
     year, month = ref.year, ref.month
     expr = (schedule_expr or "").strip().lower()
     # Next run = first scheduled slot *after* last_finished_at (not after "now"), so we don't skip the due slot
+    if expr == "diario":
+        cand = datetime(last_fin_tz.year, last_fin_tz.month, last_fin_tz.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+        if cand > last_fin_tz:
+            return cand
+        next_day = last_fin_tz.date() + timedelta(days=1)
+        return datetime(next_day.year, next_day.month, next_day.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+    if expr == "semanal":
+        # Monday = weekday 0
+        days_since_monday = last_fin_tz.weekday()  # 0=Mon..6=Sun
+        this_monday = last_fin_tz.date() - timedelta(days=days_since_monday)
+        cand = datetime(this_monday.year, this_monday.month, this_monday.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+        if cand > last_fin_tz:
+            return cand
+        next_monday = this_monday + timedelta(days=7)
+        return datetime(next_monday.year, next_monday.month, next_monday.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
     if expr == "mensual":
         cand = datetime(year, month, 1, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
         if cand > last_fin_tz:
@@ -503,6 +545,13 @@ def get_next_run_at(
         _debug_log("scheduler.py:get_next_run_at", "get_next_run_at exit (trimestral next year)", {"result": res.isoformat()}, "H2")
         # #endregion
         return res
+    if expr == "semestral":
+        semesters = [date(year, 1, 1), date(year, 7, 1)]
+        for d in semesters:
+            cand = datetime(d.year, d.month, d.day, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+            if cand > last_fin_tz:
+                return cand
+        return datetime(year + 1, 1, 1, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
     if expr == "anual":
         cand = datetime(year, 1, 1, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
         if cand > last_fin_tz:

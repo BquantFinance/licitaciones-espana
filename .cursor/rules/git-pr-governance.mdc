@@ -1,0 +1,14 @@
+---
+description: Enforce branch, PR, and issue workflow discipline
+alwaysApply: true
+---
+
+# Git and PR Governance
+
+- Do not push directly to `main`; all changes must go through pull requests.
+- Every pull request must reference an existing issue (for example: `Closes #123`).
+- Keep PRs focused and reviewable; split unrelated changes into separate PRs.
+- Include validation evidence in PRs (tests/lint/manual checks relevant to the change).
+- Update `CHANGELOG.md` when behavior, contracts, or data model changes.
+- For risky changes (migrations/scheduler/ingest semantics), include rollback notes in the PR.
+- Owner/admin bypass is allowed only for exceptional emergencies and must be documented afterward.
