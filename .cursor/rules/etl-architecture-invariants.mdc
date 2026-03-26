@@ -1,0 +1,19 @@
+---
+description: Preserve ETL microservice architecture invariants from README
+alwaysApply: true
+---
+
+# ETL Architecture Invariants
+
+- Keep ETL self-contained: no runtime dependency on other microservices.
+- PostgreSQL is the only external runtime dependency.
+- Preserve parity between CLI (`licitia-etl`) and FastAPI operations when adding capabilities.
+- Maintain clear separation of concerns:
+  - `etl/cli.py`: CLI orchestration
+  - `etl/api.py`: REST transport layer
+  - `etl/ingest_l0.py`: ingestion and registry logic
+  - `etl/scheduler.py`: scheduling and run lifecycle
+  - `schemas/`: SQL DDL and migrations
+- Add new data sources through explicit registry/configuration, not hidden side effects.
+- Prefer idempotent ingestion and safe re-runs over one-shot scripts.
+- Changes that alter architecture contracts must update `README.md` and `CHANGELOG.md`.
