@@ -493,6 +493,17 @@ def get_next_run_at(
         next_day = last_fin_tz.date() + timedelta(days=1)
         return datetime(next_day.year, next_day.month, next_day.day,
                         SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+    if expr == "semanal":
+        # Monday = weekday 0
+        days_since_monday = last_fin_tz.weekday()  # 0=Mon..6=Sun
+        this_monday = last_fin_tz.date() - timedelta(days=days_since_monday)
+        cand = datetime(this_monday.year, this_monday.month, this_monday.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+        if cand > last_fin_tz:
+            return cand
+        next_monday = this_monday + timedelta(days=7)
+        return datetime(next_monday.year, next_monday.month, next_monday.day,
+                        SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
     if expr == "mensual":
         cand = datetime(year, month, 1, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
         if cand > last_fin_tz:

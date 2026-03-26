@@ -91,3 +91,28 @@ def test_next_run_diario_finish_at_exact_hour():
     last = datetime(2026, 3, 25, 2, 0, 0, tzinfo=SCHEDULER_TZ)
     result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=SCHEDULER_TZ))
     assert result == datetime(2026, 3, 26, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+
+
+def test_next_run_semanal_wednesday_to_monday():
+    """Finished Wednesday → next Monday 02:00."""
+    last = datetime(2026, 3, 25, 10, 0, 0, tzinfo=SCHEDULER_TZ)  # Wednesday
+    result = get_next_run_at("Semanal", last, reference_now=datetime(2026, 3, 26, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 3, 30, 2, 0, 0, tzinfo=SCHEDULER_TZ)  # Monday
+
+def test_next_run_semanal_monday_before_hour():
+    """Finished Monday at 01:00 → same Monday 02:00."""
+    last = datetime(2026, 3, 30, 1, 0, 0, tzinfo=SCHEDULER_TZ)  # Monday 01:00
+    result = get_next_run_at("Semanal", last, reference_now=datetime(2026, 3, 30, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 3, 30, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+
+def test_next_run_semanal_monday_after_hour():
+    """Finished Monday at 03:00 → next Monday 02:00."""
+    last = datetime(2026, 3, 30, 3, 0, 0, tzinfo=SCHEDULER_TZ)  # Monday 03:00
+    result = get_next_run_at("Semanal", last, reference_now=datetime(2026, 3, 30, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 4, 6, 2, 0, 0, tzinfo=SCHEDULER_TZ)  # Next Monday
+
+def test_next_run_semanal_finish_at_exact_hour_monday():
+    """Finished Monday exactly at 02:00 → next Monday 02:00."""
+    last = datetime(2026, 3, 30, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Semanal", last, reference_now=datetime(2026, 3, 30, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 4, 6, 2, 0, 0, tzinfo=SCHEDULER_TZ)
