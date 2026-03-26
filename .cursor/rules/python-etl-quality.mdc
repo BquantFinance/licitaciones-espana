@@ -1,0 +1,15 @@
+---
+description: Python and ETL quality standards for licitia-etl
+alwaysApply: true
+---
+
+# Python + ETL Quality
+
+- Use explicit typing in new/modified Python code, especially public functions and pipeline boundaries.
+- Raise meaningful exceptions; do not swallow errors with empty `except` blocks.
+- Log operational context (`conjunto`, `subconjunto`, run identifiers) on failures and long-running steps.
+- Keep transformations deterministic and testable; avoid hidden global mutable state.
+- Validate input schema/columns before transform/load when dealing with tabular data.
+- Make load operations idempotent where practical (upsert, dedup, or guarded writes).
+- Keep batch sizes/config values driven by config/env, not hardcoded magic numbers.
+- Add or update tests in `tests/` for behavior changes (unit first, integration when cross-component).

@@ -1,0 +1,26 @@
+name: Change Request
+description: Track a change before opening a PR
+title: "[CHANGE] "
+labels: ["change-request"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Context
+      description: What problem are we solving?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Change
+      description: Describe the intended solution.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and Risks
+      description: Data model, scheduler, ingestion, API or ops impact.
+    validations:
+      required: true
