@@ -116,3 +116,28 @@ def test_next_run_semanal_finish_at_exact_hour_monday():
     last = datetime(2026, 3, 30, 2, 0, 0, tzinfo=SCHEDULER_TZ)
     result = get_next_run_at("Semanal", last, reference_now=datetime(2026, 3, 30, 10, 0, 0, tzinfo=SCHEDULER_TZ))
     assert result == datetime(2026, 4, 6, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+
+
+def test_next_run_semestral_march_to_july():
+    """Finished March → next Jul 1 02:00."""
+    last = datetime(2026, 3, 25, 10, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Semestral", last, reference_now=datetime(2026, 3, 26, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 7, 1, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+
+def test_next_run_semestral_august_to_jan():
+    """Finished August → next Jan 1 02:00."""
+    last = datetime(2026, 8, 15, 10, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Semestral", last, reference_now=datetime(2026, 8, 16, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2027, 1, 1, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+
+def test_next_run_semestral_dec_to_jan():
+    """Finished December → Jan 1 next year."""
+    last = datetime(2026, 12, 20, 10, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Semestral", last, reference_now=datetime(2026, 12, 21, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2027, 1, 1, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+
+def test_next_run_semestral_june_after_july():
+    """Finished June → Jul 1 same year."""
+    last = datetime(2026, 6, 30, 10, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Semestral", last, reference_now=datetime(2026, 7, 1, 0, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 7, 1, 2, 0, 0, tzinfo=SCHEDULER_TZ)

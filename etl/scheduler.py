@@ -535,6 +535,13 @@ def get_next_run_at(
         _debug_log("scheduler.py:get_next_run_at", "get_next_run_at exit (trimestral next year)", {"result": res.isoformat()}, "H2")
         # #endregion
         return res
+    if expr == "semestral":
+        semesters = [date(year, 1, 1), date(year, 7, 1)]
+        for d in semesters:
+            cand = datetime(d.year, d.month, d.day, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
+            if cand > last_fin_tz:
+                return cand
+        return datetime(year + 1, 1, 1, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
     if expr == "anual":
         cand = datetime(year, 1, 1, SCHEDULER_HOUR, 0, 0, tzinfo=SCHEDULER_TZ)
         if cand > last_fin_tz:
