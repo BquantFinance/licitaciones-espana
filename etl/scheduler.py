@@ -446,7 +446,7 @@ def get_next_run_at(
     reference_now: Optional[datetime] = None,
 ) -> datetime:
     """
-    Calcula la próxima ejecución según schedule_expr (Mensual/Trimestral/Anual) y la última finalización.
+    Calcula la próxima ejecución según schedule_expr (ver VALID_SCHEDULE_EXPRS) y la última finalización.
     Hora fija 02:00 Europe/Madrid. Si last_finished_at es None (nunca ejecutada), devuelve reference_now o now
     para que la comparación next_at <= now en get_tasks_due sea coherente (mismo instante).
     """

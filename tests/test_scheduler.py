@@ -1,8 +1,6 @@
 """Tests for scheduler next-run logic (get_next_run_at)."""
 import os
 from datetime import datetime
-from zoneinfo import ZoneInfo
-
 import pytest
 
 from etl.scheduler import SCHEDULER_TZ, VALID_SCHEDULE_EXPRS, get_next_run_at, validate_schedule_expr
@@ -72,21 +70,24 @@ def test_validate_schedule_expr_none_returns_default():
 
 def test_next_run_diario_after_finish_before_hour():
     """Finished at 01:00 on same day → same day 02:00."""
-    TZ = ZoneInfo("Europe/Madrid")
-    last = datetime(2026, 3, 25, 1, 0, 0, tzinfo=TZ)
-    result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=TZ))
-    assert result == datetime(2026, 3, 25, 2, 0, 0, tzinfo=TZ)
+    last = datetime(2026, 3, 25, 1, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 3, 25, 2, 0, 0, tzinfo=SCHEDULER_TZ)
 
 def test_next_run_diario_after_finish_after_hour():
     """Finished at 03:00 → next day 02:00."""
-    TZ = ZoneInfo("Europe/Madrid")
-    last = datetime(2026, 3, 25, 3, 0, 0, tzinfo=TZ)
-    result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=TZ))
-    assert result == datetime(2026, 3, 26, 2, 0, 0, tzinfo=TZ)
+    last = datetime(2026, 3, 25, 3, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 3, 26, 2, 0, 0, tzinfo=SCHEDULER_TZ)
 
 def test_next_run_diario_none_returns_now():
     """No last run → returns reference_now (task is immediately due)."""
-    TZ = ZoneInfo("Europe/Madrid")
-    now = datetime(2026, 3, 25, 10, 0, 0, tzinfo=TZ)
+    now = datetime(2026, 3, 25, 10, 0, 0, tzinfo=SCHEDULER_TZ)
     result = get_next_run_at("Diario", None, reference_now=now)
     assert result == now
+
+def test_next_run_diario_finish_at_exact_hour():
+    """Finished exactly at 02:00 → next day 02:00 (slot not repeated same day)."""
+    last = datetime(2026, 3, 25, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Diario", last, reference_now=datetime(2026, 3, 25, 10, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 3, 26, 2, 0, 0, tzinfo=SCHEDULER_TZ)
