@@ -27,7 +27,7 @@ MAX_RUN_DURATION_HOURS = int(os.environ.get("SCHEDULER_MAX_RUN_HOURS", "6"))
 VALID_SCHEDULE_EXPRS = ("Diario", "Semanal", "Mensual", "Trimestral", "Semestral", "Anual")
 
 
-def validate_schedule_expr(expr, default=None):
+def validate_schedule_expr(expr: Optional[str], default: Optional[str] = None) -> str:
     if expr is None:
         if default is not None and default in VALID_SCHEDULE_EXPRS:
             return default

@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from etl.scheduler import SCHEDULER_TZ, get_next_run_at
+from etl.scheduler import SCHEDULER_TZ, VALID_SCHEDULE_EXPRS, get_next_run_at, validate_schedule_expr
 
 
 def test_next_run_trimestral_after_last_finish_same_day():
@@ -46,9 +46,6 @@ def test_next_run_none_returns_now():
     assert next_at == now
 
 
-from etl.scheduler import VALID_SCHEDULE_EXPRS, validate_schedule_expr
-
-
 def test_valid_schedule_exprs_has_six_values():
     assert len(VALID_SCHEDULE_EXPRS) == 6
     assert "Diario" in VALID_SCHEDULE_EXPRS
@@ -65,7 +62,6 @@ def test_validate_schedule_expr_valid():
 
 
 def test_validate_schedule_expr_invalid():
-    import pytest
     with pytest.raises(ValueError, match="Frecuencia no válida"):
         validate_schedule_expr("Bimensual")
 
