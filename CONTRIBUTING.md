@@ -1,46 +1,46 @@
-# Contributing Governance
+# Gobernanza de Contribución
 
-This repository uses an issue-driven, PR-first workflow to protect production ETL quality and architecture invariants.
+Este repositorio utiliza un flujo guiado por issues y PRs para proteger la calidad del ETL en producción y sus invariantes de arquitectura.
 
-## Core Policy
+## Política base
 
-- `main` is protected and intended to receive changes through Pull Requests.
-- Contributors must not push directly to `main`.
-- Every Pull Request must be linked to an issue (for example: `Closes #123`).
-- PRs should be focused to one concern (feature, fix, refactor) and include validation evidence.
-- As a solo-maintainer setup, merge eligibility relies on required CI checks rather than mandatory human approvals.
+- `main` está protegida y debe recibir cambios mediante Pull Requests.
+- No se debe hacer push directo a `main`.
+- Toda Pull Request debe estar vinculada a una issue (por ejemplo: `Closes #123`).
+- Las PR deben centrarse en un único objetivo (feature, fix o refactor) e incluir evidencia de validación.
+- En este modelo de mantenedor único, la elegibilidad de merge depende de checks de CI obligatorios y no de aprobaciones humanas obligatorias.
 
-## Required Contribution Flow
+## Flujo de contribución requerido
 
-1. Create an issue describing problem/context and intended change.
-2. Create a branch from `main`:
-   - Recommended naming: `feat/<short-topic>`, `fix/<short-topic>`, `chore/<short-topic>`.
-3. Implement the change and add/update tests.
-4. Update `CHANGELOG.md` if behavior, contracts, schema, or data model are affected.
-5. Open a Pull Request:
-   - Use the PR template.
-   - Reference the issue (`Closes #...`).
-   - Include verification notes (tests/lint/manual checks).
-6. Get review and merge after approval.
+1. Crear una issue con el problema/contexto y el cambio propuesto.
+2. Crear una rama desde `main`:
+   - Nomenclatura recomendada: `feat/<tema-corto>`, `fix/<tema-corto>`, `chore/<tema-corto>`.
+3. Implementar el cambio y añadir/actualizar pruebas.
+4. Actualizar `CHANGELOG.md` si se altera comportamiento, contratos, esquema o modelo de datos.
+5. Abrir una Pull Request:
+   - Usar la plantilla de PR.
+   - Referenciar la issue (`Closes #...`).
+   - Incluir notas de verificación (tests/lint/comprobaciones manuales).
+6. Integrar cuando los checks obligatorios estén en verde.
 
-## ETL-Specific Expectations
+## Expectativas específicas de ETL
 
-- Preserve microservice invariants defined in `README.md`:
-  - ETL remains self-contained.
-  - PostgreSQL is the only runtime external dependency.
-  - CLI/API capability parity is maintained when adding features.
-- Keep ingestion behavior deterministic and idempotent where practical.
-- For migrations, scheduler changes, or ingestion semantics changes, include rollback notes in the PR.
+- Mantener los invariantes del microservicio definidos en `README.md`:
+  - El ETL debe seguir siendo autocontenido.
+  - PostgreSQL es la única dependencia externa en runtime.
+  - Debe mantenerse la paridad funcional CLI/API al añadir capacidades.
+- Mantener comportamiento de ingesta determinista e idempotente cuando sea viable.
+- Para migraciones, cambios en scheduler o cambios semánticos de ingesta, incluir notas de rollback en la PR.
 
-## Owner/Admin Bypass Policy
+## Política de bypass para owner/admin
 
-- Repository admins (owner) may bypass branch protections in exceptional cases.
-- Bypass is for emergencies only (incident response, hotfix unblock, or repository recovery).
-- After bypassing:
-  - Document the reason in an issue or PR comment.
-  - Open a follow-up PR/issue if additional cleanup or review is needed.
+- El owner/admin puede aplicar bypass de protecciones de rama en casos excepcionales.
+- El bypass se reserva para emergencias (incidentes, hotfix urgente o recuperación del repositorio).
+- Después de un bypass:
+  - Documentar el motivo en una issue o comentario de PR.
+  - Abrir una PR/issue de seguimiento si hace falta limpieza o revisión posterior.
 
-## Code of Review
+## Criterios de revisión
 
-- Prioritize correctness, data safety, and operational reliability.
-- Request changes when architecture invariants, data contracts, or validation evidence are missing.
+- Priorizar corrección, seguridad de datos y fiabilidad operativa.
+- Solicitar cambios cuando falten invariantes de arquitectura, contratos de datos o evidencia de validación.
