@@ -69,10 +69,26 @@ def test_scheduler_defaults_returns_valid_structure():
     assert "valid_exprs" in data
     assert "defaults" in data
     assert set(data["valid_exprs"]) == {"Diario", "Semanal", "Mensual", "Trimestral", "Semestral", "Anual"}
-    assert any(k == "nacional" or k.startswith("nacional_") for k in data["defaults"])
+    assert isinstance(data["defaults"], list)
+    assert len(data["defaults"]) > 0
+    for item in data["defaults"]:
+        assert "conjunto" in item
+        assert "subconjunto" in item
+        assert "schedule_expr" in item
+        assert item["schedule_expr"] in data["valid_exprs"]
+    assert any(item["conjunto"] == "nacional" for item in data["defaults"])
 
 
 def test_scheduler_register_invalid_schedule_expr_returns_422():
     client = TestClient(app)
     resp = client.post("/scheduler/register", json={"schedule_expr": "Quincenal"})
+    assert resp.status_code == 422
+
+
+def test_scheduler_register_per_task_invalid_schedule_expr_returns_422():
+    client = TestClient(app)
+    resp = client.post(
+        "/scheduler/register",
+        json={"tasks": [{"conjunto": "nacional", "subconjunto": "licitaciones", "schedule_expr": "Quincenal"}]},
+    )
     assert resp.status_code == 422

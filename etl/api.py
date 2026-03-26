@@ -339,11 +339,15 @@ def scheduler_register(body: SchedulerRegisterBody | None = None):
     if body and body.tasks:
         task_pairs = [(t["conjunto"], t["subconjunto"]) for t in body.tasks]
         schedule_overrides: dict[tuple[str, str], str] = {}
-        global_expr = body.schedule_expr if body else None
+        global_expr = body.schedule_expr
         for t in body.tasks:
             key = (t["conjunto"], t["subconjunto"])
             task_expr = t.get("schedule_expr") or global_expr
             if task_expr:
+                try:
+                    validate_schedule_expr(task_expr)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e))
                 schedule_overrides[key] = task_expr
         url = get_database_url()
         if not url:
@@ -356,7 +360,7 @@ def scheduler_register(body: SchedulerRegisterBody | None = None):
                 inserted, updated, registered = register_tasks(
                     conn,
                     task_pairs=task_pairs,
-                    schedule_overrides=schedule_overrides or None,
+                    schedule_overrides=schedule_overrides,
                 )
                 conn.commit()
         except Exception as e:
@@ -387,10 +391,10 @@ def scheduler_register(body: SchedulerRegisterBody | None = None):
 def scheduler_defaults():
     """Return valid schedule expressions and per-task defaults from CONJUNTOS_REGISTRY."""
     raw = _build_default_schedules()
-    defaults: dict[str, str] = {}
-    for (conjunto, subconjunto), expr in raw.items():
-        key = f"{conjunto}_{subconjunto}" if subconjunto else conjunto
-        defaults[key] = expr
+    defaults = [
+        {"conjunto": c, "subconjunto": s, "schedule_expr": expr}
+        for (c, s), expr in sorted(raw.items())
+    ]
     return {"valid_exprs": list(VALID_SCHEDULE_EXPRS), "defaults": defaults}
 
 
