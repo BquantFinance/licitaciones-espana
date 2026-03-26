@@ -8,6 +8,7 @@ This repository uses an issue-driven, PR-first workflow to protect production ET
 - Contributors must not push directly to `main`.
 - Every Pull Request must be linked to an issue (for example: `Closes #123`).
 - PRs should be focused to one concern (feature, fix, refactor) and include validation evidence.
+- As a solo-maintainer setup, merge eligibility relies on required CI checks rather than mandatory human approvals.
 
 ## Required Contribution Flow
 
