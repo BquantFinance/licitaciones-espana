@@ -141,3 +141,10 @@ def test_next_run_semestral_june_after_july():
     last = datetime(2026, 6, 30, 10, 0, 0, tzinfo=SCHEDULER_TZ)
     result = get_next_run_at("Semestral", last, reference_now=datetime(2026, 7, 1, 0, 0, 0, tzinfo=SCHEDULER_TZ))
     assert result == datetime(2026, 7, 1, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+
+
+def test_next_run_semestral_finish_at_exact_boundary():
+    """Finished exactly at Jan 1 02:00 → Jul 1 same year (slot not repeated)."""
+    last = datetime(2026, 1, 1, 2, 0, 0, tzinfo=SCHEDULER_TZ)
+    result = get_next_run_at("Semestral", last, reference_now=datetime(2026, 1, 2, 0, 0, 0, tzinfo=SCHEDULER_TZ))
+    assert result == datetime(2026, 7, 1, 2, 0, 0, tzinfo=SCHEDULER_TZ)

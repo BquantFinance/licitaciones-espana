@@ -2,7 +2,7 @@
 Configuración y registro de ejecuciones del scheduler ETL.
 Schema scheduler: tasks (conjunto, subconjunto, schedule_expr), runs (por ejecución).
 Poblado de tasks vía "licitia-etl scheduler register"; registro de runs desde cmd_ingest.
-Bucle de ejecución: scheduler run (próxima ejecución según Mensual/Trimestral/Anual, PID file, señales).
+Bucle de ejecución: scheduler run (próxima ejecución según VALID_SCHEDULE_EXPRS, PID file, señales).
 """
 
 import os
