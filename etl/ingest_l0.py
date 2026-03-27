@@ -613,7 +613,7 @@ def load_parquet_to_l0(
                         if c == natural_id_col:
                             continue
                         v = row.get(c)
-                        if pd.isna(v):
+                        if v is None or (not isinstance(v, (list, dict)) and pd.isna(v)):
                             vals.append(None)
                             continue
                         if is_nacional:
@@ -634,6 +634,8 @@ def load_parquet_to_l0(
                                     vals.append(int(v))
                                 except (TypeError, ValueError):
                                     vals.append(None)
+                            elif isinstance(v, (list, dict)):
+                                vals.append(psycopg2.extras.Json(v))
                             else:
                                 vals.append(v)
                         else:

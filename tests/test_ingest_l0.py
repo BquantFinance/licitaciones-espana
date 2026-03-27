@@ -172,6 +172,27 @@ def test_derive_cpv_prefixes_handles_float_nan():
     assert p6 is None
 
 
+def test_null_guard_safe_for_jsonb_list_and_dict():
+    """Regression: pd.isna(list|dict) raises ValueError (ambiguous truth value).
+    The ingest_l0 null guard must short-circuit on container types before calling pd.isna().
+    This tests the exact guard expression used in load_parquet_to_l0."""
+    import math
+
+    def _is_null(v):
+        """Mirrors the guard introduced in load_parquet_to_l0 line 616."""
+        return v is None or (not isinstance(v, (list, dict)) and pd.isna(v))
+
+    assert _is_null(None) is True
+    assert _is_null(float("nan")) is True
+    assert _is_null(math.nan) is True
+    assert _is_null("") is False
+    assert _is_null(0) is False
+    assert _is_null([]) is False
+    assert _is_null([{"nombre": "PCAP", "url": "https://example.com", "hash": None}]) is False
+    assert _is_null({"solvencia_tecnica": {"nombre": "Solvencia técnica", "requisitos": []}}) is False
+    assert _is_null({"criterios": []}) is False
+
+
 @pytest.mark.parametrize("conjunto,subconjunto", [
     ("nacional", "consultas_preliminares"),
     ("nacional", "contratos_menores"),
