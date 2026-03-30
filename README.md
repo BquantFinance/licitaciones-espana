@@ -7,7 +7,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | Fuente | Registros | Período | Tamaño |
 |--------|-----------|---------|--------|
 | Nacional (PLACSP) | 8.7M | 2012-2026 | 780 MB |
-| Andalucía | 808K | 2016-2026 | 47 MB |
+| Andalucía | ~857K | 2016-2026 | 47 MB |
 | Catalunya | 20.6M | 2014-2025 | ~180 MB |
 | 🆕 Euskadi | 704K | 2005-2026 | ~160 MB |
 | Valencia | 8.5M | 2000-2026 | 156 MB |
@@ -493,22 +493,24 @@ valencia/
 
 ## 🆕 Andalucía
 
-Contratación pública de la [Junta de Andalucía](https://www.juntadeandalucia.es/haciendayadministracionpublica/apl/pdc-front-publico/perfiles-licitaciones/buscador-general), incluyendo licitaciones regulares y contratos menores de todos los organismos y empresas públicas andaluzas. Extraído mediante ingeniería inversa del proxy Elasticsearch del portal, con estrategia de subdivión recursiva en 8 dimensiones para superar el límite de 10K resultados por consulta.
+Contratación pública de la [Junta de Andalucía](https://www.juntadeandalucia.es/haciendayadministracionpublica/apl/pdc-front-publico/perfiles-licitaciones/buscador-general), incluyendo licitaciones regulares y contratos menores de todos los organismos y empresas públicas andaluzas. Extraído mediante ingeniería inversa del proxy Elasticsearch del portal, con estrategia de subdivisión recursiva en 8 dimensiones para superar el límite de 10K resultados por consulta.
+
+Conteos observados en torno al 2026-03-23 consultando la API pública del portal:
 
 | Tipo | Registros | Cobertura |
 |------|-----------|-----------|
-| Licitaciones regulares (estándar) | 72,165 | 92% |
-| Contratos menores | 736,276 | 95% |
-| **Total** | **808,441** | **95%** |
+| Licitaciones regulares (estándar, sin BRR) | ~80.9K | Operativa |
+| Contratos menores (sin BRR) | ~775.7K | Operativa |
+| **Total (sin BRR)** | **~856.7K** | **Operativa** |
 
 ### Archivos
 
 ```
 ccaa_Andalucia/
-└── licitaciones_andalucia.parquet          # 808K registros (47 MB, snappy)
+└── licitaciones_andalucia.parquet          # ~857K registros (47 MB, snappy)
 
 scripts/
-└── ccaa_andalucia.py                       # Scraper ES proxy 8D + multi-sort
+└── ccaa_andalucia.py                       # Scraper ES proxy 8D + multi-sort + salida CSV/Parquet
 ```
 
 ### Campos principales (34 columnas)
@@ -531,14 +533,14 @@ El portal de la Junta de Andalucía usa un proxy frontend que limita a 10.000 re
 2. **tipoContrato.codigo**: 21 tipos (SERV, SUM, OBRA, PRIV...)
 3. **estado.codigo**: 14 estados (RES, ADJ, PUB, EVA...)
 4. **codigoTipoTramitacion**: 5 valores + null (295K registros sin tramitación)
-5. **perfilContratante.codigo**: 372 organismos
+5. **perfilContratante.codigo**: ~400 organismos
 6. **provinciasEjecucion**: 8 provincias + null
 7. **formaPresentacion**: 6 valores + null
 8. **numeroExpediente (año)**: match por texto "2018"-"2026" + null
 
 Para los chunks que aún superan 10K tras las 8 dimensiones (ej. SYBS03/Servicio Andaluz de Salud con 290K registros), se usa **multi-sort con 12 órdenes** distintas (idExpediente, importeLicitacion, numeroExpediente, titulo, fechaLimitePresentacion, adjudicaciones.importeAdjudicacion — cada una asc/desc) que acceden a ventanas diferentes de 10K registros con 0% de solapamiento.
 
-### Perfiles incluidos (372)
+### Perfiles incluidos (~400)
 
 Todas las consejerías, agencias, hospitales del SAS, universidades, diputaciones provinciales, empresas públicas y fundaciones de la Junta de Andalucía, incluyendo:
 
@@ -918,7 +920,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | Script | Fuente | Descripción |
 |--------|--------|-------------|
 | `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML |
-| `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x |
+| `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x + salida reproducible |
 | `ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4: API REST + XLSX anuales + portales municipales |
 | `consolidar_euskadi_v4.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
 | `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |

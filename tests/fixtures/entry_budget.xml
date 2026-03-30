@@ -1,0 +1,40 @@
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2">
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/TEST-BUDGET-001</id>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=TEST001"/>
+    <summary type="text">Test budget mapping entry</summary>
+    <title>Test Budget Mapping</title>
+    <updated>2026-03-25T10:00:00.000+01:00</updated>
+    <cac-place-ext:ContractFolderStatus>
+        <cbc:ContractFolderID>TEST/2026/BUDGET</cbc:ContractFolderID>
+        <cbc-place-ext:ContractFolderStatusCode>PUB</cbc-place-ext:ContractFolderStatusCode>
+        <cac-place-ext:LocatedContractingParty>
+            <cac:Party>
+                <cac:PartyName>
+                    <cbc:Name>Órgano de Test</cbc:Name>
+                </cac:PartyName>
+            </cac:Party>
+        </cac-place-ext:LocatedContractingParty>
+        <cac:ProcurementProject>
+            <cbc:Name>Proyecto de prueba para importes</cbc:Name>
+            <cbc:TypeCode>1</cbc:TypeCode>
+            <cac:BudgetAmount>
+                <cbc:EstimatedOverallContractAmount currencyID="EUR">7809917.35</cbc:EstimatedOverallContractAmount>
+                <cbc:TotalAmount currencyID="EUR">5670000.00</cbc:TotalAmount>
+                <cbc:TaxExclusiveAmount currencyID="EUR">4685950.41</cbc:TaxExclusiveAmount>
+            </cac:BudgetAmount>
+        </cac:ProcurementProject>
+        <cac:TenderingTerms/>
+        <cac:TenderingProcess/>
+        <cac-place-ext:ValidNoticeInfo>
+            <cac-place-ext:AdditionalPublicationStatus>
+                <cac-place-ext:AdditionalPublicationDocumentReference>
+                    <cbc:IssueDate>2026-03-25</cbc:IssueDate>
+                </cac-place-ext:AdditionalPublicationDocumentReference>
+            </cac-place-ext:AdditionalPublicationStatus>
+        </cac-place-ext:ValidNoticeInfo>
+    </cac-place-ext:ContractFolderStatus>
+</entry>
