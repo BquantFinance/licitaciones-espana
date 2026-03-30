@@ -568,13 +568,22 @@ Contratación pública completa de la [Comunidad de Madrid](https://contratos-pu
 
 ### Archivos
 
+El script [`descarga_contratacion_comunidad_madrid_v1.py`](comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py) ahora trabaja en pipeline:
+
 ```
 comunidad_madrid/
-├── contratacion_comunidad_madrid_completo.parquet   # Dataset unificado (90 MB, snappy)
-└── csv_originales/                                  # 765 CSVs individuales
+├── contratacion_comunidad_madrid_base.csv           # Dataset base unificado
+├── contratacion_comunidad_madrid_base.parquet       # Base en parquet
+├── contratacion_comunidad_madrid_detail.sqlite3     # Caché incremental generada al ejecutar detail
+├── contratacion_comunidad_madrid_completo.csv       # Dataset final mergeado
+├── contratacion_comunidad_madrid_completo.parquet   # Dataset final en parquet
+├── csv_originales/                                  # CSVs descargados del portal
+└── descarga_contratacion_comunidad_madrid_v1.py     # Descarga base + detail + merge
 ```
 
-### Campos principales (18 columnas)
+### Campos principales
+
+**Base (18 columnas)**
 
 | Categoría | Campos |
 |-----------|--------|
@@ -586,6 +595,30 @@ comunidad_madrid/
 | Incidencias | Importe de las modificaciones, Importe de las prórrogas, Importe de la liquidación |
 | Temporal | Fecha del contrato |
 
+**Detalle HTML enriquecido**: el dataset final añade campos `detail_*` procedentes de la ficha pública del portal. Para tipos no-menores la ficha se resuelve vía `/contrato-publico/...`; para contratos menores, vía `/contrato/<Referencia>`. Entre los campos más útiles:
+
+- `detail_numero_expediente`
+- `detail_referencia`
+- `detail_dir3`
+- `detail_codigo_entidad_adjudicadora`
+- `detail_entidad_adjudicadora`
+- `detail_codigo_cpv`
+- `detail_codigo_nuts`
+- `detail_procedimiento_adjudicacion`
+- `detail_tipo_tramitacion`
+- `detail_tipo_resolucion`
+- `detail_metodo_presentacion`
+- `detail_presupuesto_base_sin_impuestos`
+- `detail_importe_adjudicacion_sin_iva`
+- `detail_importe_adjudicacion_con_iva`
+- `detail_num_ofertas`
+- `detail_nif_adjudicatario`
+- `detail_nombre_razon_social_adjudicatario`
+- `detail_fecha_contrato`
+- `detail_fecha_limite_presentacion`
+- `detail_documentos_count`
+- `detail_status`, `detail_attempts`, `detail_last_error`
+
 ### Estrategia de descarga
 
 El portal de la Comunidad de Madrid usa un módulo antibot de Drupal y tiene restricciones complejas en los filtros de búsqueda que requirieron ingeniería inversa:
@@ -595,6 +628,7 @@ El portal de la Comunidad de Madrid usa un módulo antibot de Drupal y tiene res
 - **Contratos menores** (~99% del volumen): El filtro `fecha_hasta` es incompatible con este tipo de publicación, y `fecha_desde` no funciona combinado con `entidad_adjudicadora`. Solución: descargar por **entidad adjudicadora** (125 entidades) sin filtro de fecha.
 - **Subdivisión recursiva**: Las entidades con >50K registros (hospitales grandes) se subdividen automáticamente por **rango de presupuesto de licitación**, partiendo rangos por la mitad recursivamente hasta que cada segmento queda por debajo del límite de truncamiento.
 - **Otros tipos** (licitaciones, adjudicaciones, etc.): Se descargan por **mes + tipo de publicación** con filtros de fecha, que sí funcionan para estos tipos.
+- **Detalle HTML**: Los tipos no-menores resuelven ficha pública enlazable (`/contrato-publico/...`). Los **contratos menores** también tienen ficha pública, pero en una ruta distinta (`/contrato/<Referencia>`). El pipeline actual soporta ambos caminos y mergea esos campos en el dataset final.
 
 ### Entidades incluidas (125)
 
