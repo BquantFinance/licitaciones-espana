@@ -22,4 +22,6 @@ Thumbs.db
 *.log
 
 # Runtime cache
-ccaa_Andalucia/perfiles_cache.json
+galicia/contratos_galicia_base.parquet
+galicia/contratos_galicia_base_progress.json
+galicia/contratos_galicia_detail.sqlite3

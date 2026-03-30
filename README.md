@@ -681,21 +681,37 @@ Contratación pública completa de la [Xunta de Galicia](https://www.contratosde
 
 ```
 galicia/
-├── contratos_galicia.parquet              # 1.7M registros (36 MB, snappy)
-└── scripts/
-    └── scraper_contratos_galicia.py       # Scraper con discovery automático
+├── contratos_galicia_base.csv            # Dataset base de tabla (12 columnas)
+├── contratos_galicia_base.parquet        # Base en parquet
+├── contratos_galicia_detail.sqlite3      # Caché incremental del detalle HTML
+├── contratos_galicia.csv                 # Dataset final mergeado (62 columnas)
+├── contratos_galicia.parquet             # Dataset final en parquet
+├── contratos_galicia_base_progress.json  # Checkpoint de organismos completados
+└── scraper_galicia.py                    # Pipeline base + detail + merge
 ```
 
-### Campos principales (12 columnas)
+### Campos principales
 
-| Categoría | Campos | CM | LIC |
-|-----------|--------|:--:|:---:|
-| Identificación | id, objeto | ✅ | ✅ |
-| Importes | importe | ✅ | ✅ |
-| Fechas | publicado, modificado | ✅/❌ | ✅/✅ |
-| Estado | estado, estadoDesc | ❌ | ✅ |
-| Adjudicación | nif, adjudicatario, duracion | ✅ | ❌ |
-| Meta | _organismo_id, _tipo | ✅ | ✅ |
+**Base (12 columnas)**: `id`, `objeto`, `importe`, `estado`, `estadoDesc`, `publicado`, `modificado`, `_organismo_id`, `_tipo`, `nif`, `adjudicatario`, `duracion`
+
+**Detalle HTML enriquecido**: el dataset final añade >50 columnas derivadas de la ficha del portal, entre ellas:
+
+- `detail_tipo_tramitacion`
+- `detail_tipo_procedimiento`
+- `detail_tipo_contrato`
+- `detail_presupuesto_base_text` / `detail_presupuesto_base_eur`
+- `detail_valor_estimado_text` / `detail_valor_estimado_eur`
+- `detail_num_lotes`
+- `detail_fecha_difusion`
+- `detail_organo`
+- `detail_correo_electronico`
+- `detail_cpv_codes`
+- `detail_nuts_codes`
+- `detail_documentos_count`
+- `detail_adjudicaciones_count`
+- `detail_status`, `detail_attempts`, `detail_last_error`
+
+Además, la caché SQLite puede guardar comprimidos los `pairs` y `tables` crudos de cada ficha HTML para no perder información aunque no todo se aplane a columnas.
 
 ### Estrategia de descarga
 
@@ -704,21 +720,28 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
 - **Licitaciones**: `/api/v1/organismos/{id}/licitaciones/table` — paginación estándar, sin restricciones temporales
 - **Contratos menores**: `/api/v1/organismos/{id}/contratosmenores/table` — requiere header `Referer` dinámico por organismo y rechaza rangos de fecha >3 meses
 
-**Discovery automático**: El scraper prueba IDs de organismo 1–2000 contra ambos endpoints (licitaciones en paralelo, CM secuencial por la restricción del Referer) para descubrir los 418 organismos activos.
+**Discovery automático**: El scraper prueba IDs de organismo 1–2000 contra ambos endpoints (licitaciones en paralelo, CM secuencial por la restricción del `Referer`) para descubrir los organismos activos.
 
-**Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01 (rango de escaneo completo; los datos reales comienzan en 2018). El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
+**Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01. El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
 
-**No existe endpoint de detalle JSON** — los campos adicionales (tipo de tramitación, procedimiento, valor estimado, documentos) solo están en páginas HTML renderizadas por JSP, lo que haría inviable el scraping masivo (~1.7M peticiones individuales).
+**Detalle HTML real**: El portal no expone un endpoint JSON útil para la ficha; los campos adicionales salen de `POST /licitacion`. El scraper hace un segundo paso de enriquecimiento HTML para `LIC` y `CM`.
 
-### Estadísticas de extracción
+**Pipeline incremental y reanudable**:
 
-| Métrica | Valor |
-|---------|-------|
-| Organismos descubiertos | 418 |
-| Requests totales | 29,084 |
-| Errores | 0 |
-| Tiempo de ejecución | 7h 42min |
-| Mayor organismo | Org 11 (SERGAS) — ~300K CM |
+- `all`: ejecuta `base -> detail -> merge`
+- `base`: reconstruye solo el dataset base de tabla
+- `detail`: enriquece HTML sobre el base ya descargado
+- `merge`: junta base + detalle en el dataset final
+
+El progreso base se guarda por organismo en `contratos_galicia_base_progress.json` y el detalle se cachea en `contratos_galicia_detail.sqlite3`, de forma que si la ejecución se corta o el portal devuelve `403/429`, se puede retomar con `--resume`.
+
+**Salida reproducible**: otra persona puede rehacer la descarga completa ejecutando el mismo pipeline y obteniendo base, detalle cacheado y merge final.
+
+### Validación reciente
+
+En una validación real sobre un organismo mixto (`33`), el scraper antiguo seguía sacando `152` filas y `12` columnas. El pipeline nuevo mantiene las `152` filas, genera un base estable de `12` columnas y un dataset final enriquecido de `62` columnas, con `152/152` fichas HTML resueltas y una segunda pasada `detail --resume` que no rehace trabajo (`0` procesados).
+
+Este diseño está pensado para ejecutar el backfill histórico completo sin depender de memoria RAM ni de una corrida monolítica: si el portal corta la sesión o devuelve `403/429`, basta con relanzar la fase correspondiente con `--resume`.
 
 ---
 
@@ -903,7 +926,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
-| `galicia/scripts/scraper_contratos_galicia.py` | contratosdegalicia.gal | Scraper jQuery DataTables con discovery automático + barrido CM 3 meses |
+| `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
 | `ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias |
 | `scripts/ccaa_catalunya.py` | Socrata | Descarga datos Catalunya |
 | `scripts/ccaa_valencia.py` | CKAN | Descarga datos Valencia |
