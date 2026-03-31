@@ -2,9 +2,10 @@
 #!/usr/bin/env python3
 """
 ═══════════════════════════════════════════════════════════════════════════════
- CONSOLIDACIÓN — CONTRATACIÓN PÚBLICA DE EUSKADI  v4
+ CONSOLIDACIÓN BASE — CONTRATACIÓN PÚBLICA DE EUSKADI  v4
 ═══════════════════════════════════════════════════════════════════════════════
- Convierte la salida del scraper v4 (JSON + XLSX + CSV) en Parquets limpios.
+ Convierte la salida de descarga (JSON + XLSX + CSV) en la capa base parquet
+ sobre la que luego trabaja el enriquecimiento incremental de detalle.
 
  ENTRADA:  datos_euskadi_contratacion_v4/
  SALIDA:   euskadi_parquet/
@@ -20,22 +21,26 @@
 
  Salida final:
    euskadi_parquet/
-   ├── contratos_master.parquet        ← 655K+ contratos (B1)
-   ├── poderes_adjudicadores.parquet   ← 919 poderes (A3)
-   ├── empresas_licitadoras.parquet    ← 9042 empresas (A4)
+   ├── contratos_master.parquet        ← Base consolidada sector público (B1)
+   ├── poderes_adjudicadores.parquet   ← Catálogo A3
+   ├── empresas_licitadoras.parquet    ← Catálogo A4
    ├── revascon_historico.parquet      ← Serie 2013-2018 (B2)
    ├── bilbao_contratos.parquet        ← Contratos municipales (C1)
    ├── stats.json                      ← Estadísticas consolidación
    └── README.md                       ← Documentación
+
+ Nota:
+   · El parquet enriquecido final (`contratos_master_detallado.parquet`) se
+     genera después en `detalle_euskadi.py`.
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
+import argparse
 import json
 import logging
-import sys
 import warnings
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -45,32 +50,67 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────────────────────
 
-INPUT_DIR  = Path("datos_euskadi_contratacion_v4")
-OUTPUT_DIR = Path("euskadi_parquet")
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_INPUT_DIR = SCRIPT_DIR / "datos_euskadi_contratacion_v4"
+DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "euskadi_parquet"
+DEFAULT_LOG_PATH = SCRIPT_DIR / "consolidar_euskadi_v4.log"
 
-# Subdirectorios de entrada (del scraper v4)
-PATHS = {
-    "api_contracts":   INPUT_DIR / "A1_api_contratos",
-    "api_notices":     INPUT_DIR / "A2_api_anuncios",
-    "api_authorities": INPUT_DIR / "A3_api_poderes",
-    "api_companies":   INPUT_DIR / "A4_api_empresas",
-    "xlsx_anual":      INPUT_DIR / "B1_xlsx_sector_publico_anual",
-    "revascon_hist":   INPUT_DIR / "B2_revascon_historico",
-    "ultimos_90d":     INPUT_DIR / "B3_ultimos_90_dias",
-    "bilbao":          INPUT_DIR / "C1_bilbao",
-    "vitoria":         INPUT_DIR / "C2_vitoria_gasteiz",
-}
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("consolidar_euskadi_v4.log", encoding="utf-8"),
-    ],
-)
-log = logging.getLogger(__name__)
+def build_paths(input_dir: Path) -> dict[str, Path]:
+    return {
+        "api_contracts": input_dir / "A1_api_contratos",
+        "api_notices": input_dir / "A2_api_anuncios",
+        "api_authorities": input_dir / "A3_api_poderes",
+        "api_companies": input_dir / "A4_api_empresas",
+        "xlsx_anual": input_dir / "B1_xlsx_sector_publico_anual",
+        "revascon_hist": input_dir / "B2_revascon_historico",
+        "ultimos_90d": input_dir / "B3_ultimos_90_dias",
+        "bilbao": input_dir / "C1_bilbao",
+        "vitoria": input_dir / "C2_vitoria_gasteiz",
+    }
 
+
+def build_logger(log_path: Path | None = None) -> logging.Logger:
+    logger = logging.getLogger("euskadi.consolidacion")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    stream = logging.StreamHandler()
+    stream.setFormatter(formatter)
+    logger.addHandler(stream)
+
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    logger.propagate = False
+    return logger
+
+
+def configure_runtime(
+    input_dir: Path | None = None,
+    output_dir: Path | None = None,
+    log_path: Path | None = None,
+) -> None:
+    global INPUT_DIR, OUTPUT_DIR, PATHS, LOG_PATH, log, stats
+
+    INPUT_DIR = (input_dir or DEFAULT_INPUT_DIR).resolve()
+    OUTPUT_DIR = (output_dir or DEFAULT_OUTPUT_DIR).resolve()
+    PATHS = build_paths(INPUT_DIR)
+    LOG_PATH = (log_path or DEFAULT_LOG_PATH).resolve()
+    log = build_logger(LOG_PATH)
+    stats = {}
+
+
+INPUT_DIR = DEFAULT_INPUT_DIR
+OUTPUT_DIR = DEFAULT_OUTPUT_DIR
+PATHS = build_paths(INPUT_DIR)
+LOG_PATH = DEFAULT_LOG_PATH
+log = logging.getLogger("euskadi.consolidacion")
+log.addHandler(logging.NullHandler())
 stats = {}
 
 
@@ -617,7 +657,7 @@ def generar_readme(all_stats: dict):
         doc = file_docs.get(key, {"fuente": "?", "desc": "?"})
         readme += f"| `{key}.parquet` | {regs:,} | {mb:.1f} MB | {doc['fuente']} | {doc['desc']} |\n"
 
-    readme += f"""
+    readme += """
 ## Notas sobre redundancia
 
 - **contratos_master** (B1) es la fuente principal de contratos y subsume los
@@ -656,8 +696,41 @@ def generar_readme(all_stats: dict):
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Consolidación de contratación pública de Euskadi a Parquet",
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=DEFAULT_INPUT_DIR,
+        help="Directorio con JSON/XLSX/CSV descargados por ccaa_euskadi.py.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Directorio de salida de los Parquet consolidados.",
+    )
+    parser.add_argument(
+        "--log-path",
+        type=Path,
+        default=DEFAULT_LOG_PATH,
+        help="Ruta del fichero de log de consolidación.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
     import time as _time
+
+    args = build_parser().parse_args(argv)
+    configure_runtime(
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        log_path=args.log_path,
+    )
+
     t0 = _time.time()
 
     log.info("╔═══════════════════════════════════════════════════════════╗")
@@ -671,19 +744,19 @@ def main():
         import pyarrow  # noqa: F401
     except ImportError:
         log.error("Falta pyarrow. Instala con: pip install pyarrow")
-        sys.exit(1)
+        return 1
 
     try:
         import openpyxl  # noqa: F401
     except ImportError:
         log.error("Falta openpyxl. Instala con: pip install openpyxl")
-        sys.exit(1)
+        return 1
 
     # Verificar que exista el directorio de entrada
     if not INPUT_DIR.exists():
         log.error("Directorio de entrada no encontrado: %s", INPUT_DIR)
-        log.error("Ejecuta primero el scraper: python descarga_euskadi_v4.py")
-        sys.exit(1)
+        log.error("Ejecuta primero el scraper: python Euskadi/ccaa_euskadi.py")
+        return 1
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -745,11 +818,10 @@ def main():
     log.info("═" * 60)
     log.info("\nSalida: %s/", OUTPUT_DIR)
     log.info("  Uso:")
-    log.info('    df = pd.read_parquet("euskadi_parquet/contratos_master.parquet")')
+    log.info('    df = pd.read_parquet("%s")', OUTPUT_DIR / "contratos_master.parquet")
     log.info("    df.info()")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
-
+    raise SystemExit(main())
