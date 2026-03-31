@@ -376,33 +376,41 @@ Dataset nuevo con **3.024.000 registros** de contratos menores del sector públi
 
 ## 🆕 Euskadi
 
-Contratación pública del [País Vasco / Euskadi](https://www.contratacion.euskadi.eus/), combinando la API REST de KontratazioA con exports XLSX históricos de Open Data Euskadi y portales municipales independientes (Bilbao, Vitoria-Gasteiz). Arquitectura API-first con fallback a XLSX para series históricas.
+Contratación pública del [País Vasco / Euskadi](https://www.contratacion.euskadi.eus/), combinando la API REST de KontratazioA con exports XLSX/JSON históricos de Open Data Euskadi y portales municipales independientes (Bilbao, Vitoria-Gasteiz).
+
+Ahora mismo Euskadi queda montado como un pipeline en tres capas:
+- descarga base
+- consolidación a parquet
+- enriquecimiento incremental de detalle desde XML/HTML públicos enlazados en el propio dataset base
 
 | Dataset | Registros | Período | Fuente |
 |---------|-----------|---------|--------|
-| Contratos sector público | 664,545 | 2011-2026 | XLSX anual + JSON 2011-2013 |
-| Poderes adjudicadores | ~919 | Actual | API REST KontratazioA |
-| Empresas licitadoras | ~9,042 | Actual | API REST KontratazioA |
+| Contratos sector público | 683,260 | 2011-2026 | XLSX anual + JSON fallback 2011-2013 |
+| Poderes adjudicadores | 924 | Actual | API REST KontratazioA |
+| Empresas licitadoras | 9,080 | Actual | API REST KontratazioA |
 | REVASCON histórico | 34,523 | 2013-2018 | CSV/XLSX agregado anual |
-| Bilbao contratos | 4,823 | 2005-2026 | Portal municipal Bilbao |
+| Bilbao contratos | 4,856 | 2005-2026 | Portal municipal Bilbao |
 | Vitoria contratos menores | — | Actual | Open Data Euskadi |
-| **Total** | **~704K** | **2005-2026** | — |
 
 ### Archivos
 
 ```
-euskadi_parquet/
-├── contratos_master.parquet             # 664K contratos (138 MB)
-├── poderes_adjudicadores.parquet        # 919 poderes adjudicadores
-├── empresas_licitadoras.parquet         # 9K empresas del registro
+Euskadi/euskadi_parquet/
+├── contratos_master.parquet             # Base consolidada sector público
+├── contratos_master_detallado.parquet   # Base + detail_* enriquecido
+├── poderes_adjudicadores.parquet        # Poderes adjudicadores
+├── empresas_licitadoras.parquet         # Empresas del registro
 ├── revascon_historico.parquet           # 34K registros 2013-2018
-└── bilbao_contratos.parquet            # 4.8K contratos Bilbao
+└── bilbao_contratos.parquet             # 4.8K contratos Bilbao
 
-ccaa_euskadi.py                          # Scraper principal v4 (descarga)
-consolidar_euskadi_v4.py                 # Consolidación → Parquet
+Euskadi/ccaa_euskadi.py                  # Scraper principal v4 (descarga)
+Euskadi/consolidacion_euskadi.py         # Consolidación → Parquet
+Euskadi/detalle_euskadi.py               # Enriquecimiento incremental → detalle
 ```
 
-### Campos principales (56 columnas — contratos_master)
+### Campos principales
+
+#### Base (`contratos_master.parquet`, 56 columnas)
 
 | Categoría | Campos |
 |-----------|--------|
@@ -414,18 +422,43 @@ consolidar_euskadi_v4.py                 # Consolidación → Parquet
 | Fechas | fecha_adjudicacion, fecha_formalizacion, duracion |
 | CPV | codigo_cpv |
 
+#### Detalle (`contratos_master_detallado.parquet`)
+
+El enriquecimiento añade columnas `detail_*` con información que no venía estructurada en la base, por ejemplo:
+
+- `detail_subject`
+- `detail_contracting_type`
+- `detail_processing`
+- `detail_adjudication_procedure`
+- `detail_contracting_authority_name`
+- `detail_entity_driving_name`
+- `detail_contracting_body_name`
+- `detail_cpv_codes`
+- `detail_nuts_codes`
+- `detail_bidders_number`
+- `detail_award_price_without_vat`
+- `detail_award_price_with_vat`
+- `detail_award_date`
+- `detail_award_company_name`
+- `detail_formalization_date`
+- `detail_flag_contrato_menor`
+- `detail_flag_sara`
+- `detail_source_url`
+- `detail_source_kind`
+- `detail_status`
+
 ### Arquitectura de fuentes
 
 El scraper sigue una arquitectura **API-first** con múltiples capas de fallback:
 
 **Módulo A — API REST KontratazioA** (fuente principal para catálogos)
-- A1/A2: Contratos y anuncios (muestra 1K registros — bulk inviable: 655K items × 10/pág = 65K peticiones ~27h)
-- A3: Poderes adjudicadores — 919 registros completos (92 páginas)
-- A4: Empresas licitadoras — 9,042 registros completos (905 páginas)
+- A1/A2: Contratos y anuncios (muestra 1K registros — bulk inviable: ~683K items × 10/pág = ~68K peticiones)
+- A3: Poderes adjudicadores — 924 registros completos
+- A4: Empresas licitadoras — 9,080 registros completos
 - Paginación: `?currentPage=N` (1-based, 10 items/pág fijo)
 
 **Módulo B — XLSX/CSV Históricos** (fuente principal para contratos)
-- B1: XLSX anuales 2011-2026 (655K registros) + JSON fallback 2011-2013 (9.5K registros de XLSX vacíos)
+- B1: XLSX anuales 2011-2026 (~683K registros consolidados) + JSON fallback 2011-2013
 - B2: REVASCON agregado 2013-2018 (formato más rico que B1 para ese período)
 - B3: Snapshot últimos 90 días (ventana móvil)
 
@@ -433,11 +466,19 @@ El scraper sigue una arquitectura **API-first** con múltiples capas de fallback
 - C1: Bilbao — contratos adjudicados 2005-2026 (CSV por año + tipo)
 - C2: Vitoria-Gasteiz — contratos menores formalizados
 
+**Módulo D — Detalle incremental** (enriquecimiento público por expediente)
+- D1: XML moderno enlazado desde Open Data Euskadi
+- D2: XML legacy tipo `record`
+- D3: XML índice `r01Index/...-idxContent.xml`
+- D4: fallback HTML cuando el XML directo ya no existe
+
 ### Notas técnicas
 
 - La API de KontratazioA usa `?currentPage=N` para paginación (no `page`, `_page`, ni HATEOAS). El parámetro `_pageSize` se ignora (fijo a 10).
 - Los XLSX de 2011-2013 se publican vacíos (solo cabeceras), pero los JSON del mismo endpoint de Open Data sí contienen los datos completos (9,482 registros combinados).
 - El consolidador convierte columnas con listas/dicts a JSON string antes de deduplicar, necesario para los campos anidados de la API (clasificaciones, categorías).
+- El detalle se resuelve con varias fuentes por expediente (`xml_datos`, `xml_metadatos`, `url_amigable`, `url_física`) y mantiene una caché SQLite reanudable.
+- Parte del histórico antiguo requiere fallback HTML porque algunos XML públicos ya no existen, aunque la ficha siga publicada.
 
 ---
 
@@ -797,13 +838,13 @@ df_ted = pd.read_parquet('ted/ted_es_can.parquet')
 df_and = pd.read_parquet('ccaa_Andalucia/licitaciones_andalucia.parquet')
 
 # Euskadi - Contratos sector público
-df_eus = pd.read_parquet('euskadi_parquet/contratos_master.parquet')
+df_eus = pd.read_parquet('Euskadi/euskadi_parquet/contratos_master.parquet')
 
 # Euskadi - Poderes adjudicadores
-df_poderes = pd.read_parquet('euskadi_parquet/poderes_adjudicadores.parquet')
+df_poderes = pd.read_parquet('Euskadi/euskadi_parquet/poderes_adjudicadores.parquet')
 
 # Euskadi - Empresas licitadoras
-df_empresas = pd.read_parquet('euskadi_parquet/empresas_licitadoras.parquet')
+df_empresas = pd.read_parquet('Euskadi/euskadi_parquet/empresas_licitadoras.parquet')
 
 # Comunidad de Madrid - Contratación completa
 df_cam = pd.read_parquet('comunidad_madrid/contratacion_comunidad_madrid_completo.parquet')
@@ -921,8 +962,9 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 |--------|--------|-------------|
 | `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML |
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x + salida reproducible |
-| `ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4: API REST + XLSX anuales + portales municipales |
-| `consolidar_euskadi_v4.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
+| `Euskadi/ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4: API REST + XLSX anuales + portales municipales |
+| `Euskadi/consolidacion_euskadi.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
+| `Euskadi/detalle_euskadi.py` | Open Data Euskadi + KontratazioA | Enriquece `contratos_master.parquet` con detalle XML/HTML incremental y merge final |
 | `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
@@ -949,7 +991,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | PLACSP | Mensual |
 | TED | Trimestral (API) / Anual (CSV bulk) |
 | Andalucía | Trimestral (re-ejecutar script) |
-| Euskadi | Trimestral (re-ejecutar ccaa_euskadi.py + consolidar) |
+| Euskadi | Trimestral (re-ejecutar Euskadi/ccaa_euskadi.py + Euskadi/consolidacion_euskadi.py + Euskadi/detalle_euskadi.py si se quiere salida enriquecida) |
 | Madrid – Comunidad | Trimestral (re-ejecutar script) |
 | Madrid – Ayuntamiento | Anual (nuevos CSVs por año) |
 | Catalunya | Variable (depende del dataset) |
@@ -963,7 +1005,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 ## 📋 Requisitos
 
 ```bash
-pip install pandas pyarrow requests beautifulsoup4 pdfplumber python-dateutil
+pip install pandas pyarrow requests beautifulsoup4 pdfplumber python-dateutil openpyxl
 ```
 
 ---

@@ -25,3 +25,6 @@ Thumbs.db
 galicia/contratos_galicia_base.parquet
 galicia/contratos_galicia_base_progress.json
 galicia/contratos_galicia_detail.sqlite3
+ccaa_Andalucia/perfiles_cache.json
+Euskadi/datos_euskadi_contratacion_v4/
+Euskadi/euskadi_parquet/
