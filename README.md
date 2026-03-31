@@ -611,24 +611,34 @@ Todas las consejerías, organismos autónomos, empresas públicas y fundaciones 
 
 ## 🏛️ Madrid – Ayuntamiento
 
-Actividad contractual completa del [Ayuntamiento de Madrid](https://datos.madrid.es), unificando 67 ficheros CSV con 12 estructuras distintas en un único dataset normalizado.
+Actividad contractual completa del [Ayuntamiento de Madrid](https://datos.madrid.es), unificando 80 ficheros CSV con 12 estructuras distintas en un único dataset normalizado. El discovery ya no depende del HTML del portal: usa primero la API oficial `package_show` de datos.madrid.es y deja HTML/manifiesto estático como respaldo.
 
 | Categoría | Registros | Importe total |
 |-----------|-----------|---------------|
-| Contratos menores | 68,626 | 407M € |
-| Contratos formalizados | 17,991 | 16,606M € |
-| Acuerdo marco / sist. dinámico | 24,621 | 2,549M € |
-| Prorrogados | 4,441 | 2,967M € |
-| Modificados | 1,789 | 718M € |
+| Contratos menores | 69,089 | 411M € |
+| Contratos formalizados | 19,806 | 18,261M € |
+| Acuerdo marco / sist. dinámico | 27,525 | 2,942M € |
+| Prorrogados | 4,543 | 3,891M € |
+| Modificados | 2,038 | 995M € |
 | Cesiones | 30 | 80M € |
-| Resoluciones | 225 | 62M € |
-| Penalidades | 483 | 13M € |
-| Homologación | 1,047 | 1M € |
-| **Total** | **119,253** | **~23,400M €** |
+| Resoluciones | 240 | 64M € |
+| Penalidades | 510 | 15M € |
+| Homologación | 1,082 | 1M € |
+| **Total** | **124,863** | **~26,660M €** |
 
 ### Archivos
 
-El script `ccaa_madrid_ayuntamiento.py` genera:
+El script `comunidad_madrid/ccaa_madrid_ayuntamiento.py` genera:
+
+```text
+comunidad_madrid/datos_madrid_contratacion_completa/
+├── csv_originales/                           # 80 CSV descargados
+├── actividad_contractual_madrid_manifest.json
+├── actividad_contractual_madrid_completo.csv
+├── actividad_contractual_madrid_completo.parquet
+├── actividad_contractual_madrid_completo.xlsx
+└── *_madrid.csv                              # export por categoría
+```
 
 ### Campos principales (70+ columnas)
 
@@ -653,17 +663,18 @@ El script detecta y unifica automáticamente 12 estructuras de CSV distintas:
 | Estructura | Período | Categorías |
 |------------|---------|------------|
 | A, B, C, D | 2015-2020 | Contratos menores |
-| E, F | 2021-2025 | Contratos menores |
+| E, F | 2021-2026 | Contratos menores |
 | AC_OLD | 2015-2020 | Formalizados, acuerdo marco |
 | AC_OLD_MOD | 2015-2020 | Modificados |
-| AC_HOMOLOGACION | 2022-2024 | Homologación |
+| AC_HOMOLOGACION | 2022-2026 | Homologación |
 | AC_NEW | 2021-2024 | Todas las categorías |
-| AC_2025 | 2025 | Todas las categorías |
+| AC_2025 | 2025-2026 | Todas las categorías |
 
 ### Fuentes
 
-- [Contratos menores](https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=9e42c176aab90410VgnVCM1000000b205a0aRCRD) — 12 ficheros (2015-2025)
-- [Actividad contractual](https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=7449f3b0a4699510VgnVCM1000001d4a900aRCRD) — 55 ficheros (2015-2025)
+- [`package_show` contratos menores](https://datos.madrid.es/api/3/action/package_show?id=300253-0-contratos-actividad-menores) — 13 CSV (2015-2026)
+- [`package_show` actividad contractual](https://datos.madrid.es/api/3/action/package_show?id=216876-0-contratos-actividad) — 67 CSV (2015-2026)
+- HTML del portal y manifiesto estático del script como fallback si la API no responde
 
 ---
 
@@ -924,7 +935,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4: API REST + XLSX anuales + portales municipales |
 | `consolidar_euskadi_v4.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
 | `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
-| `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
+| `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Discovery API-first (`package_show`) + descarga paralela + unificación de 80 CSVs |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
 | `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
 | `ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias |

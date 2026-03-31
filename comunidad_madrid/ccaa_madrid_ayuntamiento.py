@@ -4,7 +4,7 @@ DESCARGA Y UNIFICACIÓN DE ACTIVIDAD CONTRACTUAL COMPLETA
 AYUNTAMIENTO DE MADRID
 =============================================================================
 Fuente: https://datos.madrid.es
-Datos desde 2015 hasta 2025
+Datos desde 2015 hasta 2026
 
 CATEGORÍAS DE CONTRATOS:
   1. contratos_menores        → Contratos menores
@@ -17,31 +17,87 @@ CATEGORÍAS DE CONTRATOS:
   8. resoluciones             → Resoluciones de contratos
   9. homologacion             → Derivados de procedimientos de homologación
 
-v9: Versión final pulida:
-    - prorrogados_2021: recuperación de headers desde filas internas si row0=NaN
-    - Columnas espurias (R, A¤o, dígitos sueltos) suprimidas en warnings
-    - Año extraído de más columnas de fecha + fallback al nombre del fichero
-    - Reduce drásticamente los "sin fecha de adjudicación"
+v12:
+    - rutas y salidas ancladas al repo
+    - discovery API-first usando package_show de datos.madrid.es
+    - fallback HTML / manifiesto estable como respaldo
+    - manifiesto JSON reproducible de los recursos descubiertos
+    - descarga paralela de CSV
+    - preparado para ejecución reproducible y testeable
 =============================================================================
 """
 
+import argparse
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 import pandas as pd
 import requests
 import re
-import os
 from pathlib import Path
 from bs4 import BeautifulSoup
 import warnings
+
 warnings.filterwarnings('ignore')
 
 
 # ===========================================================================
 # CONFIGURACIÓN
 # ===========================================================================
-OUTPUT_DIR = Path("datos_madrid_contratacion_completa")
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "datos_madrid_contratacion_completa"
+DEFAULT_LOG_PATH = SCRIPT_DIR / "descarga_madrid_ayuntamiento.log"
+DEFAULT_DOWNLOAD_WORKERS = 8
+PACKAGE_ID_MENORES = "300253-0-contratos-actividad-menores"
+PACKAGE_ID_ACTIVIDAD = "216876-0-contratos-actividad"
+PACKAGE_SHOW_URL = "https://datos.madrid.es/api/3/action/package_show?id={package_id}"
+
+
+def build_logger(log_path: Path | None = None) -> logging.Logger:
+    logger = logging.getLogger("madrid.ayuntamiento")
+    logger.setLevel(logging.INFO)
+    for handler in logger.handlers[:]:
+        handler.close()
+        logger.removeHandler(handler)
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    stream = logging.StreamHandler()
+    stream.setFormatter(formatter)
+    logger.addHandler(stream)
+
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    logger.propagate = False
+    return logger
+
+
+def configure_runtime(
+    output_dir: Path | None = None,
+    log_path: Path | None = None,
+    download_workers: int | None = None,
+) -> None:
+    global OUTPUT_DIR, CSV_DIR, LOG_PATH, DOWNLOAD_WORKERS, log
+
+    OUTPUT_DIR = (output_dir or DEFAULT_OUTPUT_DIR).resolve()
+    CSV_DIR = OUTPUT_DIR / "csv_originales"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_PATH = (log_path or DEFAULT_LOG_PATH).resolve()
+    DOWNLOAD_WORKERS = max(1, int(download_workers or DEFAULT_DOWNLOAD_WORKERS))
+    log = build_logger(LOG_PATH)
+
+
+OUTPUT_DIR = DEFAULT_OUTPUT_DIR
 CSV_DIR = OUTPUT_DIR / "csv_originales"
-OUTPUT_DIR.mkdir(exist_ok=True)
-CSV_DIR.mkdir(exist_ok=True)
+LOG_PATH = DEFAULT_LOG_PATH
+DOWNLOAD_WORKERS = DEFAULT_DOWNLOAD_WORKERS
+log = logging.getLogger("madrid.ayuntamiento")
+log.addHandler(logging.NullHandler())
 
 CATEGORIAS_ACTIVAS = {
     "contratos_menores": True,
@@ -539,95 +595,92 @@ MAPA_EXTRA_RESOLUCIONES = {
 # ===========================================================================
 def _urls_respaldo_menores():
     return {
-        "menores_2025": "https://datos.madrid.es/egob/catalogo/300253-22-contratos-actividad-menores.csv",
-        "menores_2024": "https://datos.madrid.es/egob/catalogo/300253-20-contratos-actividad-menores.csv",
-        "menores_2023": "https://datos.madrid.es/egob/catalogo/300253-18-contratos-actividad-menores.csv",
-        "menores_2022": "https://datos.madrid.es/egob/catalogo/300253-16-contratos-actividad-menores.csv",
-        "menores_2021_desde_marzo": "https://datos.madrid.es/egob/catalogo/300253-14-contratos-actividad-menores.csv",
-        "menores_2021_hasta_febrero": "https://datos.madrid.es/egob/catalogo/300253-12-contratos-actividad-menores.csv",
-        "menores_2020": "https://datos.madrid.es/egob/catalogo/300253-10-contratos-actividad-menores.csv",
-        "menores_2019": "https://datos.madrid.es/egob/catalogo/300253-8-contratos-actividad-menores.csv",
-        "menores_2018": "https://datos.madrid.es/egob/catalogo/300253-0-contratos-actividad-menores.csv",
-        "menores_2017": "https://datos.madrid.es/egob/catalogo/300253-2-contratos-actividad-menores.csv",
-        "menores_2016": "https://datos.madrid.es/egob/catalogo/300253-4-contratos-actividad-menores.csv",
-        "menores_2015": "https://datos.madrid.es/egob/catalogo/300253-6-contratos-actividad-menores.csv",
+        "menores_2015": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-17-contratos-actividad-menores-csv/download/300253-17-contratos-actividad-menores-csv.csv",
+        "menores_2016": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-15-contratos-actividad-menores-csv/download/300253-15-contratos-actividad-menores-csv.csv",
+        "menores_2017": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-18-contratos-actividad-menores-csv/download/300253-18-contratos-actividad-menores-csv",
+        "menores_2018": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-14-contratos-actividad-menores-csv/download/300253-14-contratos-actividad-menores-csv.csv",
+        "menores_2019": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-12-contratos-actividad-menores-csv/download/300253-12-contratos-actividad-menores-csv.csv",
+        "menores_2020": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-10-contratos-actividad-menores-csv/download/300253-10-contratos-actividad-menores-csv.csv",
+        "menores_2021_desde_marzo": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-8-contratos-actividad-menores-csv/download/300253-8-contratos-actividad-menores-csv.csv",
+        "menores_2021_hasta_febrero": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-9-contratos-actividad-menores-csv/download/300253-9-contratos-actividad-menores-csv.csv",
+        "menores_2022": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-23-contratos-actividad-menores-csv/download/300253-23-contratos-actividad-menores-csv.csv",
+        "menores_2023": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-4-contratos-actividad-menores-csv/download/300253-4-contratos-actividad-menores-csv",
+        "menores_2024": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-2-contratos-actividad-menores-csv/download/300253-2-contratos-actividad-menores-csv.csv",
+        "menores_2025": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-27-contratos-actividad-menores-csv/download/300253-27-contratos-actividad-menores-csv.csv",
+        "menores_2026": "https://datos.madrid.es/dataset/300253-0-contratos-actividad-menores/resource/300253-26-contratos-actividad-menores-csv/download/contratos_menores_2026.csv",
     }
 
 
 def _urls_respaldo_actividad():
     u = {}
     # fmt: off
-    # 2025
-    u["formalizados_2025"]="https://datos.madrid.es/egob/catalogo/216876-104-contratos-actividad.csv"
-    u["acuerdo_marco_2025"]="https://datos.madrid.es/egob/catalogo/216876-106-contratos-actividad.csv"
-    u["modificados_2025"]="https://datos.madrid.es/egob/catalogo/216876-108-contratos-actividad.csv"
-    u["prorrogados_2025"]="https://datos.madrid.es/egob/catalogo/216876-110-contratos-actividad.csv"
-    u["penalidades_2025"]="https://datos.madrid.es/egob/catalogo/216876-112-contratos-actividad.csv"
-    u["cesiones_2025"]="https://datos.madrid.es/egob/catalogo/216876-114-contratos-actividad.csv"
-    u["resoluciones_2025"]="https://datos.madrid.es/egob/catalogo/216876-116-contratos-actividad.csv"
-    u["homologacion_2025"]="https://datos.madrid.es/egob/catalogo/216876-118-contratos-actividad.csv"
-    # 2024
-    u["formalizados_2024"]="https://datos.madrid.es/egob/catalogo/216876-88-contratos-actividad.csv"
-    u["acuerdo_marco_2024"]="https://datos.madrid.es/egob/catalogo/216876-90-contratos-actividad.csv"
-    u["modificados_2024"]="https://datos.madrid.es/egob/catalogo/216876-92-contratos-actividad.csv"
-    u["prorrogados_2024"]="https://datos.madrid.es/egob/catalogo/216876-94-contratos-actividad.csv"
-    u["penalidades_2024"]="https://datos.madrid.es/egob/catalogo/216876-96-contratos-actividad.csv"
-    u["cesiones_2024"]="https://datos.madrid.es/egob/catalogo/216876-102-contratos-actividad.csv"
-    u["resoluciones_2024"]="https://datos.madrid.es/egob/catalogo/216876-98-contratos-actividad.csv"
-    u["homologacion_2024"]="https://datos.madrid.es/egob/catalogo/216876-100-contratos-actividad.csv"
-    # 2023
-    u["formalizados_2023"]="https://datos.madrid.es/egob/catalogo/216876-72-contratos-actividad.csv"
-    u["acuerdo_marco_2023"]="https://datos.madrid.es/egob/catalogo/216876-74-contratos-actividad.csv"
-    u["modificados_2023"]="https://datos.madrid.es/egob/catalogo/216876-76-contratos-actividad.csv"
-    u["prorrogados_2023"]="https://datos.madrid.es/egob/catalogo/216876-78-contratos-actividad.csv"
-    u["penalidades_2023"]="https://datos.madrid.es/egob/catalogo/216876-80-contratos-actividad.csv"
-    u["cesiones_2023"]="https://datos.madrid.es/egob/catalogo/216876-82-contratos-actividad.csv"
-    u["resoluciones_2023"]="https://datos.madrid.es/egob/catalogo/216876-84-contratos-actividad.csv"
-    u["homologacion_2023"]="https://datos.madrid.es/egob/catalogo/216876-86-contratos-actividad.csv"
-    # 2022
-    u["formalizados_2022"]="https://datos.madrid.es/egob/catalogo/216876-56-contratos-actividad.csv"
-    u["acuerdo_marco_2022"]="https://datos.madrid.es/egob/catalogo/216876-58-contratos-actividad.csv"
-    u["modificados_2022"]="https://datos.madrid.es/egob/catalogo/216876-60-contratos-actividad.csv"
-    u["prorrogados_2022"]="https://datos.madrid.es/egob/catalogo/216876-62-contratos-actividad.csv"
-    u["penalidades_2022"]="https://datos.madrid.es/egob/catalogo/216876-64-contratos-actividad.csv"
-    u["cesiones_2022"]="https://datos.madrid.es/egob/catalogo/216876-66-contratos-actividad.csv"
-    u["resoluciones_2022"]="https://datos.madrid.es/egob/catalogo/216876-68-contratos-actividad.csv"
-    u["homologacion_2022"]="https://datos.madrid.es/egob/catalogo/216876-70-contratos-actividad.csv"
-    # 2021
-    u["formalizados_2021_nuevos"]="https://datos.madrid.es/egob/catalogo/216876-36-contratos-actividad.csv"
-    u["formalizados_2021_anteriores"]="https://datos.madrid.es/egob/catalogo/216876-38-contratos-actividad.csv"
-    u["acuerdo_marco_2021_nuevos"]="https://datos.madrid.es/egob/catalogo/216876-40-contratos-actividad.csv"
-    u["acuerdo_marco_2021_anteriores"]="https://datos.madrid.es/egob/catalogo/216876-42-contratos-actividad.csv"
-    u["modificados_2021_nuevos"]="https://datos.madrid.es/egob/catalogo/216876-44-contratos-actividad.csv"
-    u["modificados_2021_anteriores"]="https://datos.madrid.es/egob/catalogo/216876-46-contratos-actividad.csv"
-    u["prorrogados_2021"]="https://datos.madrid.es/egob/catalogo/216876-48-contratos-actividad.csv"
-    u["penalidades_2021"]="https://datos.madrid.es/egob/catalogo/216876-50-contratos-actividad.csv"
-    u["cesiones_2021"]="https://datos.madrid.es/egob/catalogo/216876-52-contratos-actividad.csv"
-    u["resoluciones_2021"]="https://datos.madrid.es/egob/catalogo/216876-54-contratos-actividad.csv"
-    # 2020
-    u["formalizados_2020"]="https://datos.madrid.es/egob/catalogo/216876-30-contratos-actividad.csv"
-    u["acuerdo_marco_2020"]="https://datos.madrid.es/egob/catalogo/216876-32-contratos-actividad.csv"
-    u["modificados_2020"]="https://datos.madrid.es/egob/catalogo/216876-34-contratos-actividad.csv"
-    # 2019
-    u["formalizados_2019"]="https://datos.madrid.es/egob/catalogo/216876-24-contratos-actividad.csv"
-    u["acuerdo_marco_2019"]="https://datos.madrid.es/egob/catalogo/216876-26-contratos-actividad.csv"
-    u["modificados_2019"]="https://datos.madrid.es/egob/catalogo/216876-28-contratos-actividad.csv"
-    # 2018
-    u["formalizados_2018"]="https://datos.madrid.es/egob/catalogo/216876-18-contratos-actividad.csv"
-    u["acuerdo_marco_2018"]="https://datos.madrid.es/egob/catalogo/216876-20-contratos-actividad.csv"
-    u["modificados_2018"]="https://datos.madrid.es/egob/catalogo/216876-22-contratos-actividad.csv"
-    # 2017
-    u["formalizados_2017"]="https://datos.madrid.es/egob/catalogo/216876-12-contratos-actividad.csv"
-    u["acuerdo_marco_2017"]="https://datos.madrid.es/egob/catalogo/216876-14-contratos-actividad.csv"
-    u["modificados_2017"]="https://datos.madrid.es/egob/catalogo/216876-16-contratos-actividad.csv"
-    # 2016
-    u["formalizados_2016"]="https://datos.madrid.es/egob/catalogo/216876-7-contratos-actividad.csv"
-    u["acuerdo_marco_2016"]="https://datos.madrid.es/egob/catalogo/216876-5-contratos-actividad.csv"
-    u["modificados_2016"]="https://datos.madrid.es/egob/catalogo/216876-9-contratos-actividad.csv"
-    # 2015
-    u["formalizados_2015"]="https://datos.madrid.es/egob/catalogo/216876-1-contratos-actividad.csv"
-    u["acuerdo_marco_2015"]="https://datos.madrid.es/egob/catalogo/216876-3-contratos-actividad.csv"
-    u["modificados_2015"]="https://datos.madrid.es/egob/catalogo/216876-11-contratos-actividad.csv"
+    u["acuerdo_marco_2015"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-81-contratos-actividad-csv/download/216876-81-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2016"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-25-contratos-actividad-csv/download/216876-25-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2017"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-94-contratos-actividad-csv/download/216876-94-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2018"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-129-contratos-actividad-csv/download/216876-129-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2019"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-24-contratos-actividad-csv/download/216876-24-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2020"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-23-contratos-actividad-csv/download/216876-23-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2021_anteriores"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-22-contratos-actividad-csv/download/216876-22-contratos-actividad-csv"
+    u["acuerdo_marco_2021_nuevos"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-5-contratos-actividad-csv/download/216876-5-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-20-contratos-actividad-csv/download/216876-20-contratos-actividad-csv"
+    u["acuerdo_marco_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-19-contratos-actividad-csv/download/216876-19-contratos-actividad-csv.csv"
+    u["acuerdo_marco_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-117-contratos-actividad-csv/download/216876-117-contratos-actividad-csv"
+    u["acuerdo_marco_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-18-contratos-actividad-csv/download/216876-18-contratos-actividad-csv"
+    u["acuerdo_marco_2026"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-102-contratos-actividad-csv/download/contratos_basados_cesda_2026.csv"
+    u["cesiones_2021_nuevos"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-59-contratos-actividad-csv/download/216876-59-contratos-actividad-csv.csv"
+    u["cesiones_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-108-contratos-actividad-csv/download/216876-108-contratos-actividad-csv.csv"
+    u["cesiones_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-58-contratos-actividad-csv/download/216876-58-contratos-actividad-csv.csv"
+    u["cesiones_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-92-contratos-actividad-csv/download/216876-92-contratos-actividad-csv.csv"
+    u["cesiones_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-57-contratos-actividad-csv/download/216876-57-contratos-actividad-csv.csv"
+    u["formalizados_2015"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-10-contratos-actividad-csv/download/216876-10-contratos-actividad-csv.csv"
+    u["formalizados_2016"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-86-contratos-actividad-csv/download/216876-86-contratos-actividad-csv.csv"
+    u["formalizados_2017"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-8-contratos-actividad-csv/download/216876-8-contratos-actividad-csv.csv"
+    u["formalizados_2018"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-7-contratos-actividad-csv/download/216876-7-contratos-actividad-csv.csv"
+    u["formalizados_2019"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-95-contratos-actividad-csv/download/216876-95-contratos-actividad-csv.csv"
+    u["formalizados_2020"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-124-contratos-actividad-csv/download/216876-124-contratos-actividad-csv.csv"
+    u["formalizados_2021_anteriores"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-21-contratos-actividad-csv/download/216876-21-contratos-actividad-csv.csv"
+    u["formalizados_2021_nuevos"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-4-contratos-actividad-csv/download/216876-4-contratos-actividad-csv"
+    u["formalizados_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-3-contratos-actividad-csv/download/216876-3-contratos-actividad-csv"
+    u["formalizados_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-1-contratos-actividad-csv/download/216876-1-contratos-actividad-csv"
+    u["formalizados_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-0-contratos-actividad-csv/download/216876-0-contratos-actividad-csv"
+    u["formalizados_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-125-contratos-actividad-csv/download/216876-125-contratos-actividad-csv"
+    u["formalizados_2026"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-2-contratos-actividad-csv/download/contratos_inscritos_2026.csv"
+    u["homologacion_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-69-contratos-actividad-csv/download/216876-69-contratos-actividad-csv.csv"
+    u["homologacion_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-123-contratos-actividad-csv/download/216876-123-contratos-actividad-csv.csv"
+    u["homologacion_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-93-contratos-actividad-csv/download/216876-93-contratos-actividad-csv.csv"
+    u["homologacion_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-68-contratos-actividad-csv/download/216876-68-contratos-actividad-csv.csv"
+    u["homologacion_2026"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-91-contratos-actividad-csv/download/derivados_homologacion_inscritos_2026.csv"
+    u["modificados_2015"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-137-contratos-actividad-csv/download/216876-137-contratos-actividad-csv"
+    u["modificados_2016"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-38-contratos-actividad-csv/download/216876-38-contratos-actividad-csv.csv"
+    u["modificados_2017"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-128-contratos-actividad-csv/download/216876-128-contratos-actividad-csv.csv"
+    u["modificados_2018"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-37-contratos-actividad-csv/download/216876-37-contratos-actividad-csv.csv"
+    u["modificados_2019"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-42-contratos-actividad-csv/download/216876-42-contratos-actividad-csv"
+    u["modificados_2020"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-106-contratos-actividad-csv/download/216876-106-contratos-actividad-csv.csv"
+    u["modificados_2021_anteriores"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-111-contratos-actividad-csv/download/216876-111-contratos-actividad-csv.csv"
+    u["modificados_2021_nuevos"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-6-contratos-actividad-csv/download/216876-6-contratos-actividad-csv.csv"
+    u["modificados_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-35-contratos-actividad-csv/download/216876-35-contratos-actividad-csv.csv"
+    u["modificados_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-34-contratos-actividad-csv/download/216876-34-contratos-actividad-csv.csv"
+    u["modificados_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-100-contratos-actividad-csv/download/216876-100-contratos-actividad-csv.csv"
+    u["modificados_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-33-contratos-actividad-csv/download/216876-33-contratos-actividad-csv.csv"
+    u["modificados_2026"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-119-contratos-actividad-csv/download/modificaciones_inscritas_2026.csv"
+    u["penalidades_2021_nuevos"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-133-contratos-actividad-csv/download/216876-133-contratos-actividad-csv.csv"
+    u["penalidades_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-52-contratos-actividad-csv/download/216876-52-contratos-actividad-csv.csv"
+    u["penalidades_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-99-contratos-actividad-csv/download/216876-99-contratos-actividad-csv.csv"
+    u["penalidades_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-51-contratos-actividad-csv/download/216876-51-contratos-actividad-csv.csv"
+    u["penalidades_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-104-contratos-actividad-csv/download/216876-104-contratos-actividad-csv.csv"
+    u["penalidades_2026"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-50-contratos-actividad-csv/download/penalidades_inscritas_2026.csv"
+    u["prorrogados_2021_nuevos"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-132-contratos-actividad-csv/download/216876-132-contratos-actividad-csv.csv"
+    u["prorrogados_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-122-contratos-actividad-csv/download/216876-122-contratos-actividad-csv.csv"
+    u["prorrogados_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-46-contratos-actividad-csv/download/216876-46-contratos-actividad-csv.csv"
+    u["prorrogados_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-45-contratos-actividad-csv/download/216876-45-contratos-actividad-csv"
+    u["prorrogados_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-121-contratos-actividad-csv/download/216876-121-contratos-actividad-csv.csv"
+    u["prorrogados_2026"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-112-contratos-actividad-csv/download/prorrogas_inscritas_2026.csv"
+    u["resoluciones_2021_nuevos"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-97-contratos-actividad-csv/download/216876-97-contratos-actividad-csv.csv"
+    u["resoluciones_2022"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-64-contratos-actividad-csv/download/216876-64-contratos-actividad-csv.csv"
+    u["resoluciones_2023"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-135-contratos-actividad-csv/download/216876-135-contratos-actividad-csv"
+    u["resoluciones_2024"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-89-contratos-actividad-csv/download/216876-89-contratos-actividad-csv.csv"
+    u["resoluciones_2025"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-63-contratos-actividad-csv/download/216876-63-contratos-actividad-csv.csv"
+    u["resoluciones_2026"]="https://datos.madrid.es/dataset/216876-0-contratos-actividad/resource/216876-56-contratos-actividad-csv/download/resoluciones_inscritas_2026.csv"
     # fmt: on
     return u
 
@@ -635,6 +688,42 @@ def _urls_respaldo_actividad():
 # ===========================================================================
 # UTILIDADES
 # ===========================================================================
+def fetch_package_resources(package_id):
+    url = PACKAGE_SHOW_URL.format(package_id=package_id)
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    payload = resp.json()
+    if not payload.get("success"):
+        raise ValueError(f"package_show falló para {package_id}")
+    return payload["result"].get("resources", [])
+
+
+def resource_is_csv(resource):
+    fmt = (resource.get("format") or "").strip().lower()
+    url = resource.get("url") or ""
+    return fmt == "csv" or url.endswith(".csv")
+
+
+def descubrir_recursos_dataset(package_id, extractor):
+    recursos = fetch_package_resources(package_id)
+    csv_urls = {}
+    for resource in recursos:
+        if not resource_is_csv(resource):
+            continue
+        url = resource.get("url") or ""
+        context = " ".join(
+            part for part in (
+                resource.get("description"),
+                resource.get("name"),
+                resource.get("id"),
+            ) if part
+        )
+        nombre = extractor(context, url)
+        if nombre and nombre not in csv_urls:
+            csv_urls[nombre] = url
+    return dict(sorted(csv_urls.items()))
+
+
 def _clasificar_categoria(nombre):
     n = nombre.lower()
     if "menor" in n: return "contratos_menores"
@@ -652,6 +741,39 @@ def _filtrar_activas(urls):
     return {n: u for n, u in urls.items() if CATEGORIAS_ACTIVAS.get(_clasificar_categoria(n), False)}
 
 
+def exportar_manifiesto(urls):
+    # Persist the discovered catalog so later runs can compare coverage even if the portal HTML changes.
+    categorias = {}
+    for nombre, url in sorted(urls.items()):
+        categoria = _clasificar_categoria(nombre)
+        categorias[categoria] = categorias.get(categoria, 0) + 1
+
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "package_ids": {
+            "menores": PACKAGE_ID_MENORES,
+            "actividad": PACKAGE_ID_ACTIVIDAD,
+        },
+        "total_csvs": len(urls),
+        "download_workers": DOWNLOAD_WORKERS,
+        "categorias": categorias,
+        "resources": [
+            {
+                "nombre": nombre,
+                "categoria": _clasificar_categoria(nombre),
+                "url": url,
+            }
+            for nombre, url in sorted(urls.items())
+        ],
+    }
+    manifest_path = OUTPUT_DIR / "actividad_contractual_madrid_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
 def strip_normalize(col_name):
     s = col_name.upper().strip()
     for old, new in {'Á':'A','É':'E','Í':'I','Ó':'O','Ú':'U','Ñ':'N',
@@ -665,7 +787,16 @@ def strip_normalize(col_name):
 # DESCUBRIMIENTO URLs
 # ===========================================================================
 def descubrir_csv_urls_menores():
-    print("  🔍 Rascando página de contratos menores...")
+    print("  🔍 Descubriendo contratos menores...")
+    try:
+        csv_urls = descubrir_recursos_dataset(PACKAGE_ID_MENORES, _extraer_nombre_menores)
+        if csv_urls:
+            print(f"  ✓ API dataset: {len(csv_urls)} ficheros")
+            return csv_urls
+    except Exception as e:
+        print(f"  ⚠ API dataset: {e}")
+
+    print("  ↪ Fallback HTML...")
     try:
         resp = requests.get(PAGINA_CONTRATOS_MENORES, timeout=30)
         resp.raise_for_status()
@@ -681,16 +812,25 @@ def descubrir_csv_urls_menores():
             if nombre and nombre not in csv_urls:
                 csv_urls[nombre] = url
         if csv_urls:
-            print(f"  ✓ Encontrados {len(csv_urls)} ficheros")
+            print(f"  ✓ HTML: {len(csv_urls)} ficheros")
             return dict(sorted(csv_urls.items()))
     except Exception as e:
-        print(f"  ⚠ Error: {e}")
+        print(f"  ⚠ HTML: {e}")
     print("  ⚠ Usando URLs de respaldo")
     return _urls_respaldo_menores()
 
 
 def descubrir_csv_urls_actividad():
-    print("  🔍 Rascando página de actividad contractual...")
+    print("  🔍 Descubriendo actividad contractual...")
+    try:
+        csv_urls = descubrir_recursos_dataset(PACKAGE_ID_ACTIVIDAD, _extraer_nombre_actividad)
+        if csv_urls:
+            print(f"  ✓ API dataset: {len(csv_urls)} ficheros")
+            return csv_urls
+    except Exception as e:
+        print(f"  ⚠ API dataset: {e}")
+
+    print("  ↪ Fallback HTML...")
     try:
         resp = requests.get(PAGINA_ACTIVIDAD_CONTRACTUAL, timeout=30)
         resp.raise_for_status()
@@ -708,10 +848,10 @@ def descubrir_csv_urls_actividad():
             if nombre and nombre not in csv_urls:
                 csv_urls[nombre] = url
         if csv_urls:
-            print(f"  ✓ Encontrados {len(csv_urls)} ficheros")
+            print(f"  ✓ HTML: {len(csv_urls)} ficheros")
             return dict(sorted(csv_urls.items()))
     except Exception as e:
-        print(f"  ⚠ Error: {e}")
+        print(f"  ⚠ HTML: {e}")
     print("  ⚠ Usando URLs de respaldo")
     return _urls_respaldo_actividad()
 
@@ -756,18 +896,44 @@ def _extraer_nombre_actividad(context, url):
 def descargar_csv(nombre, url, force=False):
     filepath = CSV_DIR / f"{nombre}.csv"
     if filepath.exists() and not force:
-        print(f"    ✓ {nombre}.csv ya existe")
-        return filepath
-    print(f"    ⬇ {nombre}...", end=" ")
+        return filepath, f"    ✓ {nombre}.csv ya existe"
     try:
         resp = requests.get(url, timeout=60)
         resp.raise_for_status()
         filepath.write_bytes(resp.content)
-        print(f"OK ({len(resp.content)/1024:.0f} KB)")
+        return filepath, f"    ⬇ {nombre}... OK ({len(resp.content)/1024:.0f} KB)"
     except Exception as e:
-        print(f"ERROR: {e}")
-        return None
-    return filepath
+        return None, f"    ⬇ {nombre}... ERROR: {e}"
+
+
+def descargar_csvs(urls, force=False, workers=1):
+    ficheros = {}
+
+    if workers <= 1:
+        for nombre, url in sorted(urls.items()):
+            path, message = descargar_csv(nombre, url, force=force)
+            print(message)
+            if path is not None:
+                ficheros[nombre] = path
+        return ficheros
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(descargar_csv, nombre, url, force): nombre
+            for nombre, url in sorted(urls.items())
+        }
+        for future in as_completed(futures):
+            nombre = futures[future]
+            try:
+                path, message = future.result()
+            except Exception as e:
+                path = None
+                message = f"    ⬇ {nombre}... ERROR: {e}"
+            print(message)
+            if path is not None:
+                ficheros[nombre] = path
+
+    return dict(sorted(ficheros.items()))
 
 
 def leer_csv(filepath, skiprows=0, header='infer'):
@@ -1241,7 +1407,7 @@ def limpiar_dataframe(df):
         df[col] = pd.to_datetime(df[col], format='mixed', dayfirst=True, errors='coerce')
 
     # Tipo de contrato normalize
-    if df['tipo_contrato'].notna().any():
+    if 'tipo_contrato' in df.columns and df['tipo_contrato'].notna().any():
         df['tipo_contrato'] = df['tipo_contrato'].str.strip().str.title()
         unif = {
             'Suministros': 'Suministro', 'Servicio': 'Servicios',
@@ -1376,12 +1542,52 @@ def exportar(df, sufijo=""):
 # ===========================================================================
 # MAIN
 # ===========================================================================
-def main():
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Descarga y unificación de actividad contractual del Ayuntamiento de Madrid",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Directorio de salida para CSVs descargados y dataset final.",
+    )
+    parser.add_argument(
+        "--log-path",
+        type=Path,
+        default=DEFAULT_LOG_PATH,
+        help="Ruta del fichero de log.",
+    )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Vuelve a descargar los CSV aunque ya existan en disco.",
+    )
+    parser.add_argument(
+        "--download-workers",
+        type=int,
+        default=DEFAULT_DOWNLOAD_WORKERS,
+        help="Número de workers para descargar CSVs en paralelo.",
+    )
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    configure_runtime(
+        output_dir=args.output_dir,
+        log_path=args.log_path,
+        download_workers=args.download_workers,
+    )
+
     print("=" * 70)
-    print("ACTIVIDAD CONTRACTUAL COMPLETA - AYUNTAMIENTO DE MADRID (v10)")
+    print("ACTIVIDAD CONTRACTUAL COMPLETA - AYUNTAMIENTO DE MADRID (v12)")
     print("=" * 70)
     cats = [k for k, v in CATEGORIAS_ACTIVAS.items() if v]
     print(f"\nCategorías activas: {cats}")
+    print(f"Output dir: {OUTPUT_DIR}")
+    print(f"Log: {LOG_PATH}")
+    print(f"Download workers: {DOWNLOAD_WORKERS}")
 
     # PASO 1
     print("\n🔍 PASO 1: Descubriendo ficheros CSV...")
@@ -1395,13 +1601,16 @@ def main():
     print(f"\n  Total ficheros: {len(all_urls)}")
     for n in sorted(all_urls):
         print(f"    [{_clasificar_categoria(n)}] {n}")
+    manifest_path = exportar_manifiesto(all_urls)
+    print(f"  ✓ Manifiesto: {manifest_path}")
 
     # PASO 2
     print("\n📥 PASO 2: Descargando...")
-    ficheros = {}
-    for nombre, url in sorted(all_urls.items()):
-        path = descargar_csv(nombre, url)
-        if path: ficheros[nombre] = path
+    ficheros = descargar_csvs(
+        all_urls,
+        force=args.force_download,
+        workers=args.download_workers,
+    )
     print(f"\n  Descargados: {len(ficheros)}")
 
     # PASO 3
