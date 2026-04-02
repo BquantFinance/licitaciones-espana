@@ -350,7 +350,9 @@ Datos del portal [Transparència Catalunya](https://analisi.transparenciacatalun
 catalunya/
 ├── contratacion/
 │   ├── contractacio_publica.parquet         # 1.3M contratos regulares
-│   └── contractacio_menors.parquet          # 3.0M contratos menores 🆕
+│   ├── contractacio_menors.parquet          # 3.0M contratos menores 🆕
+│   ├── contractacio_menors_detallado.parquet # contratos menores enriquecidos
+│   └── contractacio_menors_detail.sqlite3   # cache incremental del detalle
 ├── subvenciones/
 │   └── raisc_subvenciones.parquet           # 9.6M registros
 ├── pressupostos/
@@ -370,7 +372,10 @@ Dataset nuevo con **3.024.000 registros** de contratos menores del sector públi
 - **43 columnas** incluyendo: `id`, `descripcio`, `pressupostLicitacio`, `pressupostAdjudicacio`, `adjudicatariNom`, `adjudicatariNif`, `organContractant`, `fase`
 - Incluye **histórico completo** con todas las actualizaciones de estado de cada contrato
 - Extraído mediante paginación con sub-segmentación automática (72K requests API)
-- Fuente: [Transparència Catalunya - Contractació Pública](https://analisi.transparenciacatalunya.cat)
+- Pipeline incremental con `checkpoint`, reanudación por ramas, ficheros intermedios por `faseVigent`, salida `raw` + `clean` y soporte `--resume`
+- Genera además un resumen por rama para auditar qué estrategia de segmentación ha seguido cada bloque pesado
+- Tiene además un segundo paso opcional de `detail`, con caché SQLite y merge final sobre el endpoint público `detall-publicacio-expedient/{id}`
+- Fuente: [PSCP Catalunya - buscador avanzado](https://contractaciopublica.cat)
 
 ---
 
@@ -925,7 +930,8 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `consolidar_euskadi_v4.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
 | `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
-| `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
+| `scripts/ccaa_cataluna_contratosmenores.py` | PSCP Catalunya | Scraper incremental con segmentación 10K, `checkpoint`, `raw` + `clean`, reanudación por ramas y fallback fino por `organ` |
+| `scripts/ccaa_cataluna_contratosmenores_detail.py` | PSCP Catalunya | Detalle incremental sobre `detall-publicacio-expedient/{id}` con caché SQLite, parser `modern`/`legacy`/`aggregated` y merge final |
 | `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
 | `ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias |
 | `scripts/ccaa_catalunya.py` | Socrata | Descarga datos Catalunya |
