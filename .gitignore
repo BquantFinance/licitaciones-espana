@@ -25,3 +25,7 @@ Thumbs.db
 galicia/contratos_galicia_base.parquet
 galicia/contratos_galicia_base_progress.json
 galicia/contratos_galicia_detail.sqlite3
+valencia_datos/
+valencia/contratacion/contratacion_detail.sqlite3
+valencia/contratacion/contratacion_detallada.parquet
+valencia/contratacion/contratacion_detallada_detail_summary.json

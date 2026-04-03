@@ -445,6 +445,11 @@ El scraper sigue una arquitectura **API-first** con múltiples capas de fallback
 
 Datos del portal [Dades Obertes GVA](https://dadesobertes.gva.es) (CKAN API).
 
+Pipeline actual:
+- `scripts/ccaa_valencia.py` descubre recursos CSV vía `package_show`, descarga en paralelo y deja manifiesto + resumen reproducibles en `valencia_datos/`.
+- `scripts/ccaa_valencia_parquet.py` convierte esos CSV a parquet por categoría con detección automática de encoding/separador y resumen final.
+- `scripts/ccaa_valencia_detail.py` enriquece la categoría de contratación contra la API pública de CONREG (`EJERCICIO + NUMERO_DE_REGISTRO`), cachea el detalle en SQLite y genera un parquet detallado.
+
 | Categoría | Archivos | Registros | Contenido |
 |-----------|----------|-----------|-----------|
 | Contratación | 13 | 246K | REGCON 2014-2025 + DANA |
@@ -465,8 +470,13 @@ Datos del portal [Dades Obertes GVA](https://dadesobertes.gva.es) (CKAN API).
 ### Archivos
 
 ```
+valencia_datos/             # CSV originales + manifiesto CKAN + resúmenes de ejecución (ignorado en git)
+
 valencia/
 ├── contratacion/          # 13 archivos, 42 MB
+│   ├── contratacion_detail.sqlite3           # Caché incremental detail (ignorado en git)
+│   ├── contratacion_detallada.parquet        # Merge final enriquecido (ignorado en git)
+│   └── contratacion_detallada_detail_summary.json
 ├── subvenciones/          # 52 archivos, 26 MB
 ├── presupuestos/          # 4 archivos, 7 MB
 ├── convenios/             # 5 archivos, 2 MB
@@ -488,6 +498,8 @@ valencia/
 - **DANA**: Datasets específicos de la catástrofe (contratos, subvenciones, ERTE)
 - **ERE/ERTE histórico**: 25 años de datos (2000-2025)
 - **Siniestralidad laboral**: 10 años de accidentes de trabajo
+- **Pipeline reproducible**: manifiesto CKAN, descarga paralela, conversión a parquet y capa `detail` separada
+- **CONREG público**: detalle de contratación resoluble por `EJERCICIO + NUMERO_DE_REGISTRO`, incluso cuando `URL_LICITACION` viene como `No encontrada`
 
 ---
 
