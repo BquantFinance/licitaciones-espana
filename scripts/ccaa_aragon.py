@@ -352,6 +352,16 @@ def comprobar_contenido(ruta, formato):
         raise ErrorDescarga("la respuesta no es un fichero gzip")
 
 
+def variantes_url(url):
+    """Direcciones a probar, por orden: un enlace http:// se pide primero por
+    https:// (el CKAN publica enlaces http:// de servidores que sirven https,
+    como las series de menores del Gobierno, y hay redes y proxies que
+    rechazan HTTP plano) y, si así no se puede, tal como se publica."""
+    if url.lower().startswith("http://"):
+        return ["https://" + url[len("http://"):], url]
+    return [url]
+
+
 def descargar(url, destino, formato=None, params=None):
     """Descarga `url` en `destino` sin machacar la versión anterior
     (guardar_version: si cambió, la anterior pasa a _historico/).
@@ -359,32 +369,39 @@ def descargar(url, destino, formato=None, params=None):
     Escribe en un temporal y solo lo instala si la descarga terminó bien y el
     contenido es válido: si falla, el fichero anterior queda intacto y se lanza
     ErrorDescarga. Devuelve (estado, bytes) con estado 'nuevo', 'actualizado'
-    o 'sin_cambios'.
+    o 'sin_cambios'. Un enlace http:// se pide antes por https:// (variantes_url).
     """
     destino = Path(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
     parcial = destino.with_name(f".{destino.name}.part")
+    candidatas = variantes_url(url)
     error = None
     try:
         for intento in range(1, REINTENTOS + 1):
-            try:
-                with requests.get(url, params=params, headers=CABECERAS, timeout=TIMEOUT, stream=True) as r:
-                    if r.status_code >= 400 and r.status_code not in ESTADOS_REINTENTABLES:
-                        raise ErrorDescarga(f"HTTP {r.status_code}", r.status_code)
-                    if r.status_code >= 400:
-                        error = f"HTTP {r.status_code}"
-                    else:
-                        with open(parcial, "wb") as f:
-                            for trozo in r.iter_content(chunk_size=1 << 16):
-                                if trozo:
-                                    f.write(trozo)
-                        comprobar_contenido(parcial, formato)
-                        tam = parcial.stat().st_size
-                        return guardar_version(destino, desde=parcial), tam
-            except ErrorDescarga:
-                raise
-            except (requests.RequestException, OSError) as e:
-                error = f"{type(e).__name__}: {e}"
+            for n, candidata in enumerate(candidatas, 1):
+                ultima = n == len(candidatas)
+                try:
+                    with requests.get(candidata, params=params, headers=CABECERAS, timeout=TIMEOUT,
+                                      stream=True) as r:
+                        if r.status_code >= 400 and r.status_code not in ESTADOS_REINTENTABLES:
+                            if not ultima:          # p.ej. https no servido: se prueba la siguiente
+                                error = f"HTTP {r.status_code}"
+                                continue
+                            raise ErrorDescarga(f"HTTP {r.status_code}", r.status_code)
+                        if r.status_code >= 400:
+                            error = f"HTTP {r.status_code}"
+                        else:
+                            with open(parcial, "wb") as f:
+                                for trozo in r.iter_content(chunk_size=1 << 16):
+                                    if trozo:
+                                        f.write(trozo)
+                            comprobar_contenido(parcial, formato)
+                            tam = parcial.stat().st_size
+                            return guardar_version(destino, desde=parcial), tam
+                except ErrorDescarga:
+                    raise
+                except (requests.RequestException, OSError) as e:
+                    error = f"{type(e).__name__}: {e}"
             if intento < REINTENTOS:
                 esperar(intento)
         raise ErrorDescarga(f"{error} (tras {REINTENTOS} intentos)")

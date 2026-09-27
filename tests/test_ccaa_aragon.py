@@ -315,6 +315,22 @@ def test_descargar_reintenta_con_backoff(web, tmp_path):
     assert not list(tmp_path.glob(".*"))                       # sin temporales
 
 
+def test_descargar_url_http_prueba_primero_https(web, tmp_path):
+    # El CKAN da enlaces http:// de servidores que sirven https (las series de
+    # menores 2024-2025 del Gobierno): el proxy de la nube rechaza HTTP plano (403)
+    http = "http://serviciosciudadano.aragon.es/cgi-bin/AODB/BRSCGI?CMD=VERLST&EJER=2025"
+    web.poner(http, Respuesta(403, b"<html>Forbidden</html>"))
+    web.poner("https" + http[4:], b"a;b\n1;2\n")
+    assert A.descargar(http, tmp_path / "x.csv", "csv") == ("nuevo", 8)
+    assert web.pedidas(http) == 0 and web.esperas == []
+    # Si el servidor no sirve https, se usa el enlace publicado
+    otra = "http://otro.aragon.es/x.csv"
+    web.poner("https" + otra[4:], requests.exceptions.SSLError("sin https"))
+    web.poner(otra, b"c;d\n3;4\n")
+    assert A.descargar(otra, tmp_path / "y.csv", "csv") == ("nuevo", 8)
+    assert (tmp_path / "y.csv").read_bytes() == b"c;d\n3;4\n"
+
+
 def test_descarga_fallida_o_html_no_toca_la_copia_anterior(web, tmp_path):
     destino = tmp_path / "x.csv"
     destino.write_bytes(b"a;b\n1;2\n")
