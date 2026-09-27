@@ -1,0 +1,106 @@
+<!-- Real: consulta preliminar de mercado CPM-1.2023 (CPM_SectorPublico_2023.zip,
+     CPM_SectorPublico_20231023_205512.atom), sin cambios salvo las declaraciones de
+     namespace, que en el ATOM van en el feed. ConditionTypeCode "S" con su motivo
+     (ConditionTypeReasonText) y PartySelectionReasonText, y un GeneralDocument. -->
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2">
+        <id>https://contrataciondelsectorpublico.gob.es/sindicacion/CPM_SectorPublico/12092799</id>
+        <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=%2Fb8VSbLUWKguf4aBO%2BvQlQ%3D%3D&amp;isConsPre=1"></link>
+        <summary type="text">Id consulta: CPM-1.2023; Órgano de Contratación: Secretaría de Estado de Telecomunicaciones e Infraestructuras Digitales; Estado: PUB</summary>
+        <title>Consulta preliminar de mercado para la preparación de la licitación del contrato de suministro de dos estaciones de comprobación técnica de emisiones radioeléctricas remotas</title>
+        <updated>2023-02-09T10:47:55.351+01:00</updated>
+        <cac-place-ext:PreliminaryMarketConsultationStatus>
+            <cbc:PreliminaryMarketConsultationID>CPM-1.2023</cbc:PreliminaryMarketConsultationID>
+            <cbc-place-ext:PreliminaryMarketConsultationStatusCode listURI="http://contrataciondelestado.es/codice/cl/2.09/PreliminaryMarketConsultationStatusCode-2.09.gc" languageID="es">PUB</cbc-place-ext:PreliminaryMarketConsultationStatusCode>
+            <cbc:ConditionTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.09/PreliminaryMarketConsultationTypeCode-2.09.gc" languageID="es">S</cbc:ConditionTypeCode>
+            <cbc-place-ext:ConditionTypeReasonText>De acuerdo con lo establecido en el documento de consulta</cbc-place-ext:ConditionTypeReasonText>
+            <cbc:ConditionsText>La propuesta deberá ser remitida a la dirección de correo electrónico cter-equipos@economia.gob.es indicando en el asunto: Consulta preliminar de mercado sobre el SUMINISTRO DE DOS ESTACIONES DE COMPROBACIÓN TÉCNICA DE EMISIONES RADIOELÉCTRICAS REMOTAS. </cbc:ConditionsText>
+            <cbc:PartySelectionReasonText>La consulta está dirigida a empresas del sector dedicadas al suministro de equipos de medida de emisiones radioeléctricas, que puedan abordar parcial o totalmente el suministro.</cbc:PartySelectionReasonText>
+            <cbc:PlannedDate>2023-02-09</cbc:PlannedDate>
+            <cbc:LimitDate>2023-02-23</cbc:LimitDate>
+            <cbc:ConsultationName>Consulta preliminar de mercado para la preparación de la licitación del contrato de suministro de dos estaciones de comprobación técnica de emisiones radioeléctricas remotas</cbc:ConsultationName>
+            <cac-place-ext:LocatedContractingParty>
+                <cbc:ContractingPartyTypeCode listURI="http://contrataciondelestado.es/codice/cl/1.04/ContractingAuthorityCode-1.04.gc">1</cbc:ContractingPartyTypeCode>
+                <cbc:ActivityCode listURI="http://contrataciondelestado.es/codice/cl/2.05/ContractingAuthorityActivityCode-2.05.gc">28</cbc:ActivityCode>
+                <cbc:BuyerProfileURIID>https://contrataciondelestado.es/wps/poc?uri=deeplink:perfilContratante&amp;idBp=Il4qB%2Fece7F7h85%2Fpmmsfw%3D%3D</cbc:BuyerProfileURIID>
+                <cac:Party>
+                    <cac:PartyIdentification>
+                        <cbc:ID schemeName="DIR3">E05068901</cbc:ID>
+                    </cac:PartyIdentification>
+                    <cac:PartyIdentification>
+                        <cbc:ID schemeName="NIF">S2829017I</cbc:ID>
+                    </cac:PartyIdentification>
+                    <cac:PartyIdentification>
+                        <cbc:ID schemeName="ID_PLATAFORMA">11223190166079</cbc:ID>
+                    </cac:PartyIdentification>
+                    <cac:PartyName>
+                        <cbc:Name>Secretaría de Estado de Telecomunicaciones e Infraestructuras Digitales</cbc:Name>
+                    </cac:PartyName>
+                    <cac:PostalAddress>
+                        <cbc:CityName>Madrid</cbc:CityName>
+                        <cbc:PostalZone>28071</cbc:PostalZone>
+                        <cac:AddressLine>
+                            <cbc:Line>Poeta Joan Maragall, 41</cbc:Line>
+                        </cac:AddressLine>
+                        <cac:Country>
+                            <cbc:IdentificationCode listURI="http://contrataciondelestado.es/codice/cl/2.08/CountryIdentificationCode-2.08.gc">ES</cbc:IdentificationCode>
+                            <cbc:Name>España</cbc:Name>
+                        </cac:Country>
+                    </cac:PostalAddress>
+                    <cac:Contact>
+                        <cbc:Name>Secretaría de Estado de Telecomunicaciones e Infraestructuras Digitales</cbc:Name>
+                        <cbc:ElectronicMail>contratacionteleco@economia.gob.es</cbc:ElectronicMail>
+                    </cac:Contact>
+                </cac:Party>
+                <cac-place-ext:ParentLocatedParty>
+                    <cac:PartyName>
+                        <cbc:Name>Ministerio de Asuntos Económicos y Transformación Digital</cbc:Name>
+                    </cac:PartyName>
+                    <cac-place-ext:ParentLocatedParty>
+                        <cac:PartyIdentification>
+                            <cbc:ID schemeName="DIR3">EA9999999</cbc:ID>
+                        </cac:PartyIdentification>
+                        <cac:PartyName>
+                            <cbc:Name>ADMINISTRACIÓN GENERAL DEL ESTADO</cbc:Name>
+                        </cac:PartyName>
+                        <cac-place-ext:ParentLocatedParty>
+                            <cac:PartyName>
+<cbc:Name>Sector Público</cbc:Name>
+                            </cac:PartyName>
+                        </cac-place-ext:ParentLocatedParty>
+                    </cac-place-ext:ParentLocatedParty>
+                </cac-place-ext:ParentLocatedParty>
+            </cac-place-ext:LocatedContractingParty>
+            <cac:ProcurementProject>
+                <cbc:Name>Suministro de dos estaciones de comprobación técnica de emisiones radioeléctricas remotas</cbc:Name>
+                <cbc:TypeCode listURI="http://contrataciondelestado.es/codice/cl/2.08/ContractCode-2.08.gc">1</cbc:TypeCode>
+            </cac:ProcurementProject>
+            <cac-place-ext:ValidNoticeInfo>
+                <cbc-place-ext:NoticeTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.08/TenderingNoticeTypeCode-2.08.gc">DOC_CON</cbc-place-ext:NoticeTypeCode>
+                <cac-place-ext:AdditionalPublicationStatus>
+                    <cbc-place-ext:PublicationMediaName>Perfil del Contratante</cbc-place-ext:PublicationMediaName>
+                    <cac-place-ext:AdditionalPublicationDocumentReference>
+                        <cbc:IssueDate>2023-02-09</cbc:IssueDate>
+                    </cac-place-ext:AdditionalPublicationDocumentReference>
+                </cac-place-ext:AdditionalPublicationStatus>
+            </cac-place-ext:ValidNoticeInfo>
+            <cac-place-ext:GeneralDocument>
+                <cac-place-ext:GeneralDocumentDocumentReference>
+                    <cbc:ID>c0f144cc-6b35-44a2-ba20-427dfaaae1e1</cbc:ID>
+                    <cbc:DocumentTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.09/PreliminaryMarketConsultationDocument-2.09.gc">2</cbc:DocumentTypeCode>
+                    <cac:Attachment>
+                        <cac:ExternalReference>
+                            <cbc:URI>https://contrataciondelestado.es/wps/wcm/connect/PLACE_es/Site/area/docAccCmpnt?srv=cmpnt&amp;cmpntname=GetDocumentsById&amp;source=library&amp;DocumentIdParam=c0f144cc-6b35-44a2-ba20-427dfaaae1e1</cbc:URI>
+                            <cbc:FileName>Documento de información detallada de la consulta</cbc:FileName>
+                        </cac:ExternalReference>
+                    </cac:Attachment>
+                </cac-place-ext:GeneralDocumentDocumentReference>
+            </cac-place-ext:GeneralDocument>
+            <cac:Language>
+                <cbc:ID>es</cbc:ID>
+            </cac:Language>
+        </cac-place-ext:PreliminaryMarketConsultationStatus>
+    </entry>

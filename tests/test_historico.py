@@ -1,6 +1,7 @@
 """Tests de comun/historico.py (control del sesgo del superviviente)."""
 import os
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -127,3 +128,173 @@ def test_guardar_y_leer_registros_conserva_version_anterior(tmp_path):
     assert h.guardar_registros(t2, ruta) == "actualizado"
     assert len(h.versiones(ruta)) == 2
     assert h.leer_registros(ruta)["id"].tolist() == ["1", "2"]
+
+
+def test_archivar_mueve_a_historico_sin_sustituir(tmp_path):
+    destino = tmp_path / "tabla.parquet"
+    destino.write_bytes(b"v1")
+    _mtime(destino, 1_700_000_000)
+    archivo = h.archivar(destino)
+    assert not destino.exists()
+    assert archivo == destino.parent / h.HISTORICO / "tabla__20231114T221320Z.parquet"
+    assert archivo.read_bytes() == b"v1"
+    destino.write_bytes(b"v2")
+    _mtime(destino, 1_700_000_000)                       # mismo sello: no se pisa
+    assert h.archivar(destino).read_bytes() == b"v2" and archivo.read_bytes() == b"v1"
+
+
+# ── sembrar: la instantánea publicada como la más antigua ────
+
+def _descarga():
+    return pd.DataFrame({
+        "id": ["a", "a", "b", "c"],
+        "fecha": pd.to_datetime(["2026-01-01T10:00:00.5Z", "2026-02-01T00:00:00Z",
+                                 "2026-01-05T00:00:00Z", "2026-03-01T00:00:00Z"], utc=True, format="ISO8601"),
+        "importe": [10.0, 12.0, 5.0, 7.0],
+        "estado": ["PUB", "ADJ", "PUB", "RES"],
+    })
+
+
+def _publicado():
+    """Instantánea antigua: otra semántica de tipos (fechas como texto, importes
+    enteros), una columna que la descarga ya no tiene y fechas que no se leyeron."""
+    return pd.DataFrame({
+        "id": ["a", "a", "d", "d", "b", "b", "e", "c"],
+        "fecha": ["2026-01-01T10:00:00.500+00:00",   # presente (mismo instante, otro formato)
+                  "2025-12-01T00:00:00Z",            # versión retirada de 'a'
+                  "2025-11-11T00:00:00Z", "2025-11-11T00:00:00Z",   # id retirado, publicado dos veces
+                  None,                               # fecha ilegible, mismo contenido que 'b' → presente
+                  None,                               # fecha ilegible, contenido que ya no está → se añade
+                  None,                               # fecha ilegible e id retirado → se añade
+                  "2026-03-01T00:00:00Z"],           # presente
+        "importe": [10, 9, 1, 1, 5, 6, 3, 7],
+        "estado": ["PUB", "PUB", "PUB", "PUB", "PUB", "ANUL", "PUB", "RES"],
+        "vieja": ["x"] * 8,
+    })
+
+
+def test_sembrar_anade_solo_las_claves_que_faltan():
+    nuevos = _descarga()
+    out, informe = h.sembrar(nuevos, _publicado(), ["id", "fecha"])
+    # Las filas de la descarga, intactas y primero
+    pd.testing.assert_frame_equal(out.iloc[:4][list(nuevos.columns)], nuevos)
+    assert out["_origen"].iloc[:4].isna().all() and out["_en_ultima_descarga"].iloc[:4].all()
+    anadidas = out.iloc[4:]
+    assert anadidas["id"].tolist() == ["a", "d", "d", "b", "e"]      # 'd' dos veces: así se publicó
+    assert anadidas["importe"].tolist() == [9, 1, 1, 6, 3]
+    assert (anadidas["_origen"] == h.ORIGEN_SEMILLA).all()
+    assert not anadidas["_en_ultima_descarga"].any()
+    assert list(out.columns) == list(nuevos.columns) + ["_origen", "_en_ultima_descarga", "vieja"]
+    assert out["vieja"].iloc[:4].isna().all()
+    assert (informe["leidas"], informe["anadidas"], informe["descartadas_clave"],
+            informe["descartadas_contenido"]) == (8, 5, 2, 1)
+    assert informe["ejemplos"][h.PRESENTE_CONTENIDO] == [("b", None)]
+    assert informe["ejemplos"][h.PRESENTE_CLAVE][0][0] == "a"
+
+
+def test_sembrar_dos_veces_no_anade_nada():
+    una, _ = h.sembrar(_descarga(), _publicado(), ["id", "fecha"])
+    dos, informe = h.sembrar(una, _publicado(), ["id", "fecha"])
+    assert informe["anadidas"] == 0 and len(dos) == len(una)
+    pd.testing.assert_frame_equal(dos, una)
+
+
+def test_sembrar_prioridad_entre_semillas_y_origen_propio():
+    primera = _publicado().iloc[[1]].assign(_origen="release v2025.01")
+    segunda = _publicado().iloc[[1, 2]]
+    out, _ = h.sembrar(_descarga(), primera, ["id", "fecha"], origen="otra")
+    out, informe = h.sembrar(out, segunda, ["id", "fecha"])
+    # La fila de la primera semilla no se duplica y conserva su _origen
+    assert out["_origen"].tolist()[4:] == ["release v2025.01", h.ORIGEN_SEMILLA]
+    assert informe["descartadas_clave"] == 1
+
+
+def test_sembrar_sin_contenido_que_comparar_anade_las_claves_incompletas():
+    publicado = _publicado()
+    out, informe = h.sembrar(_descarga(), publicado, ["id", "fecha"], contenido=[])
+    # Sin columnas con las que comprobarlo, una fila sin fecha no se da por presente
+    assert informe["descartadas_contenido"] == 0
+    assert out.iloc[4:]["id"].tolist() == ["a", "d", "d", "b", "b", "e"]
+
+
+def test_seleccionar_semilla_por_lotes():
+    # Sin cargar la descarga entera: el contenido se pide solo para las filas candidatas
+    nuevos, publicado = _descarga(), _publicado()
+    pedidas = []
+
+    def contenido_nuevos(filas):
+        pedidas.extend(filas.tolist())
+        return nuevos.loc[filas, ["importe", "estado"]]
+
+    motivo = h.seleccionar_semilla(nuevos[["id", "fecha"]], publicado[["id", "fecha"]], contenido_nuevos,
+                                   lambda filas: publicado.loc[filas, ["importe", "estado"]])
+    assert motivo.tolist() == [h.PRESENTE_CLAVE, h.ANADIDA, h.ANADIDA, h.ANADIDA,
+                               h.PRESENTE_CONTENIDO, h.ANADIDA, h.ANADIDA, h.PRESENTE_CLAVE]
+    assert pedidas == [2]          # solo la fila de la descarga con el id 'b'
+
+
+def test_texto_canonico_compara_tipos_distintos():
+    from datetime import date
+    a = h.texto_canonico(pd.Series([5, 1.5, None, date(2024, 1, 2), pd.Timestamp("2024-01-02"), True, "x"],
+                                   dtype=object))
+    assert a.tolist() == ["5.0", "1.5", None, "2024-01-02", "2024-01-02", "True", "x"]
+    utc = h.texto_canonico(pd.Series(pd.to_datetime(["2024-01-02T01:00:00+01:00"], utc=True)))
+    assert utc.tolist() == ["2024-01-02T00:00:00+00:00"]
+
+
+def test_dos_semillas_con_la_misma_entrada_sin_fecha_y_con_fecha():
+    # Regresión: la misma entrada retirada de la descarga, en un publicado sin
+    # fecha (el código antiguo no supo leerla) y en otro con ella, se añadía dos
+    # veces si el publicado sin fecha iba primero. Sale una sola vez en los dos órdenes
+    def publicado(fecha, importe=4.0):
+        return pd.DataFrame({"id": ["x"], "fecha": [fecha], "importe": [importe], "estado": ["RES"]})
+
+    sin_fecha, con_fecha = publicado(None), publicado("2025-06-01T00:00:00Z")
+    for primera, segunda in [(sin_fecha, con_fecha), (con_fecha, sin_fecha)]:
+        out, _ = h.sembrar(_descarga(), primera, ["id", "fecha"])
+        out, informe = h.sembrar(out, segunda, ["id", "fecha"])
+        assert out["id"].tolist().count("x") == 1
+        assert (informe["anadidas"], informe["descartadas_contenido"]) == (0, 1)
+    # Con otro contenido es otra versión: se añade
+    out, _ = h.sembrar(_descarga(), sin_fecha, ["id", "fecha"])
+    out, informe = h.sembrar(out, publicado("2025-06-01T00:00:00Z", importe=5.0), ["id", "fecha"])
+    assert out["id"].tolist().count("x") == 2 and informe["anadidas"] == 1
+
+
+def test_seleccionar_semilla_clave_completa_frente_a_descarga_sin_fecha():
+    # Simétrico: una fila con la clave completa que no está en la descarga es la
+    # misma entrada que una fila de la descarga sin fecha con su id y su contenido.
+    # El contenido solo se pide para las filas que comparten id
+    nuevos = pd.DataFrame({"id": ["x", "y", "z"], "fecha": [None, None, "2026-01-01T00:00:00Z"],
+                           "importe": [1.0, 2.0, 3.0]})
+    semilla = pd.DataFrame({"id": ["x", "x", "y", "w"],
+                            "fecha": ["2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z", "2025-01-01T00:00:00Z",
+                                      "2025-01-01T00:00:00Z"],
+                            "importe": [1.0, 9.0, 2.0, 1.0]})
+    pedidas_n, pedidas_s = [], []
+
+    def contenido(df, pedidas):
+        def f(filas):
+            pedidas.extend(filas.tolist())
+            return df.loc[filas, ["importe"]]
+        return f
+
+    motivo = h.seleccionar_semilla(nuevos[["id", "fecha"]], semilla[["id", "fecha"]],
+                                   contenido(nuevos, pedidas_n), contenido(semilla, pedidas_s))
+    assert motivo.tolist() == [h.PRESENTE_CONTENIDO, h.ANADIDA, h.PRESENTE_CONTENIDO, h.ANADIDA]
+    assert pedidas_n == [0, 1] and pedidas_s == [0, 1, 2]
+
+
+def test_sembrar_solo_dentro_del_ambito():
+    # Regresión: fuera del ámbito de la descarga (p.ej. años o conjuntos que esta
+    # ejecución no ha leído) no se sabe si la fila sigue publicada: no se añade
+    # como retirada, no se compara y se cuenta aparte
+    publicado = _publicado()
+    dentro = (publicado["id"] != "d").to_numpy()
+    out, informe = h.sembrar(_descarga(), publicado, ["id", "fecha"], en_ambito=dentro)
+    assert out.iloc[4:]["id"].tolist() == ["a", "b", "e"]
+    assert (informe["anadidas"], informe["fuera_ambito"]) == (3, 2)
+    assert informe["ejemplos"][h.FUERA_AMBITO][0][0] == "d"
+    motivo = h.seleccionar_semilla(_descarga()[["id", "fecha"]], publicado[["id", "fecha"]],
+                                   en_ambito=np.zeros(len(publicado), dtype=bool))
+    assert set(motivo) == {h.FUERA_AMBITO}
