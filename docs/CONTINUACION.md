@@ -73,6 +73,17 @@ Rama: `claude/determined-albattani-5ze2p8` · PR: [#23](https://github.com/Bquan
      - P7: todos los `WinningParty` (UTE), `_lotes`, `_modificaciones`, criterios de adjudicación, `OverThresholdIndicator` (SARA), contadores de ofertas, `Contract/ID` e `IssueDate`, y enlaces a pliegos.
    - No cambiar las columnas existentes.
 2. **`Euskadi/`: API `/contracts` y `/contracting-notices`.**
+   - **Hecho y con tests:**
+     - Descarga por ventanas de fecha que cuadra con `totalItems`. Aborta si la API repite página.
+     - Re-ejecuciones sin machacar: la versión anterior va a `_historico/` y una descarga caída no publica nada.
+     - Consolidaciones nuevas: A1, A2, B4 (REVASCON por poder) y C2 (Vitoria).
+   - **Pendiente, en vivo:**
+     - Que la API respete `currentPage`, `itemsOfPage`, `orderBy` y `orderType`.
+     - Que los filtros `.gt/.lt` acepten AAAA-MM-DD y si son estrictos.
+     - El máximo de registros paginables por consulta.
+     - Las URLs de Vitoria y Bilbao sin filtros.
+   - **Limitación conocida:** una ventana ya completa solo se vuelve a bajar si cambia su `totalItems`.
+   - Lo que sigue es el plan original:
    - Parámetros según código de terceros de 2025-26: `currentPage`, `itemsOfPage=50`, `orderBy`, `orderType`, filtros `award-date.gt/.lt` y `publication-date.gt/.lt`.
    - Ventanas mensuales, comprobando en cada una que el nº de ids únicos coincide con `totalItems`.
    - Los tests de consolidación existentes deben seguir pasando: la lógica de `_duplicado` y la recolocación de 2021 ya están verificadas con datos reales.
@@ -90,7 +101,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 |---|---|
 | `ted/ted_module.py` | Cachés por año y refresco del año en curso |
 | `borme/scripts/borme_scraper.py`, `borme_batch_parser.py` | Los PDF son inmutables. El parse completo no debe perder lo ya parseado si faltan PDF en disco |
-| `scripts/ccaa_valencia.py`, `ccaa_valencia_parquet.py` | `recurso_actualizado` y la reconversión sobrescriben |
+| ~~`scripts/ccaa_valencia.py`, `ccaa_valencia_parquet.py`~~ | **Hecho** (`31db07f`). Sin semilla: no hay clave estable y el release es incompatible |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | `VIGENCIA_HORAS` sobrescribe los CSV. Las versiones de un mismo CSV no son "consultas solapadas". Respetar las filas de continuación |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | `_sigue_cambiando` sobrescribe |
 | `scripts/ccaa_asturias.py` | CSV anuales |
