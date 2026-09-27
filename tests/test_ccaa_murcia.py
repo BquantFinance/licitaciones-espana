@@ -45,9 +45,25 @@ def url_menores(anio):
     return f"https://datosabiertos.carm.es/odata/Hacienda/CONTRA_ContratosMenores_{anio}.csv"
 
 
+DIR_SMS = "https://transparencia.carm.es/wres/transparencia/doc/Sector_Publico/SMS/Contratos_menores/"
+# Nombres publicados en la página de sector público (2026-09-27): cada año con otro
+SMS_PUBLICADOS = {**{f"PT_SMS_{t}T2019.xlsx": 2019 for t in range(1, 5)},
+                  "Contratos_menores_SMS_2020.xlsx": 2020, "SMS_Contratos_Menores_2021.xlsx": 2021,
+                  **{f"Contratos_Menores_SMS_{a}.xlsx": a for a in (2022, 2023, 2024)},
+                  "SMS_Contratos_menores_2025.xlsx": 2025}
+
+
 def url_sms(anio, ext="xlsx"):
-    return ("https://transparencia.carm.es/wres/transparencia/doc/Sector_Publico/SMS/"
-            f"Contratos_menores/Contratos_menores_SMS_{anio}.{ext}")
+    return f"{DIR_SMS}Contratos_menores_SMS_{anio}.{ext}"
+
+
+def pagina_sector_publico(nombres):
+    """HTML como el de la página real: enlaces absolutos y relativos, y otros enlaces."""
+    enlaces = [f'<a href="{DIR_SMS if i % 2 else "/wres/transparencia/doc/Sector_Publico/SMS/Contratos_menores/"}'
+               f'{n}">Contratos menores</a>' for i, n in enumerate(nombres)]
+    return ("<html><body><a href=\"/web/transparencia/convenios-sms\">Convenios</a>"
+            '<a href="/wres/transparencia/doc/Sector_Publico/SMS/Convenios/Convenios_2024.xlsx">x</a>'
+            + "".join(enlaces) + "</body></html>").encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +79,10 @@ class FakeResponse:
 
     def json(self):
         return self._json
+
+    @property
+    def text(self):
+        return self._body.decode("utf-8", "replace")
 
     def iter_content(self, chunk_size=8192):
         yield self._body
@@ -120,7 +140,9 @@ def _publicar_confirmados(portal):
         portal.urls[url_carm(anio)] = _csv_carm(anio)
     for anio in range(2022, 2026):
         portal.urls[url_menores(anio)] = f"Expediente,Importe\nM{anio}-1,100\n".encode("utf-8")
-    portal.urls[url_sms(2020)] = _xlsx({"Hoja1": [["Expediente", "Importe"], ["S2020-1", 50]]})
+    for nombre, anio in SMS_PUBLICADOS.items():
+        portal.urls[DIR_SMS + nombre] = _xlsx({"Hoja1": [["Expediente", "Importe"], [f"S{nombre[:-5]}-1", 50]]})
+    portal.urls[M.URL_SECTOR_PUBLICO] = pagina_sector_publico(SMS_PUBLICADOS)
 
 
 @pytest.fixture
@@ -154,14 +176,14 @@ def test_sondea_todos_los_anios_y_anota_los_no_publicados(portal, tmp_path):
     for anio in range(2017, ANIO + 1):
         assert portal.pedidas(url_carm(anio)) == 1
         assert portal.pedidas(url_menores(anio)) == 1
-        assert portal.pedidas(url_sms(anio)) == 1
-    assert portal.pedidas(url_sms(2021, "xls")) == 1          # sin .xlsx se prueba .xls
-    assert portal.pedidas(url_sms(2020, "xls")) == 0          # con .xlsx no hace falta
+    # El SMS no se sondea por año: se baja lo que enlaza la página, con su nombre
+    assert portal.pedidas(M.URL_SECTOR_PUBLICO) == 1
+    assert all(portal.pedidas(DIR_SMS + n) == 1 for n in SMS_PUBLICADOS)
+    assert portal.pedidas(url_sms(2021)) == 0
     log = _log(tmp_path)
     rangos = M.Resumen._rangos
     assert f"contratos_carm: {rangos([2017, 2018] + list(range(2024, ANIO + 1)))}" in log
     assert f"contratos_menores_carm: {rangos(list(range(2017, 2022)) + list(range(2026, ANIO + 1)))}" in log
-    assert f"contratos_menores_sms: {rangos([a for a in range(2017, ANIO + 1) if a != 2020])}" in log
 
 
 def test_parquet_por_serie_con_todos_los_anios_como_texto(portal, tmp_path):
@@ -253,6 +275,7 @@ def test_excel_con_titulo_varias_hojas_y_tipos_se_guarda_como_texto(portal, tmp_
     assert _ejecutar(tmp_path) == 0
 
     df = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
+    df = df[df["_anio_fichero"] == "2020"]
     assert list(df.columns[:5]) == ["Expediente", "Importe", "Fecha", "Hora", "CP"]
     assert df["Expediente"].tolist() == ["00123", "S-2", "S-3", "S-4"]
     assert df["Importe"].tolist() == ["1234.5", "10", "7", "0.1"]
@@ -265,12 +288,59 @@ def test_excel_con_titulo_varias_hojas_y_tipos_se_guarda_como_texto(portal, tmp_
     assert "2 hojas con datos" in log
 
 
-def test_sms_usa_xls_si_no_hay_xlsx(portal, tmp_path):
-    portal.urls[url_sms(2021, "xls")] = _xlsx({"H": [["Expediente"], ["S2021-1"]]})
+def test_sms_se_toman_los_ficheros_que_enlaza_la_pagina(portal, tmp_path):
+    # Antes solo se encontraba 2020 (plantilla Contratos_menores_SMS_{año})
     assert _ejecutar(tmp_path) == 0
-    assert (tmp_path / "raw" / "contratos_menores_sms" / "Contratos_menores_SMS_2021.xls").exists()
+    raw = tmp_path / "raw" / "contratos_menores_sms"
+    assert sorted(p.name for p in raw.iterdir() if p.is_file()) == sorted(SMS_PUBLICADOS)
     df = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
-    assert df["_anio_fichero"].tolist() == ["2020", "2021"]
+    assert sorted(df["_anio_fichero"]) == sorted(str(a) for a in SMS_PUBLICADOS.values())
+    assert (df["_anio_fichero"] == "2019").sum() == 4          # cuatro trimestres
+    assert set(df["_fuente"]) == {DIR_SMS + n for n in SMS_PUBLICADOS}
+    man = json.loads((tmp_path / "raw" / "_manifiesto.json").read_text(encoding="utf-8"))
+    assert man["contratos_menores_sms/PT_SMS_3T2019.xlsx"]["anio"] == 2019
+
+    # La página deja de enlazar un trimestre: queda retirado y sus filas se conservan
+    SLEEP_REAL(1.1)
+    portal.urls[M.URL_SECTOR_PUBLICO] = pagina_sector_publico(
+        [n for n in SMS_PUBLICADOS if n != "PT_SMS_4T2019.xlsx"])
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 0
+    df = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
+    cuarto = df["_archivo_origen"] == "contratos_menores_sms/PT_SMS_4T2019.xlsx"
+    assert cuarto.sum() == 1 and not df.loc[cuarto, "_en_ultima_descarga"].any()
+    assert df.loc[~cuarto, "_en_ultima_descarga"].all()
+    man = json.loads((tmp_path / "raw" / "_manifiesto.json").read_text(encoding="utf-8"))
+    assert man["contratos_menores_sms/PT_SMS_4T2019.xlsx"]["publicado"] is False
+
+
+@pytest.mark.parametrize("pagina", [503, b"<html><body>Sin enlaces</body></html>"])
+def test_sms_pagina_caida_o_sin_enlaces_no_retira_nada(portal, tmp_path, pagina):
+    assert _ejecutar(tmp_path) == 0
+    antes = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
+    SLEEP_REAL(1.1)
+    portal.urls[M.URL_SECTOR_PUBLICO] = pagina
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 1
+    despues = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
+    assert len(despues) == len(antes) and despues["_en_ultima_descarga"].all()
+    assert "contratos_menores_sms" in _log(tmp_path)
+
+
+def test_hoja_sin_cabecera_conserva_su_primera_fila(portal, tmp_path):
+    # Como la Hoja1 del SMS de 2021: códigos de acreedor y NIF, sin cabecera
+    portal.urls[DIR_SMS + "SMS_Contratos_Menores_2021.xlsx"] = _xlsx({
+        "Contratos menores 2021": [["Doc.compr.", " Cif", "Adjudicatario Nombre"],
+                                   [4431033264, "B87867446", "BIOMARIN"]],
+        "Hoja1": [[1000002621, "34789348P"], [1000003683, "A08015646"]],
+    })
+    assert _ejecutar(tmp_path) == 0
+    df = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
+    df = df[df["_anio_fichero"] == "2021"]
+    aux = df[df["_hoja"] == "Hoja1"]
+    assert aux["columna_1"].tolist() == ["1000002621", "1000003683"]
+    assert aux["columna_2"].tolist() == ["34789348P", "A08015646"]
+    assert "1000002621" not in df.columns
+    assert df.loc[df["_hoja"] != "Hoja1", " Cif"].tolist() == ["B87867446"]
+    assert "Hoja1]: sin fila de cabecera" in _log(tmp_path)
 
 
 def test_xls_binario(tmp_path):

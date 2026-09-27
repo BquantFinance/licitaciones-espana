@@ -50,12 +50,17 @@ FUENTES
 Confirmado en páginas oficiales (investigación previa, confianza A):
   - https://datosabiertos.carm.es/odata/transparencia/contratosOD{AÑO}.csv  (2019-2023)
   - https://datosabiertos.carm.es/odata/Hacienda/CONTRA_ContratosMenores_{AÑO}.csv  (2022-2025)
-  - https://transparencia.carm.es/wres/transparencia/doc/Sector_Publico/SMS/Contratos_menores/
-    Contratos_menores_SMS_{AÑO}.xlsx  (2020)
+  - Contratos menores del SMS: los ficheros que enlaza
+    https://transparencia.carm.es/web/transparencia/contratos-y-convenios-del-sector-publico
+    en .../Sector_Publico/SMS/Contratos_menores/, cada año con otro nombre
+    (verificado el 2026-09-27: PT_SMS_{1-4}T2019, Contratos_menores_SMS_2020,
+    SMS_Contratos_Menores_2021, Contratos_Menores_SMS_{2022-2024},
+    SMS_Contratos_menores_2025; 748.984 líneas con NIF). Se guardan con su
+    nombre publicado y el año del nombre; lo que la página deja de enlazar
+    queda como retirado.
   - Catálogo CKAN: https://datosabiertos.regiondemurcia.es/api/3/action/package_search?q=contrat
 VERIFICAR EN VIVO (el sandbox donde se escribió no llega a los portales):
   - Qué otros años existen en cada serie (el script los sondea y lo anota).
-  - Si los años del SMS distintos de 2020 usan .xlsx o .xls y el mismo nombre.
   - Mayúsculas/minúsculas de las rutas (odata/transparencia frente a
     odata/Transparencia) y si los ficheros inexistentes dan 404 o una página
     HTML con 200 (el script rechaza el HTML y lo trata como "no publicado").
@@ -67,6 +72,7 @@ VERIFICAR EN VIVO (el sandbox donde se escribió no llega a los portales):
 import argparse
 import codecs
 import datetime as dt
+import html
 import json
 import math
 import os
@@ -77,7 +83,7 @@ import unicodedata
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import pandas as pd
 import pyarrow as pa
@@ -96,10 +102,14 @@ ANIO_MINIMO = 2010   # primer año que se sondea por defecto
 
 URL_SMS = ("https://transparencia.carm.es/wres/transparencia/doc/Sector_Publico/SMS/"
            "Contratos_menores/Contratos_menores_SMS_{anio}")
+URL_SECTOR_PUBLICO = "https://transparencia.carm.es/web/transparencia/contratos-y-convenios-del-sector-publico"
 
 # plantillas: URL con {anio}, en orden de preferencia. El nombre local de cada
 # año es el de la primera plantilla (con la extensión que se haya descargado).
 # confirmados: años que constan publicados; si faltan, es un error.
+# pagina/enlaces: serie sin nombre fijo; sus ficheros son los que enlaza la
+# página (ruta que casa con la regex `enlaces`), cada uno con su nombre
+# publicado y el año que trae en el nombre (descargar_enlazados).
 SERIES = {
     "contratos_carm": {
         "descripcion": "Contratos de la CARM inscritos en el registro (sin menores)",
@@ -113,8 +123,14 @@ SERIES = {
     },
     "contratos_menores_sms": {
         "descripcion": "Contratos menores del Servicio Murciano de Salud",
-        "plantillas": [URL_SMS + ".xlsx", URL_SMS + ".xls"],
-        "confirmados": range(2020, 2021),
+        # Cada año con otro nombre (PT_SMS_1T2019…4T2019 por trimestres,
+        # Contratos_menores_SMS_2020, SMS_Contratos_Menores_2021,
+        # Contratos_Menores_SMS_2022…2024, SMS_Contratos_menores_2025): con la
+        # plantilla solo se encontraba 2020
+        "pagina": URL_SECTOR_PUBLICO,
+        "enlaces": r"/Sector_Publico/SMS/Contratos_menores/[^/]+\.(?:xlsx|xls|csv)$",
+        "plantillas": [URL_SMS + ".xlsx", URL_SMS + ".xls"],   # catálogo CKAN
+        "confirmados": range(2019, 2026),
     },
 }
 
@@ -227,6 +243,31 @@ def pedir_json(url, params=None):
             detalle = f"{type(e).__name__}: {str(e)[:150]}"
         except ValueError as e:
             detalle = f"respuesta no JSON ({str(e)[:80]})"
+        except requests.exceptions.RequestException as e:
+            raise ErrorPortal(f"{type(e).__name__}: {str(e)[:150]}") from e
+        if intento < INTENTOS:
+            time.sleep(_espera(intento, respuesta))
+    raise ErrorPortal(f"{detalle} (tras {INTENTOS} intentos)")
+
+
+def pedir_texto(url):
+    """GET de una página HTML con reintentos (red, 429, 5xx); un 4xx lanza
+    ErrorPortal."""
+    detalle = ""
+    for intento in range(1, INTENTOS + 1):
+        respuesta = None
+        try:
+            respuesta = requests.get(url, headers=CABECERAS, timeout=TIMEOUT_API)
+            codigo = respuesta.status_code
+            if codigo not in CODIGOS_REINTENTABLES:
+                if codigo >= 400:
+                    raise ErrorPortal(f"HTTP {codigo}", codigo)
+                return respuesta.text
+            detalle = f"HTTP {codigo}"
+        except ErrorPortal:
+            raise
+        except ERRORES_RED as e:
+            detalle = f"{type(e).__name__}: {str(e)[:150]}"
         except requests.exceptions.RequestException as e:
             raise ErrorPortal(f"{type(e).__name__}: {str(e)[:150]}") from e
         if intento < INTENTOS:
@@ -586,6 +627,17 @@ def _celda_texto(valor):
     return str(valor)
 
 
+PATRON_DATO = re.compile(r"-?\d+(?:[.,]\d+)*|\d{4}-\d{2}-\d{2}(?:[ T][\d:.]+)?|[A-Z]?\d{7,8}[A-Z]?|[A-Z]\d{7}[A-Z0-9]",
+                         re.IGNORECASE)
+
+
+def _parece_registro(fila):
+    """¿La fila detectada como cabecera son datos? Lo son si la mayoría de sus
+    celdas con valor son números, fechas o NIF (una cabecera son rótulos)."""
+    valores = [str(v).strip() for v in fila if v is not None and str(v).strip()]
+    return bool(valores) and sum(bool(PATRON_DATO.fullmatch(v)) for v in valores) * 2 > len(valores)
+
+
 def _hoja_a_df(filas, nombre, hoja, avisos):
     """Tabla de una hoja: detecta la fila de cabecera (las filas de título de
     encima se anotan en los avisos) y conserva todas las filas con algún valor."""
@@ -604,6 +656,13 @@ def _hoja_a_df(filas, nombre, hoja, avisos):
                       f"(no son datos): {titulo[:200]}")
     ancho = max(len(f) for f in filas)
     cabecera = filas[pos] + [None] * (ancho - len(filas[pos]))
+    if _parece_registro(cabecera):
+        # Hoja sin cabecera (p.ej. una tabla auxiliar de códigos y NIF): su
+        # primera fila es un registro, no los nombres de las columnas
+        avisos.append(f"{nombre} [{hoja}]: sin fila de cabecera (la primera fila son datos: "
+                      f"{' | '.join(str(v) for v in cabecera if v is not None)[:120]}); columnas columna_1…")
+        cabecera = [f"columna_{i}" for i in range(1, ancho + 1)]
+        pos -= 1
     datos = [f + [None] * (ancho - len(f)) for f in filas[pos + 1:]]
     df = pd.DataFrame(datos, columns=_nombres_columnas(cabecera), dtype=object)
     # Columnas sin nombre y sin ningún valor: restos del rango usado de Excel
@@ -998,12 +1057,102 @@ def descargar_serie(clave, serie, anios, raw, manifiesto, resumen, comprobar_tod
                 resumen.no_publicado(clave, anio)
 
 
+PATRON_HREF = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+PATRON_ANIO_NOMBRE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+EXTENSIONES_TABLA = (".csv", ".xlsx", ".xls", ".json")
+
+
+def anio_de_nombre(nombre):
+    """Año de un fichero por su nombre ('PT_SMS_1T2019.xlsx' → 2019), o None si
+    no trae exactamente uno."""
+    anios = set(PATRON_ANIO_NOMBRE.findall(Path(nombre).stem))
+    return int(anios.pop()) if len(anios) == 1 else None
+
+
+def enlaces_serie(serie, extra=()):
+    """{nombre publicado: url} de los ficheros de la serie que enlaza su página
+    (y de las URL del catálogo CKAN que casen, si la página no los enlaza).
+    Lanza ErrorPortal si no se puede leer la página."""
+    patron = re.compile(serie["enlaces"], re.IGNORECASE)
+    urls = [urljoin(serie["pagina"], html.unescape(h).strip())
+            for h in PATRON_HREF.findall(pedir_texto(serie["pagina"]))] + list(extra)
+    enlaces = {}
+    for url in urls:
+        ruta = unquote(urlparse(url).path)
+        if patron.search(ruta):
+            enlaces.setdefault(Path(ruta).name, url)
+    return enlaces
+
+
+def archivos_enlazados(dir_serie):
+    """Copias locales de una serie con página (nombre publicado con un año)."""
+    if not Path(dir_serie).is_dir():
+        return []
+    return sorted(r for r in Path(dir_serie).iterdir()
+                  if r.is_file() and not r.name.startswith(".") and r.suffix.lower() in EXTENSIONES_TABLA
+                  and anio_de_nombre(r.name) is not None)
+
+
+def descargar_enlazados(clave, serie, raw, manifiesto, resumen, comprobar_todo=False, extra=()):
+    """Serie sin nombre fijo: se descargan los ficheros que enlaza su página,
+    cada uno con su nombre publicado. Como en descargar_serie, los de años
+    cerrados que ya se tienen solo se vuelven a pedir con --comprobar-todo.
+    Una copia que la página deja de enlazar queda como retirada (sus filas se
+    conservan); si la página no se puede leer o no enlaza ninguno, no se
+    retira nada (más probable un fallo del portal)."""
+    dir_serie = raw / clave
+    anio_actual = ahora().year
+    print(f"\n📦 {clave}: {serie['descripcion']}")
+    try:
+        enlaces = enlaces_serie(serie, extra)
+    except ErrorPortal as e:
+        resumen.fallidos.append(f"{clave}: no se pudo leer {serie['pagina']} ({e}); se conservan las copias")
+        return
+    if not enlaces:
+        resumen.fallidos.append(f"{clave}: {serie['pagina']} no enlaza ningún fichero de la serie; "
+                                "no se retira nada")
+        return
+    anios = set()
+    for nombre, url in sorted(enlaces.items()):
+        anio = anio_de_nombre(nombre)
+        if anio is None or not nombre.lower().endswith(EXTENSIONES_TABLA):
+            resumen.avisos.append(f"{clave}: {nombre} no trae un año en el nombre; no se descarga ({url})")
+            continue
+        anios.add(anio)
+        destino = dir_serie / nombre
+        if destino.exists() and not comprobar_todo and anio < anio_actual - 1:
+            resumen.sin_cambios.append(f"{clave} {nombre} (ya descargado; --comprobar-todo para volver a pedirlo)")
+            continue
+        estado, detalle = descargar(url, destino, tipo=_tipo(url))
+        time.sleep(PAUSA)
+        if estado in ESTADOS_OK:
+            manifiesto.registrar(destino, url, estado, dataset=clave, anio=anio)
+            resumen.descarga(f"{clave} {nombre}", estado)
+            print(f"  ✅ {nombre}: {estado}")
+        else:
+            # Enlazado y no se puede bajar: se conserva la copia y se reintenta
+            resumen.fallidos.append(f"{clave} {nombre}: {detalle or estado} ({url})")
+            print(f"  ❌ {nombre}: {detalle or estado}")
+    for ruta in archivos_enlazados(dir_serie):
+        if ruta.name not in enlaces and manifiesto.get(manifiesto.rel(ruta)).get("publicado", True):
+            manifiesto.retirar(ruta, f"{serie['pagina']} ya no lo enlaza")
+            resumen.retirados.append(f"{clave} {ruta.name}: la página ya no lo enlaza; se conservan sus filas")
+            print(f"  🗑️ {ruta.name}: retirado por el portal")
+    for anio in serie["confirmados"]:
+        if anio not in anios:
+            resumen.fallidos.append(f"{clave} {anio}: año publicado según las fuentes y la página no lo enlaza")
+
+
 def descargar_todo(raw, manifiesto, resumen, desde, hasta, comprobar_todo=False):
     extra, otros = inventario_ckan(raw, resumen)
     if otros:
         resumen.avisos.append(f"{len(otros)} recursos del catálogo CKAN con '{CONSULTA_CKAN}' no son de las "
                               "series descargadas (revisar):\n      " + "\n      ".join(otros))
     for clave, serie in SERIES.items():
+        if "pagina" in serie:
+            urls = [u for (c, _), lista in extra.items() if c == clave for u in lista]
+            descargar_enlazados(clave, serie, raw, manifiesto, resumen, comprobar_todo, urls)
+            continue
         anios = set(range(desde, hasta + 1)) | set(serie["confirmados"])
         anios |= {anio for (c, anio) in extra if c == clave}
         anios |= set(archivos_locales(raw / clave, serie))
@@ -1014,7 +1163,13 @@ def generar_parquets(salida, raw, manifiesto, resumen):
     print("\n🧱 Generando Parquet...")
     for clave, serie in SERIES.items():
         ficheros = []
-        for anio, rutas in archivos_locales(raw / clave, serie).items():
+        if "pagina" in serie:
+            for ruta in archivos_enlazados(raw / clave):
+                rel = manifiesto.rel(ruta)
+                ficheros.append((ruta, rel, {"_fuente": manifiesto.get(rel).get("url") or serie["pagina"],
+                                             "_dataset": clave, "_anio_fichero": str(anio_de_nombre(ruta.name)),
+                                             "_archivo_origen": rel}))
+        for anio, rutas in ([] if "pagina" in serie else archivos_locales(raw / clave, serie).items()):
             ruta = rutas[0]
             if len(rutas) > 1:
                 resumen.avisos.append(f"{clave} {anio}: se usa {ruta.name} (también hay "
