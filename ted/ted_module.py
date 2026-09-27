@@ -54,7 +54,9 @@ class TEDConfig:
     """Configuración del módulo TED."""
     
     # ── Directorios ──
-    DATA_DIR = Path("data/ted")
+    # Carpeta ted/ del repo (junto a este script), como documenta el README y
+    # donde lee run_ted_crossvalidation.py; no depende del cwd
+    DATA_DIR = Path(__file__).resolve().parent
     OUTPUT_DIR = Path("output")
     
     # ── Filtro geográfico ──
@@ -216,12 +218,15 @@ def download_ted_spain(
     
     if output_path.exists() and not force_redownload:
         log.info(f"Cargando cache: {output_path}")
-        return pd.read_parquet(output_path)
+        cached = _read_cache(output_path)
+        if cached is not None:
+            return cached
     
     if years is None:
         years = list(range(2010, datetime.now().year + 1))
     
     all_dfs = []
+    incomplete_years = []  # Años con descarga API cortada por errores/límite
     
     # ── CSV bulk para años disponibles, API para el resto ──
     csv_years = [y for y in years if y in TEDConfig.CSV_YEARS_AVAILABLE]
@@ -246,6 +251,8 @@ def download_ted_spain(
         log.info(f"🌐 Consultando TED API para {api_years}...")
         for year in api_years:
             df_year = _download_api_year(year, force_redownload)
+            if df_year is not None and df_year.attrs.get('descarga_incompleta'):
+                incomplete_years.append(year)
             if df_year is not None and len(df_year) > 0:
                 all_dfs.append(df_year)
     
@@ -297,13 +304,27 @@ def download_ted_spain(
     
     df = _normalize_ted_data(df)
     
-    # Guardar
-    df.to_parquet(output_path, index=False)
-    log.info(f"✅ Guardado: {output_path} ({len(df):,} registros)")
+    # Guardar (solo si la descarga está completa: un consolidado truncado se
+    # reutilizaría como cache y generaría falsos "missing in TED")
+    if incomplete_years:
+        log.error(f"⚠️ Descarga TED INCOMPLETA para {incomplete_years} (errores de la API): "
+                  f"no se guarda {output_path}. Vuelve a ejecutar la descarga.")
+    else:
+        df.to_parquet(output_path, index=False)
+        log.info(f"✅ Guardado: {output_path} ({len(df):,} registros)")
     
     _print_ted_summary(df)
     
     return df
+
+
+def _read_cache(path):
+    """Lee un parquet de cache; None si no es legible (p.ej. puntero Git LFS sin descargar)."""
+    try:
+        return pd.read_parquet(path)
+    except Exception as e:
+        log.warning(f"  Cache ilegible {path} ({e}); se vuelve a descargar")
+        return None
 
 
 def _download_csv_year(year, force=False):
@@ -312,7 +333,9 @@ def _download_csv_year(year, force=False):
     
     if cache_path.exists() and not force:
         log.info(f"  {year}: usando cache {cache_path}")
-        return pd.read_parquet(cache_path)
+        cached = _read_cache(cache_path)
+        if cached is not None:
+            return cached
     
     # URLs en orden de prioridad — espacios codificados como %20
     urls = [
@@ -372,7 +395,9 @@ def _download_api_year(year, force=False):
     
     if cache_path.exists() and not force:
         log.info(f"  {year}: usando cache {cache_path}")
-        return pd.read_parquet(cache_path)
+        cached = _read_cache(cache_path)
+        if cached is not None:
+            return cached
     
     # Definir periodos: año completo primero, si falla por límite → trimestres
     periods = [
@@ -381,19 +406,22 @@ def _download_api_year(year, force=False):
     
     all_records = []
     needs_split = False
+    complete = True
     
     for date_from, date_to, period_label in periods:
-        records, hit_limit = _download_api_period(year, date_from, date_to, period_label)
+        records, hit_limit, period_complete = _download_api_period(year, date_from, date_to, period_label)
         all_records.extend(records)
         
         if hit_limit:
             needs_split = True
             break
+        complete = complete and period_complete
     
     # Si la query anual excede el límite, dividir en trimestres
     if needs_split:
         log.info(f"  {year}: límite paginación alcanzado, dividiendo en trimestres...")
         all_records = []
+        complete = True
         quarters = [
             (f"{year}0101", f"{year}0331", f"{year}-Q1"),
             (f"{year}0401", f"{year}0630", f"{year}-Q2"),
@@ -401,10 +429,17 @@ def _download_api_year(year, force=False):
             (f"{year}1001", f"{year}1231", f"{year}-Q4"),
         ]
         for date_from, date_to, period_label in quarters:
-            records, _ = _download_api_period(year, date_from, date_to, period_label)
+            records, _, period_complete = _download_api_period(year, date_from, date_to, period_label)
             all_records.extend(records)
+            complete = complete and period_complete
     
     if not all_records:
+        if not complete:
+            # Fallo de la API, no "cero resultados": que download_ted_spain lo sepa
+            log.warning(f"  {year}: sin resultados de API (descarga INCOMPLETA por errores)")
+            df_vacio = pd.DataFrame()
+            df_vacio.attrs['descarga_incompleta'] = True
+            return df_vacio
         log.warning(f"  {year}: sin resultados de API")
         return None
     
@@ -420,7 +455,12 @@ def _download_api_year(year, force=False):
     
     log.info(f"  {year}: {len(df):,} registros de API")
     
-    if len(df) > 0:
+    if not complete:
+        # No cachear: una descarga cortada se reutilizaría después como completa
+        log.warning(f"  {year}: descarga API INCOMPLETA (errores o límite de paginación); "
+                    f"no se guarda la cache {cache_path.name}")
+        df.attrs['descarga_incompleta'] = True
+    elif len(df) > 0:
         df.to_parquet(cache_path, index=False)
     
     return df
@@ -429,7 +469,9 @@ def _download_api_year(year, force=False):
 def _download_api_period(year, date_from, date_to, period_label):
     """
     Descarga un periodo específico de la API.
-    Returns: (records_list, hit_pagination_limit)
+    Returns: (records_list, hit_pagination_limit, complete)
+      complete=False si la paginación se cortó (errores HTTP/red o límite de
+      paginación) antes de recibir todos los avisos que anuncia la API.
     """
     query = (
         f"notice-type IN (can-standard, can-social, can-modif, can-desg) "
@@ -445,6 +487,8 @@ def _download_api_period(year, date_from, date_to, period_label):
     consecutive_errors = 0
     max_errors = 3
     hit_limit = False
+    failed = False   # Paginación abortada por errores (HTTP/red)
+    n_notices = 0
     
     while True:
         try:
@@ -485,6 +529,7 @@ def _download_api_period(year, date_from, date_to, period_label):
                 log.warning(f"  {period_label} page {page}: HTTP 400")
                 if consecutive_errors >= max_errors:
                     hit_limit = (page > 50)  # Probable límite si pasamos de 50
+                    failed = True
                     break
                 time.sleep(2)
                 continue
@@ -493,6 +538,7 @@ def _download_api_period(year, date_from, date_to, period_label):
                 consecutive_errors += 1
                 log.warning(f"  {period_label} page {page}: HTTP {resp.status_code}")
                 if consecutive_errors >= max_errors:
+                    failed = True
                     break
                 time.sleep(2)
                 continue
@@ -505,12 +551,14 @@ def _download_api_period(year, date_from, date_to, period_label):
             consecutive_errors += 1
             log.warning(f"  {period_label} page {page}: {e}")
             if consecutive_errors >= max_errors:
+                failed = True
                 break
             time.sleep(2)
             continue
         
         # Parsear respuesta
         notices = data.get("notices", data.get("results", []))
+        n_notices += len(notices)
         
         if total_count is None:
             total_count = data.get("total", data.get("totalNoticeCount", None))
@@ -544,7 +592,18 @@ def _download_api_period(year, date_from, date_to, period_label):
         if page % 20 == 0:
             log.info(f"    {period_label} pág {page}: {len(records):,} registros...")
     
-    return records, hit_limit
+    # Sin error HTTP pero con menos avisos de los anunciados (páginas vacías o
+    # cortas): límite de paginación alcanzado en silencio → resultado truncado
+    if not failed and total_count is not None and n_notices < total_count:
+        log.warning(f"  {period_label}: recibidos {n_notices:,} de {total_count:,} avisos "
+                    f"(límite de paginación)")
+        hit_limit = True
+    if failed:
+        log.warning(f"  {period_label}: paginación abortada por errores "
+                    f"({n_notices:,} avisos recibidos de {total_count if total_count is not None else '?'})")
+
+    complete = not failed and not hit_limit
+    return records, hit_limit, complete
 
 
 def _parse_api_notice(notice):
@@ -574,8 +633,9 @@ def _parse_api_notice(notice):
         buyer_nif = _find_spanish_nif(buyer_ids)
         
         buyer_country = _first_of_list(notice.get("buyer-country", []), "ES")
+        # Lista (['Madrid']) → primer valor; str(lista) dejaba "['Madrid']"
         buyer_city = _extract_multilang_name(notice.get("buyer-city", {})) \
-            if isinstance(notice.get("buyer-city"), dict) else str(notice.get("buyer-city", ""))
+            if isinstance(notice.get("buyer-city"), dict) else _first_of_list(notice.get("buyer-city", []))
         
         # ── CPV ──
         cpv_raw = _as_list(notice.get("classification-cpv", []))
@@ -597,7 +657,14 @@ def _parse_api_notice(notice):
         tender_cur = _first_of_list(notice.get("tender-value-cur", []), "EUR")
         
         # ── Ofertas recibidas ──
+        # BT-760 se repite por tipo de estadística (BT-759: tenders, t-sme,
+        # t-esubm...): si vienen los códigos, quedarse solo con 'tenders'
         offers_raw = _as_list(notice.get("received-submissions-type-val", []))
+        offers_codes = _as_list(notice.get("received-submissions-type-code", []))
+        if offers_codes and len(offers_codes) == len(offers_raw):
+            offers_tenders = [v for v, c in zip(offers_raw, offers_codes) if str(c) == "tenders"]
+            if offers_tenders:
+                offers_raw = offers_tenders
         
         # ── Año de publicación (del publication-number: XXXXXX-YYYY) ──
         pub_year = pub_number.split("-")[-1] if "-" in pub_number else ""
@@ -730,6 +797,16 @@ def _first_of_list(val, default=""):
     """Primer elemento de lista o default."""
     lst = _as_list(val)
     return str(lst[0]) if lst else default
+
+
+def _str_or_empty(val):
+    """str(val), salvo nulos (None/NaN/NaT) → '' (evita 'nan'/'None' como texto)."""
+    try:
+        if pd.isna(val):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    return str(val)
 
 
 def _safe_index(lst, i, default=None):
@@ -928,8 +1005,11 @@ def _normalize_ted_data(df):
     # ── Fechas ──
     for col in ['dt_dispatch', 'dt_award']:
         if col in df.columns:
-            if df[col].dtype == object:
-                df[col] = df[col].astype(str).str.replace(r'\+\d{2}:\d{2}$', '', regex=True)
+            # pandas 3: el texto tiene dtype 'str' (no object). Sin quitar la zona
+            # horaria, to_datetime(errors='coerce') devuelve TODO NaT al mezclar
+            # +01:00 (invierno) y +02:00 (verano)
+            if df[col].dtype == object or pd.api.types.is_string_dtype(df[col].dtype):
+                df[col] = df[col].astype(str).str.replace(r'(?:Z|[+-]\d{2}:\d{2})$', '', regex=True)
             df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
     
     # ── Año ──
@@ -1209,8 +1289,10 @@ def cross_validate_ted(df_pipeline, df_ted, src, R=None):
             yr = int(yr)
             ted_lookup[(nif, yr)].append(entry)
         
-        # Índice por nº expediente (matching directo sin NIF+importe)
-        exp_id = str(row.get('internal_id_proc', '')).strip()
+        # Índice por nº expediente (matching directo sin NIF+importe).
+        # Nulos fuera: con pandas 2 str(None) = 'None' agrupaba todos los avisos
+        # sin internal_id (todo el CSV bulk) bajo la clave 'NONE'
+        exp_id = _str_or_empty(row.get('internal_id_proc', '')).strip()
         if exp_id and len(exp_id) >= 4:
             ted_lookup_exp[exp_id.upper()].append(entry)
     
@@ -1234,7 +1316,8 @@ def cross_validate_ted(df_pipeline, df_ted, src, R=None):
         yr = row.get('_año', np.nan)
         
         if pd.isna(yr):
-            fecha = row.get('_fecha_adj', pd.NaT)
+            # Desde CSV la fecha llega como texto
+            fecha = pd.to_datetime(row.get('_fecha_adj', pd.NaT), errors='coerce')
             if pd.notna(fecha):
                 yr = fecha.year
             else:
@@ -1326,17 +1409,18 @@ def cross_validate_ted(df_pipeline, df_ted, src, R=None):
         df_pipeline.loc[idx, '_ted_n_ofertas'] = pd.to_numeric(
             data['ted_n_ofertas'], errors='coerce'
         )
-        df_pipeline.loc[idx, '_ted_cpv'] = str(data['ted_cpv'])
-        df_pipeline.loc[idx, '_ted_id'] = str(data['ted_id'])
-        df_pipeline.loc[idx, '_ted_win_size'] = str(data.get('ted_win_size', ''))
-        df_pipeline.loc[idx, '_ted_direct_award'] = str(data.get('ted_direct_award', ''))
-        df_pipeline.loc[idx, '_ted_sme_part'] = str(data.get('ted_sme_part', ''))
-        df_pipeline.loc[idx, '_ted_buyer_legal_type'] = str(data.get('ted_buyer_legal_type', ''))
+        # _str_or_empty: los nulos (filas CSV bulk sin campos eForms) quedan '' y no 'nan'/'None'
+        df_pipeline.loc[idx, '_ted_cpv'] = _str_or_empty(data['ted_cpv'])
+        df_pipeline.loc[idx, '_ted_id'] = _str_or_empty(data['ted_id'])
+        df_pipeline.loc[idx, '_ted_win_size'] = _str_or_empty(data.get('ted_win_size', ''))
+        df_pipeline.loc[idx, '_ted_direct_award'] = _str_or_empty(data.get('ted_direct_award', ''))
+        df_pipeline.loc[idx, '_ted_sme_part'] = _str_or_empty(data.get('ted_sme_part', ''))
+        df_pipeline.loc[idx, '_ted_buyer_legal_type'] = _str_or_empty(data.get('ted_buyer_legal_type', ''))
         df_pipeline.loc[idx, '_ted_duration'] = pd.to_numeric(
             data.get('ted_duration', np.nan), errors='coerce'
         )
-        df_pipeline.loc[idx, '_ted_award_criterion'] = str(data.get('ted_award_criterion', ''))
-        df_pipeline.loc[idx, '_ted_internal_id'] = str(data.get('ted_internal_id', ''))
+        df_pipeline.loc[idx, '_ted_award_criterion'] = _str_or_empty(data.get('ted_award_criterion', ''))
+        df_pipeline.loc[idx, '_ted_internal_id'] = _str_or_empty(data.get('ted_internal_id', ''))
     
     n_matched = len(matched_idx)
     _log(f"  ✅ Contratos validados por TED: {n_matched:,}")
@@ -1394,10 +1478,11 @@ def cross_validate_ted(df_pipeline, df_ted, src, R=None):
             _log(f"     Nº ofertas disponible para {len(ted_ofertas):,} contratos")
             _log(f"     Media ofertas (TED): {ted_ofertas.mean():.1f}")
             
+            # '_ofertas' es opcional en el pipeline (p.ej. CSV de 'validate')
             both_mask = (
                 df_pipeline['_ted_n_ofertas'].notna() & 
                 df_pipeline['_ofertas'].notna()
-            )
+            ) if '_ofertas' in df_pipeline.columns else pd.Series(False, index=df_pipeline.index)
             if both_mask.sum() > 0:
                 pip_of = df_pipeline.loc[both_mask, '_ofertas']
                 ted_of = df_pipeline.loc[both_mask, '_ted_n_ofertas']
@@ -1546,6 +1631,7 @@ def main():
             
             output_missing = TEDConfig.OUTPUT_DIR / "v6_0_missing_in_ted.csv"
             if len(df_missing) > 0:
+                TEDConfig.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
                 cols_export = [
                     '_organ', '_nif', '_adj', '_imp_adj', '_fecha_adj',
                     '_cpv', '_es_menor', 'umbral_ue_aplicable',
