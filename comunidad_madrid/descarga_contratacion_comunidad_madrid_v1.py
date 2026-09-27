@@ -25,7 +25,7 @@ v4 - Producción:
     B) OTROS TIPOS (licitaciones, adjudicaciones, etc., ~36K):
        - Fecha hasta SÍ funciona
        - Descargar por MES + TIPO PUBLICACIÓN (como v3)
-       - Período: 2017-2025 (datos empiezan en 2017)
+       - Período: 2017-año actual (datos empiezan en 2017)
 
     Columnas CSV (18):
     Tipo de Publicación; Estado; Entidad Adjudicadora; Nº Expediente;
@@ -57,7 +57,8 @@ BASE_URL = "https://contratos-publicos.comunidad.madrid"
 BUSCAR_URL = f"{BASE_URL}/contratos"
 CSV_URL = f"{BASE_URL}/buscador-contratos/csv"
 
-OUTPUT_DIR = Path("comunidad_madrid")
+# Carpeta del propio script (comunidad_madrid/), sea cual sea el directorio actual
+OUTPUT_DIR = Path(__file__).resolve().parent
 CSV_DIR = OUTPUT_DIR / "csv_originales"
 OUTPUT_DIR.mkdir(exist_ok=True)
 CSV_DIR.mkdir(exist_ok=True)
@@ -507,8 +508,11 @@ class DescargadorComunidadMadrid:
                 for f in CSV_DIR.glob(f"menores_ent{int(val):03d}_*_imp*.csv")
             )
             if ya_subdividido:
-                log.info(f"    Ya subdividido por importe, skip")
-                self.stats["skip_existe"] += 1
+                # No saltar la entidad entera: si la ejecución anterior se cortó
+                # o falló algún rango, hay que completar los que falten
+                # (los rangos ya descargados se saltan uno a uno)
+                log.info("    Ya subdividido por importe, completando rangos pendientes")
+                self._descargar_menores_por_importe(val, nombre)
                 continue
 
             ok, n_filas = self._descargar_con_reintentos(
@@ -594,7 +598,7 @@ class DescargadorComunidadMadrid:
     # ===================================================================
     # B) OTROS TIPOS — por mes + tipo publicación (con fechas)
     # ===================================================================
-    def descargar_otros(self, anio_inicio=2017, anio_fin=2025):
+    def descargar_otros(self, anio_inicio=2017, anio_fin=datetime.now().year):
         """Descarga tipos no menores por mes."""
         segmentos = generar_segmentos_mensuales(anio_inicio, anio_fin)
         total_meses = len(segmentos)
@@ -625,7 +629,7 @@ class DescargadorComunidadMadrid:
     # ===================================================================
     # DESCARGA COMPLETA
     # ===================================================================
-    def descargar_todo(self, anio_inicio=2017, anio_fin=2025):
+    def descargar_todo(self, anio_inicio=2017, anio_fin=datetime.now().year):
         self.t_inicio = time.time()
 
         log.info("=" * 65)
@@ -731,9 +735,11 @@ def unificar_csvs():
 
     df_total = pd.concat(dfs, ignore_index=True)
 
-    # Eliminar duplicados por Nº Expediente + Referencia + Entidad
-    cols_dedup = ['Nº Expediente', 'Referencia', 'Entidad Adjudicadora']
-    cols_presentes = [c for c in cols_dedup if c in df_total.columns]
+    # Eliminar duplicados exactos (mismo registro en dos CSVs, p.ej. en la
+    # frontera entre dos rangos de importe). No solo por Nº Expediente +
+    # Referencia + Entidad: eso colapsaba lotes/adjudicatarios distintos del
+    # mismo expediente y todas las filas sin expediente ni referencia.
+    cols_presentes = [c for c in df_total.columns if c != '_archivo_fuente']
     if cols_presentes:
         antes = len(df_total)
         df_total = df_total.drop_duplicates(subset=cols_presentes)
@@ -764,13 +770,13 @@ if __name__ == "__main__":
     elif modo == "otros":
         d = DescargadorComunidadMadrid()
         a1 = int(sys.argv[2]) if len(sys.argv) > 2 else 2017
-        a2 = int(sys.argv[3]) if len(sys.argv) > 3 else 2025
+        a2 = int(sys.argv[3]) if len(sys.argv) > 3 else datetime.now().year
         d.descargar_otros(a1, a2)
 
     elif modo == "todo":
         d = DescargadorComunidadMadrid()
         a1 = int(sys.argv[2]) if len(sys.argv) > 2 else 2017
-        a2 = int(sys.argv[3]) if len(sys.argv) > 3 else 2025
+        a2 = int(sys.argv[3]) if len(sys.argv) > 3 else datetime.now().year
         d.descargar_todo(a1, a2)
 
     elif modo == "unificar":
@@ -784,7 +790,7 @@ Descarga de Contratación Pública - Comunidad de Madrid v4
 Uso:
   python script.py prueba           → Test: 1 entidad + 1 mes
   python script.py menores          → Solo contratos menores (por entidad)
-  python script.py otros            → Solo otros tipos (por mes, 2017-2025)
+  python script.py otros            → Solo otros tipos (por mes, 2017-año actual)
   python script.py otros 2020 2025  → Otros tipos, período parcial
   python script.py todo             → Todo: menores + otros
   python script.py unificar         → Une CSVs en archivo único

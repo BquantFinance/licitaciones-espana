@@ -410,6 +410,9 @@ MAPA_AC_MODERN_KEYWORDS = {
     ("OBJETO",): "objeto_contrato",
     ("TIPO", "CONTRATO"): "tipo_contrato",
     ("SUBTIPO",): "subtipo_contrato",
+    # "SUBTIPO DE CONTRATO" también casa con ("TIPO","CONTRATO") y puntúa más que
+    # ("SUBTIPO",): sin esta clave se quedaba sin mapear
+    ("SUBTIPO", "CONTRATO"): "subtipo_contrato",
     ("CPV",): "codigo_cpv",
     ("INVITACIONES",): "n_invitaciones_cursadas",
     ("INVITADOS",): "invitados_presentar_oferta",
@@ -771,24 +774,34 @@ def descargar_csv(nombre, url, force=False):
 
 
 def leer_csv(filepath, skiprows=0, header='infer'):
-    for encoding in ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']:
+    # cp1252 antes que latin-1: latin-1 nunca falla, así que cp1252 no se probaba
+    # nunca y '€', comillas tipográficas, guiones... quedaban como controles \x80-\x9f
+    for encoding in ['utf-8-sig', 'utf-8', 'cp1252', 'latin-1']:
         try:
             with open(filepath, 'r', encoding=encoding) as f:
                 lines = f.readlines()
             idx = skiprows if len(lines) > skiprows else 0
-            primera = lines[idx]
+            primera = lines[idx] if lines else ''
             sep = ';' if primera.count(';') > primera.count(',') else ','
+            # index_col=False: si una fila de datos trae un separador de más
+            # (p.ej. ';' final), pandas usaría la 1ª columna como índice y
+            # desplazaría todas las columnas del fichero
             df = pd.read_csv(filepath, sep=sep, encoding=encoding, dtype=str,
                              on_bad_lines='skip', quotechar='"',
-                             skiprows=skiprows, header=header)
+                             skiprows=skiprows, header=header, index_col=False)
             if len(df) > 0 and len(df.columns) > 2:
                 if header == 'infer':
                     df.columns = [c.strip() for c in df.columns]
                 return df
-        except (UnicodeDecodeError, pd.errors.ParserError):
+        except (UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError):
             continue
-    return pd.read_csv(filepath, sep=';', encoding='latin-1', dtype=str,
-                       on_bad_lines='skip', skiprows=skiprows, header=header)
+    try:
+        return pd.read_csv(filepath, sep=';', encoding='latin-1', dtype=str,
+                           on_bad_lines='skip', skiprows=skiprows, header=header,
+                           index_col=False)
+    except pd.errors.EmptyDataError:
+        # Fichero vacío o skiprows >= nº de líneas (ficheros pequeños con título)
+        return pd.DataFrame()
 
 
 # ===========================================================================
@@ -926,7 +939,7 @@ def procesar_fichero(nombre, filepath):
         # Try skipping title rows (some files have 1-6 title/blank rows before header)
         for skip in range(1, 7):
             df2 = leer_csv(filepath, skiprows=skip)
-            if len(df2) < 2 or len(df2.columns) < 5: continue
+            if len(df2) < 1 or len(df2.columns) < 5: continue
             # Check that most columns have real names (not Unnamed)
             n_unnamed = sum(1 for c in df2.columns if 'Unnamed' in str(c))
             if n_unnamed > len(df2.columns) // 2: continue
@@ -956,7 +969,8 @@ def procesar_fichero(nombre, filepath):
                 if est2 not in ('SKIP_ROW', 'DESCONOCIDA'):
                     df, estructura = df_raw, est2
                 else:
-                    df = df_raw
+                    # La fila 0 era un registro, no una cabecera: no descartarla
+                    df = leer_csv(filepath, header=None)
                     estructura = 'SIN_CABECERA'
             else:
                 # Row 0 is not a header (e.g. all NaN) → skip it and check row 1
@@ -974,7 +988,8 @@ def procesar_fichero(nombre, filepath):
                         if est2 not in ('SKIP_ROW', 'DESCONOCIDA'):
                             df, estructura = df_raw, est2
                         else:
-                            df = df_raw
+                            # La fila 1 era un registro: solo se salta la fila 0 vacía
+                            df = leer_csv(filepath, header=None).iloc[1:].reset_index(drop=True)
                             estructura = 'SIN_CABECERA'
                     else:
                         # Skip the NaN row and keep as SIN_CABECERA
@@ -1217,12 +1232,14 @@ def normalizar_importe(valor):
         return None
     s = str(valor).strip()
     s = re.sub(r'[€\x80?]', '', s).strip()
-    s = re.sub(r'\.1$', '', s).strip()  # pandas duplicate col suffix
     if not s: return None
     if ',' in s and '.' in s:
         s = s.replace('.', '').replace(',', '.')
     elif ',' in s:
         s = s.replace(',', '.')
+    elif re.fullmatch(r'-?[1-9]\d{0,2}(\.\d{3})+', s):
+        # Solo puntos de miles, sin decimales: "15.000" → 15000, "1.234.567" → 1234567
+        s = s.replace('.', '')
     try:
         return float(s)
     except ValueError:
@@ -1238,7 +1255,13 @@ def limpiar_dataframe(df):
     # Fechas
     cols_fecha = [c for c in df.columns if 'fecha' in c]
     for col in cols_fecha:
-        df[col] = pd.to_datetime(df[col], format='mixed', dayfirst=True, errors='coerce')
+        fechas = pd.to_datetime(df[col], format='mixed', dayfirst=True, errors='coerce')
+        # Fechas con el año delante (aaaa-mm-dd): pandas 3 les aplica dayfirst e
+        # intercambia día y mes ("2025-03-05" → 3 de mayo); se parsean sin dayfirst
+        es_iso = df[col].astype(str).str.match(r'\s*\d{4}[-/]\d{1,2}[-/]\d{1,2}')
+        if es_iso.any():
+            fechas[es_iso] = pd.to_datetime(df.loc[es_iso, col], format='mixed', errors='coerce')
+        df[col] = fechas
 
     # Tipo de contrato normalize
     if df['tipo_contrato'].notna().any():
