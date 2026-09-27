@@ -165,7 +165,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | `galicia/scraper_galicia.py` | Caché SQLite y merge final |
 | `scripts/ccaa_andalucia.py` | El re-scrape completo sobrescribe la salida |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Acumular por registro. Al sembrar, quitar solo las 2,16M copias idénticas del publicado |
-| `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Capa cruda hecha** (`78d4f39`: `guardar_version`). Falta que el Parquet acumule las versiones |
+| `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Hecho**: capa cruda (`78d4f39`, `guardar_version`) y Parquet con todas las versiones (`1e28560`, `acumular`) |
 | `Euskadi/ccaa_euskadi.py` | Refresco de los ficheros que "siguen cambiando" |
 
 Un workflow razonable, ya probado en la sesión anterior aunque se paró por cuota:
@@ -240,7 +240,7 @@ Inventario completo, veredicto por CCAA y referencias (RCSP, OIReScon) en `docs/
 5. **Catalunya**:
    - Tabla de menores desde `ybgg-dgi6`: 381K en 2025, todos con NIF.
    - Cruce con el RPC para dar NIF al 45 % que solo trae nombre.
-   - Que el Parquet acumule las versiones.
+   - ~~Que el Parquet acumule las versiones~~ (`1e28560`).
 6. **C. Valenciana** (~35 % hoy):
    - XLSX trimestrales de la UV 2016-2026 (~17K/año con NIF).
    - Buscador del Ajuntament de València (~2K/año con NIF).
