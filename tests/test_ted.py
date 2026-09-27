@@ -910,3 +910,236 @@ def test_legacy_missing_pct_uses_consistent_denominator(capsys):
     assert len(missing) == 2
     pct = float(re.search(r"Missing in TED: [\d,]+ \(([\d.]+)%", out).group(1))
     assert pct == 100.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ted_module.py — completitud: todo lo que ofrece la fuente
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Tipos de aviso del tipo de documento CAN en el eForms SDK
+# (codelists/notice-type.gc + notice-types/notice-types.json: subtipos 25-40, E4-E6, T02)
+EFORMS_CAN_NOTICE_TYPES = {"veat", "can-standard", "can-social", "can-desg",
+                           "can-modif", "compl", "can-tran"}
+
+
+def _csv_hub_fake(csv_by_url):
+    """pd.read_csv simulado: solo sirve las URL dadas (cualquier otra, 404)."""
+    llamadas = []
+
+    def fake(filepath_or_buffer, *args, **kwargs):
+        if isinstance(filepath_or_buffer, str) and filepath_or_buffer.startswith("http"):
+            llamadas.append((filepath_or_buffer, kwargs.get("compression")))
+            if filepath_or_buffer in csv_by_url:
+                return _ORIG_READ_CSV(io.StringIO(csv_by_url[filepath_or_buffer]), dtype=str,
+                                      chunksize=kwargs.get("chunksize"))
+            raise urllib.error.HTTPError(filepath_or_buffer, 404, "Not Found", None, None)
+        return _ORIG_READ_CSV(filepath_or_buffer, *args, **kwargs)
+    fake.llamadas = llamadas
+    return fake
+
+
+def _api_prohibida(*a, **k):
+    raise AssertionError("no debe consultarse la API si hay CSV bulk")
+
+
+TED_CSV_2021_HUB = (
+    "ID_NOTICE_CAN,YEAR,ISO_COUNTRY_CODE,CAE_NAME,CAE_NATIONALID,TYPE_OF_CONTRACT,CPV,"
+    "VALUE_EURO_FIN_1,AWARD_VALUE_EURO_FIN_1,WIN_NAME,WIN_NATIONALID,NUMBER_OFFERS,DT_AWARD,CANCELLED\n"
+    "2021/S 010-000001,2021,ES,Ayuntamiento de Sevilla,ESP4109100J,S,79000000,400000,380000,"
+    "EMPRESA SL,ESB11111111,3,2021-01-10,0\n"
+    "2021/S 010-000002,2021,FR,Mairie,FR1,S,79000000,1,1,X,FR2,1,2021-01-10,0\n"
+)
+
+
+class TestTedCompletitud:
+    def test_query_pide_todos_los_tipos_de_aviso_can(self, monkeypatch, no_sleep):
+        # Antes: solo can-standard, can-social, can-modif y can-desg (faltaban
+        # veat -adjudicaciones sin licitación previa-, can-tran y compl)
+        assert set(tm.TEDConfig.API_NOTICE_TYPES) == EFORMS_CAN_NOTICE_TYPES
+        api = FakeTedApi(_many_notices(5))
+        monkeypatch.setattr(requests, "post", api)
+        tm._download_api_period(2024, "20240101", "20241231", "2024")
+        tipos = re.search(r"notice-type IN \(([^)]*)\)", api.calls[0]["query"]).group(1)
+        assert {t.strip() for t in tipos.split(",")} == EFORMS_CAN_NOTICE_TYPES
+
+    def test_campos_pedidos_caben_en_los_limites_de_la_api(self):
+        fields = tm.TEDConfig.API_FIELDS
+        assert len(fields) == len(set(fields))
+        # Límites documentados de la API: 250 avisos y 10.000 "campos" por página
+        assert tm.TEDConfig.TED_API_PAGE_SIZE <= 250
+        assert len(fields) * tm.TEDConfig.TED_API_PAGE_SIZE < 10_000
+        for f in ["publication-date", "notice-subtype", "form-type", "procedure-type",
+                  "contract-nature-main-proc", "place-of-performance"]:
+            assert f in fields
+
+    def test_avisos_api_con_fecha_tipo_de_contrato_y_procedimiento(self):
+        n = _notice("300001-2024", winners=["B1"], win_names=["EMP"], values=["1000"],
+                    notice_type="veat")
+        n.update({"publication-date": ["2024-03-20+01:00"], "notice-subtype": ["25"],
+                  "form-type": ["dir-awa-pre"], "procedure-type": ["neg-wo-call"],
+                  "contract-nature-main-proc": ["services"],
+                  "place-of-performance": ["ES618", "ESP"]})
+        rec = tm._parse_api_notice(n)[0]
+        assert rec["notice_type"] == "veat" and rec["notice_subtype"] == "25"
+        assert rec["procedure_type"] == "neg-wo-call" and rec["contract_nature"] == "services"
+        assert rec["place_of_performance"] == "ES618;ESP"
+        df = tm._normalize_ted_data(pd.DataFrame([rec]))
+        # Antes todas las filas de la API quedaban como 'otros' y sin fecha de publicación
+        assert df.loc[0, "tipo_contrato"] == "servicios"
+        assert df.loc[0, "publication_date"] == pd.Timestamp("2024-03-20")
+
+    def test_csv_2020_2023_desde_el_zip_de_data_europa_eu(self, monkeypatch, tmp_path, no_sleep):
+        # Las URL "TED 2020" no tienen 2020-2023: esos años caían a la API, que
+        # para avisos anteriores a eForms no trae adjudicatario ni importe
+        url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+        fake = _csv_hub_fake({url: TED_CSV_2021_HUB})
+        monkeypatch.setattr(pd, "read_csv", fake)
+        monkeypatch.setattr(requests, "post", _api_prohibida)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm.download_ted_spain(years=[2021], force_redownload=True)
+        assert (url, "zip") in fake.llamadas
+        assert df["ted_notice_id"].tolist() == ["2021/S 010-000001"]
+        assert df.loc[0, "win_nif_clean"] == "B11111111" and df.loc[0, "importe_ted"] == 380000
+        assert df.loc[0, "source"] == "csv_bulk"
+        assert (tmp_path / "ted_can_2021_ES.parquet").exists()
+
+    def test_csv_sin_columna_de_pais_prueba_la_siguiente_url(self, monkeypatch, tmp_path):
+        # Antes: una respuesta 200 que no era el CSV (p.ej. HTML) cortaba la
+        # búsqueda y el año pasaba a la API
+        primera = (f"{tm.TEDConfig.CSV_BASE_URL}/TED%202020/TED%20-%20Contract%20award"
+                   f"%20notices%202021.csv")
+        url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+        fake = _csv_hub_fake({primera: "<html>\nportal</html>\n", url: TED_CSV_2021_HUB})
+        monkeypatch.setattr(pd, "read_csv", fake)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._download_csv_year(2021, force=True)
+        assert df is not None and df["ID_NOTICE_CAN"].tolist() == ["2021/S 010-000001"]
+
+    def test_importe_de_csv_sin_columnas_fin_1(self):
+        df = pd.DataFrame({"ID_NOTICE_CAN": ["a", "b"], "YEAR": ["2022", "2022"],
+                           "AWARD_VALUE_EURO": ["150000", ""], "VALUE_EURO": ["", "90000"]})
+        out = tm._normalize_ted_data(df)
+        assert out["importe_ted"].tolist() == [150000.0, 90000.0]
+
+    def test_trimestre_por_encima_del_limite_se_divide_en_meses(self, monkeypatch, tmp_path, no_sleep):
+        # 250 avisos, la API solo sirve 50 por consulta: año y trimestres
+        # (~62) superan el límite; los meses (~21) no. Antes el trimestre quedaba truncado.
+        api = FakeTedApi(_many_notices(250), cap=50)
+        monkeypatch.setattr(requests, "post", api)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._download_api_year(2024, force=True)
+        assert len(df) == 250 and df["ted_notice_id"].is_unique
+        assert not df.attrs.get("descarga_incompleta")
+        desde = {re.search(r">=(\d{8})", c["query"]).group(1) for c in api.calls}
+        assert {"20240201", "20240501", "20240801", "20241101"} <= desde
+        assert (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+
+    def test_limite_en_un_solo_dia_es_descarga_incompleta(self, monkeypatch, tmp_path, no_sleep):
+        notices = [("20240315", _notice(f"{400000 + i}-2024")) for i in range(30)]
+        monkeypatch.setattr(requests, "post", FakeTedApi(notices, cap=10))
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._download_api_year(2024, force=True)
+        assert df.attrs.get("descarga_incompleta") is True
+        assert not (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+
+    @pytest.mark.parametrize("desde,hasta,esperado", [
+        ("20240101", "20241231", [("20240101", "20240331"), ("20240401", "20240630"),
+                                  ("20240701", "20240930"), ("20241001", "20241231")]),
+        ("20240101", "20240331", [("20240101", "20240131"), ("20240201", "20240229"),
+                                  ("20240301", "20240331")]),
+        ("20241115", "20250110", [("20241115", "20241130"), ("20241201", "20241231"),
+                                  ("20250101", "20250110")]),
+        ("20240201", "20240203", [("20240201", "20240201"), ("20240202", "20240202"),
+                                  ("20240203", "20240203")]),
+        ("20240201", "20240201", []),
+    ])
+    def test_subperiodos(self, desde, hasta, esperado):
+        assert [(a, b) for a, b, _ in tm._subperiods(desde, hasta)] == esperado
+
+    def test_ano_en_curso_no_se_cachea(self, monkeypatch, tmp_path, no_sleep):
+        monkeypatch.setattr(tm, "_current_year", lambda: 2024)
+        monkeypatch.setattr(requests, "post", FakeTedApi(_many_notices(20)))
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._download_api_year(2024, force=True)
+        assert len(df) == 20
+        # Si se guardara, la siguiente ejecución daría el año por completo
+        assert not (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+
+    def test_cache_guardada_con_el_ano_abierto_se_actualiza(self, monkeypatch, tmp_path, no_sleep):
+        import os
+        cache = tmp_path / "ted_can_2024_ES_api.parquet"
+        pd.DataFrame({"ted_notice_id": ["viejo-2024"], "lot_index": [0]}).to_parquet(cache)
+        junio_2024 = pd.Timestamp("2024-06-01").timestamp()
+        os.utime(cache, (junio_2024, junio_2024))
+        api = FakeTedApi(_many_notices(20))
+        monkeypatch.setattr(requests, "post", api)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._download_api_year(2024)
+        assert api.calls and len(df) == 20
+        assert "viejo-2024" not in pd.read_parquet(cache)["ted_notice_id"].tolist()
+        # Una cache escrita después de cerrar el año sí se reutiliza
+        api.calls.clear()
+        assert len(tm._download_api_year(2024)) == 20 and not api.calls
+
+    def test_cache_consolidada_sin_los_anos_pedidos_se_reconstruye(self, monkeypatch, tmp_path, ted_http):
+        # Antes ted_es_can.parquet se devolvía siempre, aunque le faltaran años
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        tm.download_ted_spain(years=[2019], force_redownload=True)
+        assert set(pd.read_parquet(tmp_path / "ted_es_can.parquet")["year"]) == {2019}
+        df = tm.download_ted_spain(years=[2019, 2024])
+        assert set(df["year"]) == {2019, 2024}
+        assert set(pd.read_parquet(tmp_path / "ted_es_can.parquet")["year"]) == {2019, 2024}
+        # Con todos los años cerrados y presentes se reutiliza sin red
+        ted_http.calls.clear()
+        tm.download_ted_spain(years=[2019, 2024])
+        assert not ted_http.calls
+
+    def test_cache_consolidada_con_ano_abierto_se_reconstruye(self, monkeypatch, tmp_path, ted_http):
+        import os
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        out = tmp_path / "ted_es_can.parquet"
+        (tmp_path / "ted_can_2024_ES_api.parquet").unlink()
+        julio_2024 = pd.Timestamp("2024-07-01").timestamp()
+        os.utime(out, (julio_2024, julio_2024))   # guardada con 2024 aún abierto
+        ted_http.calls.clear()
+        tm.download_ted_spain(years=[2019, 2024])
+        assert ted_http.calls   # 2024 se vuelve a pedir a la API
+
+    def test_anos_por_defecto_hasta_el_ano_en_curso(self, monkeypatch):
+        monkeypatch.setattr(tm, "_current_year", lambda: 2031)
+        assert tm._default_years() == list(range(2006, 2032))
+        capturado = {}
+        monkeypatch.setattr(tm, "download_ted_spain",
+                            lambda years, force_redownload: capturado.setdefault("years", years))
+        monkeypatch.setattr(sys, "argv", ["ted_module.py", "download"])
+        tm.main()
+        # Antes: '2010-2025' fijo
+        assert capturado["years"] == list(range(2006, 2032))
+
+    def test_cache_api_de_version_anterior_se_vuelve_a_descargar(self, monkeypatch, tmp_path, no_sleep):
+        # ted_can_2024/2025_ES_api.parquet publicados: sin veat/can-tran/compl ni
+        # notice_subtype/publication_date; reutilizarlos dejaría esos avisos fuera
+        pd.DataFrame({"ted_notice_id": ["viejo-2024"], "lot_index": [0], "notice_type": ["can-standard"]}
+                     ).to_parquet(tmp_path / "ted_can_2024_ES_api.parquet")
+        api = FakeTedApi(_many_notices(20))
+        monkeypatch.setattr(requests, "post", api)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._download_api_year(2024)
+        assert api.calls and len(df) == 20 and "notice_subtype" in df.columns
+
+    def test_csv_conserva_todas_las_columnas_de_la_fuente(self, monkeypatch, tmp_path, no_sleep):
+        # Antes solo 27 columnas (CSV_COLUMNS_KEEP): se perdían título, nº de
+        # contrato, URL del aviso, PYME adjudicataria...
+        csv_txt = (TED_CSV_2021_HUB.splitlines()[0] + ",TITLE,CONTRACT_NUMBER,TED_NOTICE_URL,B_CONTRACTOR_SME\n"
+                   + TED_CSV_2021_HUB.splitlines()[1]
+                   + ",Servicio de limpieza,CT-7,ted.europa.eu/udl?uri=TED:NOTICE:1-2021,Y\n")
+        url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+        monkeypatch.setattr(pd, "read_csv", _csv_hub_fake({url: csv_txt}))
+        monkeypatch.setattr(requests, "post", _api_prohibida)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm.download_ted_spain(years=[2021], force_redownload=True)
+        fila = df.iloc[0]
+        assert (fila["TITLE"], fila["CONTRACT_NUMBER"], fila["B_CONTRACTOR_SME"]) == (
+            "Servicio de limpieza", "CT-7", "Y")
+        assert "TED_NOTICE_URL" in pd.read_parquet(tmp_path / "ted_can_2021_ES.parquet").columns

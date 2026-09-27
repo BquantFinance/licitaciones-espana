@@ -34,7 +34,7 @@ import math
 import logging
 import hashlib
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 
 import pandas as pd
@@ -66,22 +66,50 @@ class TEDConfig:
     # URLs del dataset CSV en data.europa.eu
     # Formato nuevo: "TED%202020/TED%20-%20Contract%20award%20notices%20{year}.csv"
     CSV_BASE_URL = "https://data.europa.eu/euodp/repository/ec/dg-grow/mapps"
+    # Distribución actual del dataset "ted-csv" (un ZIP con un único CSV por año,
+    # mismas columnas). Es la única que cubre 2020-2023: las URL de "TED 2020"
+    # llegan a 2019 y esos años acababan en la API, que para los avisos
+    # anteriores a eForms no devuelve adjudicatario, importe ni nº de ofertas
+    # (0 % en 2020-2022 del ted_es_can.parquet publicado).
+    CSV_HUB_URL = "https://data.europa.eu/api/hub/store/data/ted-contract-award-notices-{year}.zip"
     CSV_YEARS_AVAILABLE = range(2006, 2024)  # CSV llega hasta ~2023
-    
+
     # ── TED Search API v3 (2024+, eForms) ──
     # Endpoint correcto (verificado feb 2026):
     #   POST https://api.ted.europa.eu/v3/notices/search
     #   Body JSON: { "query": "...", "fields": [...], "page": 1, "limit": 100, "scope": "ALL" }
+    # Límites documentados: 250 avisos por página, 10.000 "campos por página"
+    # (avisos x campos pedidos) y 15.000 avisos por consulta en modo PAGE_NUMBER.
     TED_API_SEARCH = "https://api.ted.europa.eu/v3/notices/search"
-    TED_API_PAGE_SIZE = 100  # Máximo por página
+    TED_API_PAGE_SIZE = 100  # 100 x len(API_FIELDS) debe quedar < 10.000 campos por página
     TED_API_RATE_LIMIT = 1.0  # Segundos entre requests (0.5 causa 429)
-    
+
+    # ── Tipos de aviso (notice-type) ──
+    # Todos los del tipo de documento CAN del eForms SDK (codelists/notice-type.gc
+    # y notice-types.json): subtipos 25-28 veat (transparencia ex ante:
+    # adjudicaciones sin licitación previa), 29-32 y E4 can-standard, 33-35
+    # can-social, 36-37 can-desg, 38-40 y E6 can-modif, E5 compl (finalización)
+    # y T02 can-tran (transporte de viajeros). Antes faltaban veat, can-tran y compl.
+    API_NOTICE_TYPES = (
+        "can-standard", "can-social", "can-modif", "can-desg",
+        "can-tran", "veat", "compl",
+    )
+
     # ── Campos eForms para la API ──
     # Descubiertos via error-mining del endpoint (feb 2026)
     # Solo can-standard/can-social devuelven winner/tender data
+    # Un solo nombre desconocido hace fallar toda la consulta (HTTP 400)
     API_FIELDS = [
         "publication-number",
         "notice-type",
+        # ── Aviso / procedimiento (sin ellos las filas de la API no tenían
+        #    fecha de publicación, tipo de contrato ni procedimiento) ──
+        "publication-date",
+        "notice-subtype",
+        "form-type",
+        "procedure-type",
+        "contract-nature-main-proc",
+        "place-of-performance",
         # ── Importe ──
         "tender-value",
         "tender-value-cur",
@@ -151,6 +179,10 @@ class TEDConfig:
     ]
     
     # ── Campos a extraer del CSV bulk ──
+    # Se guardan TODAS las columnas del CSV de las filas de España (título, nº de
+    # contrato, URL del aviso, PYME, criterios, ofertas por tipo...). Con False,
+    # solo las de CSV_COLUMNS_KEEP (lo que se hacía antes: 27 columnas).
+    CSV_KEEP_ALL_COLUMNS = True
     CSV_COLUMNS_KEEP = [
         'ID_NOTICE_CAN', 'YEAR', 'ISO_COUNTRY_CODE',
         'CAE_NAME', 'CAE_NATIONALID', 'CAE_TYPE', 'CAE_TOWN',
@@ -164,6 +196,9 @@ class TEDConfig:
         'B_FRA_AGREEMENT', 'CANCELLED',
         'ID_AWARD', 'ID_LOT_AWARDED',
         'ADDITIONAL_CPV', 'LOTS_NUMBER',
+        # Importes sin el sufijo _FIN_1 (CSV de data.europa.eu/api/hub): respaldo
+        # de importe_ted si en algún año faltan las columnas *_FIN_1
+        'VALUE_EURO', 'AWARD_VALUE_EURO',
     ]
     
     # ── Umbrales UE para España (2024, sin IVA) ──
@@ -215,16 +250,21 @@ def download_ted_spain(
     
     if output_path is None:
         output_path = TEDConfig.DATA_DIR / "ted_es_can.parquet"
-    
+
+    if years is None:
+        years = _default_years()
+
     if output_path.exists() and not force_redownload:
         log.info(f"Cargando cache: {output_path}")
         cached = _read_cache(output_path)
-        if cached is not None:
+        # Solo sirve si tiene todos los años pedidos y ninguno seguía abierto al
+        # guardarla (antes se devolvía siempre: el año en curso quedaba congelado
+        # y los años nuevos no se descargaban nunca)
+        if cached is not None and _cache_covers_years(cached, output_path, years):
             return cached
-    
-    if years is None:
-        years = list(range(2010, datetime.now().year + 1))
-    
+        if cached is not None:
+            log.info(f"  Cache {output_path.name} incompleta para {years[0]}-{years[-1]}: se reconstruye")
+
     all_dfs = []
     incomplete_years = []  # Años con descarga API cortada por errores/límite
     
@@ -327,6 +367,36 @@ def _read_cache(path):
         return None
 
 
+def _current_year():
+    return datetime.now().year
+
+
+def _default_years():
+    """Todos los años que ofrecen las fuentes: primer año del CSV bulk → año en curso."""
+    return list(range(TEDConfig.CSV_YEARS_AVAILABLE.start, _current_year() + 1))
+
+
+def _cache_closed_for_year(path, year):
+    """True si la cache se escribió después de terminar 'year'.
+
+    TED publica avisos a diario: una cache guardada mientras el año seguía en
+    curso solo tiene los avisos publicados hasta ese día.
+    """
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime).year > year
+    except OSError:
+        return False
+
+
+def _cache_covers_years(df, path, years):
+    """La cache consolidada sirve si contiene todos los años pedidos y ninguno
+    seguía abierto cuando se guardó."""
+    if not years or 'year' not in df.columns:
+        return False
+    cached_years = set(pd.to_numeric(df['year'], errors='coerce').dropna().astype(int))
+    return set(years) <= cached_years and _cache_closed_for_year(path, max(years))
+
+
 def _download_csv_year(year, force=False):
     """Descarga CSV de CAN para un año y filtra por España."""
     cache_path = TEDConfig.DATA_DIR / f"ted_can_{year}_ES.parquet"
@@ -341,16 +411,19 @@ def _download_csv_year(year, force=False):
     urls = [
         f"{TEDConfig.CSV_BASE_URL}/TED%202020/TED%20-%20Contract%20award%20notices%20{year}.csv",
         f"{TEDConfig.CSV_BASE_URL}/TED_CAN_{year}.csv",
+        TEDConfig.CSV_HUB_URL.format(year=year),
     ]
-    
+
     df = None
     for url in urls:
         try:
             log.info(f"  {year}: probando {url.split('/')[-1]}...")
             chunks = []
             for chunk in pd.read_csv(
-                url, 
+                url,
                 encoding='utf-8',
+                encoding_errors='replace',  # un byte inválido no debe tirar el año entero a la API
+                compression='zip' if url.endswith('.zip') else 'infer',
                 low_memory=False,
                 chunksize=50_000,
                 dtype=str,
@@ -361,15 +434,22 @@ def _download_csv_year(year, force=False):
                     break
                 es_mask = chunk['ISO_COUNTRY_CODE'] == TEDConfig.COUNTRY_CODE
                 if es_mask.any():
-                    keep_cols = [c for c in TEDConfig.CSV_COLUMNS_KEEP if c in chunk.columns]
+                    if TEDConfig.CSV_KEEP_ALL_COLUMNS:
+                        keep_cols = list(chunk.columns)
+                    else:
+                        keep_cols = [c for c in TEDConfig.CSV_COLUMNS_KEEP if c in chunk.columns]
                     chunks.append(chunk.loc[es_mask, keep_cols])
-            
+
             if chunks:
                 df = pd.concat(chunks, ignore_index=True)
                 log.info(f"  {year}: {len(df):,} registros España de CSV bulk")
-            break
+                break
+            # Respuesta sin filas de España (p.ej. una página HTML servida con
+            # 200 o un CSV de otro formato): se prueba la siguiente URL en vez de
+            # abandonar el CSV y caer a la API
+            log.warning(f"  {year}: {url.split('/')[-1]} sin registros de España")
         except Exception as e:
-            log.debug(f"  {year}: {url.split('/')[-1]} → {e}")
+            log.warning(f"  {year}: {url.split('/')[-1]} → {e}")
             continue
     
     if df is None:
@@ -389,50 +469,27 @@ def _download_api_year(year, force=False):
     Descarga CAN de España para un año vía TED Search API v3.
     
     La API tiene un límite de ~15,000 resultados por query (150 páginas × 100).
-    Para años con más resultados, se divide en trimestres automáticamente.
+    Si un periodo lo alcanza se divide (año → trimestres → meses → días) hasta
+    que cada consulta quepa en el límite.
     """
     cache_path = TEDConfig.DATA_DIR / f"ted_can_{year}_ES_api.parquet"
-    
+
     if cache_path.exists() and not force:
-        log.info(f"  {year}: usando cache {cache_path}")
-        cached = _read_cache(cache_path)
-        if cached is not None:
-            return cached
-    
-    # Definir periodos: año completo primero, si falla por límite → trimestres
-    periods = [
-        (f"{year}0101", f"{year}1231", f"{year}"),
-    ]
-    
-    all_records = []
-    needs_split = False
-    complete = True
-    
-    for date_from, date_to, period_label in periods:
-        records, hit_limit, period_complete = _download_api_period(year, date_from, date_to, period_label)
-        all_records.extend(records)
-        
-        if hit_limit:
-            needs_split = True
-            break
-        complete = complete and period_complete
-    
-    # Si la query anual excede el límite, dividir en trimestres
-    if needs_split:
-        log.info(f"  {year}: límite paginación alcanzado, dividiendo en trimestres...")
-        all_records = []
-        complete = True
-        quarters = [
-            (f"{year}0101", f"{year}0331", f"{year}-Q1"),
-            (f"{year}0401", f"{year}0630", f"{year}-Q2"),
-            (f"{year}0701", f"{year}0930", f"{year}-Q3"),
-            (f"{year}1001", f"{year}1231", f"{year}-Q4"),
-        ]
-        for date_from, date_to, period_label in quarters:
-            records, _, period_complete = _download_api_period(year, date_from, date_to, period_label)
-            all_records.extend(records)
-            complete = complete and period_complete
-    
+        if _cache_closed_for_year(cache_path, year):
+            log.info(f"  {year}: usando cache {cache_path}")
+            cached = _read_cache(cache_path)
+            if cached is not None and 'notice_subtype' in cached.columns:
+                return cached
+            if cached is not None:
+                # Generada antes de pedir veat/can-tran/compl y los campos de
+                # aviso/procedimiento: le faltan avisos y columnas
+                log.info(f"  {year}: cache {cache_path.name} de una versión anterior; se vuelve a descargar")
+        else:
+            # Guardada con el año aún abierto: le faltan los avisos posteriores
+            log.info(f"  {year}: cache {cache_path.name} guardada antes de cerrar el año; se actualiza")
+
+    all_records, complete = _download_api_range(year, f"{year}0101", f"{year}1231", f"{year}")
+
     if not all_records:
         if not complete:
             # Fallo de la API, no "cero resultados": que download_ted_spain lo sepa
@@ -460,10 +517,65 @@ def _download_api_year(year, force=False):
         log.warning(f"  {year}: descarga API INCOMPLETA (errores o límite de paginación); "
                     f"no se guarda la cache {cache_path.name}")
         df.attrs['descarga_incompleta'] = True
+    elif year >= _current_year():
+        # Año en curso: TED sigue publicando avisos; una cache ahora se
+        # reutilizaría después como si el año estuviera completo
+        log.info(f"  {year}: año en curso, no se guarda la cache {cache_path.name}")
     elif len(df) > 0:
         df.to_parquet(cache_path, index=False)
-    
+
     return df
+
+
+def _subperiods(date_from, date_to):
+    """Divide [date_from, date_to] (YYYYMMDD): año completo → trimestres,
+    varios meses → meses, un mes → días. [] si es un solo día."""
+    d0 = datetime.strptime(date_from, "%Y%m%d").date()
+    d1 = datetime.strptime(date_to, "%Y%m%d").date()
+    if d0 >= d1:
+        return []
+    fmt = "%Y%m%d"
+    if d0.year == d1.year and (d0.month, d0.day, d1.month, d1.day) == (1, 1, 12, 31):
+        y = d0.year
+        return [(f"{y}0101", f"{y}0331", f"{y}-Q1"), (f"{y}0401", f"{y}0630", f"{y}-Q2"),
+                (f"{y}0701", f"{y}0930", f"{y}-Q3"), (f"{y}1001", f"{y}1231", f"{y}-Q4")]
+    out = []
+    if (d0.year, d0.month) != (d1.year, d1.month):
+        start = d0
+        while start <= d1:
+            nxt = start.replace(year=start.year + start.month // 12, month=start.month % 12 + 1, day=1)
+            end = min(d1, nxt - timedelta(days=1))
+            out.append((start.strftime(fmt), end.strftime(fmt), start.strftime("%Y-%m")))
+            start = nxt
+        return out
+    day = d0
+    while day <= d1:
+        out.append((day.strftime(fmt), day.strftime(fmt), day.strftime("%Y-%m-%d")))
+        day += timedelta(days=1)
+    return out
+
+
+def _download_api_range(year, date_from, date_to, period_label):
+    """Descarga [date_from, date_to]; si la consulta alcanza el límite de
+    paginación, la repite por subperiodos (recursivo).
+
+    Returns: (records, complete). Antes solo se dividía una vez en trimestres:
+    un trimestre con más de 15.000 avisos quedaba truncado.
+    """
+    records, hit_limit, complete = _download_api_period(year, date_from, date_to, period_label)
+    if not hit_limit:
+        return records, complete
+    parts = _subperiods(date_from, date_to)
+    if not parts:
+        log.warning(f"  {period_label}: límite de paginación en un solo día; descarga INCOMPLETA")
+        return records, False
+    log.info(f"  {period_label}: límite paginación alcanzado, dividiendo en {len(parts)} periodos...")
+    all_records, all_complete = [], True
+    for sub_from, sub_to, sub_label in parts:
+        sub_records, sub_complete = _download_api_range(year, sub_from, sub_to, sub_label)
+        all_records.extend(sub_records)
+        all_complete = all_complete and sub_complete
+    return all_records, all_complete
 
 
 def _download_api_period(year, date_from, date_to, period_label):
@@ -474,7 +586,7 @@ def _download_api_period(year, date_from, date_to, period_label):
       paginación) antes de recibir todos los avisos que anuncia la API.
     """
     query = (
-        f"notice-type IN (can-standard, can-social, can-modif, can-desg) "
+        f"notice-type IN ({', '.join(TEDConfig.API_NOTICE_TYPES)}) "
         f"AND buyer-country=ESP "
         f"AND publication-date>={date_from} "
         f"AND publication-date<={date_to}"
@@ -702,7 +814,13 @@ def _parse_api_notice(notice):
         
         framework_est_value = _first_of_list(notice.get("framework-estimated-value", []))
         framework_max_lot = _first_of_list(notice.get("framework-maximum-value-lot", []))
-        
+
+        # ── Aviso / procedimiento ──
+        publication_date = _scalar(notice.get("publication-date", []))
+        contract_nature = _scalar(notice.get("contract-nature-main-proc", []))
+        place_of_performance = ";".join(
+            _scalar(v) for v in _as_list(notice.get("place-of-performance", [])) if _scalar(v))
+
         # ── Determinar número de registros ──
         # Para CAN multi-lot: un registro por winner/value
         # Para non-award notices: un solo registro
@@ -724,6 +842,14 @@ def _parse_api_notice(notice):
                 "year": pub_year,
                 "iso_country": buyer_country,
                 "notice_type": notice_type,
+                "notice_subtype": _scalar(notice.get("notice-subtype", [])),
+                "form_type": _scalar(notice.get("form-type", [])),
+                "publication_date": publication_date,
+                "procedure_type": _scalar(notice.get("procedure-type", [])),
+                "contract_nature": contract_nature,
+                # Misma codificación que TYPE_OF_CONTRACT del CSV (W/U/S)
+                "type_of_contract": _CONTRACT_NATURE_TO_CSV.get(contract_nature.lower(), ""),
+                "place_of_performance": place_of_performance,
                 # Comprador
                 "cae_name": buyer_name,
                 "cae_nationalid": buyer_nif,
@@ -797,6 +923,23 @@ def _first_of_list(val, default=""):
     """Primer elemento de lista o default."""
     lst = _as_list(val)
     return str(lst[0]) if lst else default
+
+
+def _scalar(val, default=""):
+    """Primer valor como texto; los dict multiidioma ({'spa': [...]}) por su nombre."""
+    if isinstance(val, dict):
+        return _extract_multilang_name(val) or default
+    lst = _as_list(val)
+    if not lst:
+        return default
+    first = lst[0]
+    if isinstance(first, dict):
+        return _extract_multilang_name(first) or default
+    return str(first)
+
+
+# contract-nature-main-proc (BT-23) → TYPE_OF_CONTRACT del CSV bulk
+_CONTRACT_NATURE_TO_CSV = {"works": "W", "supplies": "U", "services": "S"}
 
 
 def _str_or_empty(val):
@@ -981,7 +1124,13 @@ def _normalize_ted_data(df):
     if 'estimated_value_proc' in df.columns:
         mask = df['importe_ted'].isna() & df['estimated_value_proc'].notna()
         df.loc[mask, 'importe_ted'] = df.loc[mask, 'estimated_value_proc']
-    
+    # CSV sin las columnas *_FIN_1: importes AWARD_VALUE_EURO / VALUE_EURO del CSV
+    for raw_col in ('AWARD_VALUE_EURO', 'VALUE_EURO'):
+        if raw_col in df.columns:
+            mask = df['importe_ted'].isna()
+            if mask.any():
+                df.loc[mask, 'importe_ted'] = pd.to_numeric(df.loc[mask, raw_col], errors='coerce')
+
     # ── Limpiar NIF del ganador ──
     nif_col = 'win_nationalid' if 'win_nationalid' in df.columns else None
     if nif_col:
@@ -1003,7 +1152,7 @@ def _normalize_ted_data(df):
         df['cae_nif_clean'] = df['cae_nif_clean'].str.replace(r'^ES[-\s]*', '', regex=True)
     
     # ── Fechas ──
-    for col in ['dt_dispatch', 'dt_award']:
+    for col in ['dt_dispatch', 'dt_award', 'publication_date']:
         if col in df.columns:
             # pandas 3: el texto tiene dtype 'str' (no object). Sin quitar la zona
             # horaria, to_datetime(errors='coerce') devuelve TODO NaT al mezclar
@@ -1577,8 +1726,11 @@ def main():
     parser = argparse.ArgumentParser(description='Módulo TED para pipeline v6.0')
     parser.add_argument('command', choices=['download', 'validate', 'full'],
                        help='Comando a ejecutar')
-    parser.add_argument('--years', type=str, default='2010-2025',
-                       help='Rango de años (ej: 2015-2024)')
+    # Por defecto todo lo que ofrecen las fuentes (antes '2010-2025' fijo: dejaba
+    # fuera 2006-2009 del CSV bulk y el año en curso)
+    default_years = _default_years()
+    parser.add_argument('--years', type=str, default=f'{default_years[0]}-{default_years[-1]}',
+                       help=f'Rango de años (ej: 2015-2024; por defecto {default_years[0]}-{default_years[-1]})')
     parser.add_argument('--pipeline-file', type=str, default=None,
                        help='Archivo parquet/csv del pipeline para validar')
     parser.add_argument('--force', action='store_true',
