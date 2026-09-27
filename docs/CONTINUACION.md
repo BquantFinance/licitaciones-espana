@@ -45,6 +45,10 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
 - La semilla v2026.02 no añade **ninguna** fila: 8.693.891 y 4.725.557 filas leídas, todas presentes (35.627 y 3.401 sin fecha, casadas por contenido). Todo lo publicado en v2026.02 sigue en los ZIP de hoy.
 - Salida: principal 4,3 GB; resultados 0,9 GB; criterios 0,7 GB; adjudicatarios 0,4 GB; lotes 0,2 GB.
 - **No se pudo subir** (releases bloqueados en la sesión): hay que repetirlo en la máquina del propietario con `herramientas/sesion_2026_09_27/regeneracion_placsp/`.
+- **Resultados en `docs/REGENERACION_ISSUE_6.md`**: cruce TED, 20 indicadores, contraste por versión con `v2026.02` y con la PR #24, y hashes de los 45 ZIP.
+  - Contraste con `v2026.02`: `importe_sin_iva` cambia en 4.314.328 de 8.494.308 versiones (50,8 %); el publicado es siempre el valor estimado. La PR #24 da 50,9 %.
+  - TED: 153.110 de 257.637 SARA casados; 11.677 de 2026 sin evaluar. INT-CONS-20 = 37,8 %.
+  - Calidad: score medio 93,3.
 
 **Sesión del 2026-09-27 (noche).** Prioridad del propietario: *el 100 % de los contratos menores para un modelo antifraude* (§3.6 y `docs/COBERTURA.md` §0 y §5).
 - Commits, todos con tests en pandas 3 y 2.2:
@@ -66,9 +70,7 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
 - **En curso** (si la sesión se corta, se pierde el directorio temporal; los scripts para reanudarlo están en `herramientas/sesion_2026_09_27/`, con su README):
   - **Euskadi `/contracts`**: 4 procesos por tramos de años (`euskadi/contratos_api_tramo.py`) y después `euskadi/terminar.sh`, que hace la ejecución normal (`_estado.json`), consolida fuera del LFS y mide los menores por año.
     - Las ventanas completas no se vuelven a bajar: basta con relanzar los tramos.
-  - **PLACSP para Elicita** (§3.3): `regeneracion_placsp/procesar.sh` y después `cadena.sh` (reducir, cruce TED y calidad).
-    - Luego, `comparar_publicado.py` frente a v2026.02 y las cifras de la PR #24.
-    - Por último, el release en borrador con `publicar_release.py`.
+  - **PLACSP para Elicita** (§3.3): hecho en la sesión (`docs/REGENERACION_ISSUE_6.md`). Falta el release en borrador, que tiene que crear el propietario con `publicar_release.py`: desde la sesión da 403.
   - **Comunidad de Madrid**: los menores se vuelven a bajar con una copia de `descarga_contratacion_comunidad_madrid_v1.py` fuera del repo (`python <copia> menores`: 126 entidades, con subdivisión por importe al llegar a 50.000 filas).
     - La ruta `Entidad Adjudicadora` del publicado es la jerarquía completa (`Consejería de Sanidad··>SERMAS··>…>Hospital…`). Para comparar con las 125 entidades del desplegable hay que usar el primer nivel.
   - **Galicia**: listado de menores sin detalle HTML, fuera del repo: `python galicia/scraper_galicia.py base --skip-lic --output $TRABAJO/galicia --log-path $TRABAJO/galicia/scraper.log --workers 3`. El portal tiene 1.775.090 menores y el publicado 1,64 M. Después, `merge` y contraste con el publicado.
