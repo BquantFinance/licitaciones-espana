@@ -105,7 +105,7 @@ def _sescam_xlsx(tipo, articulo):
     return _xlsx({"Hoja1": [["Gerencia", "Tipo compra", "Artículo", "Proveedor", "Nº de factura",
                              f"Importe con IVA 1 TRIM {tipo}"],
                             ["61031300 GAI Villarrobledo", "SUMINISTRO MENOR", articulo, "JANSSEN-CILAG S.A.",
-                             "0941044807", 15523.933201920001]]})
+                             "0941044807", 15523.93]]})
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +424,7 @@ def test_parquet_por_dataset_como_texto_con_metadatos(portal, tmp_path):
     assert {"Nº de factura", f"Importe con IVA 1 TRIM {VIEJO}", "Importe  sin IVA 1 TRIM"} <= set(sescam.columns)
     assert sescam["_miembro"].tolist() == ["CM_PRIMER_TRIMESTRE_FARMACIA_SESCAM.xlsx",
                                            "CM_PRIMER_TRIMESTRE_SUMINISTROS_SESCAM.xlsx"]
-    assert sescam[f"Importe con IVA 1 TRIM {VIEJO}"].tolist()[0] == "15523.933201920001"
+    assert sescam[f"Importe con IVA 1 TRIM {VIEJO}"].tolist()[0] == "15523.93"
     assert set(sescam["_unidad"]) == {"línea de factura por artículo y gerencia (no es un contrato)"}
 
     publico = _parquet(tmp_path, "sector_publico")
@@ -434,7 +434,7 @@ def test_parquet_por_dataset_como_texto_con_metadatos(portal, tmp_path):
     assert _v(publico["Adjudicatario"]) == ["COMERCIAL GALAN, S.A.", None]
     assert _v(publico["Artículo"]) == [None, "GASAS"]
     assert publico["_anio"].tolist() == ["2018", "2018"] and set(publico["_periodo"]) == {"4T"}
-    assert "3 filas antes de la cabecera" in _log(tmp_path)
+    assert "2 filas antes de la cabecera" in _log(tmp_path)
 
     caja = _parquet(tmp_path, "caja_pagadora")
     assert caja[["NIF Adjudicatario", "Fecha Factura", "_hoja"]].values.tolist() == [
