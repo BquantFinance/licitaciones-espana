@@ -8,11 +8,11 @@ Uso:
   python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
 
   python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
-    --ted ted/crossval_sara_v2.parquet \
+    --ted ted/crossval_sara.parquet \
     --borme borme_empresas.parquet
 
   python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
-    --ted ted/crossval_sara_v2.parquet \
+    --ted ted/crossval_sara.parquet \
     --borme borme_empresas.parquet \
     -s 200000
 
@@ -309,7 +309,7 @@ def calcular_cons20(df, path_ted):
     ted["_key"] = ted["expediente"].astype(str)+"|"+ted["nif_adjudicatario"].astype(str)
     td = dict(zip(ted["_key"], ted["_ted_validated"]))
     n_val = ted["_ted_validated"].sum()
-    print(f"  Validados por 5 estrategias: {n_val:,} ({n_val/len(ted)*100:.1f}%)")
+    print(f"  Validados en TED: {n_val:,} ({n_val/len(ted)*100:.1f}%)")
     del ted
     if all(c in df.columns for c in ["expediente","nif_adjudicatario"]):
         keys = df["expediente"].astype(str)+"|"+df["nif_adjudicatario"].astype(str)
@@ -441,7 +441,7 @@ def main():
     p.add_argument("-i","--input",required=True,help="Nacional parquet")
     p.add_argument("-o","--output",default="calidad")
     p.add_argument("-s","--sample",type=int,default=None)
-    p.add_argument("--ted",default=None,help="crossval_sara_v2.parquet")
+    p.add_argument("--ted",default=None,help="crossval_sara.parquet")
     p.add_argument("--borme",default=None,help="borme_empresas.parquet")
     p.add_argument("--sin-deduplicar",action="store_true",
                    help="No reducir a una fila por licitacion (version mas reciente)")

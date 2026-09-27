@@ -89,13 +89,13 @@ ted/
 
 | Categoría | Campos |
 |-----------|--------|
-| Identificación | ted_notice_id, notice_type, year |
-| Comprador | cae_name, cae_nationalid, buyer_legal_type, buyer_country |
-| Contrato | cpv_code, type_of_contract, procedure_type |
-| Importes | award_value, total_value, estimated_value |
-| Adjudicación | win_name, win_nationalid, win_country, win_size (SME) |
+| Identificación | ted_notice_id, notice_type, year, source, lot_id, internal_id_proc |
+| Comprador | cae_name, cae_nationalid, cae_type, cae_town, buyer_legal_type, iso_country |
+| Contrato | cpv, type_of_contract, top_type, is_framework, lots_number |
+| Importes | importe_ted, value_euro, award_value_euro (CSV bulk), total_value, estimated_value_proc |
+| Adjudicación | win_name, win_nationalid, win_country, win_size (SME), dt_award |
 | Competencia | number_offers, direct_award_justification, award_criterion_type |
-| Duración | duration_lot, contract_start, contract_completion |
+| Duración | duration_lot |
 
 ---
 
@@ -167,7 +167,7 @@ Top órganos missing: Servicio Andaluz de Salud (4,833), FREMAP (2,410), IB-Salu
 | Script | Descripción |
 |--------|-------------|
 | `ted/ted_module.py` | Descarga TED: CSV bulk (2010-2019) + API v3 eForms (2020-2025) |
-| `ted/run_ted_crossvalidation.py` | Cross-validation PLACSP↔TED con reglas SARA + matching avanzado (5 estrategias) |
+| `ted/run_ted_crossvalidation.py` | Cross-validation PLACSP↔TED con reglas SARA + matching avanzado (9 estrategias: E1-E7, E2b, E3b) → `ted/crossval_*.parquet` |
 | `ted/diagnostico_missing_ted.py` | Diagnóstico de missing: falsos positivos vs gaps reales |
 | `ted/analisis_sector_salud.py` | Deep dive sector salud: lotes, acuerdos marco, CPV, CCAA |
 
@@ -205,7 +205,7 @@ borme/
 |------|-------|-------------|
 | 1 | Empresa recién creada | Constitución < 6 meses antes de adjudicación |
 | 2 | Capital ridículo | Capital social < 10K€ ganando contratos > 100K€ |
-| 3 | Administradores compartidos | Misma persona administrando empresas competidoras |
+| 3 | Administradores compartidos | Misma persona con cargo en varias empresas adjudicatarias |
 | 4 | Disolución post-adjudicación | Disuelta < 12 meses después de cobrar |
 | 5 | Adjudicación en concurso | Empresa en situación concursal recibiendo contratos |
 
@@ -221,9 +221,11 @@ python borme/scripts/borme_batch_parser.py --input ./borme_pdfs --workers 8
 # 3. Anonimizar → versiones públicas con persona_hash
 python borme/scripts/borme_anonymize.py --input ./borme_pdfs --output borme/data
 
-# 4. Detectar anomalías cruzando con PLACSP
+# 4. Detectar anomalías cruzando con PLACSP (deduplica las versiones repetidas de cada licitación)
 python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp nacional/licitaciones_espana.parquet --output ./anomalias
 ```
+
+`borme_batch_parser.py --resume` añade los PDF nuevos a la salida existente (antes la sobrescribía con solo los nuevos). Para aplicar las correcciones del parser (datos registrales, anuncios 1-999 de cada año, capital resultante) a PDF ya procesados hay que ejecutarlo completo, sin `--resume`.
 
 ---
 
@@ -285,7 +287,7 @@ python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
 
 # Completo con TED + BORME (20 indicadores)
 python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
-  --ted ted/crossval_sara_v2.parquet \
+  --ted ted/crossval_sara.parquet \
   --borme borme_empresas.parquet
 ```
 
@@ -442,48 +444,51 @@ Contratación pública del [País Vasco / Euskadi](https://www.contratacion.eusk
 
 | Dataset | Registros | Período | Fuente |
 |---------|-----------|---------|--------|
-| Contratos sector público | 664,545 | 2011-2026 | XLSX anual + JSON 2011-2013 |
-| Poderes adjudicadores | ~919 | Actual | API REST KontratazioA |
-| Empresas licitadoras | ~9,042 | Actual | API REST KontratazioA |
-| REVASCON histórico | 34,523 | 2013-2018 | CSV/XLSX agregado anual |
+| Anuncios de contratación (metadatos) | 664,545 | 2011-2026 | XLSX anual + JSON 2011-2013 |
+| Poderes adjudicadores | 919 | Actual | API REST KontratazioA |
+| Empresas licitadoras | 9,017 | Actual | API REST KontratazioA |
+| REVASCON histórico (con importes) | 34,523 | 2013-2018 | CSV/XLSX agregado anual |
 | Bilbao contratos | 4,823 | 2005-2026 | Portal municipal Bilbao |
-| Vitoria contratos menores | — | Actual | Open Data Euskadi |
+| Vitoria contratos menores | — | Actual | Open Data Euskadi (no se consolida) |
 | **Total** | **~704K** | **2005-2026** | — |
+
+> ⚠️ Los parquet publicados de Euskadi tienen errores de consolidación ya corregidos en los scripts (hay que regenerarlos): en `revascon_historico` 31.191 de las 34.523 filas (REVASCON 2015-2018) salieron como columnas `unnamed:_N` porque el XLSX trae filas de título antes de la cabecera; en `bilbao_contratos` los importes están divididos entre 1.000 (`"52.990"` → 52,99) y la fecha de adjudicación tiene día y mes invertidos; `contratos_master` tiene los años 2011-2013 en columnas aparte y 2.748 filas duplicadas. `contratos_master` son **metadatos de anuncios**: ninguna fuente de B1 incluye importes, adjudicatario, NIF, CPV ni procedimiento, así que para 2019-2026 no hay importes de adjudicación de Euskadi.
 
 ### Archivos
 
 ```
-euskadi_parquet/
-├── contratos_master.parquet             # 664K contratos (138 MB)
-├── poderes_adjudicadores.parquet        # 919 poderes adjudicadores
-├── empresas_licitadoras.parquet         # 9K empresas del registro
-├── revascon_historico.parquet           # 34K registros 2013-2018
-└── bilbao_contratos.parquet            # 4.8K contratos Bilbao
-
-ccaa_euskadi.py                          # Scraper principal v4 (descarga)
-consolidar_euskadi_v4.py                 # Consolidación → Parquet
+Euskadi/
+├── euskadi_parquet/
+│   ├── contratos_master.parquet         # 664K anuncios (138 MB)
+│   ├── poderes_adjudicadores.parquet    # 919 poderes adjudicadores
+│   ├── empresas_licitadoras.parquet     # 9K empresas del registro
+│   ├── revascon_historico.parquet       # 34K registros 2013-2018
+│   └── bilbao_contratos.parquet         # 4.8K contratos Bilbao
+├── ccaa_euskadi.py                      # Scraper v4 (solo descarga → Euskadi/datos_euskadi_contratacion_v4/)
+└── consolidacion_euskadi.py             # Consolidación → Parquet
 ```
 
-### Campos principales (56 columnas — contratos_master)
+### Campos principales (contratos_master)
 
 | Categoría | Campos |
 |-----------|--------|
-| Identificación | codigo_contrato, numero_expediente, objeto |
-| Órgano | poder_adjudicador, codigo_organismo, ambito |
-| Tipo | tipo_contrato, procedimiento, tramitacion |
-| Importes | importe_adjudicacion, importe_licitacion, valor_estimado |
-| Adjudicación | adjudicatario, nif_adjudicatario |
-| Fechas | fecha_adjudicacion, fecha_formalizacion, duracion |
-| CPV | codigo_cpv |
+| Anuncio | nombre, descripción, colección, titulo_del_contrato, objeto_del_contrato, tipo_de_anuncio, fecha_de_publicación_documento |
+| Expediente | expediente, estado_de_la_tramitacion, contrato_menor, adjudicación, subsanación, apertura_de_plicas, acuerdos_de_la_mesa_de_contratacion |
+| Órgano | ámbito_geográfico_del_poder_adjudicador, entidad_que_impulsa_la_contratación, órgano_de_contratación, institución, departamento, órgano_gestor |
+| Enlaces | url_física, url_amigable, xml_datos, xml_metadatos, zip |
+| Fechas | fecha_límite_de_presentación, fecha_de_creación |
+| Origen | _archivo_origen, _year (año del fichero, no del contrato), _fuente |
+
+Los importes y adjudicatarios de Euskadi están en `revascon_historico` (2013-2018: tipo_de_contrato, adjudicatario, importe_de_adjudicación_con_iva, fecha_de_formalización...) y `bilbao_contratos`.
 
 ### Arquitectura de fuentes
 
 El scraper sigue una arquitectura **API-first** con múltiples capas de fallback:
 
 **Módulo A — API REST KontratazioA** (fuente principal para catálogos)
-- A1/A2: Contratos y anuncios (muestra 1K registros — bulk inviable: 655K items × 10/pág = 65K peticiones ~27h)
+- A1/A2: Contratos y anuncios (muestra — bulk inviable: 655K items × 10/pág = 65K peticiones ~27h). La API ignora `currentPage` en estos recursos: la "muestra 1K" publicada eran 100 copias de la página 1 (10 registros); el scraper ahora lo detecta y aborta
 - A3: Poderes adjudicadores — 919 registros completos (92 páginas)
-- A4: Empresas licitadoras — 9,042 registros completos (905 páginas)
+- A4: Empresas licitadoras — 9,042 registros descargados (905 páginas), 9,017 únicos
 - Paginación: `?currentPage=N` (1-based, 10 items/pág fijo)
 
 **Módulo B — XLSX/CSV Históricos** (fuente principal para contratos)
@@ -918,14 +923,16 @@ df_ted.groupby('year').size().plot(kind='bar', title='Contratos TED España')
 and_menores = df_and[df_and['codigo_procedimiento'].astype(str) == '9']
 and_menores['organo_contratacion'].value_counts().head(20)
 
-# Euskadi: gasto anual por tipo de contrato
-df_eus.groupby(['anio', 'tipo_contrato'])['importe_adjudicacion'].sum().unstack().plot()
+# Euskadi: importe adjudicado por año y tipo de contrato (REVASCON 2013-2018)
+df_rev = pd.read_parquet('Euskadi/euskadi_parquet/revascon_historico.parquet')
+anio_formalizacion = pd.to_datetime(df_rev['fecha_de_formalización'], errors='coerce', dayfirst=True).dt.year
+df_rev.groupby([anio_formalizacion, 'tipo_de_contrato'])['importe_de_adjudicación_con_iva'].sum().unstack().plot()
 
-# Euskadi: top poderes adjudicadores por volumen
-df_eus.groupby('poder_adjudicador')['importe_adjudicacion'].sum().nlargest(20)
+# Euskadi: anuncios por tipo de anuncio
+df_eus['tipo_de_anuncio'].value_counts().head(10)
 
-# Euskadi: empresas más activas en el Registro de Licitadores
-df_empresas['officialname'].value_counts().head(10)
+# Euskadi: empresas del Registro de Licitadores
+df_empresas['name'].value_counts().head(10)
 
 # Comunidad de Madrid: contratos menores por hospital
 cam_menores = df_cam[df_cam['Tipo de Publicación'] == 'Contratos menores']
@@ -935,7 +942,7 @@ cam_menores['Entidad Adjudicadora'].value_counts().head(20)
 df_madrid.groupby(['categoria', 'anio'])['importe_adjudicacion_iva_inc'].sum().unstack(0).plot()
 
 # Contratos SARA no publicados en TED
-df_sara = pd.read_parquet('ted/crossval_sara_v2.parquet')
+df_sara = pd.read_parquet('ted/crossval_sara.parquet')
 missing = df_sara[df_sara['_ted_missing']]
 missing.groupby('organo_contratante').size().nlargest(10)
 
@@ -1003,7 +1010,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `scripts/ccaa_valencia.py` | CKAN | Descarga datos Valencia |
 | `scripts/ccaa_valencia_parquet.py` | — | Convierte los CSV de Valencia a Parquet |
 | `ted/ted_module.py` | TED | Descarga CSV bulk + API v3 eForms |
-| `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED + matching avanzado (5 estrategias) |
+| `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED + matching avanzado (9 estrategias) |
 | `ted/diagnostico_missing_ted.py` | — | Diagnóstico de missing |
 | `ted/analisis_sector_salud.py` | — | Deep dive sector salud |
 | `borme/scripts/borme_scraper.py` | BOE/BORME | Descarga ~126K PDFs del Registro Mercantil |

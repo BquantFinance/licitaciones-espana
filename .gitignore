@@ -22,6 +22,15 @@ Thumbs.db
 *.log
 *.part
 
+# Datos crudos / intermedios que generan los scripts (no subir)
+Euskadi/datos_euskadi_contratacion_v4/
+datos_madrid_contratacion_completa/
+catalunya_parquet/
+valencia_datos/
+valencia_parquet/
+borme_parse_parts/
+data/ted/
+
 # Runtime cache
 ccaa_Andalucia/perfiles_cache.json
 galicia/contratos_galicia_base.parquet
