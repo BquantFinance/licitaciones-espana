@@ -64,6 +64,62 @@ def detect_encoding_and_sep(filepath: Path) -> tuple:
     return encoding, ';'
 
 
+# Texto numérico con ceros a la izquierda: '03001', '03000047', '-01' (no '0', '0,5')
+PATRON_CERO_INICIAL = r'^\s*[+-]?0\d'
+FILAS_POR_TROZO = 500_000
+
+
+def _tiene_cero_inicial(serie) -> bool:
+    valores = serie.dropna()
+    return len(valores) > 0 and bool(valores.astype(str).str.match(PATRON_CERO_INICIAL).any())
+
+
+def restaurar_ceros_iniciales(df: pd.DataFrame, csv_path: Path, encoding: str, sep: str) -> pd.DataFrame:
+    """Columnas que pandas leyó como número pero cuyo texto original lleva ceros a
+    la izquierda (códigos postales y de municipio de Alicante '03001', códigos de
+    centro '03000047'...): el 0 se perdía (en los parquet publicados codigo_postal
+    empieza en 3001). Esas columnas se guardan como texto, tal como las publica GVA.
+    """
+    # Si pandas usó la 1ª columna como índice las posiciones no casan con el archivo
+    if not isinstance(df.index, pd.RangeIndex):
+        return df
+    tipos = df.dtypes
+    numericas = [i for i in range(len(tipos))
+                 if pd.api.types.is_numeric_dtype(tipos.iloc[i]) and not pd.api.types.is_bool_dtype(tipos.iloc[i])]
+    if not numericas:
+        return df
+
+    def trozos():
+        # Misma lectura (mismas líneas descartadas) pero todo como texto y por trozos
+        return pd.read_csv(csv_path, encoding=encoding, sep=sep, dtype=str, on_bad_lines='skip',
+                           chunksize=FILAS_POR_TROZO)
+
+    try:
+        con_ceros = set()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", pd.errors.ParserWarning)
+            for trozo in trozos():
+                if trozo.shape[1] != df.shape[1]:
+                    return df
+                for i in numericas:
+                    if i not in con_ceros and _tiene_cero_inicial(trozo.iloc[:, i]):
+                        con_ceros.add(i)
+            if not con_ceros:
+                return df
+            posiciones = sorted(con_ceros)
+            texto = pd.concat([t.iloc[:, posiciones] for t in trozos()], ignore_index=True)
+    except Exception as e:
+        print(f"     ⚠️ No se pudo comprobar ceros a la izquierda: {e}")
+        return df
+    if len(texto) != len(df):
+        print("     ⚠️ No se pudo comprobar ceros a la izquierda (filas distintas)")
+        return df
+    for j, i in enumerate(posiciones):
+        df.isetitem(i, texto.iloc[:, j].array)
+    print(f"     🔢 Guardadas como texto (ceros a la izquierda): {', '.join(str(df.columns[i]) for i in posiciones)}")
+    return df
+
+
 def convert_to_parquet(csv_path: Path, parquet_path: Path) -> bool:
     """Convierte un CSV a Parquet."""
     tmp_path = parquet_path.with_name(parquet_path.name + '.tmp')
@@ -85,6 +141,8 @@ def convert_to_parquet(csv_path: Path, parquet_path: Path) -> bool:
             str(a.message).count("Skipping line")
             for a in avisos if issubclass(a.category, pd.errors.ParserWarning)
         )
+
+        df = restaurar_ceros_iniciales(df, csv_path, encoding, sep)
 
         # Convertir columnas object a string para evitar errores, conservando
         # los vacíos como nulos (astype(str) a secas los convertía en el texto 'nan')
@@ -170,7 +228,9 @@ def main():
             parquet_name = csv_file.stem.replace(" ", "_") + ".parquet"
             parquet_path = output_category / parquet_name
             
-            if parquet_path.exists():
+            # Solo se salta si el parquet es posterior al CSV: si la descarga
+            # actualizó el CSV, se vuelve a convertir
+            if parquet_path.exists() and parquet_path.stat().st_mtime >= csv_file.stat().st_mtime:
                 print(f"  ⏭️ Ya existe: {parquet_name}")
                 total_parquet += 1
                 continue

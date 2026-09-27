@@ -228,6 +228,81 @@ def test_error_de_red_a_mitad_no_deja_parcial_y_se_anota(ckan, tmp_path):
     assert [f.split(" (")[0] for f in fallidos] == ["ds: A.csv", "ds: B.csv"]
 
 
+def test_series_anuales_se_amplian_con_los_anios_que_existen_en_el_portal(ckan):
+    # El catálogo fijo llegaba a 2025: 2026 (y años anteriores con el mismo patrón)
+    # no se pedían nunca
+    datasets = {
+        "contratacion": ["eco-gvo-contratos-2024", "eco-gvo-contratos-2025", "eco-contratos-dana"],
+        "paro": ["datos-de-paro-en-la-comunitat-valenciana"],
+    }
+    ckan.paquetes.update({ds: [] for ds in datasets["contratacion"]})
+    ckan.paquetes["eco-gvo-contratos-2026"] = []
+    ckan.paquetes["eco-gvo-contratos-2013"] = []
+    ckan.paquetes["eco-gvo-contratos-2020"] = 500  # error del portal: no se puede saber
+    fallidos = []
+
+    ampliado = V.ampliar_series_anuales(datasets, anio_actual=2026, anio_minimo=2010, fallidos=fallidos)
+
+    assert ampliado["contratacion"] == [
+        "eco-gvo-contratos-2024", "eco-gvo-contratos-2025", "eco-contratos-dana",
+        "eco-gvo-contratos-2013", "eco-gvo-contratos-2026",
+    ]
+    assert ampliado["paro"] == datasets["paro"]  # sin año: no se sondea
+    assert fallidos == ["eco-gvo-contratos-2020: no se pudo comprobar si existe"]
+    sondeados = [c["params"]["id"] for c in ckan.llamadas if c["url"] == API_URL]
+    assert sorted(sondeados) == sorted(f"eco-gvo-contratos-{a}" for a in range(2010, 2027) if a not in (2024, 2025))
+    assert datasets["contratacion"][-1] == "eco-contratos-dana"  # no se modifica el catálogo original
+
+
+def test_main_descarga_el_anio_nuevo_y_lo_anota(ckan, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(V, "DATASETS", {"contratacion": ["eco-gvo-contratos-2025"]})
+    anio = V.datetime.now().year
+    if anio <= 2025:
+        pytest.skip("el año en curso ya está en el catálogo")
+    nuevo = f"eco-gvo-contratos-{anio}"
+    ckan.paquetes["eco-gvo-contratos-2025"] = [_recurso("Contratos 2025", "http://gva/c2025.csv")]
+    ckan.paquetes[nuevo] = [_recurso("Contratos nuevo", "http://gva/cnuevo.csv")]
+    ckan.cuerpos.update({"http://gva/c2025.csv": b"a;b\n1;2\n", "http://gva/cnuevo.csv": b"a;b\n3;4\n"})
+
+    assert V.main() == 0
+    carpeta = tmp_path / "valencia_datos" / "contratacion"
+    assert sorted(p.name for p in carpeta.iterdir()) == ["Contratos 2025.csv", "Contratos nuevo.csv"]
+    log = (tmp_path / "valencia_datos" / "descarga_log.txt").read_text(encoding="utf-8")
+    assert "DATASETS NUEVOS" in log and nuevo in log
+
+
+def test_recurso_actualizado_en_el_portal_se_vuelve_a_descargar(ckan, tmp_path):
+    recurso = _recurso("Contratos 2025", "http://gva/c2025.csv")
+    ckan.paquetes["eco-gvo-contratos-2025"] = [recurso]
+    ckan.cuerpos["http://gva/c2025.csv"] = b"a;b\n1;2\n3;4\n"
+    local = tmp_path / "Contratos 2025.csv"
+    local.write_bytes(b"a;b\n1;2\n")
+    os.utime(local, (1_000_000, 1_000_000))
+
+    # Sin fecha de modificación: se conserva la copia (comportamiento anterior)
+    V.process_dataset("eco-gvo-contratos-2025", tmp_path)
+    assert local.read_bytes() == b"a;b\n1;2\n" and ckan.descargas() == []
+
+    # Modificado antes de la copia local: tampoco se descarga
+    recurso["last_modified"] = "1970-01-02T00:00:00"
+    V.process_dataset("eco-gvo-contratos-2025", tmp_path)
+    assert ckan.descargas() == []
+
+    # Modificado después: se vuelve a descargar
+    recurso["last_modified"] = "2026-01-15T10:00:00.000000"
+    assert V.process_dataset("eco-gvo-contratos-2025", tmp_path)[0] == 1
+    assert local.read_bytes() == b"a;b\n1;2\n3;4\n"
+
+    # Si la actualización falla se conserva la copia anterior y se anota
+    os.utime(local, (1_000_000, 1_000_000))
+    ckan.cuerpos["http://gva/c2025.csv"] = 503
+    fallidos = []
+    V.process_dataset("eco-gvo-contratos-2025", tmp_path, fallidos=fallidos)
+    assert local.read_bytes() == b"a;b\n1;2\n3;4\n"
+    assert len(fallidos) == 1
+
+
 def test_download_file_cierra_la_respuesta(monkeypatch, tmp_path):
     respuesta = FakeResponse(status=404)
     monkeypatch.setattr(requests, "get", lambda *a, **k: respuesta)
@@ -438,6 +513,44 @@ def test_separador_correcto_aunque_haya_una_linea_mala_al_principio(tmp_path, ca
     capturado = capsys.readouterr()
     # pandas >= 2.1 emite ParserWarning (se cuenta); pandas 2.0 lo escribe él mismo en stderr
     assert "1 líneas mal formadas descartadas" in capturado.out or "Skipping line 3" in capturado.err
+
+
+@pytest.mark.parametrize("modo", _modos_texto())
+def test_codigos_con_ceros_a_la_izquierda_se_guardan_tal_cual(tmp_path, monkeypatch, modo):
+    # En los parquet publicados codigo_postal empieza en 3001 y codigo_ine en 3001
+    filas = ["codigo_postal;municipio;habitantes;cod_provincia"]
+    filas += [f"4600{i};Municipi {i};{1000 + i};46" for i in range(5)]
+    filas += ["03001;Alacant;337000;03", ";Sense CP;10;12"]
+    csv = tmp_path / "centros.csv"
+    csv.write_text("\n".join(filas) + "\n", encoding="utf-8")
+    monkeypatch.setattr(P, "FILAS_POR_TROZO", 2)  # el 0 aparece en un trozo posterior
+
+    salida = tmp_path / "centros.parquet"
+    with _modo(modo):
+        assert P.convert_to_parquet(csv, salida)
+    tabla = pq.read_table(salida)
+    assert tabla.column("codigo_postal").to_pylist()[-2:] == ["03001", None]
+    assert tabla.column("cod_provincia").to_pylist()[-3:] == ["46", "03", "12"]
+    assert _es_texto(tabla.schema.field("codigo_postal").type)
+    # Sin ceros a la izquierda: sigue siendo numérica
+    assert pa.types.is_integer(tabla.schema.field("habitantes").type)
+
+
+def test_csv_actualizado_se_vuelve_a_convertir(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    carpeta = tmp_path / "valencia_datos" / "contratacion"
+    carpeta.mkdir(parents=True)
+    csv = carpeta / "Contratos 2025.csv"
+    csv.write_text("a;b\n1;2\n", encoding="utf-8")
+    assert P.main() == 0
+    parquet = tmp_path / "valencia_parquet" / "contratacion" / "Contratos_2025.parquet"
+    assert len(pd.read_parquet(parquet)) == 1
+
+    # La descarga trae una versión nueva del CSV: antes se daba por "Ya existe"
+    csv.write_text("a;b\n1;2\n3;4\n", encoding="utf-8")
+    os.utime(parquet, (1_000_000, 1_000_000))
+    assert P.main() == 0
+    assert len(pd.read_parquet(parquet)) == 2
 
 
 def test_archivo_de_una_columna_latin1(tmp_path):

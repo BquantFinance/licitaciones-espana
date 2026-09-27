@@ -27,10 +27,11 @@ Categorías incluidas (14):
 
 import requests
 import os
+import re
 import sys
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Configuración
 BASE_URL = "https://dadesobertes.gva.es"
@@ -225,6 +226,77 @@ DATASETS = {
 }
 
 
+# Series anuales (ids que acaban en -AAAA): en cada ejecución se buscan en el
+# portal los años que faltan en el catálogo, desde este año hasta el actual
+# (antes el catálogo fijo llegaba a 2025 y no pedía nunca 2026 ni años anteriores
+# publicados con el mismo patrón)
+ANIO_MINIMO_SERIES = 2000
+
+
+def existe_dataset(dataset_id):
+    """True si package_show encuentra el dataset, False si no existe (404/403),
+    None si no se pudo comprobar (error de red o respuesta inesperada)."""
+    try:
+        response = requests.get(API_URL, params={"id": dataset_id}, timeout=30)
+        if response.status_code in (403, 404):
+            return False
+        response.raise_for_status()
+        return bool(response.json().get("success"))
+    except Exception:
+        return None
+
+
+def ampliar_series_anuales(datasets, anio_actual=None, anio_minimo=ANIO_MINIMO_SERIES, fallidos=None):
+    """Copia de datasets con los años que existen en el portal y faltaban.
+
+    Para cada prefijo con año del catálogo (p. ej. 'eco-gvo-contratos-2014' ->
+    'eco-gvo-contratos-') se prueba package_show con los años de anio_minimo a
+    anio_actual que no están. Los encontrados se añaden al final de su categoría:
+    el orden de los ya conocidos (y por tanto sus nombres de archivo) no cambia.
+    """
+    anio_actual = anio_actual or datetime.now().year
+    ampliados = {}
+    for categoria, ids in datasets.items():
+        anios_por_prefijo = {}
+        for dataset_id in ids:
+            m = re.fullmatch(r"(.+-)((?:19|20)\d{2})", dataset_id)
+            if m:
+                anios_por_prefijo.setdefault(m.group(1), set()).add(int(m.group(2)))
+        nuevos = []
+        for prefijo, anios in anios_por_prefijo.items():
+            for anio in range(anio_minimo, anio_actual + 1):
+                candidato = f"{prefijo}{anio}"
+                if anio in anios or candidato in ids or candidato in nuevos:
+                    continue
+                existe = existe_dataset(candidato)
+                if existe:
+                    print(f"  🆕 Dataset nuevo en el portal: {candidato}")
+                    nuevos.append(candidato)
+                elif existe is None and fallidos is not None:
+                    fallidos.append(f"{candidato}: no se pudo comprobar si existe")
+        ampliados[categoria] = list(ids) + nuevos
+    return ampliados
+
+
+def fecha_ckan(valor):
+    """Fecha ISO de CKAN (UTC sin zona) -> epoch, o None"""
+    if not valor:
+        return None
+    try:
+        fecha = datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if fecha.tzinfo is None:
+        fecha = fecha.replace(tzinfo=timezone.utc)
+    return fecha.timestamp()
+
+
+def recurso_actualizado(resource, filepath):
+    """True si el portal indica que el recurso cambió después de la copia local"""
+    modificado = fecha_ckan(resource.get("last_modified") or resource.get("metadata_modified"))
+    return modificado is not None and modificado > os.path.getmtime(filepath)
+
+
 def get_dataset_info(dataset_id):
     """Obtiene información del dataset vía API CKAN"""
     try:
@@ -351,8 +423,11 @@ def process_dataset(dataset_id, category_dir, usados=None, fallidos=None):
 
         filepath = category_dir / filename
         
-        # Verificar si ya existe
-        if filepath.exists():
+        # Verificar si ya existe. Si el portal lo ha actualizado después (datasets
+        # del año en curso, listados diarios...) se vuelve a descargar: antes la
+        # primera copia se quedaba para siempre (el contratos 2025 publicado tiene 32 filas)
+        existia = filepath.exists()
+        if existia and not recurso_actualizado(resource, filepath):
             size_mb = os.path.getsize(filepath) / (1024 * 1024)
             print(f"  ⏭️ Ya existe: {filename}")
             total_size += size_mb
@@ -360,7 +435,7 @@ def process_dataset(dataset_id, category_dir, usados=None, fallidos=None):
             continue
         
         # Descargar
-        print(f"  ⬇️ {filename}...", end=" ", flush=True)
+        print(f"  ⬇️ {filename}{' (actualizado en el portal)' if existia else ''}...", end=" ", flush=True)
         success, result = download_file(url, filepath)
         
         if success:
@@ -369,7 +444,9 @@ def process_dataset(dataset_id, category_dir, usados=None, fallidos=None):
             total_size += result
         else:
             print(f"❌ {result}")
-            if filepath.exists():
+            # Si falla la actualización se conserva la copia anterior (download_file
+            # escribe en un .part y solo sustituye el archivo al terminar bien)
+            if filepath.exists() and not existia:
                 filepath.unlink()
             if fallidos is not None:
                 fallidos.append(f"{dataset_id}: {filename} ({result})")
@@ -399,7 +476,11 @@ def main():
     errors = []
     fallidos = []
 
-    for category, datasets in DATASETS.items():
+    print("\n🔎 Buscando años nuevos de las series anuales...")
+    catalogo = ampliar_series_anuales(DATASETS, fallidos=fallidos)
+    descubiertos = [d for cat, lista in catalogo.items() for d in lista if d not in DATASETS.get(cat, [])]
+
+    for category, datasets in catalogo.items():
         print(f"\n{'=' * 70}")
         print(f"📁 CATEGORÍA: {category.upper()}")
         print("=" * 70)
@@ -444,6 +525,9 @@ def main():
             print(f"  📁 {category}/")
             print(f"      {data['files']} archivos, {data['size']:.1f} MB")
     
+    if descubiertos:
+        print(f"\n🆕 DATASETS NUEVOS DESCARGADOS ({len(descubiertos)}): {', '.join(descubiertos)}")
+
     # Mostrar errores
     if errors:
         print(f"\n⚠️ DATASETS SIN CSV ({len(errors)}):")
@@ -464,6 +548,13 @@ def main():
         f.write(f"Duración: {duration}\n")
         f.write(f"Total archivos: {total_files}\n")
         f.write(f"Total tamaño: {total_size:.1f} MB ({total_size/1024:.2f} GB)\n\n")
+
+        if descubiertos:
+            f.write("DATASETS NUEVOS (no estaban en el catálogo del script):\n")
+            f.write("-" * 50 + "\n")
+            for d in descubiertos:
+                f.write(f"  - {d}\n")
+            f.write("\n")
         
         f.write("DETALLE POR CATEGORÍA:\n")
         f.write("-" * 50 + "\n")

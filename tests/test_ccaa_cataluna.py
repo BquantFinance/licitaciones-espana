@@ -10,6 +10,7 @@ import asyncio
 import importlib.util
 import json
 import logging
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -88,7 +89,9 @@ BCN_RECURSOS = {
     'modificacions-de-contractes': [
         {'id': 'x0000001-a', 'name': 'modificacions_2021', 'format': 'CSV', 'url': 'https://bcn.test/md2021.csv'},
     ],
-    'contractes-menors-autoritzacio-generica': [],
+    'contractes-menors-a-generica': [
+        {'id': 'g0000001-a', 'name': '2022_contractes_menors_a_generica', 'format': 'CSV', 'url': 'https://bcn.test/ag2022.csv'},
+    ],
 }
 
 
@@ -172,6 +175,60 @@ class DescargaCatalunyaTests(unittest.TestCase):
         self.assertEqual(list(self.dir.iterdir()), [])
         self.assertEqual(ccaa_cataluna.stats['failed'], 1)
 
+    def _socrata_con_fecha(self, rows_updated_at, contenido=b"id,nom\n1,nou\n"):
+        pedidas = []
+
+        def fake_get(url, timeout=None, stream=False, **kwargs):
+            pedidas.append(url)
+            if url.endswith("/hb6v-jcbf.json"):
+                return _resp(json_data={'id': 'hb6v-jcbf', 'rowsUpdatedAt': rows_updated_at})
+            return _resp(body=contenido)
+
+        with patch.object(ccaa_cataluna, "SOCRATA_DATASETS", {'hb6v-jcbf': ('01_contratacion/registro', 'x')}), \
+                patch.object(ccaa_cataluna.session, "get", side_effect=fake_get), \
+                patch.object(ccaa_cataluna.time, "sleep"):
+            ccaa_cataluna.download_socrata_datasets(self.dir)
+        return pedidas
+
+    def test_socrata_actualizado_en_el_portal_se_vuelve_a_descargar(self):
+        # Antes un CSV ya descargado no se actualizaba nunca (registro de contratos,
+        # PSCP... se quedaban congelados en la primera descarga)
+        csv = self.dir / "01_transparencia_catalunya" / "01_contratacion" / "registro.csv"
+        csv.parent.mkdir(parents=True)
+        csv.write_bytes(b"id,nom\n1,vell\n")
+        os.utime(csv, (1_000_000, 1_000_000))
+
+        pedidas = self._socrata_con_fecha(500_000)  # la copia local es posterior: no se descarga
+        self.assertFalse(any("rows.csv" in u for u in pedidas))
+        self.assertEqual(csv.read_bytes(), b"id,nom\n1,vell\n")
+
+        pedidas = self._socrata_con_fecha(2_000_000)  # el portal lo actualizó después
+        self.assertTrue(any("rows.csv" in u for u in pedidas))
+        self.assertEqual(csv.read_bytes(), b"id,nom\n1,nou\n")
+
+        # Sin fecha en los metadatos se mantiene el comportamiento anterior (no se descarga)
+        os.utime(csv, (1_000_000, 1_000_000))
+        pedidas = self._socrata_con_fecha(None, contenido=b"id,nom\n1,otro\n")
+        self.assertEqual(csv.read_bytes(), b"id,nom\n1,nou\n")
+
+    def test_bcn_recurso_modificado_se_vuelve_a_descargar(self):
+        carpeta = self.dir / "02_barcelona" / "contratos_menores"
+        carpeta.mkdir(parents=True)
+        viejo = carpeta / "2019_contractes_menors.csv"
+        viejo.write_bytes(b"Id\n0\n")
+        os.utime(viejo, (1_000_000, 1_000_000))
+        self._descargar_bcn([
+            {'id': 'a1', 'name': '2019_contractes_menors', 'format': 'CSV', 'url': 'https://bcn.test/a2019.csv',
+             'last_modified': '2025-11-03T10:15:00.123456'},
+        ])
+        self.assertIn("a2019.csv", viejo.read_text())
+
+    def test_epoch_ckan(self):
+        self.assertEqual(ccaa_cataluna.epoch_ckan('1970-01-02T00:00:00'), 86400.0)
+        self.assertEqual(ccaa_cataluna.epoch_ckan('1970-01-02T00:00:00Z'), 86400.0)
+        self.assertIsNone(ccaa_cataluna.epoch_ckan(None))
+        self.assertIsNone(ccaa_cataluna.epoch_ckan('no es fecha'))
+
     def test_metadatos_fallidos_se_registran(self):
         with patch.object(ccaa_cataluna, "SOCRATA_DATASETS", {'hb6v-jcbf': ('01_contratacion/registro', 'x')}), \
                 patch.object(ccaa_cataluna.session, "get", return_value=_resp(status=503)), \
@@ -252,7 +309,7 @@ class DescargaCatalunyaTests(unittest.TestCase):
         # Documentado en catalunya/README.md (antes nunca se generaba)
         self.assertTrue((parquet_dir / "contratacion" / "licitaciones_adjudicaciones.parquet").exists())
         for nombre in ("contratos_menores_bcn", "contratistas_bcn", "perfil_contratante_bcn",
-                       "modificaciones_bcn", "resumen_trimestral_bcn"):
+                       "modificaciones_bcn", "resumen_trimestral_bcn", "contratos_menores_autorizacion_bcn"):
             self.assertTrue((parquet_dir / "contratacion" / f"{nombre}.parquet").exists(), nombre)
         self.assertTrue((parquet_dir / "README.md").exists())
 
@@ -265,6 +322,13 @@ class DescargaCatalunyaTests(unittest.TestCase):
         menores_bcn = pd.read_parquet(parquet_dir / "contratacion" / "contratos_menores_bcn.parquet")
         self.assertEqual(len(menores_bcn), 4)
         self.assertEqual(sorted(set(menores_bcn["_año"])), [2019, 2020])
+        autorizacion = pd.read_parquet(parquet_dir / "contratacion" / "contratos_menores_autorizacion_bcn.parquet")
+        self.assertEqual((len(autorizacion), set(autorizacion["_año"])), (2, {2022}))
+        # Todo lo que se descarga de Socrata se convierte (antes 4 datasets se quedaban en CSV)
+        convertidos = {Path(csv_rel).relative_to("01_transparencia_catalunya").with_suffix("").as_posix()
+                       for csv_rel in cat_parquet.ARCHIVOS}
+        for dataset_id, (subpath, _) in ccaa_cataluna.SOCRATA_DATASETS.items():
+            self.assertIn(subpath, convertidos, f"{dataset_id} se descarga pero no se convierte")
         resumen = pd.read_parquet(parquet_dir / "contratacion" / "resumen_trimestral_bcn.parquet")
         self.assertEqual(set(resumen["_año"]), {2019})
         perfil = pd.read_parquet(parquet_dir / "contratacion" / "perfil_contratante_bcn.parquet")
@@ -330,6 +394,62 @@ class ConversorParquetTests(unittest.TestCase):
         for nombre, esperado in casos.items():
             self.assertEqual(cat_parquet.anio_de_nombre(nombre), esperado, nombre)
 
+    def test_codigos_con_ceros_a_la_izquierda_se_guardan_tal_cual(self):
+        # En los parquet publicados CODIPOSTAL empieza en 8002 y CODI_INE10 en 801930008
+        filas = ["CODIPOSTAL,Nom,Import,CODI_INE10,Any"]
+        filas += [f"4389{i % 10},m{i},{i}.5,{4300000000 + i},2020" for i in range(7)]
+        filas += ["08002,Barcelona,1.5,0801930008,2021", "25001,Lleida,,,2022"]
+        path = self._escribir("ens.csv", "\n".join(filas) + "\n")
+        with patch.object(cat_parquet, "FILAS_POR_TROZO", 3):  # el 0 aparece en un trozo posterior
+            df = cat_parquet.load_csv(path)
+        self.assertEqual(list(df["CODIPOSTAL"])[-2:], ["08002", "25001"])
+        self.assertEqual(df["CODI_INE10"].iloc[-2], "0801930008")
+        self.assertTrue(pd.isna(df["CODI_INE10"].iloc[-1]))
+        # Las columnas numéricas sin ceros a la izquierda no cambian
+        self.assertTrue(pd.api.types.is_float_dtype(df["Import"]))
+        self.assertTrue(pd.api.types.is_integer_dtype(df["Any"]))
+
+        salida = self.dir / "out" / "ens.parquet"
+        cat_parquet.convert_to_parquet(path, salida, "ens")
+        tabla = pq.read_table(salida)
+        self.assertEqual(tabla.column("CODIPOSTAL").to_pylist()[-2:], ["08002", "25001"])
+        self.assertEqual(tabla.column("CODI_INE10").to_pylist()[-2:], ["0801930008", ""])
+
+    def test_ceros_con_columnas_duplicadas_y_cero_decimal(self):
+        path = self._escribir("dup.csv", "Codi,Codi,Valor\n01,5,0.5\n2,6,0\n")
+        df = cat_parquet.load_csv(path)
+        self.assertEqual(list(df.iloc[:, 0]), ["01", "2"])
+        self.assertEqual(list(df.iloc[:, 1]), [5, 6])
+        self.assertEqual(list(df["Valor"]), [0.5, 0.0])
+
+    def test_lineas_mal_formadas_se_cuentan_y_se_avisa(self):
+        path = self._escribir("malo.csv", "a,b,c\n1,2,3\n4,5,6,7\n8,9,10\n")
+        with patch.object(cat_parquet, "log") as log:
+            df = cat_parquet.load_csv(path)
+        self.assertEqual(list(df["a"]), [1, 8])
+        mensajes = [str(c.args[0]) for c in log.call_args_list]
+        if tuple(int(x) for x in pd.__version__.split(".")[:2]) >= (2, 1):  # pandas 2.0 lo escribe en stderr
+            self.assertTrue(any("1 líneas mal formadas" in m for m in mensajes), mensajes)
+
+    def test_consolidacion_bcn_incluye_excel_y_json_sin_csv(self):
+        entrada = self.dir / "in"
+        carpeta = entrada / "02_barcelona" / "contratos_menores"
+        carpeta.mkdir(parents=True)
+        (carpeta / "2019_contractes_menors.csv").write_text("Id,Nom\n1,csv\n", encoding="utf-8")
+        # Mismo recurso en JSON: no se duplica
+        (carpeta / "2019_contractes_menors.json").write_text('[{"Id": 1, "Nom": "csv"}]', encoding="utf-8")
+        # Recursos publicados solo en Excel o JSON: antes no llegaban al parquet
+        pd.DataFrame({"Id": [2, 3], "Nom": ["xlsx", "xlsx"]}).to_excel(carpeta / "2020_contractes_menors.xlsx", index=False)
+        (carpeta / "2021_contractes_menors.json").write_text(
+            json.dumps({"result": {"records": [{"Id": 4, "Nom": "json"}]}}), encoding="utf-8")
+        (carpeta / "llegeix-me.txt").write_text("no es un recurso", encoding="utf-8")
+
+        n, _ = cat_parquet.consolidate_barcelona_menores(entrada, self.dir / "out")
+        self.assertEqual(n, 4)
+        df = pd.read_parquet(self.dir / "out" / "contratacion" / "contratos_menores_bcn.parquet")
+        self.assertEqual(sorted(zip(df["Nom"], df["_año"])),
+                         [("csv", 2019), ("json", 2021), ("xlsx", 2020), ("xlsx", 2020)])
+
     def test_consolidacion_bcn_sin_anio_no_escribe_none_literal(self):
         entrada = self.dir / "in"
         carpeta = entrada / "02_barcelona" / "contratos_menores"
@@ -352,7 +472,7 @@ FILTROS = {'faseVigent': '_fase', 'ambit': '_ambit', 'tipusContracte': '_tipus',
            'procedimentAdjudicacio': '_proc', 'organ': '_organ'}
 
 
-def _registros(n, fase, inicio, organs=(1,), proc=401):
+def _registros(n, fase, inicio, organs=(1,), proc=401, tipus=393):
     regs = []
     for i in range(n):
         rid = inicio + i
@@ -364,7 +484,7 @@ def _registros(n, fase, inicio, organs=(1,), proc=401):
             'fasesVigents': {NOMBRES_FASE[fase]: {
                 'lotsActius': 1, 'dataPublicacio': f'2024-01-{i % 28 + 1:02d}T10:00:00', 'idPublicacio': rid * 10}},
             # Atributos internos para filtrar/ordenar en la API falsa (no se devuelven)
-            '_fase': fase, '_ambit': 1500001, '_tipus': 393, '_proc': proc, '_organ': organ,
+            '_fase': fase, '_ambit': 1500001, '_tipus': tipus, '_proc': proc, '_organ': organ,
             '_orden': f'{i:08d}',
         })
     return regs
@@ -559,13 +679,81 @@ class ContratosMenoresTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()),
                          ['cm.parquet', 'cm_duplicate_analysis.json', 'cm_raw.parquet'])
 
-    def test_hueco_de_cobertura_en_segmentacion_se_avisa(self):
-        # 60 registros con un procediment que no está en PROCEDIMENTS: inalcanzables al segmentar
+    def test_hueco_de_cobertura_en_segmentacion_se_avisa_y_se_recupera(self):
+        # 60 registros con un procediment que no está en PROCEDIMENTS: no salen en ningún
+        # sub-segmento; el segmento (10.020 <= 2 ventanas) se pide entero en los dos órdenes
         regs = _registros(9960, 20, 100000) + _registros(60, 20, 300000, proc=999999)
-        with self.assertLogs(cat_menores.logger, level=logging.WARNING) as logs:
-            self._ejecutar(APIFalsa(regs))
+        api = APIFalsa(regs)
+        with self.assertLogs(cat_menores.logger, level=logging.INFO) as logs:
+            self._ejecutar(api)
         self.assertTrue(any("coverage gap" in m and "9960 of 10020" in m for m in logs.output), logs.output)
-        self.assertEqual(len(pd.read_parquet(self.out)), 9960)
+        self.assertTrue(any("Gap recovery: +60" in m for m in logs.output), logs.output)
+        self.assertFalse(any("Coverage gap remains" in m for m in logs.output), logs.output)
+        limpio = pd.read_parquet(self.out)
+        self.assertEqual(len(limpio), 10020)
+        self.assertEqual(set(limpio['id']), {r['id'] for r in regs})
+        # La recuperación pide el segmento padre (sin procediment) en orden ascendente
+        self.assertTrue(any(q.get('tipusContracte') == '393' and 'procedimentAdjudicacio' not in q
+                            and q['sortOrder'] == 'asc' for t, q in api.peticiones if t == 'cerca'))
+
+    def test_hueco_grande_se_recupera_segmentando_por_organo(self):
+        # 20.110 registros (> 2 ventanas): 50 con un tipus fuera de TIPUS_CONTRACTE.
+        # No caben en dos ventanas: se vuelve a pedir el segmento por órgano.
+        regs = (_registros(10030, 20, 100000, organs=(7,))
+                + _registros(10030, 20, 200000, organs=(8,))
+                + _registros(50, 20, 300000, organs=(8,), tipus=999999))
+        api = APIFalsa(regs, organs={1500001: [7, 8]})
+        with self.assertLogs(cat_menores.logger, level=logging.INFO) as logs:
+            self._ejecutar(api)
+        self.assertTrue(any("Gap recovery by organ" in m for m in logs.output), logs.output)
+        self.assertFalse(any("Coverage gap remains" in m for m in logs.output), logs.output)
+        limpio = pd.read_parquet(self.out)
+        self.assertEqual(len(limpio), 20110)
+        self.assertEqual(set(limpio['id']), {r['id'] for r in regs})
+        self.assertFalse(limpio.duplicated().any())
+
+    def test_contratos_distintos_con_mismo_id_y_descripcio_no_se_pierden(self):
+        # Publicación agregada: varios contratos (expedientId distintos) con la misma
+        # descripción. Antes se deduplicaba por (id, descripcio) y quedaba uno.
+        def contrato(exp, importe, fase):
+            return {'id': 500, 'descripcio': 'Material oficina', 'expedientId': f'uuid;{exp}',
+                    'pressupostAdjudicacio': importe, 'esAgregatContractes': True,
+                    'fasesVigents': {'ADJUDICACIO': {'lotsActius': 0, 'dataPublicacio': '2024-02-19T11:18:05.000Z',
+                                                     'idPublicacio': 500}},
+                    '_fase': fase, '_ambit': 1500001, '_tipus': 393, '_proc': 403, '_organ': 1, '_orden': exp}
+        regs = [contrato('1', 100.0, 20), contrato('2', 250.0, 20), contrato('3', 100.0, 20),
+                contrato('1', 100.0, 800)]  # la misma publicación vuelve en otra fase: copia idéntica
+        self._ejecutar(APIFalsa(regs))
+        limpio = pd.read_parquet(self.out)
+        crudo = pd.read_parquet(self.dir / "cm_raw.parquet")
+        self.assertEqual(len(crudo), 4)
+        self.assertEqual(sorted(limpio['expedientId']), ['uuid;1', 'uuid;2', 'uuid;3'])
+        self.assertEqual(sorted(limpio['pressupostAdjudicacio']), [100.0, 100.0, 250.0])
+        analisis = json.loads((self.dir / "cm_duplicate_analysis.json").read_text())
+        self.assertEqual(analisis['identical_rows_removed'], 1)
+        self.assertEqual(analisis['rows_clean'], 3)
+
+    def test_total_sin_filtro_de_fase_detecta_fases_no_consultadas(self):
+        # 40 registros cuya fase (30) no está en FASES_ALL: la API los cuenta sin filtro
+        regs = self._basicos() + _registros(40, 10, 700000)
+        for r in regs[-40:]:
+            r['_fase'] = 30
+        api = APIFalsa(regs)
+        with self.assertLogs(cat_menores.logger, level=logging.WARNING) as logs:
+            self._ejecutar(api)
+        self.assertEqual(len(pd.read_parquet(self.out)), 580)
+        analisis = json.loads((self.dir / "cm_duplicate_analysis.json").read_text())
+        self.assertEqual(analisis['api_total_without_phase_filter'], 620)
+        self.assertTrue(any("620 records without phase filter" in m for m in logs.output), logs.output)
+        self.assertTrue(any('faseVigent' not in q for t, q in api.peticiones if t == 'cerca'))
+
+    def test_incloure_placsp_se_envia_a_la_api(self):
+        api = APIFalsa(self._basicos())
+        with patch.object(cat_menores, 'INCLOURE_PLACSP', 'true'):
+            self._ejecutar(api)
+        cerca = [q for t, q in api.peticiones if t == 'cerca']
+        self.assertTrue(cerca)
+        self.assertTrue(all(q['inclourePublicacionsPlacsp'] == 'true' for q in cerca))
 
 
 if __name__ == "__main__":

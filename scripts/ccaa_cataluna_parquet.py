@@ -10,9 +10,11 @@ Convierte los CSVs relevantes a Parquet, descartando redundantes.
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import json
 import logging
 import glob
 import re
+import warnings
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -58,6 +60,13 @@ ARCHIVOS = {
     '01_transparencia_catalunya/01_contratacion/fase_ejecucion.csv': 
         ('contratacion/fase_ejecucion.parquet', 'Contratos en fase ejecución'),
     
+    # Se descargaban (ydq4-xy5b, jxvs-kzbu) pero no se convertían
+    '01_transparencia_catalunya/01_contratacion/contratos_menores_generalitat.csv':
+        ('contratacion/contratos_menores_generalitat.parquet', 'Contratos menores Generalitat'),
+
+    '01_transparencia_catalunya/01_contratacion/adjudicaciones_contractuales_quincenal.csv':
+        ('contratacion/adjudicaciones_quincenales.parquet', 'Adjudicaciones contractuales quincenales'),
+
     # =========================================================================
     # SUBVENCIONES - TODOS
     # =========================================================================
@@ -90,6 +99,13 @@ ARCHIVOS = {
     
     '01_transparencia_catalunya/04_presupuestos/despeses_2019.csv': 
         ('presupuestos/despeses_2019.parquet', 'Gastos 2019 detallado'),
+
+    # Se descargaban (w2cu-rmuv, wwmk-zys7) pero no se convertían
+    '01_transparencia_catalunya/04_presupuestos/evolucion_presupuestos.csv':
+        ('presupuestos/evolucion_presupuestos.parquet', 'Evolución presupuestos Generalitat'),
+
+    '01_transparencia_catalunya/04_presupuestos/ejecucion_consolidado_sector_publico.csv':
+        ('presupuestos/ejecucion_consolidado_sector_publico.parquet', 'Ejecución consolidado sector público'),
     
     # =========================================================================
     # SECTOR PÚBLICO / ENTIDADES - TODOS
@@ -165,13 +181,78 @@ def load_csv(path):
     for enc in encodings:
         for sep in separators:
             try:
-                df = pd.read_csv(path, encoding=enc, sep=sep, low_memory=False, on_bad_lines='skip')
-                if len(df.columns) > 1:
-                    return df
+                # Las líneas mal formadas se descartan, pero se cuentan y se avisa
+                # (antes se perdían en silencio)
+                with warnings.catch_warnings(record=True) as avisos:
+                    warnings.simplefilter("always", pd.errors.ParserWarning)
+                    df = pd.read_csv(path, encoding=enc, sep=sep, low_memory=False, on_bad_lines='warn')
             except Exception:
                 continue
+            if len(df.columns) > 1:
+                descartadas = sum(
+                    str(a.message).count("Skipping line")
+                    for a in avisos if issubclass(a.category, pd.errors.ParserWarning)
+                )
+                if descartadas:
+                    log(f"   ⚠️ {Path(path).name}: {descartadas:,} líneas mal formadas descartadas")
+                return restaurar_ceros_iniciales(df, path, enc, sep)
     
     raise ValueError(f"No se pudo cargar: {path}")
+
+
+# Texto numérico con ceros a la izquierda: '08002', '0801930008', '-01' (no '0', '0.5')
+PATRON_CERO_INICIAL = r'^\s*[+-]?0\d'
+FILAS_POR_TROZO = 500_000
+
+
+def _tiene_cero_inicial(serie):
+    valores = serie.dropna()
+    return len(valores) > 0 and bool(valores.astype(str).str.match(PATRON_CERO_INICIAL).any())
+
+
+def restaurar_ceros_iniciales(df, path, encoding, sep):
+    """Columnas que pandas leyó como número pero cuyo texto original lleva ceros a
+    la izquierda (códigos postales '08002', INE10 '0801930008', municipio '080193'...):
+    el 0 se perdía (en los parquet publicados CODIPOSTAL empieza en 8002 y CODI_INE10
+    en 801930008). Esas columnas se guardan como texto, tal como las publica la fuente.
+    """
+    # Si pandas usó la 1ª columna como índice (más campos que cabeceras) las
+    # posiciones no casan con las del archivo: no se toca nada
+    if not isinstance(df.index, pd.RangeIndex):
+        return df
+    tipos = df.dtypes
+    numericas = [i for i in range(len(tipos))
+                 if pd.api.types.is_numeric_dtype(tipos.iloc[i]) and not pd.api.types.is_bool_dtype(tipos.iloc[i])]
+    if not numericas:
+        return df
+
+    def trozos():
+        # Misma lectura (mismas líneas descartadas) pero todo como texto y por trozos
+        return pd.read_csv(path, encoding=encoding, sep=sep, dtype=str, on_bad_lines='skip',
+                           chunksize=FILAS_POR_TROZO)
+
+    try:
+        con_ceros = set()
+        for trozo in trozos():
+            if trozo.shape[1] != df.shape[1]:
+                return df
+            for i in numericas:
+                if i not in con_ceros and _tiene_cero_inicial(trozo.iloc[:, i]):
+                    con_ceros.add(i)
+        if not con_ceros:
+            return df
+        posiciones = sorted(con_ceros)
+        texto = pd.concat([t.iloc[:, posiciones] for t in trozos()], ignore_index=True)
+    except Exception as e:
+        log(f"   ⚠️ {Path(path).name}: no se pudo comprobar ceros a la izquierda ({e})")
+        return df
+    if len(texto) != len(df):
+        log(f"   ⚠️ {Path(path).name}: no se pudo comprobar ceros a la izquierda (filas distintas)")
+        return df
+    for j, i in enumerate(posiciones):
+        df.isetitem(i, texto.iloc[:, j].array)
+    log(f"   🔢 Guardadas como texto (ceros a la izquierda): {', '.join(str(df.columns[i]) for i in posiciones)}")
+    return df
 
 
 def texto_sin_nulos(serie):
@@ -220,26 +301,71 @@ def convert_to_parquet(input_path, output_path, descripcion):
     return len(df), size_parquet
 
 
-def consolidate_barcelona_menores(input_dir, output_dir):
-    """Consolida contratos menores Barcelona (múltiples años) en un solo Parquet"""
+# Formatos que descarga ccaa_cataluna.py de Open Data BCN
+EXTENSIONES_BCN = ('.csv', '.xlsx', '.xls', '.json')
+
+
+def archivos_bcn(dir_path):
+    """CSV de la carpeta y, además, los XLSX/XLS/JSON que no tienen un CSV con el
+    mismo nombre. Antes solo se convertían los CSV: un recurso publicado solo en
+    Excel o JSON se descargaba pero no llegaba al parquet. Si hay CSV del mismo
+    recurso se usa el CSV (no se duplican filas)."""
+    archivos = sorted(p for p in dir_path.iterdir() if p.is_file() and p.suffix.lower() in EXTENSIONES_BCN)
+    con_csv = {p.stem.lower() for p in archivos if p.suffix.lower() == '.csv'}
+    return [p for p in archivos if p.suffix.lower() == '.csv' or p.stem.lower() not in con_csv]
+
+
+def cargar_tabla(path):
+    """Lee un recurso de Open Data BCN (CSV, Excel o JSON) como DataFrame"""
+    ext = path.suffix.lower()
+    if ext == '.csv':
+        return load_csv(path)
+    if ext in ('.xlsx', '.xls'):
+        hojas = {nombre: h for nombre, h in pd.read_excel(path, sheet_name=None).items() if not h.empty}
+        if not hojas:
+            raise ValueError("Excel sin datos")
+        if len(hojas) == 1:
+            return next(iter(hojas.values()))
+        # Todas las hojas (p. ej. una por trimestre), indicando de cuál sale cada fila
+        return pd.concat([h.assign(_hoja=nombre) for nombre, h in hojas.items()], ignore_index=True)
+    if ext == '.json':
+        with open(path, encoding='utf-8-sig') as f:
+            datos = json.load(f)
+        if isinstance(datos, dict):  # formato datastore de CKAN: {"result": {"records": [...]}}
+            datos = datos.get('result', datos)
+            if isinstance(datos, dict):
+                datos = datos.get('records', datos)
+        if not isinstance(datos, list) or not all(isinstance(r, dict) for r in datos):
+            raise ValueError("JSON sin lista de registros")
+        return pd.json_normalize(datos)
+    raise ValueError(f"Formato no soportado: {path.name}")
+
+
+def consolidar_bcn(input_dir, output_dir, carpeta, destino, titulo, origen='_año'):
+    """Consolida todos los recursos de un dataset de Open Data BCN en un parquet.
+
+    origen='_año': año sacado del nombre del archivo; '_archivo_origen': nombre del archivo.
+    """
     log("\n" + "="*60)
-    log("📦 CONSOLIDANDO: Contratos menores Barcelona")
+    log(f"📦 CONSOLIDANDO: {titulo}")
     
-    menores_dir = input_dir / '02_barcelona' / 'contratos_menores'
-    if not menores_dir.exists():
+    dir_path = input_dir / '02_barcelona' / carpeta
+    if not dir_path.exists():
         log("   ⚠️ No encontrado")
         return 0, 0
     
     dfs = []
-    for csv_file in sorted(menores_dir.glob('*.csv')):
+    for archivo in archivos_bcn(dir_path):
         try:
-            df = load_csv(csv_file)
-            # Extraer año del nombre
-            df['_año'] = anio_de_nombre(csv_file.stem)
+            df = cargar_tabla(archivo)
+            if origen == '_archivo_origen':
+                df['_archivo_origen'] = archivo.name
+            else:
+                df['_año'] = anio_de_nombre(archivo.stem)
             dfs.append(df)
-            log(f"   ✅ {csv_file.name}: {len(df):,} registros")
+            log(f"   ✅ {archivo.name}: {len(df):,} registros")
         except Exception as e:
-            log(f"   ❌ {csv_file.name}: {e}")
+            log(f"   ❌ {archivo.name}: {e}")
     
     if not dfs:
         return 0, 0
@@ -251,7 +377,7 @@ def consolidate_barcelona_menores(input_dir, output_dir):
         if es_texto(df_all[col]):
             df_all[col] = texto_sin_nulos(df_all[col])
     
-    output_path = output_dir / 'contratacion' / 'contratos_menores_bcn.parquet'
+    output_path = output_dir / 'contratacion' / destino
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df_all.to_parquet(output_path, index=False, compression='snappy')
     
@@ -259,166 +385,44 @@ def consolidate_barcelona_menores(input_dir, output_dir):
     log(f"   💾 CONSOLIDADO: {len(df_all):,} registros, {size:.1f}MB")
     
     return len(df_all), size
+
+
+def consolidate_barcelona_menores(input_dir, output_dir):
+    """Consolida contratos menores Barcelona (múltiples años) en un solo Parquet"""
+    return consolidar_bcn(input_dir, output_dir, 'contratos_menores', 'contratos_menores_bcn.parquet',
+                          'Contratos menores Barcelona')
 
 
 def consolidate_barcelona_contratistas(input_dir, output_dir):
     """Consolida contratistas Barcelona (múltiples años)"""
-    log("\n" + "="*60)
-    log("📦 CONSOLIDANDO: Contratistas Barcelona")
-    
-    dir_path = input_dir / '02_barcelona' / 'contratistas'
-    if not dir_path.exists():
-        log("   ⚠️ No encontrado")
-        return 0, 0
-    
-    dfs = []
-    for csv_file in sorted(dir_path.glob('*.csv')):
-        try:
-            df = load_csv(csv_file)
-            df['_año'] = anio_de_nombre(csv_file.stem)
-            dfs.append(df)
-            log(f"   ✅ {csv_file.name}: {len(df):,} registros")
-        except Exception as e:
-            log(f"   ❌ {csv_file.name}: {e}")
-    
-    if not dfs:
-        return 0, 0
-    
-    df_all = pd.concat(dfs, ignore_index=True)
-    
-    # Convertir columnas object a string para evitar errores de tipos mixtos
-    for col in df_all.columns:
-        if es_texto(df_all[col]):
-            df_all[col] = texto_sin_nulos(df_all[col])
-    
-    output_path = output_dir / 'contratacion' / 'contratistas_bcn.parquet'
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df_all.to_parquet(output_path, index=False, compression='snappy')
-    
-    size = output_path.stat().st_size / 1024 / 1024
-    log(f"   💾 CONSOLIDADO: {len(df_all):,} registros, {size:.1f}MB")
-    
-    return len(df_all), size
+    return consolidar_bcn(input_dir, output_dir, 'contratistas', 'contratistas_bcn.parquet',
+                          'Contratistas Barcelona')
 
 
 def consolidate_barcelona_perfil(input_dir, output_dir):
     """Consolida perfil contratante Barcelona"""
-    log("\n" + "="*60)
-    log("📦 CONSOLIDANDO: Perfil contratante Barcelona")
-    
-    dir_path = input_dir / '02_barcelona' / 'perfil_contratante'
-    if not dir_path.exists():
-        log("   ⚠️ No encontrado")
-        return 0, 0
-    
-    dfs = []
-    for csv_file in sorted(dir_path.glob('*.csv')):
-        try:
-            df = load_csv(csv_file)
-            df['_archivo_origen'] = csv_file.name
-            dfs.append(df)
-            log(f"   ✅ {csv_file.name}: {len(df):,} registros")
-        except Exception as e:
-            log(f"   ❌ {csv_file.name}: {e}")
-    
-    if not dfs:
-        return 0, 0
-    
-    df_all = pd.concat(dfs, ignore_index=True)
-    
-    # Convertir columnas object a string para evitar errores de tipos mixtos
-    for col in df_all.columns:
-        if es_texto(df_all[col]):
-            df_all[col] = texto_sin_nulos(df_all[col])
-    
-    output_path = output_dir / 'contratacion' / 'perfil_contratante_bcn.parquet'
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df_all.to_parquet(output_path, index=False, compression='snappy')
-    
-    size = output_path.stat().st_size / 1024 / 1024
-    log(f"   💾 CONSOLIDADO: {len(df_all):,} registros, {size:.1f}MB")
-    
-    return len(df_all), size
+    return consolidar_bcn(input_dir, output_dir, 'perfil_contratante', 'perfil_contratante_bcn.parquet',
+                          'Perfil contratante Barcelona', origen='_archivo_origen')
 
 
 def consolidate_barcelona_modificaciones(input_dir, output_dir):
     """Consolida modificaciones de contratos Barcelona"""
-    log("\n" + "="*60)
-    log("📦 CONSOLIDANDO: Modificaciones contratos Barcelona")
-    
-    dir_path = input_dir / '02_barcelona' / 'modificaciones_contratos'
-    if not dir_path.exists():
-        log("   ⚠️ No encontrado")
-        return 0, 0
-    
-    dfs = []
-    for csv_file in sorted(dir_path.glob('*.csv')):
-        try:
-            df = load_csv(csv_file)
-            df['_año'] = anio_de_nombre(csv_file.stem)
-            dfs.append(df)
-            log(f"   ✅ {csv_file.name}: {len(df):,} registros")
-        except Exception as e:
-            log(f"   ❌ {csv_file.name}: {e}")
-    
-    if not dfs:
-        return 0, 0
-    
-    df_all = pd.concat(dfs, ignore_index=True)
-    
-    # Convertir columnas object a string para evitar errores de tipos mixtos
-    for col in df_all.columns:
-        if es_texto(df_all[col]):
-            df_all[col] = texto_sin_nulos(df_all[col])
-    
-    output_path = output_dir / 'contratacion' / 'modificaciones_bcn.parquet'
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df_all.to_parquet(output_path, index=False, compression='snappy')
-    
-    size = output_path.stat().st_size / 1024 / 1024
-    log(f"   💾 CONSOLIDADO: {len(df_all):,} registros, {size:.1f}MB")
-    
-    return len(df_all), size
+    return consolidar_bcn(input_dir, output_dir, 'modificaciones_contratos', 'modificaciones_bcn.parquet',
+                          'Modificaciones contratos Barcelona')
 
 
 def consolidate_barcelona_resumen(input_dir, output_dir):
     """Consolida resumen trimestral Barcelona"""
-    log("\n" + "="*60)
-    log("📦 CONSOLIDANDO: Resumen trimestral Barcelona")
+    return consolidar_bcn(input_dir, output_dir, 'resumen_trimestral', 'resumen_trimestral_bcn.parquet',
+                          'Resumen trimestral Barcelona')
     
-    dir_path = input_dir / '02_barcelona' / 'resumen_trimestral'
-    if not dir_path.exists():
-        log("   ⚠️ No encontrado")
-        return 0, 0
     
-    dfs = []
-    for csv_file in sorted(dir_path.glob('*.csv')):
-        try:
-            df = load_csv(csv_file)
-            df['_año'] = anio_de_nombre(csv_file.stem)
-            dfs.append(df)
-            log(f"   ✅ {csv_file.name}: {len(df):,} registros")
-        except Exception as e:
-            log(f"   ❌ {csv_file.name}: {e}")
-    
-    if not dfs:
-        return 0, 0
-    
-    df_all = pd.concat(dfs, ignore_index=True)
-    
-    # Convertir columnas object a string para evitar errores de tipos mixtos
-    for col in df_all.columns:
-        if es_texto(df_all[col]):
-            df_all[col] = texto_sin_nulos(df_all[col])
-    
-    output_path = output_dir / 'contratacion' / 'resumen_trimestral_bcn.parquet'
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df_all.to_parquet(output_path, index=False, compression='snappy')
-    
-    size = output_path.stat().st_size / 1024 / 1024
-    log(f"   💾 CONSOLIDADO: {len(df_all):,} registros, {size:.1f}MB")
-    
-    return len(df_all), size
+def consolidate_barcelona_autorizacion(input_dir, output_dir):
+    """Contratos menores derivados de una autorización genérica de gasto (se descargaban
+    en 02_barcelona/contratos_menores_autorizacion pero no se convertían)"""
+    return consolidar_bcn(input_dir, output_dir, 'contratos_menores_autorizacion',
+                          'contratos_menores_autorizacion_bcn.parquet',
+                          'Contratos menores (autorización genérica) Barcelona')
 
 
 # =============================================================================
@@ -505,6 +509,11 @@ def main():
     stats['tamaño_total_mb'] += s
     if n > 0: stats['convertidos'] += 1
     
+    n, s = consolidate_barcelona_autorizacion(input_dir, output_dir)
+    stats['registros_total'] += n
+    stats['tamaño_total_mb'] += s
+    if n > 0: stats['convertidos'] += 1
+    
     # =========================================================================
     # RESUMEN
     # =========================================================================
@@ -553,8 +562,11 @@ Generado: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 │   ├── contratacion_programada.parquet
 │   ├── contratos_covid.parquet
 │   ├── resoluciones_tribunal.parquet
-│   ├── contratos_menores_bcn.parquet       (2014-2018 consolidado)
-│   ├── contratistas_bcn.parquet            (2012-2023 consolidado)
+│   ├── contratos_menores_generalitat.parquet
+│   ├── adjudicaciones_quincenales.parquet
+│   ├── contratos_menores_bcn.parquet       (consolidado, todos los años publicados)
+│   ├── contratos_menores_autorizacion_bcn.parquet
+│   ├── contratistas_bcn.parquet            (consolidado, todos los años publicados)
 │   ├── perfil_contratante_bcn.parquet
 │   ├── modificaciones_bcn.parquet
 │   └── resumen_trimestral_bcn.parquet
@@ -568,6 +580,8 @@ Generado: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 │   ├── ejecucion_gastos.parquet            (1.5M registros)
 │   ├── ejecucion_ingresos.parquet
 │   ├── presupuestos_aprobados.parquet
+│   ├── evolucion_presupuestos.parquet
+│   ├── ejecucion_consolidado_sector_publico.parquet
 │   └── despeses_2019.parquet
 ├── entidades/
 │   ├── ens_locals.parquet                  ⭐ MASTER

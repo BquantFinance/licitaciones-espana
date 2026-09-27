@@ -19,7 +19,7 @@ import json
 import requests
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import sys
 import logging
 
@@ -115,7 +115,11 @@ BCN_DATASETS = {
     'relacio-contractistes': 'contratistas',
     'resums-trimestrals-contractacio': 'resumen_trimestral',
     'modificacions-de-contractes': 'modificaciones_contratos',
-    'contractes-menors-autoritzacio-generica': 'contratos_menores_autorizacion',
+    # "Contractes menors derivats d'una autorització genèrica de despesa". El slug
+    # anterior ('contractes-menors-autoritzacio-generica') no existe en el portal
+    # (package_list: ... 'contractes-menors', 'contractes-menors-a-generica',
+    # 'corredors-bici-bcn' ...): package_show daba 404 y no se descargaba nada.
+    'contractes-menors-a-generica': 'contratos_menores_autorizacion',
 }
 
 # =============================================================================
@@ -140,14 +144,46 @@ session.headers['User-Agent'] = 'BQuantFinance/2.0 (Gerard BQuant - Investigaci�
 # FUNCIONES AUXILIARES
 # =============================================================================
 
-def download_with_progress(url, path, desc="", timeout=600):
-    """Descarga un archivo con indicador de progreso"""
+def epoch_ckan(valor):
+    """Fecha ISO de CKAN (UTC sin zona, p. ej. '2025-11-03T10:15:00.123456') -> epoch, o None"""
+    if not valor:
+        return None
+    try:
+        fecha = datetime.fromisoformat(str(valor).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if fecha.tzinfo is None:
+        fecha = fecha.replace(tzinfo=timezone.utc)
+    return fecha.timestamp()
+
+
+def fecha_actualizacion_socrata(dataset_id):
+    """rowsUpdatedAt (epoch) de un dataset Socrata, o None si no se puede saber"""
+    try:
+        r = session.get(f"{SOCRATA_BASE}/api/views/{dataset_id}.json", timeout=30)
+        if r.status_code == 200:
+            valor = r.json().get('rowsUpdatedAt')
+            return float(valor) if valor else None
+    except Exception:
+        pass
+    return None
+
+
+def download_with_progress(url, path, desc="", timeout=600, modificado=None):
+    """Descarga un archivo con indicador de progreso.
+
+    modificado: fecha (epoch) de la última actualización en el portal. Si la copia
+    local es anterior se vuelve a descargar (antes un archivo ya descargado no se
+    actualizaba nunca y los datasets que crecen se quedaban congelados).
+    """
     global stats
     
     if not FORCE_DOWNLOAD and path.exists() and path.stat().st_size > 0:
-        log(f"⏭️ Skip: {path.name}")
-        stats['skipped'] += 1
-        return True
+        if modificado is None or path.stat().st_mtime >= modificado:
+            log(f"⏭️ Skip: {path.name}")
+            stats['skipped'] += 1
+            return True
+        log(f"🔄 {path.name}: actualizado en el portal después de la copia local, se vuelve a descargar")
     
     path.parent.mkdir(parents=True, exist_ok=True)
     # Descargar a un temporal: un archivo cortado no debe quedar como "ya descargado"
@@ -241,8 +277,9 @@ def download_socrata_datasets(output_dir):
         # Descargar CSV
         url_csv = f"{SOCRATA_BASE}/api/views/{dataset_id}/rows.csv?accessType=DOWNLOAD"
         path_csv = Path(str(full_path) + ".csv")
+        modificado = fecha_actualizacion_socrata(dataset_id)
         
-        if download_with_progress(url_csv, path_csv, descripcion):
+        if download_with_progress(url_csv, path_csv, descripcion, modificado=modificado):
             n = count_csv_records(path_csv)
             if n > 0:
                 log(f"   📝 {n:,} registros")
@@ -327,7 +364,8 @@ def download_barcelona_datasets(output_dir):
                                 res_id = str(resource.get('id') or '')[:8]
                                 path = dataset_dir / f"{Path(safe_name).stem}_{res_id}.{res_format}"
                             rutas_usadas[path] = res_url
-                            if download_with_progress(res_url, path, res_name):
+                            modificado = epoch_ckan(resource.get('last_modified') or resource.get('metadata_modified'))
+                            if download_with_progress(res_url, path, res_name, modificado=modificado):
                                 if res_format == 'csv':
                                     n = count_csv_records(path)
                                     if n > 0:

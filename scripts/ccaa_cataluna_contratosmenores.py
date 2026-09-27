@@ -11,6 +11,14 @@ Usage:
     python contractacio_scraper_v4.py --output data.parquet
     python contractacio_scraper_v4.py --output data.parquet --resume
     python contractacio_scraper_v4.py --output data.parquet --cleanup  # Delete incremental files after
+    python contractacio_scraper_v4.py --output data.parquet --incloure-placsp  # + publicaciones de PLACSP
+
+Duplicados: una misma publicación sale en varias consultas (una por cada fase
+vigente que tenga, ambos órdenes, recuperación de huecos) y esas copias son
+idénticas. Solo se eliminan las filas idénticas en TODAS las columnas; antes se
+deduplicaba por (id, descripcio) y se perdían los contratos distintos de una
+misma publicación agregada con la misma descripción (en el parquet publicado,
+1.781 grupos (id, descripcio) con expedientId distintos).
 """
 
 import argparse
@@ -24,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -38,6 +47,18 @@ FASES_ALL = FASES_NORMAL + FASES_AGREGADAS
 TIPUS_CONTRACTE = [393, 394, 395, 396, 397, 398, 1000007, 1008217]
 AMBITS = [1500001, 1500002, 1500003, 1500004, 1500005]
 PROCEDIMENTS = [401, 419, 1000008, 402, 404, 421, 405, 1000010, 1000011, 403, 1000012, 1008211]
+# Las listas de tipus/procediment son fijas y la fuente tiene más valores (en el
+# dataset PSCP de Socrata ybgg-dgi6: "Privat d'Administració Pública", "Altra
+# legislació sectorial", "Negociat amb publicitat", "Tramitació amb mesures de
+# gestió eficient", "Específic de Sistema Dinàmic d'adquisició" y vacíos). Esos
+# registros no salen en ningún sub-segmento: recuperar_hueco() los busca.
+
+# La API solo sirve las primeras 10.000 posiciones de cada consulta (page * size)
+VENTANA_API = 10000
+
+# 'false' = sin las publicaciones de órganos que publican en PLACSP (todas las
+# filas publicadas tienen esPlacsp=False). --incloure-placsp las incluye.
+INCLOURE_PLACSP = 'false'
 
 HEADERS = {
     'accept': 'application/json, text/plain, */*',
@@ -130,8 +151,19 @@ async def fetch_json(session: aiohttp.ClientSession, url: str, params: dict = No
     return None
 
 
+def clave_registro(r: dict) -> str:
+    """Identidad de un registro de la API: su JSON completo.
+
+    Las copias que devuelven consultas distintas (una por fase vigente, orden
+    asc/desc...) son idénticas. (id, descripcio) no identifica un registro: una
+    publicación agregada lista muchos contratos (expedientId distintos) que
+    pueden compartir descripción.
+    """
+    return json.dumps(r, sort_keys=True, ensure_ascii=False, default=str)
+
+
 async def get_count(session: aiohttp.ClientSession, params: dict, stats: ScraperStats) -> int:
-    query_params = {**params, 'page': 0, 'size': 1, 'inclourePublicacionsPlacsp': 'false', 
+    query_params = {**params, 'page': 0, 'size': 1, 'inclourePublicacionsPlacsp': INCLOURE_PLACSP,
                     'sortField': 'dataUltimaPublicacio', 'sortOrder': 'desc'}
     data = await fetch_json(session, f"{BASE_URL}/cerca-avancada", params=query_params, stats=stats)
     # A failed request is NOT "0 results": abort so the fase is not checkpointed (resume with --resume)
@@ -157,7 +189,7 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
                 **params,
                 'page': page,
                 'size': 100,
-                'inclourePublicacionsPlacsp': 'false',
+                'inclourePublicacionsPlacsp': INCLOURE_PLACSP,
                 'sortField': 'dataUltimaPublicacio',
                 'sortOrder': order
             }
@@ -180,7 +212,7 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
                 break
             
             for r in content:
-                key = f"{r.get('id')}_{r.get('descripcio', '')}"
+                key = clave_registro(r)
                 if key not in seen_keys:
                     seen_keys.add(key)
                     records.append(r)
@@ -235,9 +267,11 @@ async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: 
     
     stats.segments_over_10k += 1
     all_records = []
+    dimension = None  # filtro por el que se ha segmentado este nivel
     
     if 'faseVigent' not in base_params:
         logger.info(f"Segmenting by faseVigent (count={count})")
+        dimension = 'faseVigent'
         for fase in FASES_ALL:
             params = {**base_params, 'faseVigent': fase}
             records = await scrape_with_segmentation(session, params, stats, depth + 1, organs_cache)
@@ -245,6 +279,7 @@ async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: 
             
     elif 'ambit' not in base_params:
         logger.debug(f"Segmenting by ambit for fase={base_params.get('faseVigent')}")
+        dimension = 'ambit'
         for ambit in AMBITS:
             params = {**base_params, 'ambit': ambit}
             records = await scrape_with_segmentation(session, params, stats, depth + 1, organs_cache)
@@ -252,6 +287,7 @@ async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: 
             
     elif 'tipusContracte' not in base_params:
         logger.debug(f"Segmenting by tipusContracte for ambit={base_params.get('ambit')}")
+        dimension = 'tipusContracte'
         for tipus in TIPUS_CONTRACTE:
             params = {**base_params, 'tipusContracte': tipus}
             records = await scrape_with_segmentation(session, params, stats, depth + 1, organs_cache)
@@ -259,6 +295,7 @@ async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: 
             
     elif 'procedimentAdjudicacio' not in base_params:
         logger.debug(f"Segmenting by procediment")
+        dimension = 'procedimentAdjudicacio'
         for proc in PROCEDIMENTS:
             params = {**base_params, 'procedimentAdjudicacio': proc}
             records = await scrape_with_segmentation(session, params, stats, depth + 1, organs_cache)
@@ -268,6 +305,7 @@ async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: 
         ambit_id = base_params.get('ambit')
         if ambit_id:
             logger.info(f"Segmenting by organ for ambit={ambit_id} (deepest level)")
+            dimension = 'organ'
             
             if ambit_id not in organs_cache:
                 organs_cache[ambit_id] = await get_organs_for_ambit(session, ambit_id, stats)
@@ -281,13 +319,57 @@ async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: 
             all_records = await scrape_segment(session, base_params, stats, "no_ambit")
     else:
         logger.warning(f"⚠️ Segment at 10k after ALL segmentation - using both sort orders: {base_params}")
+        dimension = 'ambos_ordenes'
         all_records = await scrape_segment(session, base_params, stats, "max_segmented", both_orders=True)
     
     # Records with values outside the hard-coded segment lists are not reachable: make the gap visible
     if len(all_records) < count:
         logger.warning(f"⚠️ Segmentation coverage gap: got {len(all_records)} of {count} records for {base_params}")
+        all_records = await recuperar_hueco(session, base_params, stats, all_records, count, depth,
+                                            organs_cache, dimension)
     
     return all_records
+
+
+async def recuperar_hueco(session: aiohttp.ClientSession, base_params: dict, stats: ScraperStats,
+                          records: list, count: int, depth: int, organs_cache: dict,
+                          dimension: Optional[str]) -> list:
+    """Busca los registros de un segmento que no salieron en sus sub-segmentos.
+
+    Son los que tienen un valor que no está en las listas fijas (tipus o
+    procediment vacío o nuevo, órgano que /organs/noms no lista...):
+    - si el segmento cabe en dos ventanas de la API (<= 20.000), se pide entero
+      en orden descendente y ascendente;
+    - si no y se había segmentado por una lista fija (tipus/procediment), se
+      vuelve a pedir segmentando por órgano (lista que da la propia API).
+    Solo se añaden los registros que faltaban (sin copias).
+    """
+    extra = []
+    if count <= 2 * VENTANA_API and dimension != 'ambos_ordenes':
+        extra = await scrape_segment(session, base_params, stats, "gap", both_orders=True)
+    elif (dimension in ('tipusContracte', 'procedimentAdjudicacio')
+          and base_params.get('ambit') and 'organ' not in base_params):
+        ambit_id = base_params['ambit']
+        logger.info(f"   Gap recovery by organ for {base_params}")
+        if ambit_id not in organs_cache:
+            organs_cache[ambit_id] = await get_organs_for_ambit(session, ambit_id, stats)
+        for organ in organs_cache[ambit_id]:
+            params = {**base_params, 'organ': organ['id']}
+            extra.extend(await scrape_with_segmentation(session, params, stats, depth + 1, organs_cache))
+
+    vistos = {clave_registro(r) for r in records}
+    nuevos = []
+    for r in extra:
+        clave = clave_registro(r)
+        if clave not in vistos:
+            vistos.add(clave)
+            nuevos.append(r)
+    if nuevos:
+        logger.info(f"   ✅ Gap recovery: +{len(nuevos)} records for {base_params}")
+    completos = records + nuevos
+    if len(completos) < count:
+        logger.warning(f"⚠️ Coverage gap remains: {len(completos)} of {count} records for {base_params}")
+    return completos
 
 
 def save_incremental_full_json(records: list, output_path: Path, fase: int):
@@ -364,24 +446,31 @@ def analyze_duplicates(df: pd.DataFrame, key_cols: list) -> dict:
     }
 
 
-def smart_deduplicate(df: pd.DataFrame, key_cols: list, prefer_cols: list = None) -> pd.DataFrame:
-    if prefer_cols is None:
-        prefer_cols = []
+def _valores_comparables(df: pd.DataFrame) -> pd.DataFrame:
+    """Copia de df donde listas/dicts/arrays (campos anidados de la API, que al leer
+    el parquet llegan como numpy arrays) pasan a JSON para poder comparar filas."""
+    def a_texto(v):
+        if isinstance(v, np.ndarray):
+            v = v.tolist()
+        return json.dumps(v, sort_keys=True, ensure_ascii=False, default=str)
     
-    # Filter to existing columns
-    prefer_cols = [c for c in prefer_cols if c in df.columns]
+    out = df
+    for col in df.columns:
+        if df[col].dtype != object:
+            continue
+        anidado = df[col].map(lambda v: isinstance(v, (list, dict, np.ndarray)))
+        if anidado.any():
+            if out is df:
+                out = df.copy()
+            out[col] = df[col].where(~anidado, df[col].map(a_texto))
+    return out
     
-    df = df.copy()
-    df['_completeness'] = df.notna().sum(axis=1)
     
-    sort_cols = key_cols + ['_completeness'] + prefer_cols
-    sort_ascending = [True] * len(key_cols) + [False] * (1 + len(prefer_cols))
-    
-    df_sorted = df.sort_values(sort_cols, ascending=sort_ascending)
-    df_deduped = df_sorted.drop_duplicates(subset=key_cols, keep='first')
-    df_deduped = df_deduped.drop(columns=['_completeness'])
-    
-    return df_deduped
+def quitar_copias_identicas(df: pd.DataFrame) -> pd.DataFrame:
+    """Quita solo las filas idénticas en todas las columnas (copias del mismo
+    registro devueltas por varias consultas). No usa claves parciales."""
+    copias = _valores_comparables(df).duplicated(keep='first')
+    return df[~copias].reset_index(drop=True)
 
 
 async def main(output_path: str, output_format: str = 'parquet', include_agregadas: bool = True, 
@@ -411,7 +500,16 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
         logger.info(f"   Fases to scrape: {len(remaining_fases)} remaining")
         logger.info(f"   Auto-cleanup: {cleanup}")
     
+    total_api = None
     async with aiohttp.ClientSession() as session:
+        # Total que anuncia la API sin filtro de fase: control de cobertura final
+        # (registros cuya fase vigente no está en FASES_ALL no salen en ninguna consulta)
+        try:
+            total_api = await get_count(session, {}, stats)
+            logger.info(f"   API total without phase filter: {total_api:,}")
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Could not get the API total without phase filter: {e}")
+
         for fase in tqdm(remaining_fases, desc="Fases"):
             logger.info(f"\n{'='*60}")
             logger.info(f"📁 Processing faseVigent={fase}")
@@ -456,33 +554,41 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
         df_raw.to_excel(raw_file.with_suffix('.xlsx'), index=False)
     logger.info(f"✅ Raw data saved!")
     
-    # Analyze duplicates
-    key_cols = ['id', 'descripcio']
+    # Copies of the same record returned by several queries (one per current phase,
+    # both sort orders...): only rows identical in ALL columns are removed
+    logger.info(f"\n🧹 Removing identical copies...")
+    df_clean = quitar_copias_identicas(df_raw)
+
+    removed_count = len(df_raw) - len(df_clean)
+    logger.info(f"   Removed {removed_count:,} identical rows")
+    logger.info(f"   Clean dataset: {len(df_clean):,} rows, {len(df_clean.columns)} cols")
+
+    # Analyze what is left with the same identifier (informative: nothing else is removed)
+    key_cols = ['id', 'expedientId'] if 'expedientId' in df_raw.columns else ['id', 'descripcio']
     logger.info(f"\n🔍 Analyzing duplicates (key: {key_cols})...")
     
     analysis = analyze_duplicates(df_raw, key_cols)
+    analysis['identical_rows_removed'] = int(removed_count)
+    analysis['rows_clean'] = int(len(df_clean))
+    analysis['clean_rows_sharing_key'] = int(df_clean.duplicated(subset=key_cols, keep=False).sum())
+    analysis['api_total_without_phase_filter'] = total_api
     
     logger.info(f"   Duplicate rows: {analysis['duplicate_rows']:,}")
     logger.info(f"   Duplicate groups: {analysis['duplicate_groups']:,}")
+    logger.info(f"   Clean rows sharing {key_cols} (different content): {analysis['clean_rows_sharing_key']:,}")
     
     if analysis['differing_columns']:
         logger.info(f"   Columns that differ within duplicates (top 10):")
         for col_info in analysis['differing_columns'][:10]:
             logger.info(f"      - {col_info['column']}: differs in {col_info['groups_with_differences']:,} groups ({col_info['pct_groups']:.1f}%)")
     
+    if total_api is not None and len(df_clean) < total_api:
+        logger.warning(f"⚠️ The API reports {total_api:,} records without phase filter; "
+                       f"got {len(df_clean):,} (phases outside FASES_ALL or coverage gaps)")
+
     analysis_file = output_file.with_stem(output_file.stem + '_duplicate_analysis').with_suffix('.json')
     with open(analysis_file, 'w', encoding='utf-8') as f:
         json.dump(analysis, f, indent=2, ensure_ascii=False)
-    
-    # Smart deduplication
-    logger.info(f"\n🧹 Smart deduplication...")
-    date_cols = [c for c in df_raw.columns if 'dataPublicacio' in c.lower() or 'data' in c.lower()]
-    
-    df_clean = smart_deduplicate(df_raw, key_cols, prefer_cols=date_cols)
-    
-    removed_count = len(df_raw) - len(df_clean)
-    logger.info(f"   Removed {removed_count:,} duplicate rows")
-    logger.info(f"   Clean dataset: {len(df_clean):,} rows, {len(df_clean.columns)} cols")
     
     stats.total_records = len(df_clean)
     
@@ -528,7 +634,12 @@ if __name__ == '__main__':
     parser.add_argument('--no-agregadas', action='store_true', help='Skip aggregated phases')
     parser.add_argument('--resume', '-r', action='store_true', help='Resume from checkpoint')
     parser.add_argument('--cleanup', action='store_true', help='Delete incremental files after completion')
+    parser.add_argument('--incloure-placsp', action='store_true',
+                        help='Include publications of bodies that publish on PLACSP (inclourePublicacionsPlacsp=true)')
     args = parser.parse_args()
+
+    if args.incloure_placsp:
+        INCLOURE_PLACSP = 'true'
     
     asyncio.run(main(args.output, args.format, include_agregadas=not args.no_agregadas, 
                      resume=args.resume, cleanup=args.cleanup))
