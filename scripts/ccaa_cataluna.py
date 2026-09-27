@@ -150,6 +150,8 @@ def download_with_progress(url, path, desc="", timeout=600):
         return True
     
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Descargar a un temporal: un archivo cortado no debe quedar como "ya descargado"
+    tmp_path = path.with_name(path.name + '.part')
     
     try:
         r = session.get(url, timeout=timeout, stream=True)
@@ -159,7 +161,7 @@ def download_with_progress(url, path, desc="", timeout=600):
         downloaded = 0
         start_time = time.time()
         
-        with open(path, 'wb') as f:
+        with open(tmp_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
@@ -177,11 +179,14 @@ def download_with_progress(url, path, desc="", timeout=600):
         
         print()  # Nueva línea
         
-        size = path.stat().st_size
+        size = tmp_path.stat().st_size
         if size == 0:
-            path.unlink()
+            tmp_path.unlink()
+            log(f"❌ Error {desc}: respuesta vacía")
+            stats['failed'] += 1
             return False
         
+        tmp_path.replace(path)
         stats['downloaded'] += 1
         stats['bytes'] += size
         size_str = f"{size/1024:.1f}KB" if size < 1024*1024 else f"{size/1024/1024:.2f}MB"
@@ -192,6 +197,7 @@ def download_with_progress(url, path, desc="", timeout=600):
         print()
         log(f"❌ Error {desc}: {e}")
         stats['failed'] += 1
+        tmp_path.unlink(missing_ok=True)
         return False
 
 
@@ -204,10 +210,10 @@ def count_csv_records(path):
                     df = pd.read_csv(path, encoding=encoding, sep=sep, on_bad_lines='skip', low_memory=False, nrows=None)
                     if len(df.columns) > 1:
                         return len(df)
-                except:
+                except Exception:
                     continue
         return 0
-    except:
+    except Exception:
         return 0
 
 
@@ -265,8 +271,10 @@ def download_socrata_metadata(output_dir):
             if r.status_code == 200:
                 with open(path, 'w', encoding='utf-8') as f:
                     json.dump(r.json(), f, ensure_ascii=False, indent=2)
-        except:
-            pass
+            else:
+                log(f"   ⚠️ Metadatos {dataset_id}: HTTP {r.status_code}")
+        except Exception as e:
+            log(f"   ⚠️ Metadatos {dataset_id}: {e}")
         
         time.sleep(0.3)
     
@@ -301,11 +309,12 @@ def download_barcelona_datasets(output_dir):
                     
                     dataset_dir = bcn_dir / local_name
                     dataset_dir.mkdir(exist_ok=True)
+                    rutas_usadas = {}  # ruta -> url, para detectar recursos distintos con el mismo nombre
                     
                     for resource in resources:
-                        res_url = resource.get('url', '')
-                        res_name = resource.get('name', 'unknown')
-                        res_format = resource.get('format', '').lower()
+                        res_url = resource.get('url') or ''
+                        res_name = resource.get('name') or 'unknown'  # CKAN puede devolver null
+                        res_format = (resource.get('format') or '').lower()
                         
                         if res_format in ['csv', 'xlsx', 'xls', 'json']:
                             safe_name = "".join(c if c.isalnum() or c in '._-' else '_' for c in res_name)
@@ -313,6 +322,11 @@ def download_barcelona_datasets(output_dir):
                                 safe_name = f"{safe_name}.{res_format}"
                             
                             path = dataset_dir / safe_name
+                            if rutas_usadas.get(path, res_url) != res_url:
+                                # Mismo nombre que otro recurso: no saltarlo como "ya descargado"
+                                res_id = str(resource.get('id') or '')[:8]
+                                path = dataset_dir / f"{Path(safe_name).stem}_{res_id}.{res_format}"
+                            rutas_usadas[path] = res_url
                             if download_with_progress(res_url, path, res_name):
                                 if res_format == 'csv':
                                     n = count_csv_records(path)

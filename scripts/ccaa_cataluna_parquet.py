@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 import logging
 import glob
+import re
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -38,6 +39,9 @@ ARCHIVOS = {
     
     '01_transparencia_catalunya/01_contratacion/publicaciones_pscp.csv': 
         ('contratacion/publicaciones_pscp.parquet', 'Publicaciones PSCP (ciclo completo)'),
+    
+    '01_transparencia_catalunya/01_contratacion/licitaciones_adjudicaciones_curso.csv': 
+        ('contratacion/licitaciones_adjudicaciones.parquet', 'Licitaciones y adjudicaciones en curso'),
     
     '01_transparencia_catalunya/01_contratacion/contratacion_programada.csv': 
         ('contratacion/contratacion_programada.parquet', 'Contratación planificada'),
@@ -149,16 +153,41 @@ def load_csv(path):
     encodings = ['utf-8', 'latin-1', 'cp1252']
     separators = [',', ';', '\t']
     
+    # Probar primero el separador más frecuente en la cabecera: un CSV con ';' y una coma
+    # en algún nombre de columna se aceptaría con ',' y se leería desalineado
+    try:
+        with open(path, 'rb') as f:
+            cabecera = f.readline(1024 * 1024).decode('latin-1')
+        separators.sort(key=lambda s: -cabecera.count(s))
+    except OSError:
+        pass
+    
     for enc in encodings:
         for sep in separators:
             try:
                 df = pd.read_csv(path, encoding=enc, sep=sep, low_memory=False, on_bad_lines='skip')
                 if len(df.columns) > 1:
                     return df
-            except:
+            except Exception:
                 continue
     
     raise ValueError(f"No se pudo cargar: {path}")
+
+
+def texto_sin_nulos(serie):
+    """Columnas de texto (object en pandas 2, str en pandas 3) -> str con '' en vez de nulos"""
+    return serie.fillna('').astype(str)
+
+
+def es_texto(serie):
+    """True para columnas object (pandas 2) o str (pandas 3)"""
+    return serie.dtype == 'object' or pd.api.types.is_string_dtype(serie.dtype)
+
+
+def anio_de_nombre(nombre):
+    """Año (19xx/20xx) contenido en el nombre de archivo, o None"""
+    m = re.search(r'(19|20)\d{2}', nombre)
+    return int(m.group(0)) if m else None
 
 
 def convert_to_parquet(input_path, output_path, descripcion):
@@ -173,8 +202,8 @@ def convert_to_parquet(input_path, output_path, descripcion):
     # Optimizar tipos de datos
     for col in df.columns:
         # Convertir object a string para evitar errores de tipos mixtos
-        if df[col].dtype == 'object':
-            df[col] = df[col].astype(str).replace('nan', '')
+        if es_texto(df[col]):
+            df[col] = texto_sin_nulos(df[col])
     
     # Crear directorio de salida
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,8 +235,7 @@ def consolidate_barcelona_menores(input_dir, output_dir):
         try:
             df = load_csv(csv_file)
             # Extraer año del nombre
-            year = ''.join(c for c in csv_file.stem if c.isdigit())[:4]
-            df['_año'] = int(year) if year else None
+            df['_año'] = anio_de_nombre(csv_file.stem)
             dfs.append(df)
             log(f"   ✅ {csv_file.name}: {len(df):,} registros")
         except Exception as e:
@@ -220,8 +248,8 @@ def consolidate_barcelona_menores(input_dir, output_dir):
     
     # Convertir columnas object a string para evitar errores de tipos mixtos
     for col in df_all.columns:
-        if df_all[col].dtype == 'object':
-            df_all[col] = df_all[col].astype(str).replace('nan', '')
+        if es_texto(df_all[col]):
+            df_all[col] = texto_sin_nulos(df_all[col])
     
     output_path = output_dir / 'contratacion' / 'contratos_menores_bcn.parquet'
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -247,8 +275,7 @@ def consolidate_barcelona_contratistas(input_dir, output_dir):
     for csv_file in sorted(dir_path.glob('*.csv')):
         try:
             df = load_csv(csv_file)
-            year = ''.join(c for c in csv_file.stem if c.isdigit())[:4]
-            df['_año'] = int(year) if year else None
+            df['_año'] = anio_de_nombre(csv_file.stem)
             dfs.append(df)
             log(f"   ✅ {csv_file.name}: {len(df):,} registros")
         except Exception as e:
@@ -261,8 +288,8 @@ def consolidate_barcelona_contratistas(input_dir, output_dir):
     
     # Convertir columnas object a string para evitar errores de tipos mixtos
     for col in df_all.columns:
-        if df_all[col].dtype == 'object':
-            df_all[col] = df_all[col].astype(str).replace('nan', '')
+        if es_texto(df_all[col]):
+            df_all[col] = texto_sin_nulos(df_all[col])
     
     output_path = output_dir / 'contratacion' / 'contratistas_bcn.parquet'
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -301,8 +328,8 @@ def consolidate_barcelona_perfil(input_dir, output_dir):
     
     # Convertir columnas object a string para evitar errores de tipos mixtos
     for col in df_all.columns:
-        if df_all[col].dtype == 'object':
-            df_all[col] = df_all[col].astype(str).replace('nan', '')
+        if es_texto(df_all[col]):
+            df_all[col] = texto_sin_nulos(df_all[col])
     
     output_path = output_dir / 'contratacion' / 'perfil_contratante_bcn.parquet'
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -328,8 +355,7 @@ def consolidate_barcelona_modificaciones(input_dir, output_dir):
     for csv_file in sorted(dir_path.glob('*.csv')):
         try:
             df = load_csv(csv_file)
-            year = ''.join(c for c in csv_file.stem if c.isdigit())[:4]
-            df['_año'] = int(year) if year else None
+            df['_año'] = anio_de_nombre(csv_file.stem)
             dfs.append(df)
             log(f"   ✅ {csv_file.name}: {len(df):,} registros")
         except Exception as e:
@@ -342,8 +368,8 @@ def consolidate_barcelona_modificaciones(input_dir, output_dir):
     
     # Convertir columnas object a string para evitar errores de tipos mixtos
     for col in df_all.columns:
-        if df_all[col].dtype == 'object':
-            df_all[col] = df_all[col].astype(str).replace('nan', '')
+        if es_texto(df_all[col]):
+            df_all[col] = texto_sin_nulos(df_all[col])
     
     output_path = output_dir / 'contratacion' / 'modificaciones_bcn.parquet'
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -369,8 +395,7 @@ def consolidate_barcelona_resumen(input_dir, output_dir):
     for csv_file in sorted(dir_path.glob('*.csv')):
         try:
             df = load_csv(csv_file)
-            year = ''.join(c for c in csv_file.stem if c.isdigit())[:4]
-            df['_año'] = int(year) if year else None
+            df['_año'] = anio_de_nombre(csv_file.stem)
             dfs.append(df)
             log(f"   ✅ {csv_file.name}: {len(df):,} registros")
         except Exception as e:
@@ -383,8 +408,8 @@ def consolidate_barcelona_resumen(input_dir, output_dir):
     
     # Convertir columnas object a string para evitar errores de tipos mixtos
     for col in df_all.columns:
-        if df_all[col].dtype == 'object':
-            df_all[col] = df_all[col].astype(str).replace('nan', '')
+        if es_texto(df_all[col]):
+            df_all[col] = texto_sin_nulos(df_all[col])
     
     output_path = output_dir / 'contratacion' / 'resumen_trimestral_bcn.parquet'
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -530,7 +555,9 @@ Generado: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 │   ├── resoluciones_tribunal.parquet
 │   ├── contratos_menores_bcn.parquet       (2014-2018 consolidado)
 │   ├── contratistas_bcn.parquet            (2012-2023 consolidado)
-│   └── perfil_contratante_bcn.parquet
+│   ├── perfil_contratante_bcn.parquet
+│   ├── modificaciones_bcn.parquet
+│   └── resumen_trimestral_bcn.parquet
 ├── subvenciones/
 │   ├── raisc_concesiones.parquet           ⭐ MASTER (9.6M registros)
 │   ├── raisc_convocatorias.parquet
@@ -578,7 +605,7 @@ df_2024 = df[df['año'] == 2024]
 
 - **TODOS** los archivos CSV originales se han convertido (sin descartar nada)
 - Los archivos de Barcelona (múltiples años) se han consolidado en uno solo
-- Parquet es ~60-80%% más pequeño y 10x más rápido de cargar
+- Parquet es ~60-80% más pequeño y 10x más rápido de cargar
 """)
     
     log(f"\n📄 README: {output_dir}/README.md")

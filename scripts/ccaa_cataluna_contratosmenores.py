@@ -134,7 +134,10 @@ async def get_count(session: aiohttp.ClientSession, params: dict, stats: Scraper
     query_params = {**params, 'page': 0, 'size': 1, 'inclourePublicacionsPlacsp': 'false', 
                     'sortField': 'dataUltimaPublicacio', 'sortOrder': 'desc'}
     data = await fetch_json(session, f"{BASE_URL}/cerca-avancada", params=query_params, stats=stats)
-    return data.get('totalElements', 0) if data else 0
+    # A failed request is NOT "0 results": abort so the fase is not checkpointed (resume with --resume)
+    if not data or data.get('errorData'):
+        raise RuntimeError(f"Count request failed for {params}")
+    return data.get('totalElements', 0)
 
 
 async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: ScraperStats, 
@@ -165,7 +168,8 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
                     logger.error(f"Too many consecutive failures, stopping segment")
-                    break
+                    # Do not return a truncated segment as if it were complete
+                    raise RuntimeError(f"Too many consecutive failures at page {page} for {params}")
                 await asyncio.sleep(5)
                 continue
             
@@ -202,6 +206,9 @@ async def get_organs_for_ambit(session: aiohttp.ClientSession, ambit_id: int, st
             params={'page': page, 'size': 1000, 'ambitId': ambit_id},
             stats=stats
         )
+        if data is None:
+            # A partial/empty organ list would silently drop whole >10k segments
+            raise RuntimeError(f"Could not fetch organs for ambit={ambit_id} (page {page})")
         if not data:
             break
         organs.extend(data)
@@ -276,18 +283,25 @@ async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: 
         logger.warning(f"⚠️ Segment at 10k after ALL segmentation - using both sort orders: {base_params}")
         all_records = await scrape_segment(session, base_params, stats, "max_segmented", both_orders=True)
     
+    # Records with values outside the hard-coded segment lists are not reachable: make the gap visible
+    if len(all_records) < count:
+        logger.warning(f"⚠️ Segmentation coverage gap: got {len(all_records)} of {count} records for {base_params}")
+    
     return all_records
 
 
 def save_incremental_full_json(records: list, output_path: Path, fase: int):
     """Save FULL JSON records using json_normalize - no field filtering."""
+    fase_file = output_path.parent / f"{output_path.stem}_fase_{fase}.parquet"
     if not records:
+        # Remove a stale file from a previous run, otherwise it would be merged again
+        if fase_file.exists():
+            fase_file.unlink()
         return
     
     # FULL JSON - flatten everything
     df = pd.json_normalize(records, sep='_')
     
-    fase_file = output_path.parent / f"{output_path.stem}_fase_{fase}.parquet"
     df.to_parquet(fase_file, index=False, compression='snappy')
     logger.info(f"💾 Saved {len(df)} records ({len(df.columns)} columns) for fase {fase}")
 
@@ -338,7 +352,7 @@ def analyze_duplicates(df: pd.DataFrame, key_cols: list) -> dict:
                     'groups_with_differences': int(n_groups_differ),
                     'pct_groups': float(n_groups_differ / n_dupe_groups * 100)
                 })
-        except:
+        except Exception:
             pass  # Skip columns that can't be compared
     
     differing_cols.sort(key=lambda x: x['groups_with_differences'], reverse=True)
@@ -472,14 +486,15 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
     
     stats.total_records = len(df_clean)
     
-    # Save clean
-    logger.info(f"💾 Saving CLEAN data to {output_file}...")
+    # Save clean (same extension rule as the raw file, e.g. -f csv must not write CSV into *.parquet)
+    clean_file = output_file.with_suffix({'parquet': '.parquet', 'csv': '.csv'}.get(output_format, '.xlsx'))
+    logger.info(f"💾 Saving CLEAN data to {clean_file}...")
     if output_format == 'parquet':
-        df_clean.to_parquet(output_file, index=False, compression='snappy')
+        df_clean.to_parquet(clean_file, index=False, compression='snappy')
     elif output_format == 'csv':
-        df_clean.to_csv(output_file, index=False, encoding='utf-8-sig')
+        df_clean.to_csv(clean_file, index=False, encoding='utf-8-sig')
     else:
-        df_clean.to_excel(output_file, index=False)
+        df_clean.to_excel(clean_file, index=False)
     
     # Cleanup only if requested
     if cleanup:
@@ -503,7 +518,7 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
     logger.info(f"   API requests: {stats.requests_made:,}")
     logger.info(f"   Time: {elapsed/60:.1f} minutes")
     logger.info(f"   Raw output: {raw_file}")
-    logger.info(f"   Clean output: {output_file}")
+    logger.info(f"   Clean output: {clean_file}")
 
 
 if __name__ == '__main__':
