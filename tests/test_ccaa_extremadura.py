@@ -672,10 +672,11 @@ def test_documento_enlazado_que_falla_conserva_la_copia(portal, tmp_path):
     assert _ejecutar(tmp_path) == 0
     SLEEP_REAL(1.1)
     doc = portal.paginas["contratos-incidencias-inscritas-registro-contratos"]["documentos"][0]
+    original = portal.ficheros[doc["ruta"]]
     portal.ficheros[doc["ruta"]] = b"<!DOCTYPE html><html><body>Mantenimiento</body></html>"
     assert _ejecutar(tmp_path, "--comprobar-todo") == 1
     raw = tmp_path / "raw" / "menores" / "menores_2026_2T.xlsx"
-    assert len(M.versiones(raw)) == 1 and raw.read_bytes() == _menores_c("CM0000010108/2026")
+    assert len(M.versiones(raw)) == 1 and raw.read_bytes() == original
     assert "menores/menores_2026_2T.xlsx: la respuesta es HTML" in _log(tmp_path)
     assert _menores(tmp_path)["_en_ultima_descarga"].all()
 
