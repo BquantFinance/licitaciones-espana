@@ -1586,11 +1586,12 @@ def marcar_repetidos(df):
     numero = numero.map(lambda v: (v.strip() or None) if isinstance(v, str) else None)
 
     def orden(fichero):
-        anio = fichero._anio if isinstance(fichero._anio, str) and fichero._anio.isdigit() else "0"
-        return int(anio), fichero._trimestre if isinstance(fichero._trimestre, str) else "", fichero._archivo_origen
+        rel, anio, trimestre = fichero
+        return (int(anio) if isinstance(anio, str) and anio.isdigit() else 0,
+                trimestre if isinstance(trimestre, str) else "", rel)
 
     ficheros = df[["_archivo_origen", "_anio", "_trimestre"]].drop_duplicates("_archivo_origen")
-    posicion = {f._archivo_origen: i for i, f in enumerate(sorted(ficheros.itertuples(index=False), key=orden))}
+    posicion = {f[0]: i for i, f in enumerate(sorted(ficheros.itertuples(index=False, name=None), key=orden))}
     tabla = pd.DataFrame({"numero": numero, "posicion": df["_archivo_origen"].map(posicion),
                           "fichero": df["_archivo_origen"]}).dropna(subset=["numero"])
     primero = tabla.sort_values("posicion", kind="stable").drop_duplicates("numero").set_index("numero")["fichero"]

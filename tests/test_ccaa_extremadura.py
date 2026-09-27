@@ -433,6 +433,26 @@ def test_tres_esquemas_en_un_parquet_como_texto(portal, tmp_path):
         "registro_contratos_menores.parquet"]
 
 
+def test_contrato_publicado_otra_vez_se_marca_sin_quitar_filas(portal, tmp_path):
+    # Como el listado real de 4T 2023, que vuelve a publicar contratos de 1T y 2T-3T 2023
+    portal.publicar("registro-contratos-4t-2023", "4º Trimestre de 2023.", [
+        portal.documento("LISTADO CONTRATOS MENORES 4 T 2023.xlsx", _menores_c(
+            "CM005815/23", "CM000001/22", "CM0000005815/2023", "CM008231/23", "CM008231/23"))])
+    portal.buscador.append("registro-contratos-4t-2023")
+    assert _ejecutar(tmp_path) == 0
+    df = _menores(tmp_path)
+    assert len(df) == 12                                              # no se quita ninguna fila
+    cuarto = df[df["_archivo_origen"] == "menores/menores_2023_4T.xlsx"]
+    assert _v(cuarto["_repetido_de"]) == ["menores/menores_2023_2T-3T.xlsx", "menores/menores_2022_1T.xls",
+                                          None, None, None]
+    assert df.loc[df["_archivo_origen"] != "menores/menores_2023_4T.xlsx", "_repetido_de"].isna().all()
+    assert "2023 4T: 5 filas (2 ya estaban en un listado anterior (_repetido_de))" in _log(tmp_path)
+    SLEEP_REAL(1.1)
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 0
+    otra = _menores(tmp_path)
+    assert _v(otra["_repetido_de"]) == _v(df["_repetido_de"]) and len(otra) == 12
+
+
 def test_xls_binario_y_xlsx(portal, tmp_path):
     xlwt = pytest.importorskip("xlwt")
     pytest.importorskip("xlrd")

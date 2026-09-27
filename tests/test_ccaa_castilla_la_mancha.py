@@ -485,6 +485,16 @@ def test_uclm_un_postback_por_ejercicio_con_los_campos_del_formulario(portal, tm
     assert man[f"uclm/{ANIO}/contratosMenoresActuales_{ANIO}.html"]["metodo"] == "GET"
 
 
+def test_uclm_actuales_es_el_ejercicio_siguiente_al_ultimo_cerrado(portal, tmp_path):
+    # En enero la UCLM aún no ha pasado el año anterior a "anteriores": la página
+    # de actuales sigue siendo la de ese año, no la del calendario
+    portal.uclm = {ANIO - 3: portal.uclm[ANIO - 2], ANIO - 2: portal.uclm[ANIO - 1]}
+    assert _ejecutar(tmp_path, "--fuente", "uclm") == 0
+    assert (tmp_path / "raw" / "uclm" / str(ANIO - 1) / f"contratosMenoresActuales_{ANIO - 1}.html").exists()
+    assert json.loads((tmp_path / "raw" / "inventario_uclm.json").read_text(encoding="utf-8")) == {
+        "anteriores": [ANIO - 3, ANIO - 2], "actuales": ANIO - 1}
+
+
 def test_uclm_no_crea_versiones_si_solo_cambia_el_viewstate(portal, tmp_path):
     assert _ejecutar(tmp_path, "--fuente", "uclm") == 0
     SLEEP_REAL(1.1)
