@@ -50,7 +50,9 @@ SOCRATA_DATASETS = {
     'dkrd-id95': ('01_contratacion/resoluciones_tribunal', 'Resoluciones Tribunal Catalán Contratos'),
     'nn7v-4yxe': ('01_contratacion/adjudicaciones_generalitat', 'Adjudicaciones Generalitat Catalunya'),
     '8idu-wkjv': ('01_contratacion/fase_ejecucion', 'Publicaciones fase ejecución'),
-    'ydq4-xy5b': ('01_contratacion/contratos_menores_generalitat', 'Contratos Menores Generalitat'),
+    # Menores de la Generalitat y su sector público, 2020-2024 (ventana de 5 años). Los
+    # importes vienen en céntimos y se sirven tal cual. Antes se pedía ydq4-xy5b (404)
+    'qjue-2pk9': ('01_contratacion/contratos_menores_generalitat', 'Contratos Menores Generalitat'),
     'jxvs-kzbu': ('01_contratacion/adjudicaciones_contractuales_quincenal', 'Adjudicaciones contractuales quincenales'),
     
     # =========================================================================
@@ -553,7 +555,7 @@ Categorías incluidas:
 - Resoluciones Tribunal (dkrd-id95)
 - Adjudicaciones Generalitat (nn7v-4yxe)
 - Fase ejecución (8idu-wkjv)
-- Contratos menores (ydq4-xy5b)
+- Contratos menores de la Generalitat (qjue-2pk9; importes en céntimos)
 - Adjudicaciones quincenales (jxvs-kzbu)
 
 #### Subvenciones y Ayudas ({len([k for k in SOCRATA_DATASETS if '02_subvenciones' in SOCRATA_DATASETS[k][0]])} datasets)

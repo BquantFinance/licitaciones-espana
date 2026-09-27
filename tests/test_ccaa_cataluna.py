@@ -129,6 +129,13 @@ def _fake_get_factory(urls_pedidas):
 # =============================================================================
 
 class DescargaCatalunyaTests(unittest.TestCase):
+    def test_menores_de_la_generalitat_piden_el_dataset_vigente(self):
+        # ydq4-xy5b da 404; qjue-2pk9 son los menores 2020-2024 (importes en céntimos)
+        self.assertIn('qjue-2pk9', ccaa_cataluna.SOCRATA_DATASETS)
+        self.assertNotIn('ydq4-xy5b', ccaa_cataluna.SOCRATA_DATASETS)
+        ruta = ccaa_cataluna.SOCRATA_DATASETS['qjue-2pk9'][0]
+        self.assertIn(f'01_transparencia_catalunya/{ruta}.csv', cat_parquet.ARCHIVOS)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)

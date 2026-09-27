@@ -60,7 +60,7 @@ ARCHIVOS = {
     '01_transparencia_catalunya/01_contratacion/fase_ejecucion.csv': 
         ('contratacion/fase_ejecucion.parquet', 'Contratos en fase ejecución'),
     
-    # Se descargaban (ydq4-xy5b, jxvs-kzbu) pero no se convertían
+    # contratos_menores_generalitat: Socrata qjue-2pk9 (antes ydq4-xy5b, 404); jxvs-kzbu da 404
     '01_transparencia_catalunya/01_contratacion/contratos_menores_generalitat.csv':
         ('contratacion/contratos_menores_generalitat.parquet', 'Contratos menores Generalitat'),
 
