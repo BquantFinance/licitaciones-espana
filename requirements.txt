@@ -3,3 +3,7 @@ pandas>=2.0.0
 pyarrow>=14.0.0
 python-dateutil>=2.9.0
 beautifulsoup4>=4.12.0
+openpyxl>=3.1.0    # Euskadi (XLSX), exportaciones .xlsx
+aiohttp>=3.9.0     # Catalunya: contratos menores
+tqdm>=4.66.0       # Catalunya: contratos menores
+pdfplumber>=0.10.0 # BORME: parser de PDFs

@@ -6,7 +6,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 
 | Fuente | Registros | Período | Tamaño |
 |--------|-----------|---------|--------|
-| Nacional (PLACSP) | 8.7M | 2012-2026 | 780 MB |
+| Nacional (PLACSP) | 4.7M licitaciones (8.7M filas con versiones repetidas en v2026.02) | 2012-2026 | 780 MB |
 | Andalucía | ~857K | 2016-2026 | 47 MB |
 | Catalunya | 20.6M | 2014-2025 | ~180 MB |
 | 🆕 Euskadi | 704K | 2005-2026 | ~160 MB |
@@ -17,8 +17,8 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | 🆕 Asturias | 375K | 2019-2024 | 21 MB |
 | TED (España) | 591K | 2010-2025 | 57 MB |
 | 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | 750 MB |
-| 🆕 Calidad (indicadores) | 8.7M contratos × 20 indicadores | 2012-2026 | 977 MB |
-| **TOTAL** | **~44.4M + BORME** | **2000-2026** | **~2.3 GB** |
+| 🆕 Calidad (indicadores) | 8.7M filas × 20 indicadores (v2026.02, ver correcciones PLACSP) | 2012-2026 | 977 MB |
+| **TOTAL** | **~40.4M + BORME** | **2000-2026** | **~2.3 GB** |
 
 ---
 
@@ -36,11 +36,16 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 | `valencia.zip` | Datos Valencia (14 categorías) | 120 MB |
 | `andalucia.zip` | Contratación Junta de Andalucía | 114 MB |
 | `euskadi.zip` | Contratación Euskadi | 109 MB |
-| `comunidad_madrid.zip` | Contratación Comunidad de Madrid | ~90 MB |
-| `madrid_ayuntamiento.zip` | Actividad contractual Ayuntamiento de Madrid | ~40 MB |
-| `galicia.zip` | Contratación pública Xunta de Galicia (CM + LIC) | ~35 MB |
-| `asturias.zip` | Contratación centralizada Principado de Asturias | ~21 MB |
+| `comunidad_madrid.zip` | Contratación Comunidad de Madrid (CSV + Parquet + CSV originales) | 252 MB |
+| `madrid_ayuntamiento.zip` | Actividad contractual Ayuntamiento de Madrid ⚠️ ver nota | 252 MB |
+| `contratos_galicia.zip` | Contratación pública Xunta de Galicia (CM + LIC) | 34 MB |
+| `asturias.zip` | Contratación centralizada Principado de Asturias | 17 MB |
 | `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | 750 MB |
+| `calidad_licitaciones_resultado.rar` | Indicadores de calidad sobre PLACSP (RAR) | 690 MB |
+
+> ⚠️ En el release `v2026.02`, `madrid_ayuntamiento.zip` es por error una copia exacta de `comunidad_madrid.zip` (mismo SHA-256): contiene los datos de la **Comunidad** de Madrid, no `actividad_contractual_madrid_completo.parquet`. Para obtener los datos del Ayuntamiento, ejecutar `comunidad_madrid/ccaa_madrid_ayuntamiento.py` hasta que se publique el ZIP correcto.
+>
+> ⚠️ Los datos nacionales (PLACSP) de `v2026.02` y los indicadores de calidad derivados tienen errores de columnas que afectan a cualquier suma o recuento: ver [Correcciones en los datos PLACSP](#correcciones-en-los-datos-placsp).
 
 ### Cómo obtener los datos
 
@@ -99,6 +104,8 @@ ted/
 Pipeline para validar si los contratos SARA españoles se publican efectivamente en el Diario Oficial de la UE.
 
 ### Resultados
+
+> ⚠️ Calculado con `licitaciones_espana.parquet` de `v2026.02` sin deduplicar: cada versión adjudicada de una misma licitación contaba como un contrato SARA distinto, la suma de lotes por expediente sumaba versiones repetidas y "negociado sin publicidad" era en realidad el código de negociado *con* publicidad. `run_ted_crossvalidation.py` ya corrige la entrada; las cifras cambiarán al regenerar.
 
 | Métrica | Valor |
 |---------|-------|
@@ -224,26 +231,28 @@ python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp naciona
 
 Pipeline de calidad que aplica **20 indicadores** de validez, consistencia y fiabilidad sobre el dataset nacional (PLACSP), cruzando con TED y BORME.
 
-**8,693,891 contratos** evaluados | Score medio: **88.3** | Mediana: **89.5**
+**4,727,478 licitaciones** evaluadas (una fila por licitación)
+
+> ⚠️ El parquet publicado en `v2026.02` (`calidad_licitaciones_resultado.parquet`, score medio 88.3) se calculó sobre las 8,7M filas de `licitaciones_espana.parquet` —4,7M licitaciones con versiones repetidas— y con `importe_sin_iva` = valor estimado. El pipeline ahora reduce la entrada a una fila por licitación y usa la semántica corregida de importes y procedimientos ([correcciones PLACSP](#correcciones-en-los-datos-placsp)); `--sin-deduplicar` reproduce el comportamiento anterior. La columna "Corregido" es el pipeline actual ejecutado sobre ese mismo parquet: FIA-04 sigue usando la `fecha_publicacion` antigua y VAL-01 el valor estimado cuando no hay presupuesto, hasta que se reprocesen los ATOM.
 
 ### Resultados
 
-| Indicador | % Fallo | Descripción |
-|---|---|---|
-| INT-VAL-01 | 22.6% | Importe de licitación en formato válido |
-| INT-VAL-02 | 31.8% | Importe de adjudicación en formato válido |
-| INT-VAL-07 | 39.2% | Fecha de adjudicación válida |
-| INT-VAL-09 | 23.3% | Código CPV válido |
-| INT-VAL-12 | 33.4% | NIF/CIF adjudicatario válido (checksum) |
-| INT-VAL-14 | 1.3% | Contrato menor coherente con cuantía (LCSP art. 118) |
-| INT-CONS-01 | 1.1% | Si adjudicado, nº ofertas ≥ 1 |
-| INT-CONS-08 | 0.3% | Importe adjudicación ≤ licitación (+5%) |
-| INT-CONS-18 | 51.3% | Adjudicatario existe en BORME (3.3M empresas) |
-| INT-CONS-20 | 77.5% | Contrato SARA publicado en TED (5 estrategias matching) |
-| INT-FIA-01 | 0.6% | Nº ofertas en rango razonable (P99 por CPV) |
-| INT-FIA-04 | 21.3% | Plazo presentación ofertas razonable (0-365 días) |
-| INT-FIA-08 | 0.4% | PBL no outlier (≤ 50M€) |
-| INT-FIA-09 | 0.8% | PA plausible por segmento CPV (P1-P99) |
+| Indicador | % Fallo v2026.02 (8,7M filas) | % Fallo corregido (4,7M licitaciones) | Descripción |
+|---|---|---|---|
+| INT-VAL-01 | 22.6% | 0.8% | Importe de licitación en formato válido |
+| INT-VAL-02 | 31.8% | 5.8% | Importe de adjudicación en formato válido |
+| INT-VAL-07 | 39.2% | 12.3% | Fecha de adjudicación válida |
+| INT-VAL-09 | 23.3% | 41.4% | Código CPV válido (sube porque los contratos menores, 60% sin CPV, pasan a ser el 68% del total) |
+| INT-VAL-12 | 33.4% | 7.8% | NIF/CIF adjudicatario válido (checksum) |
+| INT-VAL-14 | 1.3% | 0.5% | Contrato menor coherente con cuantía (LCSP art. 118); antes 162K derivados de acuerdo marco contaban como menores |
+| INT-CONS-01 | 1.1% | 1.4% | Si adjudicado, nº ofertas ≥ 1 |
+| INT-CONS-08 | 0.3% | 0.4% | Importe adjudicación ≤ licitación (+5%) |
+| INT-CONS-18 | 51.3% | 52.4% | Adjudicatario existe en BORME (3.3M empresas) |
+| INT-CONS-20 | 77.5% | pendiente | Contrato SARA publicado en TED (requiere regenerar el cruce PLACSP↔TED) |
+| INT-FIA-01 | 0.6% | 0.7% | Nº ofertas en rango razonable (P99 por CPV) |
+| INT-FIA-04 | 21.3% | 21.8% | Plazo presentación ofertas razonable (0-365 días) |
+| INT-FIA-08 | 0.4% | 0.0% | PBL no outlier (≤ 50M€); antes se evaluaba el valor estimado |
+| INT-FIA-09 | 0.8% | 1.2% | PA plausible por segmento CPV (P1-P99) |
 
 Los 6 indicadores restantes (formato numérico, no negativos, NUTS, trazabilidad) dan 0.0% de fallo — checks de sanidad que se aplican pero no revelan problemas.
 
@@ -251,20 +260,21 @@ Los indicadores se basan en el marco de calidad de PPDS, con contribuciones de J
 
 ### Menores vs Regulares
 
-| Indicador | Menores (3.3M) | Regulares (5.4M) | Diferencia |
+Recalculado con el pipeline corregido (en `v2026.02`: 3.3M filas de menores frente a 5.4M "regulares", que eran 1.5M licitaciones con versiones repetidas):
+
+| Indicador | Menores (3.2M) | Regulares (1.5M) | Diferencia |
 |---|---|---|---|
-| NIF adjudicatario inválido | 2.7% | 52.1% | -49.5pp |
-| Sin CPV | 60.3% | 0.7% | +59.6pp |
-| Sin fecha adjudicación | 0.8% | 62.6% | -61.9pp |
-| Sin importe licitación | 53.1% | 4.1% | +49.0pp |
-| Score medio | 90.8 | 86.7 | +4.1 |
+| NIF adjudicatario inválido | 2.7% | 18.6% | -16.0pp |
+| Sin CPV | 60.6% | 1.2% | +59.3pp |
+| Sin fecha adjudicación | 0.6% | 36.9% | -36.3pp |
+| Sin importe licitación | 0.0% | 2.5% | -2.5pp |
 
 ### Archivos
 
 ```
 calidad/
 ├── calidad_licitaciones.py                  # Pipeline (429 líneas)
-└── calidad_licitaciones_resultado.parquet   # 8.7M × 70 cols (977 MB)
+└── calidad_licitaciones_resultado.parquet   # v2026.02: 8.7M filas × 70 cols (977 MB), pendiente de regenerar
 ```
 
 ### Uso
@@ -299,33 +309,82 @@ df.groupby('organo_contratante')['score_calidad'].mean().nlargest(20)
 
 Licitaciones de la [Plataforma de Contratación del Sector Público](https://contrataciondelsectorpublico.gob.es/).
 
-| Conjunto | Registros | Período |
-|----------|-----------|---------|
-| Licitaciones | 3.6M | 2012-actualidad |
-| Agregación CCAA | 1.7M | 2016-actualidad |
-| Contratos menores | 3.3M | 2018-actualidad |
-| Encargos medios propios | 14.7K | 2021-actualidad |
-| Consultas preliminares | 3.7K | 2022-actualidad |
+| Conjunto | Licitaciones únicas | Filas en `licitaciones_espana.parquet` (v2026.02) | Período |
+|----------|--------------------:|-------------------------------------------------:|---------|
+| Licitaciones | 1,08M | 3,65M | 2012-actualidad |
+| Agregación CCAA | 434K | 1,74M | 2016-actualidad |
+| Contratos menores | 3,20M | 3,29M | 2018-actualidad |
+| Encargos medios propios | 12,5K | 14,7K | 2021-actualidad |
+| Consultas preliminares | 1,9K | 3,7K | 2022-actualidad |
+| **Total** | **4,73M** | **8,69M** | |
+
+### Correcciones en los datos PLACSP
+
+Los parquet nacionales publicados hasta `v2026.02` —y todo lo calculado sobre ellos: indicadores de calidad, cruce PLACSP↔TED, detector BORME×PLACSP— tienen errores de columnas que distorsionan cualquier suma o recuento. Cifras medidas sobre el propio `licitaciones_espana.parquet`:
+
+| Problema | Efecto | Corrección |
+|----------|--------|------------|
+| **Versiones repetidas.** Cada actualización de una licitación (anuncio, adjudicación, formalización...) es una entrada nueva del ATOM y se guardaba como una fila más | 8.693.891 filas para 4.727.478 licitaciones (hasta 15+ copias). Sumar importes infla la adjudicación ×4,7 (2.223,7 → 476,6 B€) y `importe_sin_iva` ×8 (11.764,7 → 1.476,1 B€). `licitaciones_completo_2012_2026.parquet` sí tiene una fila por licitación, pero en 23.911 casos (0,5 %) no es la versión más reciente | Una fila por `id`: la versión con `fecha_updated` más reciente |
+| **`importe_sin_iva` era el valor estimado** ([#6](https://github.com/BquantFinance/licitaciones-espana/issues/6)): se guardaba `EstimatedOverallContractAmount` | En el conjunto `licitaciones`, el 27 % de las filas tiene `importe_sin_iva` > `importe_con_iva`, imposible para un presupuesto sin IVA | `valor_estimado_contrato` = EstimatedOverallContractAmount; `importe_sin_iva` = TaxExclusiveAmount |
+| **Etiquetas de códigos desplazadas** | "Negociado sin publicidad" etiquetaba el código 4 (negociado *con* publicidad): 41.388 filas frente a 191.039 licitaciones reales. 162.392 derivados de acuerdo marco figuraban como "Contrato menor" y los 3,3M contratos menores como "Asociación innovación". Tipos 22/32 (concesiones LCSP) sin etiqueta y 40 (colaboración público-privada) como "Concesión Servicios" | Etiquetas recalculadas desde `procedimiento_code` / `tipo_contrato_code` |
+| **CPV guardado como número** | 73.903 CPV sin el cero inicial (`9134100` en lugar de `09134100`) | CPV como texto de 8 dígitos |
+| **`fecha_publicacion` (y `ano`) de un anuncio posterior.** Se tomaba el primer `ValidNoticeInfo` sin mirar su tipo | En las licitaciones adjudicadas o resueltas era casi siempre la fecha del anuncio de adjudicación/formalización: en el 63 % el plazo de presentación termina *antes* de esa "publicación" (0,2 % en las que siguen en plazo). Los recuentos por año usan en realidad el año de adjudicación | Fecha del anuncio de licitación (`DOC_CN`) o, si no lo hay, del primer anuncio publicado. Solo se corrige reprocesando los ATOM |
+
+El scraper ya genera los datos corregidos. Para corregir un parquet ya descargado sin volver a procesar los ATOM:
+
+```bash
+python nacional/normalizar_placsp.py -i nacional/licitaciones_espana.parquet \
+    -o nacional/licitaciones_espana_normalizado.parquet    # ~1-2 min, ~4 GB de RAM
+```
+
+```python
+import sys; sys.path.insert(0, '.')        # desde la raíz del repo
+from nacional.licitaciones import leer_placsp
+df = leer_placsp('nacional/licitaciones_espana.parquet')  # una fila por licitación, semántica actual
+```
+
+Sobre los parquet de `v2026.02` la normalización mueve el antiguo `importe_sin_iva` a `valor_estimado_contrato` y deja `importe_sin_iva` vacío: el presupuesto sin IVA real solo se obtiene reprocesando los ZIP de la PLACSP:
+
+```bash
+python nacional/licitaciones.py --anos 2012-2026 --solo-procesar --data-dir <zips PLACSP> --output-dir nacional
+```
 
 ### Archivos
 
 ```
 nacional/
-├── licitaciones_espana.parquet              # Última versión (641 MB)
-└── licitaciones_completo_2012_2026.parquet  # Historial completo (780 MB)
+├── licitaciones.py                          # Scraper ATOM → Parquet/CSV (una fila por licitación)
+├── normalizar_placsp.py                     # Corrige parquets ya generados (ver arriba)
+├── licitaciones_espana.parquet              # v2026.02: 8,7M filas = todas las versiones de 4,7M licitaciones (965 MB)
+└── licitaciones_completo_2012_2026.parquet  # v2026.02: 4,7M filas, una por licitación (762 MB)
 ```
 
-### Campos principales (48 columnas)
+El scraper escribe `licitaciones_completo_{inicio}_{fin}.parquet/.csv` y, desde esta versión, `licitaciones_completo_{inicio}_{fin}_resultados.parquet/.csv` con una fila por resultado (`cac:TenderResult`, uno por lote): las columnas de adjudicación de la tabla principal corresponden al **primer lote**.
+
+### Campos principales
 
 | Categoría | Campos |
 |-----------|--------|
 | Identificación | id, expediente, objeto, url |
-| Órgano | organo_contratante, nif_organo, dir3_organo, ciudad_organo |
-| Tipo | tipo_contrato, subtipo_code, procedimiento, estado |
-| Importes | importe_sin_iva, importe_con_iva, importe_adjudicacion |
-| Adjudicación | adjudicatario, nif_adjudicatario, num_ofertas, es_pyme |
+| Órgano | organo_contratante, nif_organo, dir3_organo, ciudad_organo, dependencia |
+| Tipo | tipo_contrato(_code), subtipo_code, procedimiento(_code), estado(_code) |
+| Importes | valor_estimado_contrato, importe_sin_iva, importe_con_iva, importe_adjudicacion, importe_adj_con_iva |
+| Adjudicación (1er lote) | adjudicatario, nif_adjudicatario, num_ofertas, es_pyme, fecha_adjudicacion |
+| Lotes | n_lotes, n_resultados (+ tabla `_resultados`: lote, resultado_code, adjudicatario, NIF, importes, ofertas, pyme) |
 | Clasificación | cpv_principal, cpvs, ubicacion, nuts |
-| Fechas | fecha_publicacion, fecha_limite, fecha_adjudicacion |
+| Fechas | fecha_publicacion, fecha_limite, fecha_adjudicacion, fecha_updated |
+
+| Columna | Elemento CODICE | Significado |
+|---------|-----------------|-------------|
+| `valor_estimado_contrato` | `ProcurementProject/BudgetAmount/EstimatedOverallContractAmount` | Valor estimado: todos los lotes, prórrogas y modificaciones previstas (base de los umbrales SARA) |
+| `importe_sin_iva` | `ProcurementProject/BudgetAmount/TaxExclusiveAmount` | Presupuesto base de licitación sin impuestos |
+| `importe_con_iva` | `ProcurementProject/BudgetAmount/TotalAmount` | Presupuesto base de licitación con impuestos |
+| `importe_adjudicacion` | `TenderResult/AwardedTenderedProject/LegalMonetaryTotal/TaxExclusiveAmount` | Adjudicado sin impuestos (primer lote) |
+| `importe_adj_con_iva` | `TenderResult/AwardedTenderedProject/LegalMonetaryTotal/PayableAmount` | Adjudicado con impuestos (primer lote) |
+
+**Procedimiento** (`procedimiento_code`): 1 Abierto · 2 Restringido · 3 Negociado sin publicidad · 4 Negociado con publicidad · 5 Diálogo competitivo · 6 Contrato menor · 7 Derivado de acuerdo marco · 8 Concurso de proyectos · 9 Abierto simplificado · 10 Asociación para la innovación · 11 Derivado de asociación para la innovación · 12 Sistema dinámico de adquisición · 13 Licitación con negociación · 100 Normas internas · 999 Otros.
+
+**Tipo de contrato** (`tipo_contrato_code`): 1 Suministros · 2 Servicios · 3 Obras · 7 Administrativo especial · 8 Privado · 21 Gestión de servicios públicos · 22 Concesión de servicios · 31 Concesión de obras públicas · 32 Concesión de obras · 40 Colaboración público-privada · 50 Patrimonial · 999 Otros.
 
 ---
 
@@ -349,28 +408,31 @@ Datos del portal [Transparència Catalunya](https://analisi.transparenciacatalun
 ```
 catalunya/
 ├── contratacion/
-│   ├── contractacio_publica.parquet         # 1.3M contratos regulares
-│   └── contractacio_menors.parquet          # 3.0M contratos menores 🆕
+│   ├── contractacio_menors.parquet          # 3.0M contratos menores 🆕
+│   ├── publicaciones_pscp.parquet           # Publicaciones PSCP (ciclo completo)
+│   ├── adjudicaciones_generalitat.parquet
+│   ├── contratos_registro.parquet, fase_ejecucion.parquet, contratacion_programada.parquet
+│   ├── contratos_covid.parquet, resoluciones_tribunal.parquet
+│   └── *_bcn.parquet                        # Ayuntamiento de Barcelona (menores, contratistas, perfil, modificaciones, resumen)
 ├── subvenciones/
-│   └── raisc_subvenciones.parquet           # 9.6M registros
-├── pressupostos/
-│   └── pressupostos_*.parquet
-├── convenis/
-│   └── convenis_*.parquet
-├── rrhh/
-│   └── rrhh_*.parquet
-└── patrimoni/
-    └── patrimoni_*.parquet
+│   ├── raisc_concesiones.parquet            # 9.6M registros
+│   ├── raisc_convocatorias.parquet
+│   └── convocatorias_subvenciones.parquet
+├── presupuestos/                            # ejecución de gastos/ingresos, presupuestos aprobados
+├── convenios/convenios.parquet
+├── rrhh/                                    # altos cargos, retribuciones, convocatorias
+├── entidades/                               # ayuntamientos, entes locales, sector público
+└── territorio/                              # municipios
 ```
 
 ### 🆕 Contratos menores Catalunya
 
 Dataset nuevo con **3.024.000 registros** de contratos menores del sector público catalán:
 
-- **43 columnas** incluyendo: `id`, `descripcio`, `pressupostLicitacio`, `pressupostAdjudicacio`, `adjudicatariNom`, `adjudicatariNif`, `organContractant`, `fase`
-- Incluye **histórico completo** con todas las actualizaciones de estado de cada contrato
-- Extraído mediante paginación con sub-segmentación automática (72K requests API)
-- Fuente: [Transparència Catalunya - Contractació Pública](https://analisi.transparenciacatalunya.cat)
+- **43 columnas**: `id`, `titol`, `descripcio`, `pressupostLicitacio`, `pressupostAdjudicacio`, `organ`, `idOrgan`, `codiExpedient`, `expedientId`, `esPlacsp`, `esAgregatContractes`, `esAgregatEncarrecs`, `nomPublicacioAgregada` y `fasesVigents_<FASE>_{lotsActius,dataPublicacio,idPublicacio}` para 10 fases (no incluye nombre ni NIF del adjudicatario)
+- Una fila por publicación (`id` + `descripcio`), con las fases vigentes de cada una en columnas
+- Extraído de la API del portal de contratación pública (`contractaciopublica.cat`, `portal-api`) mediante paginación con sub-segmentación automática (72K requests API)
+- Fuente: [Plataforma de Serveis de Contractació Pública](https://contractaciopublica.cat)
 
 ---
 
@@ -517,13 +579,13 @@ scripts/
 
 | Categoría | Campos |
 |-----------|--------|
-| Identificación | id_expediente, numero_expediente, titulo |
-| Clasificación | tipo_contrato, estado, procedimiento, tramitacion |
-| Órgano | perfil_contratante, provincia |
-| Importes | importe_licitacion, valor_estimado, importe_adjudicacion |
-| Adjudicación | adjudicatario, nif_adjudicatario |
-| Fechas | fecha_publicacion, fecha_limite_presentacion |
-| Otros | forma_presentacion, clausulas_sociales, clausulas_ambientales |
+| Identificación | id_expediente, numero_expediente, titulo, url_detalle |
+| Clasificación | tipo_contrato(_codigo), estado(_codigo), codigo_procedimiento (9 = contrato menor), codigo_tramitacion, codigo_normativa |
+| Órgano | organo_contratacion, codigo_perfil, codigo_dir3, provincias_ejecucion |
+| Importes | importe_licitacion, valor_estimado, importe_adjudicacion (sin IVA), importe_adjudicacion_iva (primera adjudicación) |
+| Adjudicación | adjudicatario_nif, todos_adjudicatarios_nif, num_adjudicaciones |
+| Fechas | fecha_publicacion, fecha_limite_presentacion, anuncio_primera_fecha, anuncio_ultima_fecha |
+| Otros | forma_presentacion, cofinanciado_ue, subasta_electronica, sistema_racionalizacion, cpv, medios_publicacion, num_lotes, num_anuncios |
 
 ### Estrategia de descarga
 
@@ -677,6 +739,8 @@ Contratación pública completa de la [Xunta de Galicia](https://www.contratosde
 | Licitaciones | 50,382 | 2007-2026 |
 | **Total** | **1,685,789** | **2007-2026** |
 
+> ⚠️ En los datos publicados (`contratos_galicia.parquet` / `contratos_galicia.zip`) la columna `importe` está inflada ×10 o ×100: el scraper eliminaba el punto decimal de los importes de la API como si fuera separador de miles (674.78 → 67478). El 55 % de los contratos menores publicados supera 48.400 € (imposible por ley) y suman 547.600 M€. El scraper ya está corregido; hay que regenerar los datos. El fichero publicado solo tiene las 12 columnas base.
+
 ### Archivos
 
 ```
@@ -756,6 +820,8 @@ Contratación centralizada del [Principado de Asturias](https://sede.asturias.es
 | Columnas | 99 |
 | Tamaño | 21 MB |
 
+> ⚠️ En el parquet publicado la columna `IVA` de 2023 está multiplicada ×10 (210/100/40/50 en lugar de 21/10/4/5) y, con pandas 3, los importes quedaban como texto. El script ya está corregido y escribe en `ccaa_asturias/`; hay que regenerar los datos.
+
 ### Archivos
 
 ```
@@ -787,8 +853,10 @@ ccaa_asturias/
 ```python
 import pandas as pd
 
-# Nacional - PLACSP
-df_nacional = pd.read_parquet('nacional/licitaciones_espana.parquet')
+# Nacional - PLACSP (una fila por licitación, semántica de importes corregida)
+import sys; sys.path.insert(0, '.')
+from nacional.licitaciones import leer_placsp
+df_nacional = leer_placsp('nacional/licitaciones_espana.parquet')
 
 # TED - España (consolidado)
 df_ted = pd.read_parquet('ted/ted_es_can.parquet')
@@ -797,31 +865,32 @@ df_ted = pd.read_parquet('ted/ted_es_can.parquet')
 df_and = pd.read_parquet('ccaa_Andalucia/licitaciones_andalucia.parquet')
 
 # Euskadi - Contratos sector público
-df_eus = pd.read_parquet('euskadi_parquet/contratos_master.parquet')
+df_eus = pd.read_parquet('Euskadi/euskadi_parquet/contratos_master.parquet')
 
 # Euskadi - Poderes adjudicadores
-df_poderes = pd.read_parquet('euskadi_parquet/poderes_adjudicadores.parquet')
+df_poderes = pd.read_parquet('Euskadi/euskadi_parquet/poderes_adjudicadores.parquet')
 
 # Euskadi - Empresas licitadoras
-df_empresas = pd.read_parquet('euskadi_parquet/empresas_licitadoras.parquet')
+df_empresas = pd.read_parquet('Euskadi/euskadi_parquet/empresas_licitadoras.parquet')
 
 # Comunidad de Madrid - Contratación completa
 df_cam = pd.read_parquet('comunidad_madrid/contratacion_comunidad_madrid_completo.parquet')
 
-# Madrid Ayuntamiento - Actividad contractual
-df_madrid = pd.read_parquet('madrid/actividad_contractual_madrid_completo.parquet')
+# Madrid Ayuntamiento - Actividad contractual (generado por comunidad_madrid/ccaa_madrid_ayuntamiento.py)
+df_madrid = pd.read_parquet('datos_madrid_contratacion_completa/actividad_contractual_madrid_completo.parquet')
 
 # Catalunya - Contratos menores
 df_cat_menors = pd.read_parquet('catalunya/contratacion/contractacio_menors.parquet')
 
 # Catalunya - Subvenciones
-df_cat_subv = pd.read_parquet('catalunya/subvenciones/raisc_subvenciones.parquet')
+df_cat_subv = pd.read_parquet('catalunya/subvenciones/raisc_concesiones.parquet')
 
-# Valencia - Contratación
-df_val = pd.read_parquet('valencia/contratacion/')
+# Valencia - Contratación (un fichero por año; el de la DANA tiene otro esquema)
+import glob
+df_val = pd.concat([pd.read_parquet(f) for f in sorted(glob.glob('valencia/contratacion/*_20*.parquet'))])
 
-# Valencia - Lobbies REGIA
-df_lobbies = pd.read_parquet('valencia/lobbies/')
+# Valencia - Lobbies REGIA (la carpeta mezcla 7 tablas distintas)
+df_lobbies = pd.read_parquet('valencia/lobbies/Grupos_de_interés.parquet')
 
 # BORME - Actos mercantiles (anonimizado)
 df_borme = pd.read_parquet('borme/data/borme_empresas_pub.parquet')
@@ -839,15 +908,15 @@ df_ast = pd.read_parquet('ccaa_asturias/asturias_contracts_ALL_YEARS.parquet')
 ### Ejemplos de análisis
 
 ```python
-# Top adjudicatarios nacional
-df_nacional.groupby('adjudicatario')['importe_sin_iva'].sum().nlargest(10)
+# Top adjudicatarios nacional (importe adjudicado sin IVA, primer lote)
+df_nacional.groupby('nif_adjudicatario')['importe_adjudicacion'].sum().nlargest(10)
 
 # Contratos España publicados en TED por año
 df_ted.groupby('year').size().plot(kind='bar', title='Contratos TED España')
 
-# Andalucía: contratos menores por perfil contratante
-and_menores = df_and[df_and['procedimiento'] == 'Contrato menor']
-and_menores['perfil_contratante'].value_counts().head(20)
+# Andalucía: contratos menores por órgano de contratación
+and_menores = df_and[df_and['codigo_procedimiento'].astype(str) == '9']
+and_menores['organo_contratacion'].value_counts().head(20)
 
 # Euskadi: gasto anual por tipo de contrato
 df_eus.groupby(['anio', 'tipo_contrato'])['importe_adjudicacion'].sum().unstack().plot()
@@ -871,11 +940,11 @@ missing = df_sara[df_sara['_ted_missing']]
 missing.groupby('organo_contratante').size().nlargest(10)
 
 # Contratos menores Catalunya por órgano
-df_cat_menors.groupby('organContractant')['pressupostAdjudicacio'].sum().nlargest(10)
+df_cat_menors.groupby('organ')['pressupostAdjudicacio'].sum().nlargest(10)
 
-# Evolución ERE/ERTE Valencia (2000-2025)
-df_erte = pd.read_parquet('valencia/empleo/')
-df_erte.groupby('año')['expedientes'].sum().plot()
+# Evolución ERE/ERTE Valencia (un único snapshot: los de 2024 y 2025 se solapan)
+df_erte = pd.read_parquet('valencia/empleo/Datos_ERE_y_ERTE_solicitados_y_resueltos_en_la_Comunitat_Valenciana_2025-12-28.parquet')
+df_erte.groupby(df_erte['FECHA_SOLICITUD'].str[:4]).size().plot()
 
 # BORME: constituciones por año
 df_borme = pd.read_parquet('borme/data/borme_empresas_pub.parquet')
@@ -909,7 +978,7 @@ df_ast.groupby(['year', 'CARACTERISTICAS CONTRATO'])['IMP. ADJ. (CON IVA)'].sum(
 df_ast.groupby('ENTE CONTRATANTE')['IMP. ADJ. (CON IVA)'].sum().nlargest(10)
 
 # Asturias: contratos menores por órgano
-ast_menores = df_ast[df_ast['CLASIFICACION GENERAL'] == 'MENOR']
+ast_menores = df_ast[df_ast['CLASIFICACION GENERAL'].isin(['MENOR', 'MENORES 5000'])]
 ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 ```
 
@@ -919,17 +988,20 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 
 | Script | Fuente | Descripción |
 |--------|--------|-------------|
-| `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML |
+| `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML (una fila por licitación + tabla de resultados por lote) |
+| `nacional/normalizar_placsp.py` | — | Corrige parquets PLACSP ya generados: versiones repetidas, semántica de importes, etiquetas y CPV |
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x + salida reproducible |
-| `ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4: API REST + XLSX anuales + portales municipales |
-| `consolidar_euskadi_v4.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
-| `descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
-| `ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
-| `scripts/ccaa_cataluna_contratosmenores.py` | Socrata | Descarga contratos menores Catalunya |
+| `Euskadi/ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4 (solo descarga): API REST + XLSX anuales + portales municipales |
+| `Euskadi/consolidacion_euskadi.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
+| `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
+| `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica 67 CSVs (9 categorías, 12 estructuras) |
+| `scripts/ccaa_cataluna_contratosmenores.py` | contractaciopublica.cat | Descarga contratos menores Catalunya (todas las fases, API del portal) |
 | `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
-| `ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias |
-| `scripts/ccaa_catalunya.py` | Socrata | Descarga datos Catalunya |
+| `scripts/ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias → `ccaa_asturias/` |
+| `scripts/ccaa_cataluna.py` | Socrata + CKAN Barcelona | Descarga datos Catalunya |
+| `scripts/ccaa_cataluna_parquet.py` | — | Convierte los CSV de Catalunya a Parquet |
 | `scripts/ccaa_valencia.py` | CKAN | Descarga datos Valencia |
+| `scripts/ccaa_valencia_parquet.py` | — | Convierte los CSV de Valencia a Parquet |
 | `ted/ted_module.py` | TED | Descarga CSV bulk + API v3 eForms |
 | `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED + matching avanzado (5 estrategias) |
 | `ted/diagnostico_missing_ted.py` | — | Diagnóstico de missing |
@@ -963,7 +1035,10 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 ## 📋 Requisitos
 
 ```bash
-pip install pandas pyarrow requests beautifulsoup4 pdfplumber python-dateutil
+pip install -r requirements.txt
+
+# Tests (offline, sin acceso a los portales)
+pip install pytest && python -m pytest
 ```
 
 ---
