@@ -109,6 +109,8 @@ Pipeline para validar si los contratos SARA españoles se publican efectivamente
 
 > ⚠️ Calculado con `licitaciones_espana.parquet` de `v2026.02` contando cada entrada del ATOM como un contrato: cada versión adjudicada de una misma licitación contaba como un contrato SARA distinto, la suma de lotes por expediente sumaba versiones repetidas y "negociado sin publicidad" era en realidad el código de negociado *con* publicidad. `run_ted_crossvalidation.py` ahora cruza solo la versión más reciente de cada licitación (`es_ultima_version`; el parquet de entrada no se modifica); las cifras cambiarán al regenerar.
 
+El cruce guarda `id`, `fecha_updated`, `_ano` y `_ted_anio_cubierto` en `crossval_sara.parquet`: calidad une el resultado por versión, y un SARA de un año sin avisos en el snapshot TED no cuenta como *missing* (ni en `_ted_missing` ni en `crossval_missing.parquet`) porque ese snapshot no puede decir si se publicó.
+
 | Métrica | Valor |
 |---------|-------|
 | Contratos SARA identificados | 442,835 |
@@ -254,7 +256,7 @@ Evalúa todas las entradas del parquet PLACSP tal como se publican: cada fila de
 | INT-CONS-01 | 1.1% | 1.4% | Si adjudicado, nº ofertas ≥ 1 |
 | INT-CONS-08 | 0.3% | 0.4% | Importe adjudicación ≤ licitación (+5%) |
 | INT-CONS-18 | 51.3% | 52.4% | Adjudicatario existe en BORME (3.3M empresas) |
-| INT-CONS-20 | 77.5% | pendiente | Contrato SARA publicado en TED (requiere regenerar el cruce PLACSP↔TED) |
+| INT-CONS-20 | 77.5% | pendiente | Contrato SARA publicado en TED (requiere regenerar el cruce PLACSP↔TED). Se une por versión (`id` + `fecha_updated`): solo la versión evaluada recibe resultado, y un año sin avisos en el snapshot TED (p.ej. 2026 con TED hasta 2025) queda sin evaluar, no como fallo |
 | INT-FIA-01 | 0.6% | 0.7% | Nº ofertas en rango razonable (P99 por CPV) |
 | INT-FIA-04 | 21.3% | 21.8% | Plazo presentación ofertas razonable (0-365 días) |
 | INT-FIA-08 | 0.4% | 0.0% | PBL no outlier (≤ 50M€); antes se evaluaba el valor estimado |
@@ -456,6 +458,10 @@ Dataset nuevo con **3.024.000 filas** de contratos menores del sector público c
 - Una fila por publicación y contrato, con las fases vigentes de cada una en columnas (una publicación agregada contiene varios contratos, que se distinguen por `expedientId`)
 - Extraído de la API del portal de contratación pública (`contractaciopublica.cat`, `portal-api`) mediante paginación con sub-segmentación automática (72K requests API)
 - Fuente: [Plataforma de Serveis de Contractació Pública](https://contractaciopublica.cat)
+
+**Menores con NIF del adjudicatario.** `publicaciones_pscp.parquet` (Socrata `ybgg-dgi6`) trae 1.048.149 filas con `procediment = 'Contracte menor'` y NIF en el 99,7-100 %: ~350.000 al año en 2023-2024 (locales, Generalitat y universidades), estructurados desde el 2.º semestre de 2022. El RPC (`contratos_registro.parquet`) trae también los de menos de 5.000 €, pero solo con el nombre del adjudicatario.
+
+**Ventanas móviles.** El RPC (`hb6v-jcbf`) y los menores de la Generalitat (`qjue-2pk9`, 2020-2024, importes en céntimos tal como se publican; antes se pedía `ydq4-xy5b`, que da 404) solo sirven los últimos 5 años. `ccaa_cataluna.py` guarda la versión anterior de cada CSV en `_historico/` y `ccaa_cataluna_parquet.py` construye cada parquet con todas las versiones: lo que sale de la ventana sigue con `_en_ultima_descarga=False`.
 
 ---
 
@@ -1117,10 +1123,12 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 ## 📈 Cobertura y próximas CCAA
 
 - [x] Nacional (PLACSP), Andalucía, Asturias, Catalunya, Euskadi, Galicia, Madrid, Valencia
-- [ ] Castilla y León, Región de Murcia, Navarra, Aragón, La Rioja, Castilla-La Mancha (scrapers en desarrollo)
-- [ ] Extremadura, Canarias, Cantabria, Illes Balears, Ceuta y Melilla
+- [x] Castilla y León, Región de Murcia y Aragón: `scripts/ccaa_castilla_leon.py`, `ccaa_murcia.py` (incluye los menores del Servicio Murciano de Salud 2019-2025) y `ccaa_aragon.py`, verificados en vivo el 2026-09-27
+- [ ] La Rioja, Castilla-La Mancha, Extremadura y menores de Valencia fuera del REGCON (Universitat de València, Ajuntament de València, Diputación de Alicante): scrapers en desarrollo
+- [ ] Canarias, Cantabria, Illes Balears, Ceuta y Melilla
+- Navarra: su ley foral de contratos (art. 102.3) solo obliga a publicar la menor cuantía agregada por empresa y trimestre; no hay fuente contrato a contrato
 
-Qué publica cada comunidad fuera de PLACSP (sobre todo contratos menores), qué nos falta y cómo atacarlo: [docs/COBERTURA.md](docs/COBERTURA.md).
+**Contratos menores:** no hay cobertura del 100 %. Estimamos el 55-65 % de los menores publicados y no existe un denominador oficial completo (el RCSP es una cota inferior). Veredicto por comunidad, inventario de fuentes y plan: [docs/COBERTURA.md](docs/COBERTURA.md) (§0.1 y §5).
 
 ---
 
