@@ -689,6 +689,32 @@ class TestRunTedCrossvalidationE2E:
 #  run_ted_crossvalidation.py — casos sueltos
 # ═══════════════════════════════════════════════════════════════════════════
 
+def test_sara_de_un_ano_sin_ted_queda_sin_evaluar(tmp_path, monkeypatch, ted_http):
+    """TED solo cubre 2019 y 2024: un SARA de 2025 sin coincidencia no es 'missing'
+    (el snapshot no puede decir si se publicó); el resultado va por id y versión."""
+    repo = _make_repo(tmp_path, ["run_ted_crossvalidation.py"])
+    monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", repo / "ted")
+    tm.download_ted_spain(years=[2019, 2024])
+    df = _placsp_df().assign(fecha_updated=pd.Timestamp("2025-07-01 10:00", tz="UTC"))
+    extra = df[df["expediente"] == "DEF-2024-9"].assign(
+        id="placsp-2025", expediente="DEF-2025-1", ano=2025.0,
+        fecha_adjudicacion=pd.Timestamp("2025-06-01"))
+    pd.concat([df, extra], ignore_index=True).to_parquet(
+        repo / "nacional" / "licitaciones_espana.parquet", index=False)
+    _run_script(repo, "run_ted_crossvalidation.py", monkeypatch)
+
+    sara = pd.read_parquet(repo / "ted" / "crossval_sara.parquet").set_index("expediente")
+    assert {"id", "fecha_updated", "_ano", "_ted_anio_cubierto"} <= set(sara.columns)
+    assert sara.loc["DEF-2025-1", "id"] == "placsp-2025"
+    assert not sara.loc["DEF-2025-1", "_ted_anio_cubierto"]
+    assert not sara.loc["DEF-2025-1", "_ted_missing"] and not sara.loc["DEF-2025-1", "_ted_validated"]
+    # El mismo contrato en 2024 (año cubierto) sí es missing
+    assert sara.loc["DEF-2024-9", "_ted_anio_cubierto"] and sara.loc["DEF-2024-9", "_ted_missing"]
+    missing = pd.read_parquet(repo / "ted" / "crossval_missing.parquet")
+    assert "DEF-2025-1" not in set(missing["expediente"]) and "DEF-2024-9" in set(missing["expediente"])
+    assert len(missing) == sara["_ted_missing"].sum()
+
+
 class TestLoadPlacspSemantica:
     """load_placsp sobre la semántica corregida de PLACSP (issue #6 y versiones repetidas)."""
 

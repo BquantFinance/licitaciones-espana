@@ -1190,9 +1190,21 @@ def run_advanced_matching(df_sara, df_ted, matched_idx_prev, match_data_prev, co
 #  5. APLICAR RESULTADOS + RESUMEN
 # ======================================================================
 
+def anios_cubiertos(df_ted):
+    """Años con avisos en el snapshot TED (columna year), o None si no se sabe."""
+    if 'year' not in df_ted.columns:
+        return None
+    return set(pd.to_numeric(df_ted['year'], errors='coerce').dropna().astype(int))
+
+
 def apply_results_and_report(df_placsp, matched_idx, match_data,
-                              n_e1, n_e2, n_e2b, e2b_matched_idx, adv):
-    """Marca matched/missing, genera resumen, guarda outputs."""
+                              n_e1, n_e2, n_e2b, e2b_matched_idx, adv, anios_ted=None):
+    """Marca matched/missing, genera resumen, guarda outputs.
+
+    anios_ted: años que cubre el snapshot TED (anios_cubiertos). Un SARA de otro
+    año (p.ej. 2026 con TED hasta 2025) sin coincidencia queda sin evaluar
+    (_ted_anio_cubierto=False), no como missing; una coincidencia sí cuenta.
+    """
     print(f"\n{'='*70}")
     print(f"  RESUMEN CONSOLIDADO")
     print(f"{'='*70}")
@@ -1297,16 +1309,27 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
         if s_idx in adv['e6_ted_ids']:
             df_placsp.at[s_idx, '_ted_id'] = adv['e6_ted_ids'][s_idx]
 
+    # -- Cobertura del snapshot TED --
+    ano_col = '_ano' if '_ano' in df_placsp.columns else 'ano'
+    if anios_ted is None:
+        df_placsp['_ted_anio_cubierto'] = True
+    else:
+        df_placsp['_ted_anio_cubierto'] = df_placsp[ano_col].isin(anios_ted)
+    cubierto = df_placsp['_ted_anio_cubierto']
+
     # -- Missing flags --
     df_placsp['_ted_missing'] = (
         df_placsp['_es_sara'] &
         ~df_placsp['_ted_validated'] &
-        ~df_placsp['_es_neg_sin_pub']
+        ~df_placsp['_es_neg_sin_pub'] &
+        cubierto
     )
     df_placsp['_ted_missing_incl_neg'] = (
         df_placsp['_es_sara'] &
-        ~df_placsp['_ted_validated']
+        ~df_placsp['_ted_validated'] &
+        cubierto
     )
+    n_sin_cobertura = int((df_placsp['_es_sara'] & ~df_placsp['_ted_validated'] & ~cubierto).sum())
 
     # -- Counts --
     n_sara = df_placsp['_es_sara'].sum()
@@ -1337,10 +1360,14 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
     print(f"  Neg. sin pub. (no matched):     {n_neg:>8,}  ({n_neg/n_sara*100:>5.1f}%)")
     print(f"  Missing (excl. neg s/p):    {n_missing:>8,}  ({n_missing/n_sara*100:>5.1f}%)")
     print(f"  Missing (incl. neg s/p):    {n_missing_incl_neg:>8,}  ({n_missing_incl_neg/n_sara*100:>5.1f}%)")
+    if anios_ted is not None:
+        print(f"  Sin evaluar (año fuera de TED {min(anios_ted, default='-')}-"
+              f"{max(anios_ted, default='-')}): {n_sin_cobertura:>8,}  ({n_sin_cobertura/n_sara*100:>5.1f}%)")
 
     # -- Por año --
     df_missing_final = adv['df_missing_final']
-    ano_col = '_ano' if '_ano' in df_placsp.columns else 'ano'
+    if anios_ted is not None:
+        df_missing_final = df_missing_final[df_missing_final[ano_col].isin(anios_ted)]
 
     print(f"\n  {'Ano':>6} {'SARA':>8} {'Match':>8} {'%':>6} {'Missing':>8}")
     print(f"  {'-'*42}")
@@ -1431,7 +1458,9 @@ def save_outputs(df_placsp, df_missing_final, hc):
     """Guarda parquets de resultados."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # id + fecha_updated: calidad une el resultado por versión (no por expediente)
     save_cols = [
+        'id', 'fecha_updated',
         'expediente', 'organo_contratante', 'nif_organo', 'dependencia',
         'nif_adjudicatario', 'adjudicatario', 'importe_adjudicacion',
         'valor_estimado_contrato', 'importe_sin_iva', 'ano', 'estado', 'conjunto', 'tipo_contrato',
@@ -1439,7 +1468,7 @@ def save_outputs(df_placsp, df_missing_final, hc):
         '_es_sara', '_umbral_sara', '_imp_sara', '_imp_match',
         '_sara_por_lotes', '_is_age', '_is_sector',
         '_es_neg_sin_pub', '_tipo_contrato', '_procedimiento',
-        '_ted_validated', '_ted_missing', '_ted_missing_incl_neg',
+        '_ted_validated', '_ted_missing', '_ted_missing_incl_neg', '_ano', '_ted_anio_cubierto',
         '_match_strategy',
         '_ted_id', '_ted_n_ofertas', '_ted_cpv', '_ted_win_size',
         '_ted_direct_award', '_ted_sme_part', '_ted_buyer_legal_type',
@@ -1488,7 +1517,8 @@ if __name__ == "__main__":
 
     # 4. Aplicar resultados + resumen
     df_placsp, df_missing_final, hc = apply_results_and_report(
-        df_placsp, matched_idx, match_data, n_e1, n_e2, n_e2b, e2b_matched_idx, adv
+        df_placsp, matched_idx, match_data, n_e1, n_e2, n_e2b, e2b_matched_idx, adv,
+        anios_ted=anios_cubiertos(df_ted)
     )
 
     # 5. Guardar

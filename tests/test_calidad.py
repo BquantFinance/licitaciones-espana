@@ -80,3 +80,39 @@ def test_cons08_usa_el_par_con_iva_si_falta_sin_iva():
     })
     r = calidad.calcular_indicadores_base(df)
     assert r["INT-CONS-08"].tolist() == [False, True]
+
+
+def _nacional_cons20():
+    return pd.DataFrame({
+        "id": ["a", "a", "b", "e", "d"],
+        "expediente": ["E1", "E1", "E2", "E2", "E4"],
+        "nif_adjudicatario": ["B1", "B1", "B2", "B2", "B4"],
+        "fecha_updated": pd.to_datetime(["2024-01-01", "2024-05-01", "2024-02-01", "2024-03-01",
+                                         "2026-02-01"], utc=True),
+    })
+
+
+def test_cons20_se_une_por_version_y_respeta_la_cobertura_de_ted(tmp_path):
+    ted = pd.DataFrame({
+        "id": ["a", "b", "d"], "expediente": ["E1", "E2", "E4"], "nif_adjudicatario": ["B1", "B2", "B4"],
+        # otra resolución que el nacional: la unión no depende de ella
+        "fecha_updated": pd.to_datetime(["2024-05-01", "2024-02-01", "2026-02-01"], utc=True
+                                        ).astype("datetime64[us, UTC]"),
+        "_ted_validated": [True, False, False],
+        "_ted_missing": [False, True, False],
+        "_match_strategy": ["E1_E2", "", ""],
+        "_ted_anio_cubierto": [True, True, False],
+    })
+    ruta = tmp_path / "crossval_sara.parquet"
+    ted.to_parquet(ruta, index=False)
+    res = calidad.calcular_cons20(_nacional_cons20(), str(ruta))
+    # a: solo la versión evaluada (la última); b: missing; e: mismo expediente y
+    # adjudicatario que b pero otro id, no hereda; d: 2026 sin TED, sin evaluar
+    assert res.tolist()[1:3] == [True, False]
+    assert pd.isna(res.iloc[0]) and pd.isna(res.iloc[3]) and pd.isna(res.iloc[4])
+
+    # Un cruce antiguo (sin id ni fecha_updated) sigue uniéndose por expediente|adjudicatario
+    ruta_antigua = tmp_path / "crossval_antiguo.parquet"
+    ted.drop(columns=["id", "fecha_updated", "_ted_anio_cubierto"]).to_parquet(ruta_antigua, index=False)
+    antiguo = calidad.calcular_cons20(_nacional_cons20(), str(ruta_antigua))
+    assert antiguo.tolist() == [True, True, False, False, False]

@@ -29,6 +29,7 @@ es_ultima_version / n_versiones para agregar por licitacion;
 """
 import pandas as pd
 import numpy as np
+import pyarrow.parquet as pq
 import re
 import argparse
 import os
@@ -301,8 +302,48 @@ def calcular_indicadores_base(df):
 # CONS-20 (TED) y CONS-18 (BORME)
 # ======================================================================
 
+def _clave_version(df):
+    """(id, fecha_updated en µs desde 1970) para unir por versión, sea cual sea la
+    resolución del timestamp en cada parquet."""
+    f = pd.to_datetime(df["fecha_updated"], utc=True, errors="coerce").astype("datetime64[us, UTC]")
+    return pd.DataFrame({"id": df["id"].astype("string").to_numpy(),
+                         "_t": f.astype("int64").to_numpy()})
+
+
+def _cons20_por_version(df, path_ted, columnas):
+    """El resultado del cruce (una versión por id: la última) se une por id y
+    fecha_updated: solo esa versión lo recibe, no las anteriores ni otro
+    expediente homónimo. Sin coincidencia en un año que el snapshot TED no
+    cubre (_ted_anio_cubierto=False), queda sin evaluar."""
+    leer = ["id", "fecha_updated", "_ted_validated"] + [c for c in ["_ted_anio_cubierto"] if c in columnas]
+    ted = pd.read_parquet(path_ted, columns=leer)
+    val = ted["_ted_validated"].astype("boolean")
+    if "_ted_anio_cubierto" in ted.columns:
+        sin_cobertura = ~ted["_ted_anio_cubierto"].astype(bool) & ~val.fillna(False)
+        val = val.mask(sin_cobertura)
+        print(f"  {len(ted):,} contratos SARA; sin evaluar por año fuera de TED: {int(sin_cobertura.sum()):,}")
+    else:
+        print(f"  {len(ted):,} contratos SARA")
+    ted = _clave_version(ted).assign(_r=val.to_numpy())
+    repetidas = ted.duplicated(["id", "_t"])
+    if repetidas.any():
+        print(f"  AVISO: {int(repetidas.sum()):,} versiones con más de un resultado TED; cuenta si alguno casa")
+        ted = ted.groupby(["id", "_t"], as_index=False, sort=False)["_r"].max()
+    res = _clave_version(df).merge(ted, on=["id", "_t"], how="left", sort=False)["_r"]
+    res.index = df.index
+    n_eval = res.notna().sum(); n_ok = (res == True).sum(); n_miss = (res == False).sum()  # noqa: E712
+    print(f"  SARA en nacional (por versión): {n_eval:,} | En TED: {n_ok:,} "
+          f"({n_ok/max(n_eval,1)*100:.1f}%) | Missing: {n_miss:,}")
+    return res
+
+
 def calcular_cons20(df, path_ted):
     print(f"  Cargando TED: {path_ted}")
+    columnas = pq.read_schema(path_ted).names
+    if {"id", "fecha_updated"} <= set(columnas) and {"id", "fecha_updated"} <= set(df.columns):
+        return _cons20_por_version(df, path_ted, columnas)
+    print("  Cruce TED sin id/fecha_updated (anterior a la unión por versión): "
+          "se une por expediente|adjudicatario")
     ted = pd.read_parquet(path_ted, columns=["expediente","nif_adjudicatario",
                                               "_ted_validated","_ted_missing",
                                               "_match_strategy"])
