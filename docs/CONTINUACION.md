@@ -16,7 +16,7 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
 - El entorno necesita acceso de red *Full*, que el propietario activa en la configuración del entorno desde la web.
 - Con ese acceso, `pypi.org` va por el proxy, pero sigue en `NO_PROXY` y la conexión directa da 403. Para instalar: `env -u NO_PROXY -u no_proxy pip install --proxy "$HTTPS_PROXY" ...`.
 - Entornos de trabajo: `/home/user/venv3` (pandas 3.0.6) y `/home/user/venv22` (pandas 2.2.3). Instala también `xlrd`, `xlwt` y `odfpy`: sin `xlwt` se salta un test.
-- La API de GitHub responde con el token que inyecta el proxy (`-H "Authorization: Bearer $GITHUB_TOKEN"`, permiso de escritura). Así se puede crear un release en borrador y subirle ficheros; el conector MCP no puede.
+- La API de GitHub responde con el token que inyecta el proxy (`-H "Authorization: Bearer $GITHUB_TOKEN"`, permiso de escritura), pero **crear releases está bloqueado para este tipo de sesión** (403: "Creating, editing, or deleting releases is not permitted for this session type", comprobado el 2026-09-27). Tampoco hay `git lfs` en el contenedor. **Desde la nube no se pueden sacar datos a GitHub**: los datos descargados solo viven en el contenedor y se pierden al acabar la sesión. Los releases los tiene que crear el propietario desde su máquina, con los scripts de `herramientas/sesion_2026_09_27/`.
 - Recursos: 4 CPU, 15 GB de RAM y ~30 GB de disco. Hay que borrar las salidas de pruebas: los ZIP de toda la PLACSP ocupan ~11 GB.
 
 **Hecho y verificado.**
@@ -41,6 +41,10 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
 - La revisión de re-ejecuciones encontró duplicados sin marcar al retirarse un año, con fallos pasajeros o al retocar las descripciones: ver §3.1.4.
 
 **Datos para Elicita (issue #6).** El propietario pidió regenerar la PLACSP y la calidad y publicarlas en un release en **borrador**, sin tocar v2026.02. Estado y cifras en §3.3.
+- **Regeneración del 2026-09-27**: 45 ZIP (todos los actuales, 2012-2026) → 9.710.903 entradas de 5.218.753 licitaciones, 0 descartadas y 0 errores, en 59 min con un pico de 6,2 GB.
+- La semilla v2026.02 no añade **ninguna** fila: 8.693.891 y 4.725.557 filas leídas, todas presentes (35.627 y 3.401 sin fecha, casadas por contenido). Todo lo publicado en v2026.02 sigue en los ZIP de hoy.
+- Salida: principal 4,3 GB; resultados 0,9 GB; criterios 0,7 GB; adjudicatarios 0,4 GB; lotes 0,2 GB.
+- **No se pudo subir** (releases bloqueados en la sesión): hay que repetirlo en la máquina del propietario con `herramientas/sesion_2026_09_27/regeneracion_placsp/`.
 
 **Sesión del 2026-09-27 (noche).** Prioridad del propietario: *el 100 % de los contratos menores para un modelo antifraude* (§3.6 y `docs/COBERTURA.md` §0 y §5).
 - Commits, todos con tests en pandas 3 y 2.2:
