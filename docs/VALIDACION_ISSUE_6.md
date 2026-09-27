@@ -1,5 +1,8 @@
 # Issue #6: revisión y validación del 27 de septiembre de 2026
 
+> Informe histórico de la primera fase. La reconstrucción completa ya terminó;
+> véase [el resultado final](RESULTADO_REGENERACION_ISSUE_6.md).
+
 ## Situación en GitHub
 
 - [Comentario de 686f6c61, 27 de marzo](https://github.com/BquantFinance/licitaciones-espana/issues/6#issuecomment-4142176179):

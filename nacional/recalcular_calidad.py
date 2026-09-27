@@ -11,6 +11,7 @@ import sys
 from types import SimpleNamespace
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from nacional.regenerar_historico import digest
 
@@ -21,6 +22,15 @@ def cargar(root, relative, name):
     module=importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def leer_reconstruido(path, solo_ultima_version=False):
+    """Respeta las marcas canónicas consolidadas; no las recalcula por orden físico."""
+    required={"valor_estimado_contrato","n_versiones","es_ultima_version","entrada_repetida","entrada_origen"}
+    if not required.issubset(pq.read_schema(path).names):
+        raise ValueError("Se requiere el nacional consolidado con marcas de versión verificables")
+    filters=[("es_ultima_version","=",True)] if solo_ultima_version else None
+    return pq.read_table(path,filters=filters).to_pandas()
 
 
 def cons20_por_version(df, path):
@@ -54,6 +64,7 @@ def run(args):
                 "sha256_driver":digest(__file__)}
     if not marker.exists():
         ted=cargar(args.parser_root,"ted/run_ted_crossvalidation.py","ted_regeneracion")
+        ted.leer_placsp=leer_reconstruido
         ted.OUTPUT_DIR=path_ted
         df=ted.load_placsp(args.nacional)
         source=ted.load_ted(args.ted)
@@ -78,6 +89,7 @@ def run(args):
     expected=(args.parser_root/"nacional/licitaciones.py").resolve()
     if Path(quality.leer_placsp.__code__.co_filename).resolve()!=expected:
         raise ValueError("Se ha cargado una revisión distinta del lector nacional")
+    quality.leer_placsp=leer_reconstruido
     result=args.output/"calidad"/"calidad_licitaciones_resultado.parquet"
     if result.exists():
         raise ValueError("El resultado de calidad ya existe; no se sobrescribe")

@@ -10,7 +10,10 @@ que se perdieron al generar aquel parquet.
 - Parser, calidad y TED: revisión `627008b1b40158418b432f92f1a8757e646249bf`
   de la PR #23 del mantenedor. Aún no integrada en `main` al comenzar el trabajo.
 - `patches/pr23-ted-nulos.patch`: corrección adicional para campos nullable de
-  pandas y expedientes vacíos, con una prueba de regresión.
+  pandas y expedientes vacíos, con una prueba de regresión. También mantiene
+  como texto mutable las columnas de enriquecimiento de TED y usa asignaciones
+  escalares directas para evitar copiar arrays Arrow en cada actualización.
+  La exportación de calidad utiliza Zstandard para reducir el tamaño de entrega.
 - Python 3.11+ y `requirements-regeneracion.txt`; esta ejecución usa pandas 3.
 - Los ZIP actuales pueden diferir de los descargados para el release original,
   especialmente los anuales de 2026. La comparación registra las diferencias;
@@ -80,6 +83,9 @@ de salida. No se sobrescriben los parquets publicados.
 - Se conserva una fila por entrada ATOM, incluidas versiones repetidas. Las
   marcas `n_versiones`, `es_ultima_version` y `entrada_repetida` se calculan
   después sobre el conjunto completo, no por bloque.
+  TED y calidad leen esas marcas canónicas sin recalcularlas a partir del orden
+  físico del parquet: con duplicados idénticos, cambiar ese criterio de empate
+  seleccionaba otra copia en algunas filas.
 - Se preserva el detalle de adjudicatarios, lotes, criterios, resultados y
   modificaciones como JSON en `detalle.parquet` de cada partición. No se usa
   para reemplazar silenciosamente los importes principales del expediente.
@@ -100,6 +106,8 @@ de salida. No se sobrescriben los parquets publicados.
   2026 también se deja sin evaluar; no se convierte en un resultado negativo.
   Una coincidencia encontrada sí se conserva. Incluso en años cubiertos,
   "sin coincidencia" no prueba por sí solo que el contrato no se publicara.
+  El ajuste de cobertura se aplica en `validacion_por_version.parquet` y calidad;
+  las tablas `crossval_missing` son diagnósticos brutos del pipeline TED.
 - El indicador BORME sigue siendo el contraste de nombres del pipeline del
   mantenedor: no constituye una verificación fiscal o jurídica de la empresa.
 

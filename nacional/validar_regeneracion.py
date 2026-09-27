@@ -35,6 +35,15 @@ def verificar(nacional, calidad, informe):
         checks["fechas_updated_nulas"]=db.sql("SELECT count(*) FROM n WHERE fecha_updated IS NULL").fetchone()[0]
         checks["licitaciones_sin_una_ultima_version"]=db.sql("SELECT count(*) FROM (SELECT conjunto,id FROM n GROUP BY ALL HAVING count(*) FILTER(WHERE es_ultima_version)<>1)").fetchone()[0]
         checks["ultimas_marcadas_repetidas"]=db.sql("SELECT count(*) FROM n WHERE es_ultima_version AND entrada_repetida").fetchone()[0]
+        checks["ultimas_no_recientes"]=db.sql("""SELECT count(*) FROM n JOIN
+            (SELECT conjunto,id,max(fecha_updated) ultima FROM n GROUP BY ALL) m USING(conjunto,id)
+            WHERE es_ultima_version AND fecha_updated IS DISTINCT FROM ultima""").fetchone()[0]
+        checks["recuentos_versiones_incoherentes"]=db.sql("""SELECT count(*) FROM
+            (SELECT conjunto,id FROM n GROUP BY ALL
+             HAVING min(n_versiones)<>count(DISTINCT fecha_updated) OR max(n_versiones)<>count(DISTINCT fecha_updated))""").fetchone()[0]
+        checks["marcas_repeticion_incoherentes"]=db.sql("""SELECT count(*) FROM
+            (SELECT conjunto,id,fecha_updated FROM n GROUP BY ALL
+             HAVING count(*) FILTER(WHERE entrada_repetida)<>count(*)-1)""").fetchone()[0]
         # Exact value comparisons, including all original fields and provenance.
         different=" OR ".join(f'n."{c}" IS DISTINCT FROM q."{c}"' for c in schema_n)
         checks["filas_con_campos_nacionales_modificados"]=db.sql(f"""SELECT count(*) FROM n FULL OUTER JOIN q

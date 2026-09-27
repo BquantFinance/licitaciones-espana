@@ -97,7 +97,7 @@ def test_delivery_validator_detects_changed_amounts(tmp_path):
     from nacional.validar_regeneracion import verificar
     national=pd.DataFrame({"id":["a"],"conjunto":["licitaciones"],"archivo_origen":["test.zip"],
                            "entrada_origen":[0],"fecha_updated":pd.to_datetime(["2026-01-01"],utc=True),
-                           "es_ultima_version":[True],"entrada_repetida":[False],"importe_sin_iva":[100.]})
+                           "es_ultima_version":[True],"entrada_repetida":[False],"n_versiones":[1],"importe_sin_iva":[100.]})
     quality=national.copy()
     for col in CATALOGO:
         quality[col]=True
