@@ -30,7 +30,10 @@ def leer(d, columnas, archivo):
 
 
 def distinto(a, b):
-    a, b = pd.to_numeric(a, errors='coerce'), pd.to_numeric(b, errors='coerce')
+    # a float64 con NaN: con dtypes nullable (Float64, pandas 3) NaN == x da <NA> y .sum()
+    # se saltaba esas filas (publicado vacío frente a regenerado informado)
+    a = pd.to_numeric(a, errors='coerce').astype('float64')
+    b = pd.to_numeric(b, errors='coerce').astype('float64')
     iguales = (a == b) | (a.isna() & b.isna()) | (a.notna() & b.notna() & np.isclose(a.fillna(0), b.fillna(0)))
     return ~iguales
 
