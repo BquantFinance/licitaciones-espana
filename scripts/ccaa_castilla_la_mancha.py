@@ -348,6 +348,17 @@ def _modulo(nombre):
         return None
 
 
+def _abrir_libarchive(libarchive, ruta):
+    """Lector de libarchive con el formato fijado por la firma del fichero: con
+    la detección automática, un RAR que guarda un XLSX sin comprimir se leería
+    como el ZIP de dentro."""
+    with open(ruta, "rb") as f:
+        cabeza = f.read(8)
+    formato = ("rar5" if cabeza.startswith(b"Rar!\x1a\x07\x01\x00") else "rar" if cabeza.startswith(b"Rar!\x1a\x07")
+               else "7zip" if cabeza.startswith(b"7z\xbc\xaf\x27\x1c") else "all")
+    return libarchive.file_reader(str(ruta), format_name=formato)
+
+
 def _integridad(ruta, formato):
     """Motivo por el que un ZIP/XLSX/RAR descargado está incompleto o dañado, o None."""
     try:
@@ -358,7 +369,7 @@ def _integridad(ruta, formato):
         if formato in ("rar", "7z"):
             libarchive = _modulo("libarchive")
             if libarchive is not None:
-                with libarchive.file_reader(str(ruta)) as archivo:
+                with _abrir_libarchive(libarchive, ruta) as archivo:
                     for entrada in archivo:
                         for _ in entrada.get_blocks():
                             pass
@@ -937,7 +948,7 @@ def _extraer_zip(ruta, carpeta):
 
 
 def _extraer_libarchive(libarchive, ruta, carpeta):
-    with libarchive.file_reader(str(ruta)) as archivo:
+    with _abrir_libarchive(libarchive, ruta) as archivo:
         for i, entrada in enumerate(archivo):
             if not entrada.isfile:
                 continue

@@ -504,17 +504,15 @@ def test_uclm_ejercicio_retirado_conserva_sus_filas(portal, tmp_path):
 
 
 @pytest.mark.parametrize("fallo", ["get", "post"])
-def test_uclm_caida_no_retira_nada(portal, tmp_path, fallo):
+def test_uclm_caida_no_retira_nada(portal, tmp_path, monkeypatch, fallo):
     assert _ejecutar(tmp_path, "--fuente", "uclm") == 0
     antes = _parquet(tmp_path, "uclm")
     SLEEP_REAL(1.1)
     if fallo == "get":
         portal.uclm_get = 503
     else:
-        portal.viewstate_get = ("otro", "otra")   # el servidor rechaza el postback: HTTP 500
-        portal.get, original = portal.get, portal.get
-        requests.get = lambda url, **kw: (original(url, **kw) if url != M.URL_UCLM_ANTERIORES else
-                                          FakeResponse(body=pagina_uclm(portal.uclm, "X", "Y", "hoy")))
+        # El servidor rechaza todos los postback (HTTP 500): la tabla no llega
+        monkeypatch.setattr(requests, "post", lambda url, **kw: FakeResponse(status=500))
     assert _ejecutar(tmp_path, "--fuente", "uclm", "--comprobar-todo") == 1
     despues = _parquet(tmp_path, "uclm")
     assert len(despues) == len(antes) and despues["_en_ultima_descarga"].all()
@@ -580,10 +578,32 @@ def test_descarga_fallida_no_pierde_la_copia(portal, tmp_path, fallo):
 def test_zip_cortado_se_vuelve_a_pedir(portal, tmp_path):
     url = f"{FICHEROS}2024-05/CM_PRIMER_TRIMESTRE_SESCAM.zip"
     bueno = portal.urls[url]
-    portal.urls[url] = [bueno[: len(bueno) // 2], (bueno[:-10], {"Content-Length": str(len(bueno))}), bueno]
+    portal.urls[url] = [bueno[: len(bueno) // 2], bueno]           # sin su directorio central
     assert _ejecutar(tmp_path, "--fuente", "jccm") == 0
-    assert portal.pedidas(url) == 3
+    assert portal.pedidas(url) == 2
     assert (tmp_path / "raw" / "sescam" / str(VIEJO) / Path(url).name).read_bytes() == bueno
+
+
+def test_descarga_mas_corta_que_su_content_length_se_vuelve_a_pedir(portal, tmp_path):
+    # Un CSV cortado sigue pareciendo un CSV: solo lo delata el Content-Length
+    bueno = "Expediente;Importe\nA;10\nB;20\n".encode("utf-8")
+    publicar(portal, "113", ANIO, "2026-08", "menores_JCCM_2T.csv", f"JCCM 2º trimestre {ANIO} gestor PICOS",
+             [(bueno[:-6], {"Content-Length": str(len(bueno))}), bueno])
+    assert _ejecutar(tmp_path, "--fuente", "jccm") == 0
+    assert portal.pedidas(f"{FICHEROS}2026-08/menores_JCCM_2T.csv") == 2
+    df = _parquet(tmp_path, "menores_junta")
+    assert df.loc[df["_titulo"] == f"JCCM 2º trimestre {ANIO} gestor PICOS", "Expediente"].tolist() == ["A", "B"]
+
+
+def test_dos_ficheros_con_el_mismo_nombre_no_se_pisan(portal, tmp_path):
+    for carpeta, articulo in (("2025-07", "PRIMERO"), ("2025-12", "CORREGIDO")):
+        publicar(portal, "113", ANIO, carpeta, "CM_SESCAM.zip", f"SESCAM 3º Trimestre {ANIO} ({carpeta})",
+                 _zip({"a.xlsx": _sescam_xlsx(ANIO, articulo)}))
+    assert _ejecutar(tmp_path, "--fuente", "jccm") == 0
+    carpeta = tmp_path / "raw" / "sescam" / str(ANIO)
+    assert sorted(p.name for p in carpeta.iterdir()) == ["2025-07_CM_SESCAM.zip", "2025-12_CM_SESCAM.zip"]
+    df = _parquet(tmp_path, "sescam")
+    assert sorted(df.loc[df["_anio"] == str(ANIO), "Artículo"]) == ["CORREGIDO", "PRIMERO"]
 
 
 def test_fichero_modificado_conserva_las_filas_anteriores(portal, tmp_path):
@@ -622,13 +642,14 @@ def test_solo_se_vuelven_a_pedir_el_anio_actual_y_el_anterior(portal, tmp_path):
 def test_zip_con_anidados_restos_y_ficheros_que_no_son_tablas(tmp_path):
     ruta = tmp_path / "sector_publico_1o_trimestre_2016.zip"
     ruta.write_bytes(_zip({
-        "Educación/contratos menores 1T 2016.csv": "Objeto;Importe\nSeñalización – 5 €;1.000,00\n".encode("cp1252"),
-        "__MACOSX/Educación/._contratos menores 1T 2016.csv": b"\x00\x05\x16\x07basura",
+        "EDUCACIÓN/contratos menores 1T 2016.csv": "Objeto;Importe\nSeñalización – 5 €;1.000,00\n".encode("cp1252"),
+        "__MACOSX/EDUCACIÓN/._contratos menores 1T 2016.csv": b"\x00\x05\x16\x07basura",
         "nota.pdf": b"%PDF-1.4 relacion firmada",
         "anexo.zip": _zip({"Fomento.xlsx": _xlsx({"Hoja1": [["Objeto", "Importe"], ["Bacheo", 7.0]]})}),
     }, utf8=False))
     df, avisos = M.leer_tabla(ruta)
-    assert df["_miembro"].tolist() == ["Educación/contratos menores 1T 2016.csv", "anexo.zip/Fomento.xlsx"]
+    # Nombres en cp850 sin la marca UTF-8 (como los ZIP hechos en Windows): 'Ó' no es de cp437
+    assert df["_miembro"].tolist() == ["EDUCACIÓN/contratos menores 1T 2016.csv", "anexo.zip/Fomento.xlsx"]
     assert df["Objeto"].tolist() == ["Señalización – 5 €", "Bacheo"]
     assert df["Importe"].tolist() == ["1.000,00", "7"]
     assert any("nota.pdf: no es una tabla (PDF)" in a for a in avisos)
