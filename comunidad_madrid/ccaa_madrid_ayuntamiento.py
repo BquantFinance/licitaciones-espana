@@ -34,20 +34,35 @@ DESCUBRIMIENTO Y DESCARGA (capa cruda)
   nada, y sin ninguna copia descargada no se escribe ninguna tabla.
 - Se descargan TODOS los recursos (CSV, XLSX, XLS y PDF) en
   <salida>/originales/<menores|actividad>/<categoría>_<año>[_<parte>]__<id>.<ext>
-  (el id del recurso CKAN hace el nombre único). Si el portal reutiliza un id
-  para otro fichero (otra categoría, año o parte: en datos.madrid.es el id
-  sale de la posición del recurso), es un fichero nuevo con su propio nombre
-  y el anterior queda como retirado: sus versiones nunca se mezclan.
+  (el id del recurso CKAN hace el nombre único). Si el portal describe un id
+  con otra clasificación (otra categoría, año o parte), la primera descarga
+  decide: con los mismos bytes que la copia vigente es el mismo fichero con
+  otra descripción (p.ej. texto añadido tras el año) y se conserva su clave
+  (se anota la descripción nueva y clasificacion_portal); si no, el portal ha
+  reutilizado el id para otro fichero (en datos.madrid.es el id sale de la
+  posición del recurso): es un fichero nuevo con su propio nombre y el
+  anterior queda como retirado cuando el nuevo ya tiene copia. Sus versiones
+  nunca se mezclan.
 - Todo lo listado se anota en el manifiesto antes de descargar nada, y el
   manifiesto se guarda tras cada descarga: una ejecución cortada no deja
   ficheros descargados sin anotar ni ficheros listados sin constancia.
 - Nunca se machaca: guardar_version deja la versión anterior en _historico/
   si el contenido cambió. No sustituye nada una descarga fallida, vacía,
-  cortada, que no es del formato esperado (p.ej. la página HTML de error del
-  portal), que no es una tabla (una sola columna: p.ej. un texto de error) o,
-  si ya había copia, un CSV/XLSX sin ningún registro con datos, sin cabecera
-  o con una cabecera sin ninguna columna en común con la anterior ni columnas
-  conocidas.
+  cortada (otro tamaño que su Content-Length o que el 'size' de CKAN: un
+  corte en un límite de registro pasaba por un fichero válido y un corte a
+  mitad de registro dejaba una versión inventada del último), que no es del
+  formato esperado (p.ej. la página HTML de error del portal), que no es una
+  tabla (una sola columna, o registros sin ninguna cifra y ninguna columna
+  conocida: p.ej. un texto de error con comas) o, si ya había copia, un
+  CSV/XLSX sin ningún registro con datos, sin cabecera o con una cabecera sin
+  ninguna columna en común con la anterior ni columnas conocidas.
+- Retirados: un fichero que el portal deja de listar queda como 'retirado'
+  (sus filas se conservan con _en_ultima_descarga=False). Un CSV cuyo
+  XLSX/XLS gemelo sigue listado se retira cuando falta en dos listados
+  seguidos (listados_sin_el). Un listado que pierde de golpe al menos dos
+  ficheros y más de la mitad de los que se conocían, o de sus CSV, XLSX o XLS
+  (con otra descripción o sin ella), no retira nada: es más probable un
+  fallo del portal.
 - Re-ejecuciones: un recurso se vuelve a pedir si no se tiene, si alguno de
   sus metadatos CKAN (url, hash, size, last_modified, metadata_modified,
   modified) cambió desde la última descarga, si su copia no tiene registros
@@ -63,7 +78,8 @@ DESCUBRIMIENTO Y DESCARGA (capa cruda)
   fichero, que es también la de su sello en _historico/) y de la última
   comprobación, estado ('publicado' o 'retirado': el portal ya no lo lista) y
   versiones descargadas (con su fecha, sha256, descripción y clasificación).
-  Si falta, se recupera el último de _historico/ y, si no hay, se deduce cada
+  Si falta o no se puede leer (JSON corrupto: se conserva en _historico/),
+  se recupera el último legible de _historico/ y, si no hay, se deduce cada
   fichero de su nombre.
 
 LECTURA SIN PÉRDIDAS
@@ -100,12 +116,15 @@ SALIDAS (en <salida>, por defecto ./datos_madrid_contratacion_completa)
   _fila_origen; cada fila se mapea con la cabecera de su versión):
   COLUMNAS_UNIFICADAS + anio, como siempre (fuente_fichero es
   <categoría>_<año>[_<parte>], p.ej. 'menores_2019'); importes a número (los
-  de un XLSX/XLS, el número de la celda) y fechas a fecha, con el texto
+  de una celda numérica de un XLSX/XLS, el número de la celda; los de una
+  celda de texto, como en un CSV) y fechas a fecha, con el texto
   publicado en <columna>_texto; tipo_contrato y pyme tal cual y su versión
   normalizada en tipo_contrato_normalizado y pyme_normalizado; las filas que
   antes se eliminaban por vacías siguen, con _fila_vacia=True.
 - informes/lectura_ficheros.csv (por versión de fichero: registros según el
-  módulo csv, filas leídas, cabecera, estructura, celdas con valor...),
+  módulo csv, filas leídas, cabecera, estructura, celdas con valor, valores
+  en columnas sin nombre en la cabecera ('Unnamed: N': están en la tabla
+  fiel, pero no en la unificada; también un aviso)...),
   informes/lineas_fuera_de_tabla.csv e informes/comparacion_csv_xlsx.csv.
 
 CSV FRENTE A XLSX/XLS
@@ -117,12 +136,19 @@ si menos de la mitad de sus filas están en algún CSV publicado del conjunto
 basados en acuerdo marco y los formalizados solo están en el XLS). En un
 grupo sin CSV publicado se consolida el primero (los publicados antes que los
 retirados) y cada uno de los demás cuyas filas no estén (en más de la mitad)
-en los ya consolidados. Desde entonces se sigue consolidando aunque el portal
-corrija el CSV (consolidado_desde en el manifiesto), para que sus filas no
-desaparezcan, y si su última versión no se puede leer es un fallo. No se
-decide (fallo) mientras un CSV del grupo que el portal lista no se haya
-descargado, ni sobre un XLSX/XLS que no se puede leer. Sus filas que están,
-iguales o casi iguales, en un CSV publicado llevan _repetido_en_csv=True.
+en los ya consolidados. Un XLSX/XLS retirado solo se consolida si sus filas no
+están ya en las tablas (en un CSV de su grupo o del conjunto, publicado o
+retirado, o en otro XLSX/XLS consolidado): si el portal retira un año entero,
+su XLSX no duplica los registros de su CSV. Desde entonces se sigue
+consolidando aunque el portal corrija el CSV (consolidado_desde en el
+manifiesto), para que sus filas no desaparezcan, y si su última versión no se
+puede leer es un fallo. No se decide (fallo) mientras un CSV del grupo no esté
+al día (sin ninguna copia, con su última descarga fallida, sin registros con
+datos, con otro tamaño que el que indica CKAN o ausente del último listado:
+un estado pasajero consolidaría para siempre su gemelo), ni sobre un XLSX/XLS
+que no se puede leer. Sus filas que están, iguales o casi iguales, en un CSV
+publicado (en uno retirado, también en los CSV retirados) llevan
+_repetido_en_csv=True.
 
 HISTÓRICO (sesgo del superviviente, comun/historico.py)
 Las dos tablas se construyen con TODAS las versiones guardadas de cada fichero
@@ -135,7 +161,8 @@ cada registro de la versión anterior queda como versión antigua y ninguna fila
 mezcla dos registros. Una versión sin registros con datos no retira nada. Las
 salidas se escriben con guardar_version (la anterior va a _historico/); si la
 tabla fiel nueva tuviera menos filas de algún fichero que la anterior (no
-debería: acumular no quita filas), es un fallo.
+debería: acumular no quita filas), es un fallo y las tablas anteriores no se
+sustituyen (para aceptar la pérdida hay que mover la anterior).
 
 Uso:
     python ccaa_madrid_ayuntamiento.py                    # descarga + tablas
@@ -1158,7 +1185,7 @@ def descargar(url, destino, formato, categoria, tam_ckan=None, identico_a=None):
     con estado 'nuevo', 'actualizado' o 'sin_cambios'; o 'identico' (sin
     escribir nada) si la descarga tiene los mismos bytes que el fichero
     `identico_a`. Lanza ErrorDescarga, sin tocar nada, si la descarga falla,
-    está cortada (menos bytes que su Content-Length o que el 'size' de CKAN,
+    está cortada (otro tamaño que su Content-Length o que el 'size' de CKAN,
     `tam_ckan`: un corte en un límite de registro, o con un Content-Length
     coherente, pasaba por un fichero válido), no es del formato esperado, no
     se puede leer como tabla o no es el fichero (motivo_rechazo).
@@ -1294,10 +1321,10 @@ def descargar_dataset(dataset, salida, manifiesto, resumen, anio_actual, comprob
     # 1. Todo lo listado queda anotado en el manifiesto antes de descargar nada:
     # si la ejecución se corta, la siguiente sabe qué ficheros faltan (p.ej. el
     # CSV de un grupo cuyo XLSX sí bajó: sin él no se decide si se consolida)
-    listados, ids_listados, pendientes = set(), set(), []
+    conocidos = {c for c, e in manifiesto.entradas.items() if e.get("dataset") == dataset}
+    listados, ids_listados, pendientes, reclasificados = set(), {}, [], {}
     for recurso in recursos:
         info = clasificar_recurso(recurso, dataset)
-        ids_listados.add((info["id"], info["formato"]))
         if info["aviso"]:
             resumen.aviso(f"{info['id']}: {info['aviso']}")
         clave, antes = clave_local(manifiesto, info)
@@ -1305,20 +1332,25 @@ def descargar_dataset(dataset, salida, manifiesto, resumen, anio_actual, comprob
             resumen.fallo(f"{dataset}: el recurso {info['id']} ({info['formato']}) aparece dos veces en la API")
             continue
         listados.add(clave)           # listado (aunque no se pueda descargar): no se retira
+        ids_listados[(info["id"], info["formato"])] = clave
         if antes:
-            anterior = manifiesto.entradas[antes]
-            resumen.aviso(f"{info['id']} ({info['formato']}): el portal lo describe ahora como "
-                          f"'{info['descripcion']}' ({'/'.join(str(v) for v in clasificacion(info))}) y antes como "
-                          f"'{anterior.get('descripcion')}' ({'/'.join(str(v) for v in clasificacion(anterior))}): "
-                          f"se trata como un fichero nuevo ({clave}) y {antes} queda como retirado")
+            reclasificados[clave] = antes     # la primera descarga decide si es el mismo fichero
         if not info["url"]:
             resumen.fallo(f"{dataset}: el recurso {info['id']} no tiene URL")
             continue
         entrada = manifiesto.entradas.get(clave, {})
         base = {k: info[k] for k in ("id", "dataset", "descripcion", "nombre_ckan", "categoria", "anio",
                                      "parte", "formato", "url")}
-        base.update(archivo=clave, estado="publicado", fecha_listado=ahora_iso())
-        manifiesto.entradas[clave] = {**entrada, **base}
+        if clasificacion(entrada) == clasificacion(info) or not entrada.get("clasificacion_portal"):
+            base.update(archivo=clave)
+        else:
+            # plegado antes (clave_local por clasificacion_portal): la clasificación
+            # de un fichero es la de su clave; la del portal queda anotada
+            base = {k: v for k, v in base.items() if k not in ("categoria", "anio", "parte")}
+        base.update(estado="publicado", fecha_listado=ahora_iso())
+        nueva = {**entrada, **base}
+        nueva.pop("listados_sin_el", None)
+        manifiesto.entradas[clave] = nueva
         pendientes.append((clave, info, entrada))
     manifiesto.guardar()
 
@@ -1337,8 +1369,12 @@ def descargar_dataset(dataset, salida, manifiesto, resumen, anio_actual, comprob
                 manifiesto.entradas[clave] = anotada
                 resumen.aviso(f"{clave}: su copia no estaba anotada en el manifiesto (¿ejecución cortada?); "
                               f"se anota con la fecha del fichero ({anotada['fecha_descarga']})")
+        antes = reclasificados.get(clave)
+        # primera descarga de un recurso reclasificado: ¿los mismos bytes que la copia vigente de la clave anterior?
+        identico_a = salida / antes if antes and not versiones(destino) else None
         try:
-            estado, tam, md5, filas = descargar(info["url"], destino, info["formato"], info["categoria"])
+            estado, tam, md5, filas = descargar(info["url"], destino, info["formato"], info["categoria"],
+                                                info["ckan"].get("size"), identico_a)
         except ErrorDescarga as e:
             # 'ckan' y 'url_descarga' conservan los de la última descarga buena:
             # así la próxima ejecución vuelve a intentarlo
@@ -1346,33 +1382,117 @@ def descargar_dataset(dataset, salida, manifiesto, resumen, anio_actual, comprob
             resumen.fallo(f"{clave}: {e}" + ("; se conserva la copia anterior" if destino.exists() else ""))
             manifiesto.guardar()
             continue
+        if estado == "identico":
+            plegar_reclasificado(manifiesto, clave, antes, info, md5, salida, resumen)
+            listados.discard(clave)
+            listados.add(antes)
+            ids_listados[(info["id"], info["formato"])] = antes
+            manifiesto.guardar()
+            resumen.descargado(antes, "sin_cambios", tam, "descrito de otra forma: mismo fichero")
+            continue
         manifiesto.entradas[clave], _ = registrar_descarga(manifiesto.entradas[clave], destino, estado, md5,
                                                            info, filas)
         manifiesto.guardar()
         resumen.descargado(clave, estado, tam, motivo)
 
-    # Ficheros que el portal ya no lista: sus filas se conservan en las tablas
-    # con _en_ultima_descarga=False. Un listado que pierde de golpe más de la
-    # mitad de lo conocido no retira nada (más probable un fallo del portal).
-    # Los que siguen listados con otra clasificación (id reutilizado:
-    # clave_local) sí se retiran: su id está en el listado.
-    conocidos = [c for c, e in manifiesto.entradas.items() if e.get("dataset") == dataset]
-    publicados = [c for c in conocidos if manifiesto.entradas[c].get("estado") != "retirado"]
-    faltan = [c for c in publicados if c not in listados]
-    reclasificados = [c for c in faltan if (manifiesto.entradas[c].get("id"),
-                                            manifiesto.entradas[c].get("formato")) in ids_listados]
-    ausentes = [c for c in faltan if c not in reclasificados]
-    if ausentes and len(ausentes) * 2 > len(publicados):
-        resumen.fallo(f"{dataset}: la API no lista {len(ausentes)} de los {len(publicados)} ficheros conocidos; "
-                      "no se marca ninguno como retirado")
-        ausentes = []
-    for clave in ausentes:
-        resumen.aviso(f"{clave}: el portal ya no lo lista; sus filas se conservan con "
-                      "_en_ultima_descarga=False")
-    for clave in reclasificados + ausentes:
-        manifiesto.entradas[clave]["estado"] = "retirado"
-        manifiesto.entradas[clave]["fecha_retirada"] = ahora_iso()
+    retirar_no_listados(dataset, salida, manifiesto, resumen, listados, ids_listados, conocidos)
     return listados
+
+
+def plegar_reclasificado(manifiesto, clave, antes, info, md5, salida, resumen):
+    """El recurso que el portal describe ahora de otra forma (`clave`, sin
+    copia) sirve los mismos bytes que la copia vigente de `antes`: es el
+    mismo fichero con otra descripción (p.ej. texto añadido tras el año).
+    Se conserva la clave anterior con su clasificación (así sus filas y su
+    grupo CSV/XLSX no cambian), se actualiza la descripción y se anota la
+    clasificación del portal (clasificacion_portal, para casar el recurso con
+    esta clave en adelante); la entrada provisional de `clave` se quita."""
+    provisional = manifiesto.entradas.pop(clave, {})
+    entrada = dict(manifiesto.entradas[antes])
+    descripciones = list(entrada.get("descripciones_anteriores") or [])
+    if entrada.get("descripcion") != info["descripcion"]:
+        descripciones.append({"hasta": ahora_iso(), "descripcion": entrada.get("descripcion")})
+    entrada.update(descripcion=info["descripcion"], nombre_ckan=info["nombre_ckan"], url=info["url"],
+                   estado="publicado", fecha_listado=provisional.get("fecha_listado") or ahora_iso(),
+                   clasificacion_portal=list(clasificacion(info)), descripciones_anteriores=descripciones)
+    entrada.pop("listados_sin_el", None)
+    manifiesto.entradas[antes], _ = registrar_descarga(entrada, Path(salida) / antes, "sin_cambios", md5, info)
+    resumen.aviso(f"{info['id']} ({info['formato']}): el portal lo describe ahora como '{info['descripcion']}' "
+                  f"({'/'.join(str(v) for v in clasificacion(info))}) y sirve los mismos bytes que {antes}: es el "
+                  "mismo fichero; se conserva su clave y se anota la descripción nueva")
+
+
+def _excede_mitad(candidatos, base):
+    return len(candidatos) * 2 > len(base)
+
+
+def retirar_no_listados(dataset, salida, manifiesto, resumen, listados, ids_listados, conocidos):
+    """Marca como retirados los ficheros del conjunto que el portal ya no lista
+    (sus filas se conservan en las tablas con _en_ultima_descarga=False).
+
+    - Id reutilizado para otro fichero (su id está en el listado con otra
+      clasificación y la primera descarga no tenía los mismos bytes): se
+      retira cuando el fichero nuevo ya tiene copia; si no se ha podido
+      descargar, todavía no (no se sabe si es el mismo fichero).
+    - Un CSV que falta mientras su XLSX/XLS gemelo (mismo grupo) sigue
+      listado se retira cuando falta en dos listados seguidos
+      (listados_sin_el en su entrada); mientras tanto no se decide sobre su
+      gemelo (motivo_pendiente).
+    - Un listado que pierde de golpe al menos dos ficheros y más de la mitad
+      de los publicados que ya se conocían (`conocidos`: las claves nuevas de
+      este listado no cuentan), o de sus CSV, XLSX o XLS, no retira nada: es
+      más probable un fallo del portal (p.ej. un listado sin sus CSV
+      consolidaría para siempre todos sus gemelos). Cuenta también lo
+      reclasificado.
+    """
+    entradas = manifiesto.entradas
+    publicados = [c for c, e in entradas.items() if e.get("dataset") == dataset and e.get("estado") != "retirado"]
+    faltan = [c for c in publicados if c not in listados]
+    ya_publicados = [c for c in publicados if c in conocidos]
+    reclasificados, ausentes = [], []
+    for clave in faltan:
+        nueva = ids_listados.get((entradas[clave].get("id"), entradas[clave].get("formato")))
+        if nueva is None:
+            ausentes.append(clave)
+        elif versiones(Path(salida) / nueva):
+            reclasificados.append((clave, nueva))
+        else:
+            resumen.aviso(f"{clave}: el portal da su id a '{entradas.get(nueva, {}).get('descripcion')}', que aún "
+                          "no se ha podido descargar; no se retira hasta saber si es el mismo fichero")
+    retirar = ausentes + [c for c, _ in reclasificados]
+    excesos = [f"{len(retirar)} de los {len(ya_publicados)} ficheros conocidos"] if \
+        len(retirar) >= 2 and _excede_mitad(retirar, ya_publicados) else []
+    for formato in FORMATOS_TABLA:
+        del_formato = [c for c in retirar if entradas[c].get("formato") == formato]
+        base = [c for c in ya_publicados if entradas[c].get("formato") == formato]
+        if len(del_formato) >= 2 and _excede_mitad(del_formato, base):
+            excesos.append(f"{len(del_formato)} de los {len(base)} {formato.upper()}")
+    if excesos:
+        resumen.fallo(f"{dataset}: la API no lista {' ni '.join(excesos)} (con otra descripción o sin ella); "
+                      "no se marca ninguno como retirado")
+        return
+    gemelos = {_grupo(entradas[c]) for c in listados
+               if c in entradas and entradas[c].get("formato") in ("xlsx", "xls")}
+    for clave in list(ausentes):
+        entrada = entradas[clave]
+        if entrada.get("formato") == "csv" and _grupo(entrada) in gemelos:
+            entrada["listados_sin_el"] = int(entrada.get("listados_sin_el") or 0) + 1
+            if entrada["listados_sin_el"] < 2:
+                resumen.aviso(f"{clave}: el portal no lo lista, pero sí su XLSX/XLS gemelo; se retira si tampoco "
+                              "está en el próximo listado (hasta entonces no se decide sobre el gemelo)")
+                ausentes.remove(clave)
+    for clave in ausentes:
+        resumen.aviso(f"{clave}: el portal ya no lo lista; sus filas se conservan con _en_ultima_descarga=False")
+    for clave, nueva in reclasificados:
+        anterior, actual = entradas[clave], entradas.get(nueva, {})
+        resumen.aviso(f"{anterior.get('id')} ({anterior.get('formato')}): el portal lo describe ahora como "
+                      f"'{actual.get('descripcion')}' ({'/'.join(str(v) for v in clasificacion(actual))}) y antes "
+                      f"como '{anterior.get('descripcion')}' ({'/'.join(str(v) for v in clasificacion(anterior))}) "
+                      f"con otro contenido: se trata como un fichero nuevo ({nueva}) y {clave} queda como retirado")
+    for clave in ausentes + [c for c, _ in reclasificados]:
+        entradas[clave]["estado"] = "retirado"
+        entradas[clave]["fecha_retirada"] = ahora_iso()
+        entradas[clave].pop("listados_sin_el", None)
 
 
 # ===========================================================================
@@ -1526,6 +1646,14 @@ def _registros_pandas(texto, separador, referencia, info):
 PATRON_ESCAPE_OOXML = re.compile(r"_x([0-9A-Fa-f]{4})_")
 
 
+class TextoNumero(str):
+    """Texto de una celda NUMÉRICA de un XLSX/XLS (_texto_celda). Es un str
+    (la tabla fiel guarda el mismo texto), pero importe_excel lo lee con punto
+    decimal ('1.125' es 1,125); el de una celda de texto se lee como en un
+    CSV ('15.000' es 15.000)."""
+    __slots__ = ()
+
+
 def _texto_celda(valor):
     """Celda de Excel -> texto ('' si está vacía). Enteros sin '.0', fechas en
     ISO y los escapes de OOXML deshechos ('_x000D_' es el retorno de carro que
@@ -1543,9 +1671,9 @@ def _texto_celda(valor):
     if isinstance(valor, float):
         if math.isnan(valor):
             return ""
-        return str(int(valor)) if valor.is_integer() and abs(valor) < 1e16 else repr(valor)
+        return TextoNumero(str(int(valor)) if valor.is_integer() and abs(valor) < 1e16 else repr(valor))
     if isinstance(valor, int):
-        return str(valor)
+        return TextoNumero(str(valor))
     if isinstance(valor, (pd.Timestamp, datetime)):
         if pd.isna(valor):
             return ""
@@ -1764,11 +1892,18 @@ def mapear_tabla(df, columnas_mapeo, nombre, categoria, estructura, primera=None
     = nulo). `primera`: la primera fila de datos del fichero, si `df` no la
     empieza (los ficheros sin cabecera eligen su disposición por ella).
     Devuelve (DataFrame con COLUMNAS_UNIFICADAS, columnas sin mapear)."""
-    datos = pd.DataFrame(df.to_numpy(dtype=object), index=df.index, columns=list(columnas_mapeo))
+    objetos = df.to_numpy(dtype=object)
+    datos = pd.DataFrame(objetos, index=df.index, columns=list(columnas_mapeo))
+    posicion = {columna: j for j, columna in enumerate(datos.columns)}
     mapped = _mapear_fichero(datos, nombre, categoria, estructura, primera)
     df_out = pd.DataFrame(index=datos.index)
     for col_unif in COLUMNAS_UNIFICADAS:
         serie = mapped.get(col_unif)
+        if serie is not None and col_unif in COLUMNAS_IMPORTE and serie.name in posicion:
+            # los importes, con las celdas tal cual: con pandas 3 `datos` infiere el
+            # tipo str y el texto de una celda numérica de un Excel perdería su marca
+            # (TextoNumero, ver importe_excel)
+            serie = pd.Series(objetos[:, posicion[serie.name]], index=df.index, dtype=object)
         df_out[col_unif] = serie.mask(serie == "") if serie is not None else None
     df_out['fuente_fichero'] = nombre
     df_out['categoria'] = categoria
@@ -2100,11 +2235,12 @@ def _mapear_moderno(df, nombre, categoria, estructura):
 # IMPORTES
 # ===========================================================================
 def importe_excel(valor):
-    """Importe de una celda de un XLSX/XLS (_texto_celda): el número con
-    punto decimal tal cual; una celda de texto, como en los CSV."""
-    if isinstance(valor, str):
+    """Importe de una celda de un XLSX/XLS (_texto_celda): la de una celda
+    numérica (TextoNumero), el número con punto decimal tal cual ('1.125' es
+    1,125); la de una celda de texto, como en los CSV ('15.000' es 15.000)."""
+    if isinstance(valor, TextoNumero):
         try:
-            return float(valor.strip())
+            return float(valor)
         except ValueError:
             pass
     return normalizar_importe(valor)
@@ -2245,6 +2381,19 @@ def versiones_con_fecha(destino, entrada=None):
     return salida
 
 
+def valores_sin_columna(tabla):
+    """{columna sin nombre en la cabecera ('Unnamed: N'): celdas con valor}:
+    campos de más en los registros (están en la tabla fiel, pero ningún mapeo
+    los lleva a la unificada)."""
+    cuentas = {}
+    for columna in tabla.df.columns:
+        if str(columna).startswith("Unnamed: "):
+            n = int((tabla.df[columna].astype(object).fillna("") != "").sum())
+            if n:
+                cuentas[columna] = n
+    return cuentas
+
+
 def fila_informe(clave, entrada, archivo, version, fecha, consolidado, motivo, tabla=None, error=None):
     """Fila de informes/lectura_ficheros.csv."""
     fila = {"archivo": archivo, "recurso": entrada.get("id"), "dataset": entrada.get("dataset"),
@@ -2261,6 +2410,8 @@ def fila_informe(clave, entrada, archivo, version, fecha, consolidado, motivo, t
         fila["cuadra"] = (info.get("registros") == info.get("filas_previas", 0) + info.get("filas_datos", 0)
                           + (1 if info.get("fila_cabecera") else 0)
                           and fila["celdas_con_valor_tabla"] == info.get("celdas_con_valor"))
+        fila["columnas_sin_nombre_con_valores"] = " | ".join(
+            f"{c}: {n}" for c, n in valores_sin_columna(tabla).items()) or None
     if error:
         fila["error"] = error
     return fila
@@ -2332,6 +2483,10 @@ def acumular_recurso(salida, clave, entrada, ultima, informe, fuera, resumen, mo
         elif tabla.info.get("aviso_lectura"):
             resumen.aviso(f"{archivo}: {tabla.info['aviso_lectura']}")
         fuera.extend({"archivo": archivo, "registro": r, "tipo": t, "texto": x} for r, t, x in tabla.previas)
+        sin_nombre = valores_sin_columna(tabla)
+        if sin_nombre and n == len(lista) - 1:
+            resumen.aviso(f"{archivo}: {sum(sin_nombre.values()):,} valores en columnas sin nombre en la cabecera "
+                          f"({', '.join(sin_nombre)}): están en la tabla fiel, pero no en la unificada")
         con_datos = filas_con_datos(tabla)
         if con_datos == 0:
             # versión vacía (solo cabecera o filas sin datos): no retira nada; sus
@@ -2519,44 +2674,56 @@ def decidir_consolidacion(tabulares, ultimas, resumen, pendientes=None):
     """Qué ficheros entran en las tablas y comparación de cada XLSX/XLS con el
     CSV de su grupo (categoría, año y parte).
 
-    Entran todos los CSV. Un XLSX/XLS entra si menos de UMBRAL_XLSX_EN_CSV de
-    sus filas están (iguales o casi iguales: comparar_filas) en los CSV
-    publicados de su grupo o (iguales) en otro CSV publicado del conjunto. En
-    un grupo sin CSV publicado entra el primero (los publicados antes que los
-    retirados) y cada uno de los demás si menos de ese umbral de sus filas
-    está en los ya consolidados del grupo o en algún CSV. Desde que entra, lo
+    Entran todos los CSV, publicados o retirados. Un XLSX/XLS publicado entra
+    si menos de UMBRAL_XLSX_EN_CSV de sus filas están (iguales o casi iguales:
+    comparar_filas) en los CSV publicados de su grupo o (iguales) en otro CSV
+    publicado del conjunto. En un grupo sin CSV publicado entra el primero
+    (los publicados antes que los retirados) y cada uno de los demás si menos
+    de ese umbral de sus filas está en los ya consolidados del grupo o en
+    algún CSV. Un XLSX/XLS retirado se compara con lo que ya está en las
+    tablas: los CSV de su grupo y del conjunto, publicados o retirados, y los
+    XLSX/XLS ya consolidados de su grupo (si el portal retira un año entero,
+    su XLSX no duplica los registros de su CSV retirado). Desde que entra, lo
     hace siempre (consolidado_desde en su entrada del manifiesto), para que sus
     filas no desaparezcan de las tablas si el portal corrige después el CSV,
     aunque su última versión no se pueda leer (entonces es un fallo).
 
-    No se decide sobre un XLSX/XLS (fallo) mientras un CSV de su grupo que el
-    portal lista (`pendientes`: sin ninguna copia) no se haya descargado: si
-    no, un fallo pasajero del CSV consolidaría para siempre su gemelo. Un
-    XLSX/XLS que no se puede leer es un fallo: no se sabe si trae registros
-    que no están en ningún CSV.
+    No se decide sobre los XLSX/XLS de un grupo (fallo) mientras alguno de sus
+    CSV publicados esté pendiente (`pendientes`: {clave: (entrada, motivo)}):
+    sin ninguna copia, con la última descarga fallida, sin registros con
+    datos, con otro tamaño que el que indica CKAN o ausente del último
+    listado. Si no, un estado pasajero del CSV (p.ej. un 503 justo cuando el
+    XLSX se ha actualizado) consolidaría para siempre su gemelo. Un XLSX/XLS
+    que no se puede leer es un fallo: no se sabe si trae registros que no
+    están en ningún CSV.
 
     Devuelve ({clave: motivo}, filas del informe, {conjunto: claves de fila de
-    sus CSV publicados}, {clave de XLSX/XLS consolidado: claves de fila de los
-    CSV publicados de su grupo}).
+    sus CSV publicados}, {clave de XLSX/XLS consolidado: (claves de fila de
+    los CSV de su grupo con que se compara, índice de claves de fila de los
+    CSV del conjunto)} para _repetido_en_csv: los publicados; en un XLSX/XLS
+    retirado, también los retirados).
     """
     consolidar = {clave: "CSV" for clave, e in tabulares.items() if e["formato"] == "csv"}
-    claves_csv, filas_por_csv = {}, {}
+    claves_csv, claves_csv_todos, filas_por_csv = {}, {}, {}
     for clave in consolidar:
         tabla = ultimas.get(clave)
         if isinstance(tabla, Tabla):
             filas = claves_filas(tabla.df, tabla.columnas_mapeo, "csv")
             filas_por_csv[clave] = filas
+            dataset = tabulares[clave]["dataset"]
+            indices = [claves_csv_todos.setdefault(dataset, {})]
             if _publicado(tabulares[clave]):
-                indice = claves_csv.setdefault(tabulares[clave]["dataset"], {})
+                indices.append(claves_csv.setdefault(dataset, {}))
+            for indice in indices:
                 for fila in filas:
                     if fila:
                         indice.setdefault(fila, set()).add(clave)
     grupos, pendientes_grupo = {}, {}
     for clave, e in tabulares.items():
         grupos.setdefault(_grupo(e), []).append(clave)
-    for clave, e in (pendientes or {}).items():
+    for clave, (e, motivo) in (pendientes or {}).items():
         if e.get("formato") == "csv":
-            pendientes_grupo.setdefault(_grupo(e), []).append(clave)
+            pendientes_grupo.setdefault(_grupo(e), []).append(f"{clave}: {motivo}")
     informe, referencias = [], {}
     for grupo, claves in sorted(grupos.items()):
         dataset, categoria, anio, parte = grupo
@@ -2566,6 +2733,7 @@ def decidir_consolidacion(tabulares, ultimas, resumen, pendientes=None):
         otros = sorted((c for c in claves if c not in csvs),
                        key=lambda c: (not _publicado(tabulares[c]), FORMATOS_TABLA.index(tabulares[c]["formato"]), c))
         filas_ref = [f for c in publicados for f in filas_por_csv.get(c, [])]
+        filas_todos = [f for c in csvs for f in filas_por_csv.get(c, [])]
         base = {"dataset": dataset, "categoria": categoria, "anio": anio or None, "parte": parte or None,
                 "csv": " | ".join(publicados or csvs) or None, "filas_csv": sum(1 for f in filas_ref if f)}
         if not otros:
@@ -2575,6 +2743,15 @@ def decidir_consolidacion(tabulares, ultimas, resumen, pendientes=None):
         for clave in otros:
             fila = {**base, "xlsx": clave}
             desde = tabulares[clave].get("consolidado_desde")
+            retirado = not _publicado(tabulares[clave])
+            # con qué se compara: lo que está en las tablas y sirve el portal; un
+            # XLSX/XLS retirado, con todo lo que ya está en las tablas
+            if retirado:
+                referencia = filas_todos + [f for filas in consolidados for f in filas]
+                indice, propios = claves_csv_todos.get(dataset, {}), csvs
+            else:
+                referencia = filas_ref if publicados else [f for filas in consolidados for f in filas]
+                indice, propios = claves_csv.get(dataset, {}), publicados
             tabla = ultimas.get(clave)
             if not isinstance(tabla, Tabla):
                 fila.update(consolidado_xlsx=bool(desde), error=str(tabla),
@@ -2582,21 +2759,24 @@ def decidir_consolidacion(tabulares, ultimas, resumen, pendientes=None):
                 if desde:
                     # acumular_recurso da el fallo de cada versión que no se puede leer
                     consolidar[clave] = f"consolidado desde {desde}"
+                    referencias[clave] = (filas_todos if retirado else filas_ref, indice)
                 else:
                     resumen.fallo(f"{clave}: no se puede leer ({tabla}); no se sabe si trae registros que no "
                                   "están en ningún CSV y sus filas no entran en las tablas")
                 informe.append(fila)
                 continue
             filas_x = claves_filas(tabla.df, tabla.columnas_mapeo, "excel")
-            referencia = filas_ref if publicados else [f for filas in consolidados for f in filas]
             iguales, casi, sin_pareja, solo_ref, diferencias, ejemplos, _ = comparar_filas(referencia, filas_x)
-            indice = claves_csv.get(dataset, {})
-            en_otro = Counter(c for f in sin_pareja for c in indice.get(f, ()) if c not in publicados)
+            en_otro = Counter(c for f in sin_pareja for c in indice.get(f, ()) if c not in propios)
             n_otro = sum(1 for f in sin_pareja if f in indice)
             n_x = sum(1 for f in filas_x if f)
             fraccion = (iguales + casi + n_otro) / n_x if n_x else 1.0
             if pendientes_csv:
                 motivo = None
+            elif retirado:
+                motivo = (f"retirado y solo el {fraccion:.0%} de sus filas está en algún CSV (publicado o "
+                          "retirado) o en otro XLSX/XLS consolidado de su grupo") \
+                    if fraccion < UMBRAL_XLSX_EN_CSV else None
             elif not publicados and not consolidados:
                 motivo = "su grupo no tiene CSV publicado"
             elif fraccion < UMBRAL_XLSX_EN_CSV:
@@ -2609,15 +2789,16 @@ def decidir_consolidacion(tabulares, ultimas, resumen, pendientes=None):
                 # una vez en las tablas, sus filas no desaparecen aunque cambie el CSV
                 motivo = f"consolidado desde {desde}"
             elif motivo is None and pendientes_csv:
-                resumen.fallo(f"{clave}: el CSV de su grupo ({', '.join(pendientes_csv)}) no se ha descargado; "
-                              "no se decide si se consolida y sus filas no entran en las tablas hasta entonces")
+                resumen.fallo(f"{clave}: el CSV de su grupo no está al día ({'; '.join(pendientes_csv)}); no se "
+                              "decide si se consolida y sus filas no entran en las tablas hasta entonces")
             if motivo:
                 consolidar[clave] = motivo
                 tabulares[clave].setdefault("consolidado_desde", ahora_iso())
                 resumen.aviso(f"{clave}: se consolida también ({motivo})")
                 consolidados.append(filas_x)
-                referencias[clave] = filas_ref
-            cabecera_csv = ultimas.get(publicados[0]) if publicados else None
+                referencias[clave] = (filas_todos if retirado else filas_ref, indice)
+            ref_csv = publicados or (csvs if retirado else [])
+            cabecera_csv = ultimas.get(ref_csv[0]) if ref_csv else None
             # nombres legibles de las columnas del informe (la clave los normaliza)
             legibles = {_nombre_comparable(c): c for c in tabla.columnas_mapeo}
             if isinstance(cabecera_csv, Tabla):
@@ -2627,11 +2808,12 @@ def decidir_consolidacion(tabulares, ultimas, resumen, pendientes=None):
                 return " / ".join(legibles.get(parte, parte) for parte in columna.split(" / "))
             fila.update(
                 filas_xlsx=n_x, filas_iguales=iguales, filas_casi_iguales=casi,
-                filas_solo_csv=solo_ref if publicados else None, filas_solo_xlsx=len(sin_pareja),
+                filas_solo_csv=solo_ref if publicados or retirado else None, filas_solo_xlsx=len(sin_pareja),
                 solo_xlsx_en_otro_csv=n_otro,
                 otros_csv=" | ".join(f"{c}: {n}" for c, n in en_otro.most_common()) or None,
                 fraccion_xlsx_en_csv=round(fraccion, 4), consolidado_xlsx=bool(motivo),
-                motivo=motivo or ("el CSV de su grupo no se ha descargado" if pendientes_csv else
+                motivo=motivo or ("el CSV de su grupo no está al día" if pendientes_csv else
+                                  "retirado y sus filas ya están en las tablas" if retirado else
                                   "el CSV trae lo mismo" if publicados else "otro formato del mismo grupo"),
                 cabeceras_iguales=(isinstance(cabecera_csv, Tabla) and
                                    [_nombre_comparable(c) for c in cabecera_csv.columnas_mapeo
@@ -2697,7 +2879,7 @@ COLUMNAS_INFORME_LECTURA = [
     "consolidado", "motivo", "tipo", "codificacion", "separador", "hoja", "lineas_fisicas", "registros",
     "filas_pandas", "lectores_coinciden", "fila_cabecera", "estructura", "filas_previas", "filas_datos",
     "filas_sin_contenido", "celdas_con_valor", "celdas_con_valor_tabla", "ancho", "cuadra",
-    "columnas_sin_mapear", "aviso_lectura", "error"]
+    "columnas_sin_mapear", "columnas_sin_nombre_con_valores", "aviso_lectura", "error"]
 COLUMNAS_INFORME_COMPARACION = [
     "dataset", "categoria", "anio", "parte", "csv", "xlsx", "filas_csv", "filas_xlsx", "filas_iguales",
     "filas_casi_iguales", "filas_solo_csv", "filas_solo_xlsx", "solo_xlsx_en_otro_csv", "otros_csv",
@@ -2748,16 +2930,19 @@ def nombre_corto(clave):
     return Path(clave).stem.split("__")[0]
 
 
-def repetidas_en_csv(acumulado, infos, entrada, claves_csv, filas_ref):
+def repetidas_en_csv(acumulado, infos, entrada, referencia):
     """_repetido_en_csv de las filas de un fichero: False en los CSV; en un
-    XLSX/XLS, True si la fila está igual en algún CSV publicado del conjunto
-    (claves_csv) o igual o casi igual (comparar_filas, pareja a pareja) en los
-    CSV publicados de su grupo (filas_ref). Los CSV retirados no cuentan: si
-    el portal retira el CSV y mantiene el XLSX, sus filas son las vigentes."""
+    XLSX/XLS, True si la fila está igual en algún CSV del conjunto (el índice
+    de `referencia`) o igual o casi igual (comparar_filas, pareja a pareja)
+    en los CSV de su grupo (sus filas de referencia), ver
+    decidir_consolidacion. En un XLSX/XLS publicado solo cuentan los CSV
+    publicados: si el portal retira el CSV y mantiene el XLSX, sus filas son
+    las vigentes. En uno retirado cuentan también los CSV retirados: sus
+    filas ya están en las tablas."""
     repetido = np.zeros(len(acumulado), dtype=bool)
     if entrada["formato"] == "csv":
         return repetido
-    indice = claves_csv.get(entrada["dataset"], {})
+    filas_ref, indice = referencia or ([], {})
     for archivo, posiciones in acumulado.groupby("_archivo_origen", sort=False).indices.items():
         info = infos[archivo]
         filas = claves_filas(acumulado.iloc[posiciones][info["columnas"]], info["columnas_mapeo"], "excel")
@@ -2791,18 +2976,40 @@ def comprobar_filas_por_recurso(anterior, fiel, resumen):
     """Las filas de cada fichero solo pueden crecer (acumular no quita filas):
     si la tabla fiel anterior tenía más de alguno, algo falta (un original
     borrado o que ya no se puede leer), aunque otro fichero crezca más. Es un
-    fallo y la tabla anterior queda en _historico/."""
+    fallo y devuelve False: las tablas anteriores no se sustituyen (si no, la
+    encogida pasaría a ser la referencia y la siguiente ejecución ya no
+    avisaría). Una tabla anterior que no se puede leer es un fallo, pero no
+    impide sustituirla."""
     try:
         previas = pq.read_table(anterior, columns=["_archivo_origen"]).column(0).to_pylist()
     except Exception as e:  # noqa: BLE001 - p.ej. una tabla anterior sin _archivo_origen
         resumen.fallo(f"No se puede comprobar que no se pierden filas: la tabla fiel anterior no se puede leer "
                       f"({type(e).__name__}: {e})")
-        return
+        return True
     antes, ahora = filas_por_recurso(previas), filas_por_recurso(fiel["_archivo_origen"])
+    completa = True
     for recurso, n in sorted(antes.items()):
         if ahora.get(recurso, 0) < n:
+            completa = False
             resumen.fallo(f"{recurso}: {ahora.get(recurso, 0):,} filas en la tabla fiel y {n:,} en la anterior: "
-                          "revisa los originales (la anterior queda en _historico/)")
+                          "revisa los originales (no se sustituyen las tablas)")
+    return completa
+
+
+def motivo_pendiente(entrada, destino):
+    """Por qué la copia de un CSV publicado puede no ser la que sirve el portal
+    (o None): mientras lo esté, no se decide si su gemelo XLSX/XLS se
+    consolida (decidir_consolidacion)."""
+    if entrada.get("listados_sin_el"):
+        return "no estaba en el último listado del portal"
+    if entrada.get("ultimo_error"):
+        return f"su última descarga falló ({entrada['ultimo_error']})"
+    if entrada.get("filas_con_datos") == 0:
+        return "su copia no tiene registros con datos"
+    tam = str((entrada.get("ckan") or {}).get("size") or "").strip()
+    if tam.isdigit() and destino.exists() and int(tam) != destino.stat().st_size:
+        return f"su copia no tiene el tamaño que indica CKAN ({tam} bytes)"
+    return None
 
 
 def procesar(salida, manifiesto, resumen):
@@ -2819,9 +3026,11 @@ def procesar(salida, manifiesto, resumen):
             continue
         destino = salida / clave
         if not versiones(destino):
-            resumen.fallo(f"{clave}: no hay ninguna copia descargada")
             if _publicado(e):
-                pendientes[clave] = e
+                resumen.fallo(f"{clave}: no hay ninguna copia descargada")
+                pendientes[clave] = (e, "no se ha descargado")
+            else:
+                resumen.aviso(f"{clave}: el portal lo retiró sin que se llegara a descargar ninguna copia")
             continue
         if not destino.exists():
             resumen.fallo(f"{clave}: falta la copia vigente; se usan sus {len(versiones(destino))} versiones de "
@@ -2848,8 +3057,11 @@ def procesar(salida, manifiesto, resumen):
         if (salida / clave).exists():
             # motivo_descarga vuelve a pedir una copia sin registros con datos
             e["filas_con_datos"] = filas_con_datos(ultimas[clave])
-    consolidar, comparacion, claves_csv, referencias = decidir_consolidacion(tabulares, ultimas, resumen,
-                                                                             pendientes)
+    for clave, e in tabulares.items():
+        motivo = motivo_pendiente(e, salida / clave) if e["formato"] == "csv" and _publicado(e) else None
+        if motivo:
+            pendientes[clave] = (e, motivo)
+    consolidar, comparacion, _, referencias = decidir_consolidacion(tabulares, ultimas, resumen, pendientes)
 
     # 2. Tabla fiel (todas las versiones) y unificada (desde la fiel)
     fieles, unificadas, informe, fuera, sin_mapear = [], [], [], [], {}
@@ -2868,7 +3080,7 @@ def procesar(salida, manifiesto, resumen):
         sin_mapear.update({archivo: info["sin_mapear"] for archivo, info in infos.items()})
         if acumulado is None:
             continue
-        acumulado["_repetido_en_csv"] = repetidas_en_csv(acumulado, infos, e, claves_csv, referencias.get(clave))
+        acumulado["_repetido_en_csv"] = repetidas_en_csv(acumulado, infos, e, referencias.get(clave))
         unificadas.append(unificar_recurso(acumulado, infos, nombre_corto(clave), e["categoria"]))
         fieles.append(acumulado)
     for fila in informe:
@@ -2891,10 +3103,14 @@ def procesar(salida, manifiesto, resumen):
 
     print("\n[ESCRITURA]")
     anterior = salida / SALIDA_FIEL
-    if anterior.exists():
-        comprobar_filas_por_recurso(anterior, fiel, resumen)
-    escribir_parquet(fiel, salida / SALIDA_FIEL, resumen)
-    escribir_parquet(unificada, salida / SALIDA_UNIFICADA, resumen)
+    sustituir = comprobar_filas_por_recurso(anterior, fiel, resumen) if anterior.exists() else True
+    if sustituir:
+        escribir_parquet(fiel, salida / SALIDA_FIEL, resumen)
+        escribir_parquet(unificada, salida / SALIDA_UNIFICADA, resumen)
+    else:
+        resumen.fallo("No se sustituyen las tablas: la nueva tabla fiel tendría menos filas de algún fichero que la "
+                      "anterior, que sigue en su sitio (si la pérdida es intencionada, mueve la tabla anterior fuera "
+                      "de la carpeta de salida)")
     informes = salida / CARPETA_INFORMES
     escribir_informe(informe, COLUMNAS_INFORME_LECTURA, informes / "lectura_ficheros.csv")
     escribir_informe(fuera, ["archivo", "registro", "tipo", "texto"], informes / "lineas_fuera_de_tabla.csv")
@@ -2903,7 +3119,7 @@ def procesar(salida, manifiesto, resumen):
         if fila.get("consolidado") and fila.get("cuadra") is False:
             resumen.fallo(f"{fila['archivo']}: los registros o las celdas no cuadran con la tabla")
     imprimir_estadisticas(unificada)
-    return fiel, unificada
+    return (fiel, unificada) if sustituir else None
 
 
 # ===========================================================================

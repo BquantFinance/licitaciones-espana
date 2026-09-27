@@ -1004,31 +1004,53 @@ def test_ayto_retired_and_modified_records_are_kept(web, tmp_path):
     assert fiel.loc[fiel["_recurso"] == _rid("cesiones_2023"), "_en_ultima_descarga"].all()
 
 
-@pytest.mark.parametrize("respuesta", [
-    _Resp(503, b"Service Unavailable"),
-    _Resp(200, PAGINA_ERROR),
-    _Resp(200, b""),
-    _Resp(200, ";".join(H_RESOLUCIONES).encode("utf-8") + b"\r\n"),                     # header only
-    _Resp(200, b"R1;E1\r\nR2;E2\r\n", {"Content-Length": "999"}),                       # cut off
-    requests.ConnectionError("connection reset"),
-    # 200 without HTML that is not the file: an error text (one column), a table
-    # sharing no column with the previous version, a file without a header
-    _Resp(200, "Servicio no disponible temporalmente.\r\nInténtelo de nuevo más tarde.\r\n".encode("utf-8")),
-    _Resp(200, b"CAMPO A;CAMPO B;CAMPO C\r\nx;y;z\r\n"),
-    _Resp(200, b"01/04/2018;2018/5;EXP-R2;700.000,00\r\n02/04/2018;2018/6;EXP-R3;600.000,00\r\n"),
-], ids=["503", "html", "vacio", "solo_cabecera", "cortado", "red", "texto_de_error", "otra_cabecera",
-        "sin_cabecera"])
-def test_ayto_failed_empty_or_wrong_download_replaces_nothing(web, tmp_path, respuesta):
+RESOLUCIONES_2022_CORTADO = FICHEROS_AYTO["resoluciones_2022"][:FICHEROS_AYTO["resoluciones_2022"].rindex(b"EXP-R3") + 4]
+
+
+# (response, part of the error it must give, size given by CKAN or None = the response's own size)
+DESCARGAS_RECHAZADAS = {
+    "503": (_Resp(503, b"Service Unavailable"), "HTTP 503", None),
+    "html": (_Resp(200, PAGINA_ERROR), "página HTML", None),
+    "vacio": (_Resp(200, b""), "respuesta vacía", None),
+    "solo_cabecera": (_Resp(200, ";".join(H_RESOLUCIONES).encode("utf-8") + b"\r\n"), "ningún registro con datos",
+                      None),
+    "cortado": (_Resp(200, b"R1;E1\r\nR2;E2\r\n", {"Content-Length": "999"}), "descarga incompleta", None),
+    "red": (requests.ConnectionError("connection reset"), "ConnectionError", None),
+    # 200 without HTML that is not the file: an error text (one column), an error
+    # text with commas (two columns, no known column, no figure), a table sharing
+    # no column with the previous version, a file without a header
+    "texto_de_error": (_Resp(200, "Servicio no disponible temporalmente.\r\nInténtelo de nuevo más tarde.\r\n"
+                                  .encode("utf-8")), "una sola columna", None),
+    "texto_con_comas": (_Resp(200, "Servicio no disponible temporalmente, disculpe las molestias\r\n"
+                                   "Inténtelo de nuevo más tarde, gracias\r\n".encode("utf-8")),
+                        "no parece una tabla de contratos", None),
+    "otra_cabecera": (_Resp(200, b"CAMPO A;CAMPO B;CAMPO C\r\nx1;y2;z3\r\n"), "ninguna columna en común", None),
+    "sin_cabecera": (_Resp(200, b"01/04/2018;2018/5;EXP-R2;700.000,00\r\n02/04/2018;2018/6;EXP-R3;600.000,00\r\n"),
+                     "no tiene cabecera", None),
+    # cut in the middle of a record with a matching Content-Length (e.g. an export
+    # cut on the server): only the size CKAN gives tells it apart; it used to leave a
+    # made-up version of the last record ('EXP-R3' without the rest) for ever
+    "tamano_distinto_de_ckan": (_Resp(200, RESOLUCIONES_2022_CORTADO,
+                                      {"Content-Length": str(len(RESOLUCIONES_2022_CORTADO))}),
+                                "CKAN indica", len(FICHEROS_AYTO["resoluciones_2022"])),
+}
+
+
+@pytest.mark.parametrize("caso", list(DESCARGAS_RECHAZADAS))
+def test_ayto_failed_empty_or_wrong_download_replaces_nothing(web, tmp_path, caso):
+    respuesta, error, tam_ckan = DESCARGAS_RECHAZADAS[caso]
     _portal_con_fixtures(web)
     salida = tmp_path / "salida"
     assert _ejecutar(salida)[0] == 0
     fiel_antes = pd.read_parquet(salida / ayto.SALIDA_FIEL)
     rid = _rid("resoluciones_2022")
-    web.poner(ayto.DATASET_ACTIVIDAD, rid, DESCRIPCIONES_AYTO["resoluciones_2022"], "CSV", b"x",
-              last_modified="2026-09-20T10:00:00")
+    # CKAN gives the size of what is served (each case reaches its own check) unless the case says otherwise
+    contenido = respuesta.content if isinstance(respuesta, _Resp) else b"x"
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, DESCRIPCIONES_AYTO["resoluciones_2022"], "CSV", contenido,
+              last_modified="2026-09-20T10:00:00", **({"size": tam_ckan} if tam_ckan else {}))
     web.ficheros[web.url(ayto.DATASET_ACTIVIDAD, rid, "CSV")] = respuesta
     codigo, log = _ejecutar(salida)
-    assert codigo == 1 and "ERROR" in log
+    assert codigo == 1 and any(rid in e and error in e for e in _errores(log)), log
 
     ruta = next((salida / "originales" / "actividad").glob(f"*__{rid}.csv"))
     assert ruta.read_bytes() == FICHEROS_AYTO["resoluciones_2022"]
@@ -1038,6 +1060,28 @@ def test_ayto_failed_empty_or_wrong_download_replaces_nothing(web, tmp_path, res
     assert entrada["ckan"]["last_modified"] is None and entrada["ultimo_error"]   # retried next run
     fiel, _ = _leer(salida)
     pd.testing.assert_frame_equal(fiel, fiel_antes)                 # nothing marked as withdrawn
+
+
+def test_ayto_a_first_download_of_an_error_text_is_rejected(web, tmp_path):
+    # with no copy yet and no size in CKAN, an error text with commas (two columns)
+    # used to become the first version: its sentences stayed as columns of the
+    # faithful table and its second line as a withdrawn record
+    _un_menor(web)
+    rid = "216876-56-contratos-actividad-csv"
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, "Resoluciones contratos. 2026", "CSV", _csv_bytes([H_CAMBIO, R_CAMBIO_1]),
+              size=None)
+    url = web.url(ayto.DATASET_ACTIVIDAD, rid, "CSV")
+    web.ficheros[url] = "Servicio no disponible temporalmente, disculpe las molestias\r\n" \
+                        "Inténtelo de nuevo más tarde, gracias\r\n".encode("utf-8")
+    salida = tmp_path / "salida"
+    codigo, log = _ejecutar(salida)
+    assert codigo == 1 and any(rid in e and "no parece una tabla de contratos" in e for e in _errores(log))
+    assert not list((salida / "originales" / "actividad").glob(f"*{rid}*"))
+    web.ficheros[url] = _csv_bytes([H_CAMBIO, R_CAMBIO_1])
+    assert _ejecutar(salida)[0] == 0
+    fiel, _ = _leer(salida)
+    assert not [c for c in fiel.columns if "Servicio" in c or "molestias" in c]
+    assert fiel.loc[fiel["_recurso"] == rid, "N. DE EXPEDIENTE"].tolist() == ["EXP-1"]
 
 
 def test_ayto_api_down_publishes_nothing(web, tmp_path):
@@ -1270,15 +1314,20 @@ def test_ayto_a_resource_listed_without_url_is_not_retired(web, tmp_path):
 
 
 def test_ayto_tables_never_shrink_silently(web, tmp_path):
+    # a table with fewer rows of some file is not written: it used to replace the
+    # previous one and become the reference, so the next run said nothing
     _portal_con_fixtures(web)
     salida = tmp_path / "salida"
     assert _ejecutar(salida)[0] == 0
-    antes = len(pd.read_parquet(salida / ayto.SALIDA_FIEL))
+    fiel_antes, uni_antes = _leer(salida)
     next((salida / "originales" / "actividad").glob(f"*__{_rid('resoluciones_2022')}.csv")).unlink()
-    codigo, log = _ejecutar(salida, "--solo-procesar")
-    assert codigo == 1 and "revisa los originales" in log
-    anterior = next((salida / "_historico").glob("actividad_contractual_madrid_original__*.parquet"))
-    assert len(pd.read_parquet(anterior)) == antes                   # the previous table is kept
+    for _ in range(2):
+        codigo, log = _ejecutar(salida, "--solo-procesar")
+        assert codigo == 1 and "revisa los originales" in log and "No se sustituyen las tablas" in log
+        fiel, uni = _leer(salida)
+        pd.testing.assert_frame_equal(fiel, fiel_antes)            # the previous tables stay in place
+        pd.testing.assert_frame_equal(uni, uni_antes)
+    assert not (salida / "_historico").exists()
 
 
 def test_ayto_comprobar_contenido_rejects_what_is_not_the_file():
@@ -1549,14 +1598,28 @@ def test_ayto_rows_of_a_withdrawn_csv_do_not_flag_the_published_xlsx(web, tmp_pa
     rc, rx = "216876-64-contratos-actividad-csv", "216876-67-contratos-actividad-xlsx"
     web.poner(ayto.DATASET_ACTIVIDAD, rc, descripcion, "CSV", _csv_bytes(filas))
     web.poner(ayto.DATASET_ACTIVIDAD, rx, descripcion, "XLSX", _xlsx(filas))
+    web.poner(ayto.DATASET_ACTIVIDAD, "216876-56-contratos-actividad-csv", "Resoluciones contratos. 2026", "CSV",
+              _csv_bytes([H_CAMBIO, R_CAMBIO_1]))                # another file: the listing is never empty
     salida = tmp_path / "salida"
     assert _ejecutar(salida)[0] == 0
     web.quitar(ayto.DATASET_ACTIVIDAD, rc)                      # the CSV is withdrawn, the XLSX stays
+    # while its twin is listed, a CSV is withdrawn when two listings in a row miss it
+    codigo, log = _ejecutar(salida)
+    assert codigo == 1 and any(rx in e and "no se decide" in e for e in _errores(log))
+    assert _entrada(salida, rc)["estado"] == "publicado" and not _entrada(salida, rx).get("consolidado_desde")
     assert _ejecutar(salida)[0] == 0
+    assert _entrada(salida, rc)["estado"] == "retirado"
     _, uni = _leer(salida)
     u = uni[uni["_recurso"].isin([rc, rx])]
     en_vigor = u[u["_en_ultima_descarga"] & ~u["_repetido_en_csv"]]
     assert en_vigor[["_recurso", "n_expediente"]].values.tolist() == [[rx, "EXP-1"]]
+    # if the XLSX is withdrawn too, its rows are repeated in the (withdrawn) CSV
+    web.quitar(ayto.DATASET_ACTIVIDAD, rx)
+    assert _ejecutar(salida)[0] == 0
+    _, uni = _leer(salida)
+    u = uni[uni["_recurso"].isin([rc, rx])]
+    assert not u["_en_ultima_descarga"].any()
+    assert u[["_recurso", "_repetido_en_csv"]].values.tolist() == [[rc, False], [rx, True]]
 
 
 CESIONES_2020 = "Cesiones de contratos inscritos en el Registro de Contratos. 2020"
@@ -1642,25 +1705,33 @@ def test_ayto_a_reused_id_is_a_new_file(web, tmp_path):
     assert u.loc["EXP-P9", ["categoria", "causa_penalidad"]].tolist() == ["penalidades", "Retraso"]
 
 
-def test_ayto_a_first_download_without_records_is_requested_again(web, tmp_path):
+@pytest.mark.parametrize("ckan_da_el_tamano", [True, False], ids=["con_size", "sin_size"])
+def test_ayto_a_first_download_without_records_is_requested_again(web, tmp_path, ckan_da_el_tamano):
     # CKAN describes the real file, but the first answer only had the header: it
-    # used to be accepted and, in a closed year, never requested again
+    # used to be accepted and, in a closed year, never requested again. With the
+    # size in CKAN it is rejected; without it, it is accepted and requested again
     _un_menor(web)
     rid = "216876-64-contratos-actividad-csv"
     real = FICHEROS_AYTO["resoluciones_2022"]
-    web.poner(ayto.DATASET_ACTIVIDAD, rid, DESCRIPCIONES_AYTO["resoluciones_2022"], "CSV", real)
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, DESCRIPCIONES_AYTO["resoluciones_2022"], "CSV", real,
+              **({} if ckan_da_el_tamano else {"size": None}))
     url = web.url(ayto.DATASET_ACTIVIDAD, rid, "CSV")
     web.ficheros[url] = _csv_bytes([H_RESOLUCIONES])
     salida = tmp_path / "salida"
     codigo, log = _ejecutar(salida)
-    assert codigo == 0 and "sin registros con datos" in log
-    assert _entrada(salida, rid)["filas_con_datos"] == 0
+    if ckan_da_el_tamano:
+        assert codigo == 1 and any(rid in e and "CKAN indica" in e for e in _errores(log))
+        assert not list((salida / "originales" / "actividad").glob(f"*{rid}*"))
+    else:
+        assert codigo == 0 and "sin registros con datos" in log
+        assert _entrada(salida, rid)["filas_con_datos"] == 0
 
     web.ficheros[url] = real
     web.llamadas.clear()
     codigo, log = _ejecutar(salida)
     assert codigo == 0, log
-    assert web.pedidos(rid) == 1 and "la copia no tiene registros con datos" in log
+    assert web.pedidos(rid) == 1
+    assert ("nuevo" if ckan_da_el_tamano else "la copia no tiene registros con datos") in log
     fiel, _ = _leer(salida)
     assert sorted(fiel.loc[fiel["_recurso"] == rid, "N. DE EXPEDIENTE"]) == ["EXP-R2", "EXP-R3"]
     web.llamadas.clear()
@@ -1682,7 +1753,8 @@ def test_ayto_a_file_still_without_records_is_not_a_failure(web, tmp_path):
 
 
 def test_ayto_a_copy_that_is_not_the_size_ckan_describes_is_requested_again(web, tmp_path):
-    # e.g. an export cut at a line boundary (a valid CSV with fewer records)
+    # e.g. an export cut at a line boundary (a valid CSV with fewer records): the
+    # download is rejected (it used to be accepted and requested again later)
     _un_menor(web)
     rid = "216876-64-contratos-actividad-csv"
     real = FICHEROS_AYTO["resoluciones_2022"]
@@ -1690,14 +1762,21 @@ def test_ayto_a_copy_that_is_not_the_size_ckan_describes_is_requested_again(web,
     url = web.url(ayto.DATASET_ACTIVIDAD, rid, "CSV")
     web.ficheros[url] = b"\r\n".join(real.split(b"\r\n")[:4]) + b"\r\n"
     salida = tmp_path / "salida"
-    assert _ejecutar(salida)[0] == 0
-    web.ficheros[url] = real
-    web.llamadas.clear()
     codigo, log = _ejecutar(salida)
-    assert codigo == 0 and web.pedidos(rid) == 1 and "no tiene el tamaño que indica CKAN" in log
+    assert codigo == 1 and any(rid in e and "CKAN indica" in e for e in _errores(log))
+    web.ficheros[url] = real
+    assert _ejecutar(salida)[0] == 0
     fiel, _ = _leer(salida)
     r = fiel[fiel["_recurso"] == rid]
     assert sorted(r["N. DE EXPEDIENTE"]) == ["EXP-R2", "EXP-R3"] and r["_en_ultima_descarga"].all()
+
+    # a copy kept from before this check (not the size CKAN gives) is requested again
+    ruta = next((salida / "originales" / "actividad").glob(f"*__{rid}.csv"))
+    ruta.write_bytes(b"\r\n".join(real.split(b"\r\n")[:4]) + b"\r\n")
+    web.llamadas.clear()
+    codigo, log = _ejecutar(salida)
+    assert codigo == 0 and web.pedidos(rid) == 1 and "no tiene el tamaño que indica CKAN" in log
+    assert ruta.read_bytes() == real
 
 
 def test_ayto_an_interrupted_run_keeps_every_version_with_its_date(web, tmp_path, monkeypatch):
@@ -1760,14 +1839,17 @@ def test_ayto_excel_amounts_with_three_decimals_are_not_thousands(web, tmp_path)
     rx = "216876-3-contratos-actividad-xlsx"
     web.poner(ayto.DATASET_ACTIVIDAD, rx, "Resoluciones contratos. 2020", "XLSX", _xlsx([
         cab, ["2020/7", "EXP-7", "Obra B", 1.125], ["2020/8", "EXP-8", "Obra C", 123.456],
-        ["2020/9", "EXP-9", "Obra D", "1.234,56"]]))                 # a text cell: Spanish format
+        ["2020/9", "EXP-9", "Obra D", "1.234,56"],                   # text cells: Spanish format, as in a CSV
+        ["2020/10", "EXP-10", "Obra E", "15.000"], ["2020/11", "EXP-11", "Obra F", "1.125"]]))
     salida = tmp_path / "salida"
     assert _ejecutar(salida)[0] == 0
     _, uni = _leer(salida)
     x = uni[uni["_recurso"] == rx].set_index("n_expediente")
-    assert x["importe_adjudicacion_iva_inc"].to_dict() == {"EXP-7": 1.125, "EXP-8": 123.456, "EXP-9": 1234.56}
+    assert x["importe_adjudicacion_iva_inc"].to_dict() == {"EXP-7": 1.125, "EXP-8": 123.456, "EXP-9": 1234.56,
+                                                           "EXP-10": 15000.0, "EXP-11": 1125.0}
     assert x["importe_adjudicacion_iva_inc_texto"].to_dict() == {"EXP-7": "1.125", "EXP-8": "123.456",
-                                                                 "EXP-9": "1.234,56"}
+                                                                 "EXP-9": "1.234,56", "EXP-10": "15.000",
+                                                                 "EXP-11": "1.125"}
 
 
 def test_ayto_the_previous_manifest_and_reports_are_kept(web, tmp_path):
@@ -1874,6 +1956,300 @@ def test_ayto_every_archived_version_is_read(tmp_path):
     assert [(r.name, f, v) for r, f, v in versiones][:3] == [
         (f"{destino.stem}__20260101T000000Z{s}.csv", "2026-01-01T00:00:00Z", False) for s in ("", "_1", "_1_2")]
     assert len(versiones) == 4 and versiones[-1][2]
+
+
+# -----------------------------------------------------------------------------
+# Adversarial review (round 2): re-runs never duplicate, lose or invent records
+# -----------------------------------------------------------------------------
+def _filas_cesiones(n, anio, desde=1):
+    return [[f"{anio}/{i}", f"EXP-{i}", f"Obra {i}", f"{i},00", f"02/01/{anio}"] for i in range(desde, desde + n)]
+
+
+def _gemelos(web, anio, filas_csv, filas_xlsx=None, rc="216876-150-contratos-actividad-csv",
+             rx="216876-151-contratos-actividad-xlsx", **ckan):
+    """CSV and XLSX of the same group (same records unless filas_xlsx says otherwise)."""
+    descripcion = f"Cesiones de contratos inscritos en el Registro de Contratos. {anio}"
+    web.poner(ayto.DATASET_ACTIVIDAD, rc, descripcion, "CSV", _csv_bytes([CAB_CESIONES] + filas_csv), **ckan)
+    web.poner(ayto.DATASET_ACTIVIDAD, rx, descripcion, "XLSX",
+              _xlsx([CAB_CESIONES] + (filas_csv if filas_xlsx is None else filas_xlsx)), **ckan)
+    return rc, rx
+
+
+def test_ayto_a_withdrawn_year_does_not_duplicate_its_records_with_its_excel(web, tmp_path):
+    # The portal withdraws a whole year (CSV and XLSX, e.g. to publish it again
+    # under other ids): the withdrawn XLSX used to be consolidated ('its group has
+    # no published CSV') and every withdrawn record appeared twice, unflagged
+    _portal_con_fixtures(web)
+    rc, rx = _gemelos(web, 2019, _filas_cesiones(3, 2019))
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0
+    web.quitar(ayto.DATASET_ACTIVIDAD, rc)
+    web.quitar(ayto.DATASET_ACTIVIDAD, rx)
+    codigo, log = _ejecutar(salida)
+    assert codigo == 0, log
+    assert _entrada(salida, rc)["estado"] == _entrada(salida, rx)["estado"] == "retirado"
+    assert not _entrada(salida, rx).get("consolidado_desde")
+    fiel, uni = _leer(salida)
+    assert (fiel["_recurso"] == rc).sum() == 3 and rx not in set(fiel["_recurso"])
+    assert not fiel.loc[fiel["_recurso"] == rc, "_en_ultima_descarga"].any()
+    comparacion = pd.read_csv(salida / "informes" / "comparacion_csv_xlsx.csv", sep=";", dtype=str)
+    fila = comparacion[comparacion["xlsx"].str.contains(rx, na=False)].iloc[0]
+    assert (fila["consolidado_xlsx"], fila["motivo"]) == ("False", "retirado y sus filas ya están en las tablas")
+
+
+def test_ayto_a_csv_missing_from_one_listing_is_not_withdrawn(web, tmp_path):
+    # A CSV missing from one listing while its XLSX twin is listed used to be
+    # withdrawn at once and its twin consolidated for ever: when the CSV came
+    # back, every record of the year was in force twice
+    _portal_con_fixtures(web)
+    rc, rx = _gemelos(web, 2019, _filas_cesiones(3, 2019))
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0
+    csv_recurso = next(r for r in web.paquetes[ayto.DATASET_ACTIVIDAD] if r["id"] == rc)
+    web.quitar(ayto.DATASET_ACTIVIDAD, rc)
+    codigo, log = _ejecutar(salida)
+    assert codigo == 1 and any(rx in e and "no se decide" in e for e in _errores(log))
+    entrada = _entrada(salida, rc)
+    assert entrada["estado"] == "publicado" and entrada["listados_sin_el"] == 1
+    assert not _entrada(salida, rx).get("consolidado_desde")
+    web.paquetes[ayto.DATASET_ACTIVIDAD].append(csv_recurso)          # it is back
+    codigo, log = _ejecutar(salida)
+    assert codigo == 0, log
+    assert "listados_sin_el" not in _entrada(salida, rc) and not _entrada(salida, rx).get("consolidado_desde")
+    fiel, _ = _leer(salida)
+    assert rx not in set(fiel["_recurso"]) and fiel.loc[fiel["_recurso"] == rc, "_en_ultima_descarga"].all()
+
+
+def test_ayto_a_listing_without_its_csvs_withdraws_none_of_them(web, tmp_path):
+    # 3 of the 7 resources of the dataset (less than half), but all its CSVs:
+    # withdrawing them (two listings in a row) consolidated every twin for ever
+    web.poner(ayto.DATASET_ACTIVIDAD, "216876-56-contratos-actividad-csv", "Resoluciones contratos. 2026", "CSV",
+              _csv_bytes([H_CAMBIO, R_CAMBIO_1]))
+    fila = ["N", "EXP", "Centro", "Órgano", "Obra", "Obras", "1", "", "1,00", "1", "B1", "X SL", "No", "1,00",
+            "02/01/{}", "1", "03/01/{}"]
+    csvs = []
+    for i, anio in enumerate((2017, 2018, 2019)):
+        filas = [H_MENORES_E] + [[c.format(anio) if "{}" in c else f"{c}-{anio}-{j}" if c in ("N", "EXP") else c
+                                  for c in fila] for j in range(2)]
+        web.poner(ayto.DATASET_MENORES, f"300253-{40 + i}-contratos-actividad-menores-csv", f"Contratos menores {anio}",
+                  "CSV", _csv_bytes(filas))
+        web.poner(ayto.DATASET_MENORES, f"300253-{50 + i}-contratos-actividad-menores-xlsx",
+                  f"Contratos menores {anio}", "XLSX", _xlsx(filas))
+        csvs.append(f"300253-{40 + i}-contratos-actividad-menores-csv")
+    web.poner(ayto.DATASET_MENORES, "300253-60-contratos-actividad-menores",
+              "Contratos menores (desde 2025). Contenido y estructura del fichero", "PDF", b"%PDF-1.4 estructura")
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0
+    retirados = [r for r in web.paquetes[ayto.DATASET_MENORES] if r["id"] in csvs]
+    for rid in csvs:
+        web.quitar(ayto.DATASET_MENORES, rid)
+    for _ in range(2):
+        codigo, log = _ejecutar(salida)
+        assert codigo == 1 and "no se marca ninguno como retirado" in log
+    assert all(_entrada(salida, rid)["estado"] == "publicado" for rid in csvs)
+    assert not any(e.get("consolidado_desde") for e in _manifiesto(salida).values())
+    web.paquetes[ayto.DATASET_MENORES].extend(retirados)
+    assert _ejecutar(salida)[0] == 0
+    fiel, _ = _leer(salida)
+    assert set(fiel["_formato"]) == {"csv"} and fiel["_en_ultima_descarga"].all()
+
+
+ESTADOS_PASAJEROS = ["descarga_fallida", "primera_copia_sin_registros", "copia_de_otro_tamano"]
+
+
+@pytest.mark.parametrize("caso", ESTADOS_PASAJEROS)
+def test_ayto_a_csv_that_is_not_up_to_date_does_not_consolidate_its_twin(web, tmp_path, caso):
+    # The XLSX is compared with the copy of its CSV: if that copy is not what the
+    # portal serves (its last download failed, it has no records yet, it is not
+    # the size CKAN gives), the XLSX used to be consolidated for ever and, once
+    # the CSV was up to date, every record of the group was in force twice
+    _un_menor(web)
+    salida = tmp_path / "salida"
+    if caso == "descarga_fallida":            # E1 with 2 records; E2: the XLSX has 5 and the CSV answers 503
+        rc, rx = _gemelos(web, 2026, _filas_cesiones(2, 2026))
+        assert _ejecutar(salida)[0] == 0
+        rc, rx = _gemelos(web, 2026, _filas_cesiones(5, 2026), last_modified="2026-09-16T08:56:16")
+        url = web.url(ayto.DATASET_ACTIVIDAD, rc, "CSV")
+        completo, web.ficheros[url] = web.ficheros[url], _Resp(503, b"Service Unavailable")
+        argv = ()
+    elif caso == "primera_copia_sin_registros":   # a new year: the CSV only has its header, the XLSX 3 records
+        rc, rx = _gemelos(web, 2026, [], _filas_cesiones(3, 2026))
+        url = web.url(ayto.DATASET_ACTIVIDAD, rc, "CSV")
+        completo = _csv_bytes([CAB_CESIONES] + _filas_cesiones(3, 2026))
+        argv = ()
+    else:                                     # a copy kept from before (not the size CKAN gives)
+        rc, rx = _gemelos(web, 2019, _filas_cesiones(3, 2019))
+        assert _ejecutar(salida)[0] == 0
+        ruta = next((salida / "originales" / "actividad").glob(f"*__{rc}.csv"))
+        ruta.write_bytes(_csv_bytes([CAB_CESIONES] + _filas_cesiones(1, 2019, desde=9)))
+        url, completo, argv = None, None, ("--solo-procesar",)
+    codigo, log = _ejecutar(salida, *argv)
+    assert codigo == 1 and any(rx in e and "no se decide" in e for e in _errores(log)), log
+    assert not _entrada(salida, rx).get("consolidado_desde")
+    fiel, _ = _leer(salida)
+    assert rx not in set(fiel["_recurso"])
+
+    if url:                                   # the CSV is up to date again
+        web.poner(ayto.DATASET_ACTIVIDAD, rc, next(r for r in web.paquetes[ayto.DATASET_ACTIVIDAD]
+                                                   if r["id"] == rc)["description"], "CSV", completo,
+                  last_modified="2026-09-20T00:00:00")
+    else:
+        ruta.write_bytes(web.ficheros[web.url(ayto.DATASET_ACTIVIDAD, rc, "CSV")])
+    codigo, log = _ejecutar(salida)
+    assert codigo == 0, log
+    assert not _entrada(salida, rx).get("consolidado_desde")
+    fiel, _ = _leer(salida)
+    assert rx not in set(fiel["_recurso"])                   # each record once, from its CSV
+    vigentes = fiel.loc[(fiel["_recurso"] == rc) & fiel["_en_ultima_descarga"], "N. DE EXPEDIENTE"]
+    assert vigentes.tolist() == [f"EXP-{i}" for i in range(1, 6 if caso == "descarga_fallida" else 4)]
+
+
+def test_ayto_a_description_change_with_the_same_bytes_keeps_the_file(web, tmp_path):
+    # The portal adds text after the year to every description ('Contratos menores
+    # 2023 - Ayuntamiento de Madrid'): the 'parte' changes, and each file used to be
+    # downloaded again under another name while the previous one was withdrawn,
+    # so every record appeared as withdrawn (and its XLSX twin consolidated)
+    _portal_con_fixtures(web)
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0
+    fiel_antes, _ = _leer(salida)
+    archivos = sorted(p.name for p in (salida / "originales" / "menores").iterdir())
+    for recurso in web.paquetes[ayto.DATASET_MENORES]:
+        if "Contenido y estructura" not in recurso["description"]:
+            recurso["description"] += " - Ayuntamiento de Madrid"
+            recurso["metadata_modified"] = "2026-09-26T00:00:00"
+    codigo, log = _ejecutar(salida)
+    assert codigo == 0, log
+    assert "es el mismo fichero; se conserva su clave" in log and "queda como retirado" not in log
+    assert sorted(p.name for p in (salida / "originales" / "menores").iterdir()) == archivos
+    menores = [e for e in _manifiesto(salida).values() if e["dataset"] == ayto.DATASET_MENORES
+               and e["categoria"] != "documentacion"]
+    assert all(e["estado"] == "publicado" and e["descripcion"].endswith("- Ayuntamiento de Madrid")
+               and e["clasificacion_portal"][2].endswith("ayuntamiento_de_madrid") for e in menores)
+    fiel, _ = _leer(salida)
+    columnas = [c for c in fiel.columns if c != "_descripcion"]
+    pd.testing.assert_frame_equal(fiel[columnas], fiel_antes[columnas])
+    # the next listing finds the same files: closed years are not requested again
+    web.llamadas.clear()
+    assert _ejecutar(salida)[0] == 0 and web.pedidos(_rid("menores_2016")) == 0
+
+
+def test_ayto_a_described_again_file_is_not_withdrawn_before_it_can_be_compared(web, tmp_path):
+    # the first download with the new description fails: the previous key is not
+    # withdrawn (it may be the same file); the next run finds the same bytes and
+    # keeps a single key
+    _un_menor(web)
+    rid = "216876-60-contratos-actividad-csv"
+    contenido = _csv_bytes([H_CAMBIO, ["2019/1", "EXP-1", "Obra", "B1", "1,00"]])
+    web.poner(ayto.DATASET_ACTIVIDAD, "216876-56-contratos-actividad-csv", "Resoluciones contratos. 2026", "CSV",
+              _csv_bytes([H_CAMBIO, R_CAMBIO_1]))
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, "Resoluciones contratos. 2019", "CSV", contenido)
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, "Resoluciones contratos. 2019 (datos definitivos)", "CSV", contenido)
+    url = web.url(ayto.DATASET_ACTIVIDAD, rid, "CSV")
+    web.ficheros[url] = _Resp(503, b"Service Unavailable")
+    codigo, log = _ejecutar(salida)
+    assert codigo == 1 and "no se retira hasta saber si es el mismo fichero" in log
+    assert all(e["estado"] == "publicado" for e in _manifiesto(salida).values() if e["id"] == rid)
+    fiel, _ = _leer(salida)
+    assert fiel.loc[fiel["_recurso"] == rid, "_en_ultima_descarga"].tolist() == [True]
+    web.ficheros[url] = contenido
+    assert _ejecutar(salida)[0] == 0
+    entradas = [e for e in _manifiesto(salida).values() if e["id"] == rid]
+    assert [(e["archivo"].rsplit("/", 1)[-1], e["estado"], e["descripcion"]) for e in entradas] == [
+        (f"resoluciones_2019__{rid}.csv", "publicado", "Resoluciones contratos. 2019 (datos definitivos)")]
+    assert [p.name for p in (salida / "originales" / "actividad").glob(f"*{rid}*")] == [f"resoluciones_2019__{rid}.csv"]
+
+
+def test_ayto_ids_reused_for_most_files_withdraw_nothing(web, tmp_path):
+    # 3 of the 4 files of a dataset described otherwise with other contents (ids
+    # reused?): more than half at once is more likely a portal failure
+    _un_menor(web)
+    ids = [f"216876-{i}-contratos-actividad-csv" for i in (60, 61, 62, 63)]
+    for i, rid in enumerate(ids):
+        web.poner(ayto.DATASET_ACTIVIDAD, rid, f"Resoluciones contratos. {2016 + i}", "CSV",
+                  _csv_bytes([H_CAMBIO, [f"{2016 + i}/1", f"EXP-{i}", "Obra", "B1", "1,00"]]))
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0
+    for i, rid in enumerate(ids[:3]):
+        web.poner(ayto.DATASET_ACTIVIDAD, rid, f"Penalidades en contratos inscritas en el Registro de Contratos. "
+                  f"{2016 + i}", "CSV", _csv_bytes([H_CAMBIO, [f"{2016 + i}/9", f"EXP-P{i}", "Obra", "B2", "2,00"]]))
+    codigo, log = _ejecutar(salida)
+    assert codigo == 1 and "no se marca ninguno como retirado" in log
+    estados = {(e["id"], e["categoria"]): e["estado"] for e in _manifiesto(salida).values() if e["id"] in ids}
+    assert all(v == "publicado" for v in estados.values()) and len(estados) == 7
+
+
+def test_ayto_a_withdrawn_resource_never_downloaded_is_a_warning(web, tmp_path):
+    _un_menor(web)
+    rid = "216876-57-contratos-actividad-csv"
+    web.poner(ayto.DATASET_ACTIVIDAD, "216876-56-contratos-actividad-csv", "Resoluciones contratos. 2026", "CSV",
+              _csv_bytes([H_CAMBIO, R_CAMBIO_1]))
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, "Cesiones de contratos. 2026", "CSV", b"x")
+    web.ficheros[web.url(ayto.DATASET_ACTIVIDAD, rid, "CSV")] = _Resp(404, PAGINA_ERROR)
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 1
+    web.quitar(ayto.DATASET_ACTIVIDAD, rid)
+    for _ in range(2):                          # it used to be a failure in every run
+        codigo, log = _ejecutar(salida)
+        assert codigo == 0 and "se llegara a descargar ninguna copia" in log, log
+
+
+def test_ayto_a_corrupt_manifest_is_recovered_from_its_history(web, tmp_path):
+    _portal_con_fixtures(web)
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0 and _ejecutar(salida)[0] == 0   # a previous manifest in _historico/
+    fiel_antes, uni_antes = _leer(salida)
+    ruta = salida / "originales" / "_manifiesto.json"
+    corrupto = ruta.read_bytes()[:500]
+    ruta.write_bytes(corrupto)                  # e.g. cut by a full disk
+    codigo, log = _ejecutar(salida, "--solo-procesar")
+    assert codigo == 0 and "no se puede leer" in log and "se recupera" in log, log
+    fiel, uni = _leer(salida)
+    pd.testing.assert_frame_equal(fiel, fiel_antes)
+    pd.testing.assert_frame_equal(uni, uni_antes)
+    assert _ejecutar(salida)[0] == 0
+    assert json.loads(ruta.read_text(encoding="utf-8"))           # a valid manifest again
+    assert corrupto in [p.read_bytes() for p in (ruta.parent / "_historico").glob("_manifiesto__*.json")]
+
+
+def test_ayto_each_row_is_mapped_with_the_header_of_its_version(web, tmp_path):
+    # the rows of a previous version (withdrawn by a header change) keep the values
+    # of their own header in the unified table, not those of the last version
+    _un_menor(web)
+    rid = "216876-56-contratos-actividad-csv"
+    h1 = ["N. DE REGISTRO DE CONTRATO", "N. DE EXPEDIENTE", "OBJETO DEL CONTRATO", "IMPORTE ADJUDICACION IVA INC."]
+    h2 = h1[:3] + ["IMPORTE DE ADJUDICACION (IVA INCLUIDO)"]
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, "Resoluciones contratos. 2026", "CSV",
+              _csv_bytes([h1, ["2026/1", "EXP-1", "Obra 1", "100,00"], ["2026/2", "EXP-2", "Obra 2", "200,00"]]))
+    salida = tmp_path / "salida"
+    assert _ejecutar(salida)[0] == 0
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, "Resoluciones contratos. 2026", "CSV",
+              _csv_bytes([h2, ["2026/1", "EXP-1", "Obra 1", "150,00"], ["2026/2", "EXP-2", "Obra 2", "200,00"]]))
+    assert _ejecutar(salida)[0] == 0
+    _, uni = _leer(salida)
+    u = uni[uni["_recurso"] == rid]
+    valores = sorted(zip(u["_en_ultima_descarga"], u["n_expediente"], u["importe_adjudicacion_iva_inc"]))
+    assert valores == [(False, "EXP-1", 100.0), (False, "EXP-2", 200.0), (True, "EXP-1", 150.0),
+                       (True, "EXP-2", 200.0)]
+
+
+def test_ayto_values_under_unnamed_columns_are_reported(web, tmp_path):
+    # records with more fields than the header has names: the extra values are in
+    # the faithful table (as 'Unnamed: N') but no mapping takes them to the unified one
+    _un_menor(web)
+    rid = "216876-56-contratos-actividad-csv"
+    web.poner(ayto.DATASET_ACTIVIDAD, rid, "Resoluciones contratos. 2026", "CSV",
+              _csv_bytes([H_CAMBIO, R_CAMBIO_1 + ["sobra 1"], R_CAMBIO_2 + ["sobra 2"]]))
+    salida = tmp_path / "salida"
+    codigo, log = _ejecutar(salida)
+    assert codigo == 0 and "2 valores en columnas sin nombre en la cabecera (Unnamed: 5)" in log
+    fiel, _ = _leer(salida)
+    assert fiel.loc[fiel["_recurso"] == rid, "Unnamed: 5"].tolist() == ["sobra 1", "sobra 2"]
+    lectura = pd.read_csv(salida / "informes" / "lectura_ficheros.csv", sep=";", dtype=str)
+    fila = lectura[lectura["archivo"].str.contains(rid)].iloc[0]
+    assert fila["columnas_sin_nombre_con_valores"] == "Unnamed: 5: 2"
 
 
 # =============================================================================
