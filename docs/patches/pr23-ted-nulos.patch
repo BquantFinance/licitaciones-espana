@@ -1,0 +1,54 @@
+diff --git a/ted/run_ted_crossvalidation.py b/ted/run_ted_crossvalidation.py
+index ed03e35..3d756d3 100644
+--- a/ted/run_ted_crossvalidation.py
++++ b/ted/run_ted_crossvalidation.py
+@@ -224,7 +224,7 @@ def get_sara_threshold(year, tipo_contrato, is_age, is_sector):
+ 
+ def classify_buyer(dependencia):
+     """Clasifica: (is_age, is_sector)."""
+-    if not dependencia or pd.isna(dependencia):
++    if pd.isna(dependencia) or not dependencia:
+         return False, False
+     # Sin acentos y por palabra completa: como subcadena 'ICO ' casaba con
+     # 'PÚBLICO ' (todo 'Sector Público > ...' salía AGE) y 'BOE' con 'BOECILLO'
+@@ -236,7 +236,7 @@ def classify_buyer(dependencia):
+ 
+ def normalize_name(name):
+     """Normaliza nombre organo para matching fuzzy."""
+-    if not name or pd.isna(name):
++    if pd.isna(name) or not name:
+         return ''
+     s = str(name).upper().strip()
+     for a, b in [('Á','A'),('É','E'),('Í','I'),('Ó','O'),('Ú','U'),
+@@ -282,7 +282,7 @@ def _clave_organo_expediente(df, exp_col):
+ 
+ def clean_nif(nif):
+     """Limpia NIF: mayusculas, sin prefijo ES."""
+-    if not nif or pd.isna(nif):
++    if pd.isna(nif) or not nif:
+         return ''
+     s = str(nif).strip().upper()
+     s = re.sub(r'^ES[-\s]*', '', s)
+@@ -413,7 +413,7 @@ def load_placsp(path):
+     df['_ano'] = pd.to_numeric(df['ano'], errors='coerce')
+     df = df[(df['_ano'] >= 2010) & (df['_ano'] <= 2027)].copy()
+ 
+-    df['_expediente'] = df['expediente'].astype(str).replace('nan', '').str.strip()
++    df['_expediente'] = df['expediente'].map(_str_or_empty).str.strip()
+     df['_fecha_adj'] = pd.to_datetime(df['fecha_adjudicacion'], errors='coerce')
+     df['_tipo_contrato'] = df['tipo_contrato'].astype(str).replace('nan', '').str.strip()
+     df['_procedimiento'] = df['procedimiento'].astype(str).replace('nan', '').str.strip()
+diff --git a/tests/test_ted.py b/tests/test_ted.py
+index 8e91a5c..ec24dd6 100644
+--- a/tests/test_ted.py
++++ b/tests/test_ted.py
+@@ -1143,3 +1143,9 @@ class TestTedCompletitud:
+         assert (fila["TITLE"], fila["CONTRACT_NUMBER"], fila["B_CONTRACTOR_SME"]) == (
+             "Servicio de limpieza", "CT-7", "Y")
+         assert "TED_NOTICE_URL" in pd.read_parquet(tmp_path / "ted_can_2021_ES.parquet").columns
++
++
++def test_nullable_strings_from_rebuilt_parquet():
++    assert rtc.classify_buyer(pd.NA) == (False, False)
++    assert rtc.normalize_name(pd.NA) == ""
++    assert rtc.clean_nif(pd.NA) == ""

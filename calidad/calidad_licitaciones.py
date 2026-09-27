@@ -25,6 +25,7 @@ import re
 import argparse
 import os
 import sys
+import pyarrow.parquet as pq
 
 if sys.stdout.encoding != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -363,6 +364,15 @@ def imprimir_resumen(sc, n, df):
 # ======================================================================
 
 def run(args):
+    columnas = pq.read_schema(args.input).names
+    if "valor_estimado_contrato" not in columnas:
+        raise ValueError(
+            "Parquet anterior al arreglo #6: importe_sin_iva contiene el valor "
+            "estimado. Recupera los importes desde los ATOM con "
+            "python -m nacional.reparar_importes antes de recalcular calidad."
+        )
+    if "score_calidad" in columnas or any(c.startswith("INT-") for c in columnas):
+        raise ValueError("Usa el parquet nacional corregido, no un resultado de calidad con indicadores antiguos")
     os.makedirs(args.output, exist_ok=True)
     empresas_borme = cargar_borme(args.borme) if args.borme else None
 
