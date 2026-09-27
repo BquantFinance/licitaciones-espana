@@ -224,8 +224,14 @@ API_ENDPOINTS = {
 
 
 def _es_pagina(data) -> bool:
-    """¿Es una página de la API? {totalItems, totalPages, ..., items: [...]}"""
-    return isinstance(data, dict) and isinstance(data.get("items"), list)
+    """¿Es una página de la API? {totalItems, totalPages, ..., items: [...]}. Una
+    consulta sin resultados (p.ej. un mes sin contratos) llega sin 'items':
+    {totalItems: 0, totalPages: 0, currentPage: 1, itemsOfPage: 0, _links}."""
+    if not isinstance(data, dict):
+        return False
+    if isinstance(data.get("items"), list):
+        return True
+    return "items" not in data and data.get("totalItems") == 0 and data.get("totalPages") == 0
 
 
 def _get_pagina(url: str, resource_name: str, page: int):

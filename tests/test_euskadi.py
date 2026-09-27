@@ -305,6 +305,20 @@ def test_paginate_rehace_paginas_y_borra_las_sobrantes(red, tmp_path):
     assert sorted(ids) == list(range(27000, 27015))
 
 
+@pytest.mark.parametrize("data, es", [
+    ({"totalItems": 2, "totalPages": 1, "currentPage": 1, "items": [{"id": 1}, {"id": 2}]}, True),
+    # Consulta sin resultados, tal como la sirve la API real (sin 'items')
+    ({"totalItems": 0, "totalPages": 0, "currentPage": 1, "itemsOfPage": 0, "_links": {}}, True),
+    # Sin 'items' pero con registros: respuesta rota, se reintenta
+    ({"totalItems": 5, "totalPages": 1, "currentPage": 1}, False),
+    ({"totalItems": 0}, False),
+    ({"error": "Not Found"}, False),
+    ([], False),
+])
+def test_es_pagina_acepta_consultas_vacias(data, es):
+    assert ccaa._es_pagina(data) is es
+
+
 def test_probe_solo_acepta_paginas_de_la_api(red):
     rutas, _ = red
     # JSON con 200 que no es una página (error, índice…) en el primer candidato
@@ -691,8 +705,10 @@ class ApiVentanas:
         n = int(q["itemsOfPage"])
         pagina = 1 if self.ignora_pagina else int(q["currentPage"])
         trozo = sel[(pagina - 1) * n: pagina * n]
-        data = {"totalItems": len(sel), "totalPages": max(1, -(-len(sel) // n)),
-                "itemsOfPage": len(trozo), "items": trozo}
+        data = {"totalItems": len(sel), "totalPages": -(-len(sel) // n), "itemsOfPage": len(trozo)}
+        if sel:
+            data["items"] = trozo
+        # Sin resultados la API real no trae 'items': {totalItems: 0, totalPages: 0, ...}
         if not self.sin_current:
             data["currentPage"] = pagina
         return resp_json(data)
