@@ -327,7 +327,8 @@ class DescargaCatalunyaTests(unittest.TestCase):
         self.assertTrue((parquet_dir / "README.md").exists())
 
         registro = pd.read_parquet(parquet_dir / "contratacion" / "contratos_registro.parquet")
-        self.assertEqual(list(registro.columns), ["Codi", "Nom", "Import adjudicació", "Data formalització"])
+        self.assertEqual(list(registro.columns), ["Codi", "Nom", "Import adjudicació", "Data formalització",
+                                                  "_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"])
         self.assertEqual(list(registro["Nom"]), ["Educació", ""])
         self.assertEqual(list(registro["Import adjudicació"]), [1234.5, 99.0])
         self.assertEqual(pd.to_datetime(registro["Data formalització"]).dt.year.iloc[0], 2020)
@@ -393,6 +394,38 @@ class ConversorParquetTests(unittest.TestCase):
         self.assertEqual(tabla.column("Data").to_pylist(), ["2020-01-01", "", ""])
         # Los numéricos siguen siendo numéricos con nulos
         self.assertEqual(tabla.column("Import").to_pylist(), [10.5, None, 3.0])
+
+    def test_una_version_salida_de_siempre_mas_columnas_meta(self):
+        path = self._escribir("u.csv", "Nom,Import\nA,10.5\nB,3\n")
+        salida = self.dir / "out" / "u.parquet"
+        n, _ = cat_parquet.convert_to_parquet(path, salida, "u")
+        tabla = pq.read_table(salida)
+        self.assertEqual(n, 2)
+        self.assertEqual(tabla.column_names, ["Nom", "Import", "_primera_descarga", "_ultima_descarga",
+                                              "_en_ultima_descarga"])
+        self.assertEqual(tabla.column("Import").to_pylist(), [10.5, 3.0])
+        self.assertTrue(all(tabla.column("_en_ultima_descarga").to_pylist()))
+
+    def test_varias_versiones_conservan_lo_que_sale_de_la_ventana(self):
+        # El RPC es una ventana móvil de 5 años: la versión nueva ya no trae 2019,
+        # que solo queda en _historico/ (ccaa_cataluna.py, guardar_version)
+        historico = self.dir / "_historico"
+        historico.mkdir()
+        (historico / "rpc__20250101T000000Z.csv").write_text(
+            "Exercici,Codi,Import\n2019,A-1,100\n2020,B-2,05\n", encoding="utf-8")
+        path = self._escribir("rpc.csv", "Exercici,Codi,Import\n2020,B-2,05\n2025,C-3,7.5\n")
+        salida = self.dir / "out" / "rpc.parquet"
+        n, _ = cat_parquet.convert_to_parquet(path, salida, "rpc")
+        df = pq.read_table(salida).to_pandas().set_index("Codi")
+        self.assertEqual(n, 3)
+        self.assertEqual(sorted(df.index), ["A-1", "B-2", "C-3"])
+        self.assertFalse(df.loc["A-1", "_en_ultima_descarga"])
+        self.assertTrue(df.loc["B-2", "_en_ultima_descarga"] and df.loc["C-3", "_en_ultima_descarga"])
+        self.assertEqual(df.loc["A-1", "_ultima_descarga"], "2025-01-01T00:00:00Z")
+        self.assertEqual(df.loc["B-2", "_primera_descarga"], "2025-01-01T00:00:00Z")
+        # Tipos como en una lectura suelta: el año es número y el cero de '05' se conserva
+        self.assertEqual(df.loc["A-1", "Exercici"], 2019)
+        self.assertEqual(df.loc["B-2", "Import"], "05")
 
     def test_anio_de_nombre(self):
         casos = {
