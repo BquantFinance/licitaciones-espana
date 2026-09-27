@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 BORME × PLACSP — Detector de anomalías en contratación pública
 ================================================================
 Cruza datos del Registro Mercantil (BORME) con licitaciones públicas (PLACSP)
@@ -26,6 +26,7 @@ from datetime import timedelta
 
 import pandas as pd
 import numpy as np
+import pyarrow.parquet as pq
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,14 +90,17 @@ def normalize_empresa(name):
 
     # Quitar sufijos jurídicos en loop
     SUFFIXES = [
-        " SOCIEDAD ANONIMA DEPORTIVA", " SOCIEDAD ANONIMA",
+        " SOCIEDAD ANONIMA DEPORTIVA", " SOCIEDAD ANONIMA LABORAL", " SOCIEDAD ANONIMA",
         " SOCIEDAD LIMITADA PROFESIONAL", " SOCIEDAD LIMITADA LABORAL",
         " SOCIEDAD LIMITADA NUEVA EMPRESA", " SOCIEDAD LIMITADA",
+        " SOCIEDAD DE RESPONSABILIDAD LIMITADA PROFESIONAL",
+        " SOCIEDAD DE RESPONSABILIDAD LIMITADA LABORAL",
+        " SOCIEDAD DE RESPONSABILIDAD LIMITADA",
         " SOCIEDAD COOPERATIVA ANDALUZA", " SOCIEDAD COOPERATIVA",
         " SOCIEDAD CIVIL PROFESIONAL", " SOCIEDAD CIVIL",
-        " SOCIEDAD UNIPERSONAL",
+        " SOCIEDAD UNIPERSONAL", " UNIPERSONAL",
         " AGRUPACION DE INTERES ECONOMICO",
-        " SAU", " SLU", " SAD", " SLL", " SLP", " SLNE",
+        " SAU", " SLU", " SAD", " SAL", " SLL", " SLP", " SLNE",
         " SA SME", " SAE", " SME", " SA", " SL", " SC",
         " SCA", " SCCL", " SCOOP", " SE", " SRL", " AIE",
     ]
@@ -150,7 +154,15 @@ def load_placsp(placsp_path: Path):
         "num_ofertas", "fecha_adjudicacion", "fecha_publicacion",
         "nuts", "urgencia",
     ]
+    if "fecha_updated" in pq.read_schema(placsp_path).names:
+        cols.append("fecha_updated")
     df = pd.read_parquet(placsp_path, columns=cols)
+
+    # Una fila por licitación: licitaciones_espana.parquet guarda cada
+    # actualización del ATOM como fila nueva; se queda la más reciente
+    if "fecha_updated" in df.columns:
+        df = df.sort_values("fecha_updated", na_position="first", kind="stable")
+    df = df[~df["id"].duplicated(keep="last") | df["id"].isna()]
 
     # Solo adjudicaciones
     df = df[df["adjudicatario"].notna()].copy()
@@ -215,12 +227,18 @@ def flag_capital_ridiculo(df_match, df_emp):
     return merged
 
 
-def flag_mismos_administradores(df_car):
-    """Flag 3: Personas que administran múltiples empresas adjudicatarias."""
+def flag_mismos_administradores(df_car, empresas=None):
+    """Flag 3: Personas que administran múltiples empresas adjudicatarias.
+
+    empresas: empresa_norm de las adjudicatarias (match con PLACSP). Sin él se
+    cuentan todas las empresas del BORME.
+    """
     log.info("Flag 3: Mismos administradores en múltiples empresas...")
 
     # Solo nombramientos activos (sin cese posterior)
     admins = df_car[df_car["tipo_acto"].isin(["nombramiento", "reeleccion"])].copy()
+    if empresas is not None:
+        admins = admins[admins["empresa_norm"].isin(empresas)]
 
     # Personas con >1 empresa
     persona_empresas = admins.groupby("persona")["empresa_norm"].nunique()
@@ -290,12 +308,14 @@ def run_matching(borme_dir: Path, placsp_path: Path, output_dir: Path):
     placsp_adj_set = set(df_placsp["adj_norm"].unique())
 
     overlap = borme_empresas_set & placsp_adj_set
+    # Nombres que normalizan a "" ("-", "S.L.", "(UTE)"...) no identifican empresa
+    overlap.discard("")
     log.info(f"  Empresas BORME: {len(borme_empresas_set):,}")
     log.info(f"  Adjudicatarios PLACSP: {len(placsp_adj_set):,}")
     log.info(f"  Match por nombre: {len(overlap):,}")
 
     df_match = df_placsp[df_placsp["adj_norm"].isin(overlap)].copy()
-    log.info(f"  Adjudicaciones matched: {len(df_match):,} de {len(df_placsp):,} ({len(df_match)/len(df_placsp)*100:.1f}%)")
+    log.info(f"  Adjudicaciones matched: {len(df_match):,} de {len(df_placsp):,} ({len(df_match)/max(len(df_placsp), 1)*100:.1f}%)")
 
     importe_match = df_match["importe_adjudicacion"].sum()
     importe_total = df_placsp["importe_adjudicacion"].sum()
@@ -320,8 +340,8 @@ def run_matching(borme_dir: Path, placsp_path: Path, output_dir: Path):
         "organo_contratante", "objeto"
     ]].copy()
 
-    # Flag 3: Mismos administradores
-    multi_admin = flag_mismos_administradores(df_car)
+    # Flag 3: Mismos administradores (entre empresas adjudicatarias)
+    multi_admin = flag_mismos_administradores(df_car, overlap)
 
     # Flag 4: Disolución
     df_f4 = flag_disolucion_tras_cobro(df_match, df_emp)

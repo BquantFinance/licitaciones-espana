@@ -15,6 +15,7 @@ Basado en datos de la Agencia Estatal Boletin Oficial del Estado (https://www.bo
 
 import re
 import json
+import shutil
 import logging
 import argparse
 import pdfplumber
@@ -112,7 +113,9 @@ ACTOS = [
 # REGEX
 # =====================================================================
 
-ENTRY_START_RE = re.compile(r'^(\d{4,7})\s*-\s*', re.MULTILINE)
+# Inicio de anuncio "57315 - EMPRESA SL.". La numeración se reinicia cada año,
+# así que el primer BORME del año trae anuncios de 1-3 cifras (ver _entry_starts)
+ENTRY_START_RE = re.compile(r'^(\d{1,7})\s*-\s*', re.MULTILINE)
 
 # Generic body start detector (approach B):
 # Company names are ALL CAPS. Body starts at first mixed-case word after ". "
@@ -162,13 +165,20 @@ SECTION_MAP = {
     'Cancelaciones de oficio de nombramientos': 'cancelacion',
 }
 
+# Variantes reales: "T 856, L 683, F 96, S 8, H CC 11959, I/A 2 (29.01.15)",
+# "T 16030 , F 160, S 8, H M 271304, I/A 6 ( 2.02.15)" (sin Libro, espacio antes
+# de la coma y tras el paréntesis), "H NA004126, I/A00037"
 DATOS_REG_RE = re.compile(
-    r'Datos registrales[.:]\s*T\s*(\d+),\s*L\s*(\d+),\s*F\s*(\d+),\s*S\s*(\d+),'
-    r'\s*H\s*([A-Z\s]*\d+),\s*I/A\s*(\d+)\s*\((\d{1,2}\.\d{2}\.\d{2,4})\)')
-DOMICILIO_RE = re.compile(r'Domicilio[.:]\s*(.+?)(?:[.]\s*Capital[.:]|$)', re.DOTALL)
+    r'Datos registrales[.:]\s*T\s*(\d+)\s*,\s*(?:L\s*(\d+)\s*,\s*)?F\s*(\d+)\s*,\s*S\s*(\d+)\s*,'
+    r'\s*H\s*([A-Z\s]*\d+)\s*,\s*I/A\s*(\d+)\s*\(\s*(\d{1,2}\.\d{2}\.\d{2,4})\s*\)')
+# El domicilio termina en "(MUNICIPIO)." si no le sigue "Capital:"
+DOMICILIO_RE = re.compile(
+    r'Domicilio[.:]\s*(.+?)(?:[.]\s*Capital[.:]|(?<=\))\.(?=\s|$)|$)', re.DOTALL)
 CAPITAL_RE = re.compile(r'Capital[.:]\s*([\d.,]+)\s*Euros')
+# Ampliación/reducción: "Capital: <importe ampliado> Euros. Resultante Suscrito: <capital> Euros"
+RESULTANTE_RE = re.compile(r'Resultante Suscrito[.:]\s*([\d.,]+)\s*Euros')
 OBJETO_RE = re.compile(r'Objeto social[.:]\s*(.+?)(?:[.]\s*Domicilio[.:]|$)', re.DOTALL)
-COMIENZO_RE = re.compile(r'Comienzo de operaciones[.:]\s*([\d.]+)')
+COMIENZO_RE = re.compile(r'Comienzo de operaciones[.:]\s*(\d(?:[\d.]*\d)?)')
 
 _SKIP_LINES = frozenset([
     "SECCIÓN PRIMERA","Empresarios","Actos inscritos",
@@ -193,6 +203,21 @@ def _clean(raw: str) -> str:
         if s in _SKIP_LINES: continue
         lines.append(line)
     return "\n".join(lines)
+
+
+def _entry_starts(text: str) -> list:
+    """Inicios de anuncio. Un número de 1-3 cifras (primer BORME del año) solo se
+    acepta con formato "N - " y si es el primero o continúa la numeración, para
+    no cortar en líneas que empiezan por p.ej. "12 - 2º B" dentro de un domicilio."""
+    starts = []
+    for m in ENTRY_START_RE.finditer(text):
+        num = m.group(1)
+        if len(num) < 4 and (
+                num.startswith("0") or not m.group(0).startswith(num + " ")
+                or (starts and int(num) != int(starts[-1].group(1)) + 1)):
+            continue
+        starts.append(m)
+    return starts
 
 
 def _normalize_empresa(name: str) -> str:
@@ -252,26 +277,23 @@ def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
     cod_prov = bm.group(4)
     provincia_filename = COD_PROVINCIA.get(cod_prov, "")
 
-    # Fecha de la ruta
+    # Fecha de la ruta (.../YYYY/MM/DD/<pdf>, estructura del scraper). Se busca
+    # desde el final y anclada al año del fichero: un directorio base tipo
+    # "D:/2026/borme_pdfs" no debe tomarse como la fecha
     parts = path.parts
     fecha_borme = f"{year}-01-01"
-    try:
-        for idx, p in enumerate(parts):
-            if p.isdigit() and len(p) == 4 and 2000 <= int(p) <= 2030:
-                if idx + 2 < len(parts):
-                    fecha_borme = f"{parts[idx]}-{parts[idx+1].zfill(2)}-{parts[idx+2].zfill(2)}"
-                break
-    except:
-        pass
+    for idx in range(len(parts) - 4, -1, -1):
+        if parts[idx] == str(year) and parts[idx + 1].isdigit() and parts[idx + 2].isdigit():
+            fecha_borme = f"{parts[idx]}-{parts[idx+1].zfill(2)}-{parts[idx+2].zfill(2)}"
+            break
 
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            raw = "\n".join(p.extract_text() or "" for p in pdf.pages)
-    except Exception:
-        return [], []
+    # Un PDF ilegible/truncado propaga la excepción: _process_one lo cuenta como
+    # error (y --resume lo reintenta) en vez de darlo por procesado sin filas
+    with pdfplumber.open(pdf_path) as pdf:
+        raw = "\n".join(p.extract_text() or "" for p in pdf.pages)
 
     text = _clean(raw)
-    splits = list(ENTRY_START_RE.finditer(text))
+    splits = _entry_starts(text)
     if not splits:
         return [], []
 
@@ -300,7 +322,8 @@ def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
                 break
             rest = block[bm.end():bm.end() + 40]
             first_word = rest.split('.')[0].split(':')[0].split(' ')[0].strip()
-            if first_word in _LEGAL_FORMS:
+            # "Sociedad unipersonal." es un acto, no parte de la forma jurídica
+            if first_word in _LEGAL_FORMS and not _ACTO_KW_RE.match(rest):
                 continue
             body_pos = bm.start() + 1
             break
@@ -346,15 +369,21 @@ def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
         elif "Cambio de domicilio social." in body:
             actos.append("Cambio de domicilio")
             dm = re.search(
-                r'Cambio de domicilio social[.:]\s*(.+?)(?:[.]\s*Datos registrales|$)', body)
+                r'Cambio de domicilio social[.:]\s*(.+?)'
+                r'(?:[.]\s*Datos registrales|(?<=\))\.(?=\s|$)|$)', body)
             if dm:
                 row["domicilio"] = dm.group(1).strip()[:300]
 
+        # Capital social tras el acto: en ampliaciones "Capital:" es el importe
+        # ampliado y el capital resultante es el último "Resultante Suscrito:"
+        # (en reducciones solo aparece este)
+        resultantes = RESULTANTE_RE.findall(body)
         m = CAPITAL_RE.search(body)
-        if m:
+        capital_txt = resultantes[-1] if resultantes else (m.group(1) if m else None)
+        if capital_txt:
             try:
-                row["capital_euros"] = float(m.group(1).replace(".", "").replace(",", "."))
-            except:
+                row["capital_euros"] = float(capital_txt.replace(".", "").replace(",", "."))
+            except ValueError:
                 pass
 
         for acto in ACTOS:
@@ -421,8 +450,35 @@ def _process_one(pdf_path_str: str) -> Tuple[List[Dict], List[Dict], str, bool]:
     try:
         e_rows, c_rows = parse_single_pdf(pdf_path_str)
         return e_rows, c_rows, pdf_path_str, True
-    except Exception:
+    except Exception as e:
+        log.warning(f"   Error procesando {pdf_path_str}: {e}")
         return [], [], pdf_path_str, False
+
+
+def _pdfs_guardados(parts_dir: Path, empresas_parquet: Path) -> set:
+    """Nombres de PDF con filas ya guardadas (parciales por batch o salida previa)."""
+    fuentes = sorted(parts_dir.glob("empresas_*.parquet"))
+    if empresas_parquet.exists():
+        fuentes.append(empresas_parquet)
+    guardados = set()
+    for p in fuentes:
+        guardados.update(pd.read_parquet(p, columns=["pdf_filename"])["pdf_filename"])
+    return guardados
+
+
+def _consolidar(parts_dir: Path, prefijo: str, previo: Path = None) -> pd.DataFrame:
+    """Une las filas guardadas por batch con la salida previa (--resume).
+    Si un PDF está en ambas, mandan las filas nuevas."""
+    frames = [pd.read_parquet(p) for p in sorted(parts_dir.glob(f"{prefijo}_*.parquet"))]
+    if previo is not None and previo.exists():
+        nuevos = set()
+        for f in frames:
+            nuevos.update(f["pdf_filename"])
+        base = pd.read_parquet(previo)
+        frames.insert(0, base[~base["pdf_filename"].isin(nuevos)])
+    frames = [f.assign(fecha_borme=pd.to_datetime(f["fecha_borme"], errors="coerce"))
+              for f in frames if len(f) > 0]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
@@ -431,27 +487,40 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
     empresas_parquet = output_dir / "borme_empresas.parquet"
     cargos_parquet = output_dir / "borme_cargos.parquet"
     progress_file = output_dir / "borme_parse_progress.json"
+    # Filas de cada batch, guardadas antes de marcar sus PDFs como hechos: así
+    # --resume no pierde lo procesado en ejecuciones anteriores
+    parts_dir = output_dir / "borme_parse_parts"
 
     log.info(f"Buscando BORME-A PDFs en {base_dir}...")
     all_pdfs = find_borme_a_pdfs(base_dir)
     log.info(f"   Encontrados: {len(all_pdfs):,} PDFs")
 
     done_set = set()
-    if resume and progress_file.exists():
+    usar_previo = resume and progress_file.exists()
+    if usar_previo:
         with open(progress_file) as f:
             done_set = set(json.load(f).get("done", []))
+        # Solo cuenta como procesado lo que tiene filas guardadas
+        guardados = _pdfs_guardados(parts_dir, empresas_parquet)
+        sin_filas = {p for p in done_set if Path(p).name not in guardados}
+        if sin_filas:
+            log.warning(f"   {len(sin_filas):,} PDFs marcados como procesados sin filas guardadas: se reprocesan")
+            done_set -= sin_filas
         log.info(f"   Resumiendo: {len(done_set):,} ya procesados")
+    elif parts_dir.exists():
+        shutil.rmtree(parts_dir)  # ejecución completa: descartar parciales antiguos
 
     pending = [p for p in all_pdfs if str(p) not in done_set]
     log.info(f"   Pendientes: {len(pending):,}")
 
-    if not pending:
+    if not pending and not any(parts_dir.glob("*.parquet")):
         log.info("Nada que procesar.")
         return
 
+    parts_dir.mkdir(parents=True, exist_ok=True)
     BATCH_SIZE = 5000
-    all_empresas = []
-    all_cargos = []
+    n_empresas = 0
+    n_cargos = 0
     errors = []
     processed = len(done_set)
     total = len(all_pdfs)
@@ -483,22 +552,30 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
                         f"({processed / total * 100:.1f}%) "
                         f"| {rate:.0f} PDFs/s "
                         f"| ETA: {eta / 60:.0f}min "
-                        f"| empresas: {len(all_empresas) + len(batch_empresas):,} "
-                        f"| cargos: {len(all_cargos) + len(batch_cargos):,}"
+                        f"| empresas: {n_empresas + len(batch_empresas):,} "
+                        f"| cargos: {n_cargos + len(batch_cargos):,}"
                     )
 
-        all_empresas.extend(batch_empresas)
-        all_cargos.extend(batch_cargos)
+        # Guardar las filas del batch ANTES de marcar sus PDFs como hechos
+        tag = f"{t0:%Y%m%d%H%M%S}_{batch_start:07d}"
+        if batch_empresas:
+            pd.DataFrame(batch_empresas).to_parquet(
+                parts_dir / f"empresas_{tag}.parquet", index=False, engine="pyarrow")
+        if batch_cargos:
+            pd.DataFrame(batch_cargos).to_parquet(
+                parts_dir / f"cargos_{tag}.parquet", index=False, engine="pyarrow")
+        n_empresas += len(batch_empresas)
+        n_cargos += len(batch_cargos)
 
         with open(progress_file, "w") as f:
             json.dump({"done": list(done_set), "errors": errors}, f)
         log.info(f"   Batch guardado ({batch_start + len(batch):,} procesados)")
 
-    # DataFrames
+    # DataFrames: salida previa (--resume) + filas de los batches
     log.info("Construyendo DataFrames...")
 
-    df_empresas = pd.DataFrame(all_empresas)
-    df_cargos = pd.DataFrame(all_cargos)
+    df_empresas = _consolidar(parts_dir, "empresas", empresas_parquet if usar_previo else None)
+    df_cargos = _consolidar(parts_dir, "cargos", cargos_parquet if usar_previo else None)
 
     if len(df_empresas) > 0:
         df_empresas["fecha_borme"] = pd.to_datetime(df_empresas["fecha_borme"], errors="coerce")
@@ -525,6 +602,9 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
         df_cargos.to_parquet(cargos_parquet, index=False, engine="pyarrow")
         log.info(f"   {cargos_parquet} ({cargos_parquet.stat().st_size / 1e6:.1f} MB)")
 
+    # Las salidas finales ya contienen todas las filas: los parciales sobran
+    shutil.rmtree(parts_dir, ignore_errors=True)
+
     # Resumen
     elapsed = (datetime.now() - t0).total_seconds()
     log.info(f"\n{'=' * 60}")
@@ -539,8 +619,9 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
         log.info(f"   Rango fechas: {df_empresas['fecha_borme'].min()} -> {df_empresas['fecha_borme'].max()}")
         constit = df_empresas[df_empresas["actos"].str.contains("Constitución", na=False)]
         log.info(f"   Constituciones: {len(constit):,}")
-        with_capital = df_empresas["capital_euros"].notna().sum()
-        log.info(f"   Con capital: {with_capital:,}")
+        if "capital_euros" in df_empresas.columns:
+            with_capital = df_empresas["capital_euros"].notna().sum()
+            log.info(f"   Con capital: {with_capital:,}")
     if len(df_cargos) > 0:
         log.info(f"   Cargos unicos (tipos): {df_cargos['cargo'].nunique()}")
         log.info(f"   Personas unicas: {df_cargos['persona'].nunique():,}")

@@ -223,8 +223,12 @@ class ScraperState:
         }
 
     def save(self):
-        with open(self.state_file, "w") as f:
+        # Escritura atómica: un corte a medias no debe dejar un JSON corrupto
+        # que impida arrancar con --resume
+        tmp = self.state_file.with_name(self.state_file.name + ".tmp")
+        with open(tmp, "w") as f:
             json.dump(self.state, f, indent=2, default=str)
+        os.replace(tmp, self.state_file)
 
     @property
     def last_date(self) -> Optional[date]:
@@ -234,6 +238,7 @@ class ScraperState:
         return None
 
     def mark_completed(self, d: date, n_pdfs: int, n_bytes: int):
+        """d: marca de agua para --resume (todos los días hasta d están completos)."""
         self.state["last_completed_date"] = d.isoformat()
         self.state["total_pdfs"] += n_pdfs
         self.state["total_days_processed"] += 1
@@ -296,6 +301,16 @@ class Manifest:
 # ─────────────────────────────────────────────
 #  MAIN SCRAPER
 # ─────────────────────────────────────────────
+class DiaIncompleto(RuntimeError):
+    """El día no se completó (fallo de red/HTTP en el índice o en algún PDF):
+    no debe darse por completado, para que --resume lo reintente."""
+
+    def __init__(self, msg: str, n_pdfs: int = 0, n_bytes: int = 0):
+        super().__init__(msg)
+        self.n_pdfs = n_pdfs
+        self.n_bytes = n_bytes
+
+
 def scrape_day(
     session: requests.Session,
     d: date,
@@ -305,7 +320,11 @@ def scrape_day(
     delay: float,
     dl_lock: Optional[threading.Lock] = None,
 ) -> Tuple[int, int]:
-    """Scrape un día completo. Thread-safe si se pasa dl_lock."""
+    """Scrape un día completo. Thread-safe si se pasa dl_lock.
+
+    Lanza DiaIncompleto si el índice o algún PDF no se pudo descargar; devolver
+    (0, 0) queda reservado para días sin BORME (404 / sin PDFs).
+    """
 
     def _is_downloaded(url):
         if dl_lock:
@@ -326,7 +345,7 @@ def scrape_day(
         resp = session.get(url, timeout=30)
     except requests.RequestException as e:
         log.warning(f"  ⚠️  Error fetching index {d}: {e}")
-        return 0, 0
+        raise DiaIncompleto(f"Error descargando índice: {e}") from e
 
     if resp.status_code == 404:
         log.debug(f"  404 para {d} (festivo/no publicación)")
@@ -337,15 +356,15 @@ def scrape_day(
         time.sleep(30)
         try:
             resp = session.get(url, timeout=30)
-        except requests.RequestException:
-            return 0, 0
+        except requests.RequestException as e:
+            raise DiaIncompleto(f"Error descargando índice: {e}") from e
         if resp.status_code != 200:
             log.error(f"  🚫 Reintento fallido para {d}: HTTP {resp.status_code}")
-            return 0, 0
+            raise DiaIncompleto(f"HTTP {resp.status_code} en índice tras 429")
 
     if resp.status_code != 200:
         log.warning(f"  ⚠️  HTTP {resp.status_code} para {d}")
-        return 0, 0
+        raise DiaIncompleto(f"HTTP {resp.status_code} en índice")
 
     html = resp.text
 
@@ -365,6 +384,7 @@ def scrape_day(
 
     n_downloaded = 0
     total_bytes = 0
+    n_fallidos = 0
 
     for link in pdf_links:
         pdf_url = link["url"]
@@ -395,6 +415,7 @@ def scrape_day(
             pdf_resp.raise_for_status()
         except requests.RequestException as e:
             log.warning(f"    ⚠️  Error descargando {link['pdf_filename']}: {e}")
+            n_fallidos += 1
             continue
 
         content = pdf_resp.content
@@ -402,11 +423,15 @@ def scrape_day(
         # Validar que es PDF
         if not content[:5] == b"%PDF-":
             log.warning(f"    ⚠️  {link['pdf_filename']} no es PDF válido (primeros bytes: {content[:20]})")
+            n_fallidos += 1
             continue
 
-        # Guardar
-        with open(local_path, "wb") as f:
+        # Guardar vía .part + rename: un corte a medias no deja un PDF truncado
+        # que la siguiente ejecución daría por descargado
+        tmp_path = local_path.with_name(local_path.name + ".part")
+        with open(tmp_path, "wb") as f:
             f.write(content)
+        os.replace(tmp_path, local_path)
 
         sha256 = hashlib.sha256(content).hexdigest()
 
@@ -423,6 +448,8 @@ def scrape_day(
         n_downloaded += 1
         total_bytes += len(content)
 
+    if n_fallidos:
+        raise DiaIncompleto(f"{n_fallidos} PDFs sin descargar", n_downloaded, total_bytes)
     return n_downloaded, total_bytes
 
 
@@ -489,34 +516,52 @@ def run(args):
                     log.info(f"[{pct:5.1f}%] {d} ✓ {n_pdfs} PDFs ({n_bytes / 1024:.0f} KB)")
                 else:
                     log.info(f"[{pct:5.1f}%] {d}")
-            return d, n_pdfs, n_bytes
+            return d, n_pdfs, n_bytes, True
         except Exception as e:
             with progress_lock:
                 progress["done"] += 1
             log.error(f"  ✗ {d}: {e}")
             state.add_error(d, str(e))
-            return d, 0, 0
+            # Día incompleto: cuenta lo descargado, pero no se da por completado
+            return d, getattr(e, "n_pdfs", 0), getattr(e, "n_bytes", 0), False
+
+    # Marca de agua para --resume: last_completed_date solo avanza por días
+    # laborables consecutivos completados sin error (en paralelo terminan
+    # desordenados, y un día fallido debe reintentarse al retomar)
+    completados = set()
+    siguiente = [0]  # índice en work_days del primer día aún no completado
+
+    def registrar(d, n_pdfs, n_bytes, ok):
+        if ok:
+            completados.add(d)
+        while siguiente[0] < len(work_days) and work_days[siguiente[0]] in completados:
+            siguiente[0] += 1
+        marca = work_days[siguiente[0] - 1] if siguiente[0] else start - timedelta(days=1)
+        state.mark_completed(marca, n_pdfs, n_bytes)
 
     try:
         if workers <= 1:
             # Modo secuencial (original)
             for d in work_days:
-                result = process_day(d)
-                state.mark_completed(result[0], result[1], result[2])
+                registrar(*process_day(d))
         else:
             # Modo paralelo
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {executor.submit(process_day, d): d for d in work_days}
-                for future in as_completed(futures):
-                    try:
-                        d, n_pdfs, n_bytes = future.result()
-                        state.mark_completed(d, n_pdfs, n_bytes)
-                    except KeyboardInterrupt:
-                        raise
-                    except Exception as e:
-                        d = futures[future]
-                        log.error(f"  ✗ {d} futuro: {e}")
-                        state.add_error(d, str(e))
+                try:
+                    for future in as_completed(futures):
+                        try:
+                            registrar(*future.result())
+                        except KeyboardInterrupt:
+                            raise
+                        except Exception as e:
+                            d = futures[future]
+                            log.error(f"  ✗ {d} futuro: {e}")
+                            state.add_error(d, str(e))
+                except KeyboardInterrupt:
+                    # Cancelar los días encolados: si no, el with espera a TODOS
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
 
     except KeyboardInterrupt:
         log.info("\n⏸️  Interrumpido por usuario")
