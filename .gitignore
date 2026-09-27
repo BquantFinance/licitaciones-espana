@@ -1,4 +1,4 @@
-﻿# Datos CSV originales (muy grandes, no subir)
+# Datos CSV originales (muy grandes, no subir)
 catalunya_datos_completos/
 *.csv
 
@@ -20,8 +20,10 @@ Thumbs.db
 # Temp
 *.tmp
 *.log
+*.part
 
 # Runtime cache
+ccaa_Andalucia/perfiles_cache.json
 galicia/contratos_galicia_base.parquet
 galicia/contratos_galicia_base_progress.json
 galicia/contratos_galicia_detail.sqlite3
