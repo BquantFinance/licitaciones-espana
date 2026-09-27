@@ -3,7 +3,8 @@
 BORME PDF Scraper v1.0
 ======================
 Descarga todos los PDFs del Boletín Oficial del Registro Mercantil (BORME)
-desde boe.es, iterando por fecha.
+desde boe.es, iterando por fecha: los enlazados en el índice HTML del día más
+los que lista el sumario de la API de datos abiertos del BOE (secciones A, B y C).
 
 Uso:
     python borme_scraper.py --start 2009-01-01 --end 2025-12-31 --output ./borme_pdfs
@@ -58,6 +59,12 @@ from urllib3.util.retry import Retry
 # ─────────────────────────────────────────────
 BASE_URL = "https://www.boe.es"
 INDEX_PATTERN = "/borme/dias/{year:04d}/{month:02d}/{day:02d}/index.php"
+# Sumario oficial del día (API de datos abiertos del BOE, APIsumarioBORME.pdf):
+# lista cada documento de las secciones A (actos inscritos), B (otros actos) y
+# C (anuncios y avisos legales) con su url_pdf, desde 2009. Los días sin BORME
+# responde 404. Se usa además del índice HTML para no depender de qué enlaces
+# muestre la página index.php.
+SUMARIO_API_PATTERN = "/datosabiertos/api/borme/sumario/{year:04d}{month:02d}{day:02d}"
 USER_AGENT = (
     "BQuant-BORME-Scraper/1.0 "
     "(investigación académica; contacto: bquantfinance.com) "
@@ -150,39 +157,58 @@ def extract_pdf_links(html: str) -> List[dict]:
         Lista de dicts: {url, pdf_filename, tipo}
         Deduplicados por URL.
     """
+    return _links_from_paths(m.group(1) for m in PDF_HREF_RE.finditer(html))
+
+
+# PDFs en la respuesta de la API de sumarios (XML o JSON): url_pdf absoluta
+# (https://www.boe.es/borme/dias/.../pdfs/BORME-X-....pdf) o relativa
+SUMARIO_PDF_RE = re.compile(
+    r'(?:https?://(?:www\.)?boe\.es)?(/(?:borme|boe)/dias/\d{4}/\d{2}/\d{2}/pdfs/BORME-[A-Z]-[^"\'<>\s\\]+?\.pdf)',
+    re.IGNORECASE,
+)
+
+
+def extract_pdf_links_sumario(texto: str) -> List[dict]:
+    """PDFs de todas las secciones listados en el sumario de la API de datos abiertos.
+
+    Se buscan las url_pdf en el texto en vez de recorrer el árbol XML/JSON, así
+    no depende del formato de respuesta (en JSON las barras pueden ir como '\\/').
+    """
+    return _links_from_paths(m.group(1) for m in SUMARIO_PDF_RE.finditer(texto.replace("\\/", "/")))
+
+
+def _tipo_desde_nombre(pdf_filename: str) -> str:
+    """Sección inferida del nombre: BORME-A, BORME-B, BORME-C, BORME-S, o legacy."""
+    upper_fn = pdf_filename.upper()
+    if "BORME-A-" in upper_fn:
+        return "A"  # Sección Primera — Actos inscritos
+    if "BORME-B-" in upper_fn:
+        return "B"  # Sección Primera — Otros actos
+    if "BORME-C-" in upper_fn:
+        return "C"  # Sección Segunda — Anuncios y avisos legales
+    if "BORME-S-" in upper_fn:
+        return "S"  # Sumario
+    if upper_fn.startswith("R"):
+        return "C"  # Legacy Sección Segunda (2001-2008)
+    if upper_fn.startswith("A"):
+        return "A"  # Legacy Sección Primera (2001-2008)
+    return "otro"
+
+
+def _links_from_paths(paths) -> List[dict]:
+    """[{url, pdf_filename, tipo}] deduplicados por URL, en orden de aparición."""
     seen_urls = set()
     results = []
-
-    for match in PDF_HREF_RE.finditer(html):
-        url_path = match.group(1)
+    for url_path in paths:
         if url_path in seen_urls:
             continue
         seen_urls.add(url_path)
-
         pdf_filename = url_path.split("/")[-1]
-
-        # Tipo inferido del nombre: BORME-A, BORME-B, BORME-C, BORME-S, o legacy
-        tipo = "otro"
-        upper_fn = pdf_filename.upper()
-        if "BORME-A-" in upper_fn:
-            tipo = "A"  # Sección Primera — Actos inscritos
-        elif "BORME-B-" in upper_fn:
-            tipo = "B"  # Sección Primera — Otros actos
-        elif "BORME-C-" in upper_fn:
-            tipo = "C"  # Sección Segunda — Anuncios y avisos legales
-        elif "BORME-S-" in upper_fn:
-            tipo = "S"  # Sumario
-        elif upper_fn.startswith("R"):
-            tipo = "C"  # Legacy Sección Segunda (2001-2008)
-        elif upper_fn.startswith("A"):
-            tipo = "A"  # Legacy Sección Primera (2001-2008)
-
         results.append({
             "url": url_path,
             "pdf_filename": pdf_filename,
-            "tipo": tipo,
+            "tipo": _tipo_desde_nombre(pdf_filename),
         })
-
     return results
 
 
@@ -319,11 +345,15 @@ def scrape_day(
     already_downloaded: set,
     delay: float,
     dl_lock: Optional[threading.Lock] = None,
+    usar_sumario_api: bool = True,
 ) -> Tuple[int, int]:
     """Scrape un día completo. Thread-safe si se pasa dl_lock.
 
-    Lanza DiaIncompleto si el índice o algún PDF no se pudo descargar; devolver
-    (0, 0) queda reservado para días sin BORME (404 / sin PDFs).
+    Los PDFs del día son la unión de los enlazados en el índice HTML y los que
+    lista el sumario de la API de datos abiertos (secciones A, B y C).
+
+    Lanza DiaIncompleto si el índice, el sumario o algún PDF no se pudo
+    descargar; devolver (0, 0) queda reservado para días sin BORME (404 / sin PDFs).
     """
 
     def _is_downloaded(url):
@@ -347,10 +377,6 @@ def scrape_day(
         log.warning(f"  ⚠️  Error fetching index {d}: {e}")
         raise DiaIncompleto(f"Error descargando índice: {e}") from e
 
-    if resp.status_code == 404:
-        log.debug(f"  404 para {d} (festivo/no publicación)")
-        return 0, 0
-
     if resp.status_code == 429:
         log.error(f"  🚫 429 RATE LIMITED en índice {d} — esperando 30s y reintentando")
         time.sleep(30)
@@ -358,23 +384,39 @@ def scrape_day(
             resp = session.get(url, timeout=30)
         except requests.RequestException as e:
             raise DiaIncompleto(f"Error descargando índice: {e}") from e
-        if resp.status_code != 200:
+        if resp.status_code not in (200, 404):
             log.error(f"  🚫 Reintento fallido para {d}: HTTP {resp.status_code}")
             raise DiaIncompleto(f"HTTP {resp.status_code} en índice tras 429")
 
-    if resp.status_code != 200:
+    if resp.status_code == 404:
+        log.debug(f"  404 para {d} (festivo/no publicación)")
+        pdf_links = []
+    elif resp.status_code != 200:
         log.warning(f"  ⚠️  HTTP {resp.status_code} para {d}")
         raise DiaIncompleto(f"HTTP {resp.status_code} en índice")
+    else:
+        html = resp.text
+        # Primero los enlaces: una frase como "no se publica" en el texto de la
+        # página no debe descartar un día que sí enlaza PDFs
+        pdf_links = extract_pdf_links(html)
+        if not pdf_links and detect_no_borme(html):
+            log.debug(f"  No hay BORME para {d}")
 
-    html = resp.text
-
-    if detect_no_borme(html):
-        log.debug(f"  No hay BORME para {d}")
-        return 0, 0
-
-    pdf_links = extract_pdf_links(html)
+    error_sumario = None
+    if usar_sumario_api:
+        try:
+            vistos = {link["url"] for link in pdf_links}
+            for link in fetch_sumario_links(session, d):
+                if link["url"] not in vistos:
+                    vistos.add(link["url"])
+                    pdf_links.append(link)
+        except DiaIncompleto as e:
+            error_sumario = e
 
     if not pdf_links:
+        if error_sumario is not None:
+            # Sin sumario no se puede afirmar que el día no tenga BORME
+            raise error_sumario
         log.debug(f"  Sin PDFs encontrados para {d}")
         return 0, 0
 
@@ -450,7 +492,34 @@ def scrape_day(
 
     if n_fallidos:
         raise DiaIncompleto(f"{n_fallidos} PDFs sin descargar", n_downloaded, total_bytes)
+    if error_sumario is not None:
+        # Se descargó lo del índice HTML, pero sin el sumario pueden faltar
+        # secciones: el día queda pendiente para --resume
+        raise DiaIncompleto(str(error_sumario), n_downloaded, total_bytes)
     return n_downloaded, total_bytes
+
+
+def fetch_sumario_links(session: requests.Session, d: date) -> List[dict]:
+    """PDFs del día según el sumario de la API de datos abiertos del BOE.
+
+    404 → día sin BORME ([]). Errores de red / 5xx / 429 → DiaIncompleto (el día
+    se reintenta). Otros 4xx → aviso y [] (el índice HTML sigue valiendo).
+    """
+    url = BASE_URL + SUMARIO_API_PATTERN.format(year=d.year, month=d.month, day=d.day)
+    try:
+        resp = session.get(url, timeout=30, headers={"Accept": "application/xml"})
+    except requests.RequestException as e:
+        log.warning(f"  ⚠️  Error en sumario API {d}: {e}")
+        raise DiaIncompleto(f"Error descargando sumario API: {e}") from e
+    if resp.status_code == 404:
+        return []
+    if resp.status_code == 429 or resp.status_code >= 500:
+        log.warning(f"  ⚠️  HTTP {resp.status_code} en sumario API {d}")
+        raise DiaIncompleto(f"HTTP {resp.status_code} en sumario API")
+    if resp.status_code != 200:
+        log.warning(f"  ⚠️  HTTP {resp.status_code} en sumario API {d}: se usa solo el índice HTML")
+        return []
+    return extract_pdf_links_sumario(resp.text)
 
 
 def run(args):
@@ -483,6 +552,7 @@ def run(args):
     manifest.open()
 
     workers = getattr(args, 'workers', 1)
+    usar_sumario_api = not getattr(args, 'sin_sumario_api', False)
     total_days = (end - start).days + 1
     log.info(f"🚀 BORME Scraper: {start} → {end} ({total_days:,} días)")
     log.info(f"📁 Output: {output_dir}")
@@ -505,7 +575,8 @@ def run(args):
         session = create_session()
         try:
             n_pdfs, n_bytes = scrape_day(
-                session, d, output_dir, manifest, already_downloaded, args.delay, dl_lock
+                session, d, output_dir, manifest, already_downloaded, args.delay, dl_lock,
+                usar_sumario_api=usar_sumario_api,
             )
             with progress_lock:
                 progress["done"] += 1
@@ -622,6 +693,11 @@ def main():
     parser.add_argument(
         "--resume", action="store_true",
         help="Retomar desde el último día completado"
+    )
+    parser.add_argument(
+        "--sin-sumario-api", action="store_true",
+        help=("No consultar el sumario de la API de datos abiertos del BOE "
+              "(solo los PDFs enlazados en el índice HTML del día)")
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",

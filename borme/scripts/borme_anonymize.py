@@ -21,7 +21,6 @@ Uso:
 Fuente de los datos: Agencia Estatal Boletín Oficial del Estado (https://www.boe.es)
 """
 
-import re
 import hashlib
 import argparse
 import logging
@@ -49,38 +48,6 @@ def hash_persona(name: str, salt: str = "borme_2024") -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-# Municipio del domicilio BORME "C/ MAYOR 5 2º B (MUNICIPIO)": primer paréntesis
-# con letras (el "( 2.02.15)" de los datos registrales no cuenta)
-_MUNICIPIO_RE = re.compile(r'\(([^()]*[^\W\d_][^()]*)\)')
-
-
-def _municipio(domicilio):
-    """Deja solo el municipio del domicilio; None si no hay municipio reconocible."""
-    if not isinstance(domicilio, str):
-        return domicilio
-    m = _MUNICIPIO_RE.search(domicilio)
-    return m.group(1).strip()[:80] if m else None
-
-
-def _empresarios_individuales(df_emp: pd.DataFrame) -> set:
-    """empresa_norm de empresarios individuales: la "empresa" es una persona física."""
-    if "actos" not in df_emp.columns or "empresa_norm" not in df_emp.columns:
-        return set()
-    es_pf = df_emp["actos"].str.contains("Empresario Individual", na=False, regex=False)
-    return set(df_emp.loc[es_pf, "empresa_norm"].dropna())
-
-
-def _hashear_personas_fisicas(df: pd.DataFrame, personas_fisicas: set) -> pd.DataFrame:
-    """Sustituye empresa/empresa_norm por su hash cuando son una persona física."""
-    if not personas_fisicas or "empresa_norm" not in df.columns:
-        return df
-    es_pf = df["empresa_norm"].isin(personas_fisicas)
-    for col in ("empresa", "empresa_norm"):
-        if col in df.columns:
-            df.loc[es_pf, col] = df.loc[es_pf, col].apply(hash_persona)
-    return df
-
-
 def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
     """Limpia borme_empresas: quita campos de texto libre que podrían
     contener nombres de personas (objeto_social a veces menciona personas)."""
@@ -97,24 +64,15 @@ def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in keep_cols if c in df_emp.columns]
     df = df_emp[cols].copy()
 
-    # Truncar domicilio a ciudad (quitar calle/número que podría ser personal).
-    # Formato BORME "CALLE NUM PISO (MUNICIPIO)": se queda solo el municipio
-    if "domicilio" in df.columns:
-        df["domicilio"] = df["domicilio"].apply(_municipio)
-
-    # Empresarios individuales: el nombre de la "empresa" es el de una persona física
-    df = _hashear_personas_fisicas(df, _empresarios_individuales(df_emp))
+    # El domicilio social se publica tal cual en el BORME ("CALLE NUM (MUNICIPIO)")
+    # y se conserva completo.
 
     log.info(f"  {len(df):,} filas, {df['empresa_norm'].nunique():,} empresas")
     return df
 
 
-def anonymize_cargos(df_car: pd.DataFrame, personas_fisicas: set = None) -> pd.DataFrame:
-    """Reemplaza nombres de personas por hash irreversible.
-
-    personas_fisicas: empresa_norm de empresarios individuales (ver
-    _empresarios_individuales), que también se hashean en empresa/empresa_norm.
-    """
+def anonymize_cargos(df_car: pd.DataFrame) -> pd.DataFrame:
+    """Reemplaza nombres de personas por hash irreversible."""
     log.info("Anonimizando cargos...")
 
     df = df_car.copy()
@@ -122,7 +80,6 @@ def anonymize_cargos(df_car: pd.DataFrame, personas_fisicas: set = None) -> pd.D
 
     # Eliminar nombre real
     df = df.drop(columns=["persona"], errors="ignore")
-    df = _hashear_personas_fisicas(df, personas_fisicas)
 
     # Reordenar
     col_order = [
@@ -225,7 +182,7 @@ def main():
 
     # Anonimizar
     df_emp_pub = anonymize_empresas(df_emp)
-    df_car_pub = anonymize_cargos(df_car, _empresarios_individuales(df_emp))
+    df_car_pub = anonymize_cargos(df_car)
 
     # Guardar
     log.info("\nGuardando...")

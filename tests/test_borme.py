@@ -383,17 +383,6 @@ class TestRunBatch:
 # ═════════════════════════════════════════════
 #  borme_anonymize.py
 # ═════════════════════════════════════════════
-@pytest.mark.parametrize("domicilio, esperado", [
-    ("C/ MAYOR 5 2º B (MADRID)", "MADRID"),
-    ("AVDA VIRGEN DE LA MONTAÑA 1 - LOCAL EXTERIOR (CACERES)", "CACERES"),
-    # Domicilio desbordado (empresario individual, sin paréntesis de municipio)
-    ("C/ X 5 OURENSE. Estado Civil : Soltero . Datos registrales. T 785 , F 203, S 8, H OR 11977, I/A 1 ( 2.02.15)", None),
-    ("PS DE GRACIA Num.46 P.2", None),
-])
-def test_domicilio_solo_municipio(domicilio, esperado):
-    assert anon._municipio(domicilio) == esperado
-
-
 def _empresas_privadas():
     return pd.DataFrame({
         "fecha_borme": pd.to_datetime(["2024-01-04", "2024-01-04", "2024-02-01"]),
@@ -442,10 +431,11 @@ def test_hash_persona():
     assert anon.hash_persona(None) == "" and anon.hash_persona(float("nan")) == ""
 
 
-def test_anonymize_cli_sin_datos_personales(monkeypatch, tmp_path):
+def test_anonymize_cli_solo_hashea_personas(monkeypatch, tmp_path):
     src, out = tmp_path / "borme_pdfs", tmp_path / "data"
     src.mkdir()
-    _empresas_privadas().to_parquet(src / "borme_empresas.parquet", index=False)
+    emp_priv = _empresas_privadas()
+    emp_priv.to_parquet(src / "borme_empresas.parquet", index=False)
     _cargos_privados().to_parquet(src / "borme_cargos.parquet", index=False)
 
     _run_cli(monkeypatch, "borme_anonymize.py", "--input", src, "--output", out)
@@ -455,17 +445,15 @@ def test_anonymize_cli_sin_datos_personales(monkeypatch, tmp_path):
     assert "objeto_social" not in emp.columns
     assert "persona" not in car.columns and "persona_hash" in car.columns
     textos = _textos(emp) | _textos(car)
-    for dato_personal in ["FULANO", "ZUTANO", "PRUEBA", "Soltero", "C/ MAYOR", "C/ LUNA"]:
-        assert not any(dato_personal in t for t in textos), dato_personal
-    # El domicilio conserva el municipio; las empresas normales, su nombre
-    assert emp["domicilio"].tolist()[0] == "MADRID"
-    assert emp["empresa"].tolist()[0] == "ALFA SOLUCIONES SL"
-    # El empresario individual se hashea igual en todas sus filas y en cargos
-    h = anon.hash_persona("FULANO MENGANO, JUAN")
-    assert emp["empresa_norm"].tolist()[1:] == [h, h]
-    assert car["empresa_norm"].tolist() == ["ALFA SOLUCIONES", h]
+    for nombre in ["ZUTANO", "PRUEBA"]:
+        assert not any(nombre in t for t in textos), nombre
     assert car["persona_hash"].tolist() == [anon.hash_persona("ZUTANO PERENGANO ANA"),
                                             anon.hash_persona("PRUEBA EJEMPLO LUIS")]
+    # Lo demás se publica tal como aparece en el BORME: domicilio completo y
+    # nombre de la empresa (también el de los empresarios individuales)
+    assert emp["domicilio"].tolist()[:2] == emp_priv["domicilio"].tolist()[:2]
+    assert emp["empresa_norm"].tolist() == emp_priv["empresa_norm"].tolist()
+    assert car["empresa_norm"].tolist() == ["ALFA SOLUCIONES", "FULANO MENGANO, JUAN"]
 
 
 def test_build_admin_graph():
@@ -892,8 +880,9 @@ def test_pipeline_readme_completo(monkeypatch, tmp_path, fake_pdf, capsys):
     car_pub = pd.read_parquet(data / "borme_cargos_pub.parquet")
     assert len(emp_pub) == 9 and len(car_pub) == 7
     textos = _textos(emp_pub) | _textos(car_pub)
-    for nombre in ["FULANO", "ZUTANO", "PRUEBA", "C/ MAYOR"]:
+    for nombre in ["FULANO", "ZUTANO", "PRUEBA"]:  # personas de los cargos
         assert not any(nombre in t for t in textos)
+    assert "C/ MAYOR 5 2º B (MADRID)" in set(emp_pub["domicilio"])  # domicilio social tal cual
     # 4. Cruce con PLACSP
     _placsp(tmp_path / "licitaciones_espana.parquet")
     _run_cli(monkeypatch, "borme_placsp_match.py", "--borme", pdfs,
@@ -909,3 +898,136 @@ def test_pipeline_readme_completo(monkeypatch, tmp_path, fake_pdf, capsys):
     assert "Total BORME-A PDFs: 2" in salida
     assert "Entradas totales: 9" in salida
     assert "Errores: 0" in salida
+
+
+# ═════════════════════════════════════════════
+#  borme_scraper.py — sumario de la API de datos abiertos (secciones A, B y C)
+# ═════════════════════════════════════════════
+def _sumario_url(d):
+    return f"https://www.boe.es/datosabiertos/api/borme/sumario/{d:%Y%m%d}"
+
+
+def _sumario_xml(d, files):
+    """Respuesta de /datosabiertos/api/borme/sumario/{AAAAMMDD} (formato XML documentado)."""
+    items = "".join(
+        f"<item><identificador>{f[:-4]}</identificador>"
+        f'<url_pdf szBytes="1">https://www.boe.es/borme/dias/{d:%Y/%m/%d}/pdfs/{f}</url_pdf>'
+        f"<url_xml>https://www.boe.es/diario_borme/xml.php?id={f[:-4]}</url_xml></item>"
+        for f in files)
+    return (f'<?xml version="1.0" encoding="UTF-8"?><response><status><code>200</code></status>'
+            f'<data><sumario><diario numero="3"><seccion codigo="A">{items}</seccion>'
+            f"</diario></sumario></data></response>")
+
+
+def _publica_sumario(boe, d, files):
+    boe.routes[_sumario_url(d)] = _resp(200, _sumario_xml(d, files))
+    for f in files:
+        boe.routes[_pdf_url(d, f)] = _resp(200, content=b"%PDF-1.4 " + f.encode())
+
+
+def _manifest(out):
+    with open(out / "manifest.csv", newline="", encoding="utf-8") as f:
+        return [(r["date"], r["pdf_filename"], r["tipo"]) for r in csv.DictReader(f)]
+
+
+def test_scraper_une_indice_html_y_sumario_api(monkeypatch, tmp_path):
+    # El índice HTML solo enlaza la sección A; el sumario oficial trae también B y C
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, ["BORME-A-2024-3-28.pdf"])
+    _publica_sumario(boe, JUE, ["BORME-A-2024-3-28.pdf", "BORME-B-2024-3-28.pdf",
+                                "BORME-C-2024-123.pdf", "BORME-C-2024-124.pdf"])
+    out = tmp_path / "borme_pdfs"
+    _run_cli(monkeypatch, "borme_scraper.py", "--start", JUE, "--end", JUE,
+             "--output", out, "--delay", 0)
+    assert _manifest(out) == [
+        ("2024-01-04", "BORME-A-2024-3-28.pdf", "A"), ("2024-01-04", "BORME-B-2024-3-28.pdf", "B"),
+        ("2024-01-04", "BORME-C-2024-123.pdf", "C"), ("2024-01-04", "BORME-C-2024-124.pdf", "C")]
+    assert (out / "2024/01/04/BORME-C-2024-124.pdf").exists()
+    # El PDF que está en los dos listados se descarga una vez
+    assert boe.calls.count(_pdf_url(JUE, "BORME-A-2024-3-28.pdf")) == 1
+    assert _state(out)["last_completed_date"] == "2024-01-04"
+
+
+def test_scraper_indice_404_pero_sumario_con_pdfs(monkeypatch, tmp_path):
+    boe = FakeBOE(monkeypatch)
+    _publica_sumario(boe, JUE, ["BORME-A-2024-3-28.pdf"])
+    out = tmp_path / "borme_pdfs"
+    _run_cli(monkeypatch, "borme_scraper.py", "--start", JUE, "--end", JUE,
+             "--output", out, "--delay", 0)
+    assert (out / "2024/01/04/BORME-A-2024-3-28.pdf").exists()
+
+
+def test_scraper_frase_no_se_publica_no_descarta_pdfs_enlazados(monkeypatch, tmp_path):
+    # Antes detect_no_borme() se miraba antes que los enlaces: una página con PDFs
+    # que contuviera "no se publica" en cualquier texto daba el día por vacío
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, ["BORME-A-2024-3-28.pdf"])
+    html = boe.routes[_index_url(JUE)].text.replace(
+        "</body>", "<p>El BORME no se publica sábados, domingos ni festivos.</p></body>")
+    boe.routes[_index_url(JUE)] = _resp(200, html)
+    out = tmp_path / "borme_pdfs"
+    _run_cli(monkeypatch, "borme_scraper.py", "--start", JUE, "--end", JUE,
+             "--output", out, "--delay", 0, "--sin-sumario-api")
+    assert (out / "2024/01/04/BORME-A-2024-3-28.pdf").exists()
+
+
+def test_scraper_sumario_caido_deja_el_dia_pendiente(monkeypatch, tmp_path):
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, ["BORME-A-2024-3-28.pdf"])
+    boe.routes[_sumario_url(JUE)] = _resp(503, "Service Unavailable")
+    boe.publish(VIE, ["BORME-A-2024-4-28.pdf"])
+    out = tmp_path / "borme_pdfs"
+    args = ["--start", JUE, "--end", VIE, "--output", out, "--delay", 0]
+
+    _run_cli(monkeypatch, "borme_scraper.py", *args)
+    st = _state(out)
+    # Lo del índice se descarga, pero sin sumario pueden faltar secciones
+    assert (out / "2024/01/04/BORME-A-2024-3-28.pdf").exists()
+    assert st["last_completed_date"] == "2024-01-03"
+    assert [e["date"] for e in st["errors"]] == ["2024-01-04"]
+
+    _publica_sumario(boe, JUE, ["BORME-A-2024-3-28.pdf", "BORME-C-2024-99.pdf"])
+    _run_cli(monkeypatch, "borme_scraper.py", *args, "--resume")
+    assert (out / "2024/01/04/BORME-C-2024-99.pdf").exists()
+    assert _state(out)["last_completed_date"] == "2024-01-05"
+    assert boe.calls.count(_pdf_url(JUE, "BORME-A-2024-3-28.pdf")) == 1
+
+
+def test_scraper_sumario_caido_sin_indice_no_se_da_por_dia_vacio(monkeypatch, tmp_path):
+    boe = FakeBOE(monkeypatch)
+    boe.routes[_sumario_url(JUE)] = requests.ConnectionError("reset")
+    out = tmp_path / "borme_pdfs"
+    _run_cli(monkeypatch, "borme_scraper.py", "--start", JUE, "--end", JUE,
+             "--output", out, "--delay", 0)
+    assert _state(out)["last_completed_date"] == "2024-01-03"
+
+
+def test_scraper_sumario_4xx_usa_solo_el_indice(monkeypatch, tmp_path):
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, ["BORME-A-2024-3-28.pdf"])
+    boe.routes[_sumario_url(JUE)] = _resp(400, "Bad Request")
+    out = tmp_path / "borme_pdfs"
+    _run_cli(monkeypatch, "borme_scraper.py", "--start", JUE, "--end", JUE,
+             "--output", out, "--delay", 0)
+    assert (out / "2024/01/04/BORME-A-2024-3-28.pdf").exists()
+    assert _state(out)["last_completed_date"] == "2024-01-04"
+
+
+def test_scraper_sin_sumario_api_no_la_consulta(monkeypatch, tmp_path):
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, ["BORME-A-2024-3-28.pdf"])
+    _run_cli(monkeypatch, "borme_scraper.py", "--start", JUE, "--end", JUE,
+             "--output", tmp_path / "o", "--delay", 0, "--sin-sumario-api")
+    assert not any("datosabiertos" in u for u in boe.calls)
+
+
+def test_extract_pdf_links_sumario_xml_y_json():
+    xml = _sumario_xml(JUE, ["BORME-A-2024-3-28.pdf", "BORME-C-2024-5.pdf", "BORME-A-2024-3-28.pdf"])
+    json_txt = json.dumps({"data": {"sumario": {"diario": [{"seccion": [{"item": [
+        {"url_pdf": {"texto": "https://www.boe.es/borme/dias/2024/01/04/pdfs/BORME-B-2024-3-08.pdf"}},
+    ]}]}]}}}).replace("/", "\\/")   # json_encode de PHP escapa las barras
+    assert [(link["url"], link["tipo"]) for link in scraper.extract_pdf_links_sumario(xml)] == [
+        ("/borme/dias/2024/01/04/pdfs/BORME-A-2024-3-28.pdf", "A"),
+        ("/borme/dias/2024/01/04/pdfs/BORME-C-2024-5.pdf", "C")]
+    assert [link["pdf_filename"] for link in scraper.extract_pdf_links_sumario(json_txt)] == [
+        "BORME-B-2024-3-08.pdf"]
