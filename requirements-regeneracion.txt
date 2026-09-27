@@ -1,0 +1,3 @@
+-r requirements.txt
+pandas>=3,<4
+duckdb>=1.4,<2

@@ -279,6 +279,13 @@ python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
   --borme borme_empresas.parquet
 ```
 
+**Importes históricos (issue #6):** el arreglo del parser no modifica los
+parquets ya publicados. Calidad rechaza entradas que aún no incluyan
+`valor_estimado_contrato`. Para recuperar `importe_sin_iva` desde los ATOM y
+recalcular los indicadores, consulta [la guía de regeneración](docs/REGENERACION_IMPORTES.md).
+Si el parquet perdió fechas de versión, usa la [reconstrucción completa desde
+los ZIP oficiales](docs/REGENERACION_COMPLETA.md), con comparación de cobertura.
+
 ```python
 import pandas as pd
 df = pd.read_parquet('calidad/calidad_licitaciones_resultado.parquet')
@@ -322,7 +329,7 @@ nacional/
 | Identificación | id, expediente, objeto, url |
 | Órgano | organo_contratante, nif_organo, dir3_organo, ciudad_organo |
 | Tipo | tipo_contrato, subtipo_code, procedimiento, estado |
-| Importes | importe_sin_iva, importe_con_iva, importe_adjudicacion |
+| Importes | valor_estimado_contrato, importe_sin_iva, importe_con_iva, importe_adjudicacion |
 | Adjudicación | adjudicatario, nif_adjudicatario, num_ofertas, es_pyme |
 | Clasificación | cpv_principal, cpvs, ubicacion, nuts |
 | Fechas | fecha_publicacion, fecha_limite, fecha_adjudicacion |

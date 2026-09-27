@@ -6,3 +6,6 @@ borme/data/borme_cargos_pub.parquet filter=lfs diff=lfs merge=lfs -text
 galicia/*.parquet filter=lfs diff=lfs merge=lfs -text
 ccaa_asturias/*.parquet filter=lfs diff=lfs merge=lfs -text
 calidad/*.parquet filter=lfs diff=lfs merge=lfs -text
+
+# Los parches conservan el contexto y los finales de línea del archivo origen.
+docs/patches/*.patch whitespace=-blank-at-eol
