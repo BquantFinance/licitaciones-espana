@@ -101,15 +101,25 @@ CABECERAS_MOJIBAKE = {
     "Fecha de resoluciï¿½n": "Fecha de resolución",
 }
 
-# contratos_2021.xlsx: en ~18.8K filas faltan las primeras celdas a partir de
-# "Fecha límite de presentación" y el resto está corrido 2 columnas a la
-# izquierda (3 si falta también "URL física"): URL en la fecha límite, zip en
-# "XML datos", fecha en "XML metadatos", institución en "Fecha de creación"…
+# contratos_2021.xlsx (verificado sobre las 64.826 filas del fichero de 2026-02):
+# - 18.000 filas traen desde "Fecha límite de presentación" los valores de
+#   "URL física" en adelante (URL física, XML datos, XML metadatos, zip, fecha
+#   de creación, institución…): corridos 2 columnas a la izquierda.
+# - 826 filas los traen desde "Órgano de Contratación": corridos 3.
+# - 21 de esas 826 traen además, desde "Fecha de publicación documento", los
+#   valores de "Expediente" en adelante (expediente, estado, contrato menor,
+#   entidad, órgano): corridos 1.
+# Ningún otro fichero B1 (2011-2026) tiene filas corridas.
 B1_COLS_CORRIDAS = [
-    "fecha_límite_de_presentación", "url_amigable", "url_física", "xml_datos",
-    "xml_metadatos", "zip", "fecha_de_creación", "id._institución", "institución",
-    "id._departamento", "departamento",
+    "órgano_de_contratación", "fecha_límite_de_presentación", "url_amigable",
+    "url_física", "xml_datos", "xml_metadatos", "zip", "fecha_de_creación",
+    "id._institución", "institución", "id._departamento", "departamento",
 ]
+B1_COLS_CABECERA_CORRIDA = [
+    "fecha_de_publicación_documento", "expediente", "estado_de_la_tramitacion",
+    "contrato_menor", "entidad_que_impulsa_la_contratación", "órgano_de_contratación",
+]
+_FECHA_DMY = r"\d{1,2}/\d{1,2}/\d{4}(?: \d{1,2}:\d{2}(?::\d{2})?)?"
 
 # REVASCON 2013-2014 (CSV) llama distinto a 3 campos del XLSX 2015-2018
 REVASCON_CSV_A_XLSX = {
@@ -142,7 +152,10 @@ def safe_str_columns(df: pd.DataFrame) -> pd.DataFrame:
         # pandas 3 lee el texto con dtype "str" (no "object"): sin la 2ª
         # condición sus "" no se convierten en nulos como en pandas 2.
         if df[col].dtype == "object" or pd.api.types.is_string_dtype(df[col]):
+            # en pandas 2 astype(str) convierte pd.NA en el texto "<NA>"
+            nulo = df[col].isna().to_numpy()
             df[col] = df[col].astype(str).replace({"nan": None, "None": None, "": None})
+            df.loc[nulo, col] = None
     return df
 
 
@@ -443,29 +456,45 @@ def consolidar_B1_contratos_master() -> dict:
     df = safe_str_columns(df)
     datos = [c for c in df.columns if not c.startswith("_")]
 
-    # Recolocar las filas corridas (la fecha límite trae una URL)
+    # Recolocar las filas corridas (ver B1_COLS_CORRIDAS). Sin esto el tipado
+    # de fechas convertiría en NaT las URL, zip, instituciones y expedientes
+    # que el fichero trae en columnas de fecha. _columnas_corridas describe
+    # cómo venía la fila en el fichero publicado ("columna:n" = desde esa
+    # columna los valores estaban n columnas a la izquierda); nulo = sin tocar.
     cols = B1_COLS_CORRIDAS
     if all(c in df.columns for c in cols):
-        limite = df[cols[0]].astype("string")
+        limite = df[cols[1]].astype("string")
         corrida = limite.str.startswith("http").fillna(False).astype(bool)
         salto3 = corrida & limite.str.contains("/es_doc/data/").fillna(False).astype(bool)
+        df["_columnas_corridas"] = pd.Series(pd.NA, index=df.index, dtype="string")
         for salto, filas in ((3, salto3), (2, corrida & ~salto3)):
             if filas.any():
-                df.loc[filas, cols[salto:]] = df.loc[filas, cols[:-salto]].to_numpy()
-                df.loc[filas, cols[:salto]] = None
+                # "URL física" y lo que la sigue están en cols[3 - salto:]
+                df.loc[filas, cols[3:]] = df.loc[filas, cols[3 - salto:len(cols) - salto]].to_numpy()
+                df.loc[filas, cols[3 - salto:3]] = None
+                df.loc[filas, "_columnas_corridas"] = f"{cols[3 - salto]}:{salto}"
+        cab = B1_COLS_CABECERA_CORRIDA
+        if all(c in df.columns for c in cab):
+            pub = df[cab[0]].astype("string")
+            no_es_fecha = pub.notna() & ~pub.str.fullmatch(_FECHA_DMY).fillna(False).astype(bool)
+            filas = salto3 & no_es_fecha
+            if filas.any():
+                df.loc[filas, cab[1:]] = df.loc[filas, cab[:-1]].to_numpy()
+                df.loc[filas, cab[0]] = None
+                df.loc[filas, "_columnas_corridas"] = f"{cab[0]}:1," + df.loc[filas, "_columnas_corridas"]
         if corrida.any():
             log.info("  Recolocadas %d filas con columnas corridas", int(corrida.sum()))
 
     # Eliminar filas completamente vacías (sin contar _archivo_origen/_year)
     df = df.dropna(how="all", subset=datos)
 
-    # Eliminar duplicados exactos si los hay, sin contar el fichero de origen:
-    # los JSON 2012 y 2013 son subconjuntos del de 2011.
-    n_antes = len(df)
-    df = df.drop_duplicates(subset=datos)
-    n_dupes = n_antes - len(df)
+    # Filas idénticas a otra anterior (sin contar el fichero de origen): se
+    # conservan todas, tal como se publican, y se marcan con _duplicado. Los
+    # JSON 2012 y 2013 repiten filas del de 2011.
+    df["_duplicado"] = df.duplicated(subset=datos)
+    n_dupes = int(df["_duplicado"].sum())
     if n_dupes:
-        log.info("  Eliminados %d duplicados exactos", n_dupes)
+        log.info("  %d filas repiten otra idéntica (marcadas en _duplicado)", n_dupes)
 
     # ── Tipado de columnas comunes ───────────────────────────
     # Intentar convertir columnas de importe a numérico
@@ -487,7 +516,7 @@ def consolidar_B1_contratos_master() -> dict:
 
     dest = OUTPUT_DIR / "contratos_master.parquet"
     info = save_parquet(df, dest, "contratos_master")
-    info["duplicados_eliminados"] = n_dupes
+    info["duplicados_marcados"] = n_dupes
     if "_year" in df.columns and df["_year"].notna().any():
         info["rango_años"] = f"{int(df['_year'].min())}-{int(df['_year'].max())}"
     else:
@@ -523,18 +552,15 @@ def consolidar_A3_poderes() -> dict:
 
     # 'id' es el identificador del poder adjudicador (p.ej. 27191, el de
     # _links.self.href), no el índice en la página: dos poderes con distinto
-    # id son distintos aunque coincida el resto. Si la paginación se desplaza
-    # durante la descarga, el mismo id sale dos veces: se queda el último.
-    content_cols = [c for c in df.columns
-                    if c not in ("id", "_fuente", "_archivo_origen")
-                    and not c.startswith("_")]
-    n_antes = len(df)
+    # id son distintos aunque coincida el resto. Si un id sale más de una vez
+    # (la API lo repite o la paginación se desplaza durante la descarga) se
+    # conservan todas las filas y _duplicado marca las que no son la última.
     if "id" in df.columns:
-        df = df.drop_duplicates(subset=["id"], keep="last")
+        df["_duplicado"] = df.duplicated(subset=["id"], keep="last")
     else:
-        df = df.drop_duplicates(subset=content_cols if content_cols else None)
-    if len(df) < n_antes:
-        log.info("  Deduplicados %d → %d", n_antes, len(df))
+        df["_duplicado"] = df.duplicated()
+    if df["_duplicado"].any():
+        log.info("  %d filas con id repetido (marcadas en _duplicado)", int(df["_duplicado"].sum()))
 
     df["_fuente"] = "A3_api_poderes"
     dest = OUTPUT_DIR / "poderes_adjudicadores.parquet"
@@ -567,14 +593,15 @@ def consolidar_A4_empresas() -> dict:
             df[col] = df[col].apply(lambda x: json.dumps(x, ensure_ascii=False)
                                     if isinstance(x, (list, dict)) else x)
 
-    # Deduplicamos por contenido completo para no perder registros.
+    # La API repite algunas empresas idénticas en posiciones consecutivas de
+    # la misma página (25 de 9.042 en la descarga de 2026-02): se conservan y
+    # se marcan en _duplicado.
     content_cols = [c for c in df.columns
                     if c not in ("id", "_fuente", "_archivo_origen")
                     and not c.startswith("_")]
-    n_antes = len(df)
-    df = df.drop_duplicates(subset=content_cols if content_cols else None)
-    if len(df) < n_antes:
-        log.info("  Deduplicados %d → %d (contenido completo)", n_antes, len(df))
+    df["_duplicado"] = df.duplicated(subset=content_cols if content_cols else None)
+    if df["_duplicado"].any():
+        log.info("  %d filas repiten otra idéntica (marcadas en _duplicado)", int(df["_duplicado"].sum()))
 
     df["_fuente"] = "A4_api_empresas"
     dest = OUTPUT_DIR / "empresas_licitadoras.parquet"
@@ -622,18 +649,17 @@ def consolidar_B2_revascon() -> dict:
         if col.startswith("importe"):
             df[col] = parse_importes(df[col])
 
-    # Eliminar duplicados (sin contar el fichero de origen: el mismo contrato
-    # aparece idéntico en varios XLSX anuales)
-    n_antes = len(df)
-    df = df.drop_duplicates(subset=[c for c in df.columns if not c.startswith("_")])
-    n_dupes = n_antes - len(df)
+    # El mismo contrato aparece idéntico en varios XLSX anuales: se conservan
+    # todas las filas y se marcan las que repiten otra (sin contar el fichero)
+    df["_duplicado"] = df.duplicated(subset=[c for c in df.columns if not c.startswith("_")])
+    n_dupes = int(df["_duplicado"].sum())
     if n_dupes:
-        log.info("  Eliminados %d duplicados", n_dupes)
+        log.info("  %d filas repiten otra idéntica (marcadas en _duplicado)", n_dupes)
 
     df["_fuente"] = "B2_revascon_historico"
     dest = OUTPUT_DIR / "revascon_historico.parquet"
     info = save_parquet(df, dest, "revascon_historico")
-    info["duplicados_eliminados"] = n_dupes
+    info["duplicados_marcados"] = n_dupes
     return info
 
 
@@ -664,18 +690,22 @@ def consolidar_C1_bilbao() -> dict:
 
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
-    # Bilbao descarga por año Y por tipo → posibles duplicados
-    n_antes = len(df)
-    # Excluir columna de origen para comparar
-    compare_cols = [c for c in df.columns if not c.startswith("_")]
+    # El scraper descarga Bilbao por año, por tipo y "abiertas": la misma fila
+    # llega en varias descargas. Se descartan esas repeticiones entre ficheros,
+    # no las que el Ayuntamiento publica dentro de un mismo fichero: de cada
+    # fila se conservan tantas copias como tenga el fichero que más tenga.
     # Los ficheros difieren en espacios finales ("VICONSA, S.A. " vs
-    # "VICONSA, S.A."): sin quitarlos el mismo contrato se cuenta dos veces
-    for col in compare_cols:
-        df[col] = df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
-    df = df.drop_duplicates(subset=compare_cols)
-    n_dupes = n_antes - len(df)
+    # "VICONSA, S.A."): se comparan sin ellos, pero los valores no se tocan.
+    compare_cols = [c for c in df.columns if not c.startswith("_")]
+    sin_espacios = df[compare_cols].apply(
+        lambda s: s.str.strip() if pd.api.types.is_string_dtype(s) else s)
+    clave = pd.util.hash_pandas_object(sin_espacios, index=False)
+    copia = clave.groupby([df["_archivo_origen"].to_numpy(), clave.to_numpy()]).cumcount()
+    repetida = pd.DataFrame({"clave": clave, "copia": copia}).duplicated().to_numpy()
+    n_dupes = int(repetida.sum())
+    df = df[~repetida].copy()
     if n_dupes:
-        log.info("  Eliminados %d duplicados (solapamiento año/tipo)", n_dupes)
+        log.info("  Descartadas %d filas repetidas entre descargas (año/tipo/abiertas)", n_dupes)
 
     # Tipado (importes "1.234.567,89" y fechas dd/mm o mm/dd según la columna)
     for col in df.columns:

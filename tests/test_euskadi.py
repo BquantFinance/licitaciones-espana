@@ -376,8 +376,11 @@ def test_revascon_xlsx_con_filas_de_titulo_y_csv(entrada):
     df = pd.read_parquet(cons.OUTPUT_DIR / "revascon_historico.parquet")
 
     assert not [c for c in df.columns if c.startswith("unnamed")]
-    assert info["registros"] == len(df) == 3
-    assert info["duplicados_eliminados"] == 1
+    # el contrato repetido en el XLSX de 2016 se conserva, marcado
+    assert info["registros"] == len(df) == 4
+    assert info["duplicados_marcados"] == 1
+    assert df["_duplicado"].tolist() == [False, False, False, True]
+    assert df.loc[df["_duplicado"], "_archivo_origen"].tolist() == ["revascon_2016.xlsx"]
     # cabecera y filas de título no quedan como datos
     assert set(df["estado_contrato"]) == {"Ejecución", "Finalización"}
     # CSV 2013-2014 y XLSX 2015-2018 en las mismas columnas; importes numéricos
@@ -411,8 +414,10 @@ def test_contratos_master_json_y_xlsx_en_las_mismas_columnas(entrada):
     info = cons.consolidar_B1_contratos_master()
     df = pd.read_parquet(cons.OUTPUT_DIR / "contratos_master.parquet")
 
-    assert info["registros"] == len(df) == 5
-    assert info["duplicados_eliminados"] == 1
+    # la fila del JSON 2012 que repite una del de 2011 se conserva, marcada
+    assert info["registros"] == len(df) == 6
+    assert info["duplicados_marcados"] == 1
+    assert df.loc[df["_duplicado"], "_archivo_origen"].tolist() == ["contratos_2012.json"]
     assert info["rango_años"] == "2011-2022"
     for col in ("documentname", "physicalurl", "dataxml", "metadataxml",
                 "contratacion_titulo_contrato", "colecciï¿½n"):
@@ -430,33 +435,60 @@ def test_contratos_master_json_y_xlsx_en_las_mismas_columnas(entrada):
 
 
 def test_contratos_2021_filas_corridas_se_recolocan(entrada):
-    # contratos_2021.xlsx real: filas sin "Fecha límite"/"URL amigable" (y a
-    # veces "URL física") con el resto de celdas corrido 2 o 3 columnas
-    cab = ["Nombre", "Expediente", "Fecha límite de presentación", "URL amigable", "URL física",
-           "XML datos", "XML metadatos", "Zip", "Fecha de creación", "Id. Institución",
-           "Institución", "Id. Departamento", "Departamento"]
+    # Estructura real de contratos_2021.xlsx (64.826 filas, 2026-02):
+    # 18.000 filas con los valores desde "URL física" corridos 2 columnas a la
+    # izquierda, 826 corridos 3 (desde "Órgano de Contratación") y, de éstas,
+    # 21 con la cabecera corrida 1 desde "Fecha de publicación documento".
+    cab = ["Nombre", "Colección", "Titulo del Contrato", "Objeto del Contrato",
+           "Fecha de publicación documento", "Expediente", "Estado de la tramitacion",
+           "Contrato menor", "Entidad que impulsa la contratación", "Órgano de Contratación",
+           "Fecha límite de presentación", "URL amigable", "URL física", "XML datos",
+           "XML metadatos", "Zip", "Fecha de creación", "Id. Institución", "Institución",
+           "Id. Departamento", "Departamento"]
     u = "https://www.contratacion.euskadi.eus/contenidos/anuncio_contratacion/{}"
-    cola = [u.format("expcm1/es_doc/data/es_r01dtpd1"), u.format("expcm1/r01Index/expcm1-idxContent.xml"),
-            u.format("expcm1/opendata/expcm1.zip"), "18/03/2021", "r01epd0121", "Diputación Foral de Gipuzkoa",
-            "r01etpd99", "Hacienda"]
     ficha = u.format("expcm1/es_doc/es_arch_expcm1.html")
-    filas = [["Bien", "E-0", "20/04/2021 12:00", u.format("amigable"), ficha, *cola],
-             ["Corrida 2", "E-2", ficha, *cola],
-             ["Corrida 3", "E-3", *cola]]
+    cola = [ficha, u.format("expcm1/es_doc/data/es_r01dtpd1"),
+            u.format("expcm1/r01Index/expcm1-idxContent.xml"), u.format("expcm1/opendata/expcm1.zip"),
+            "18/03/2021", "r01epd0121", "Diputación Foral de Gipuzkoa", "r01etpd99", "Hacienda"]
+    ini = ["Titulo", "Objeto", "18/03/2021"]
+    cab_ok = ["Adjudicación provisional / definitiva", "Sí", "P4812700E - Ayto", "Alcaldía"]
+    filas = [["Bien", "GV", *ini, "E-0", *cab_ok, "20/04/2021 12:00", u.format("amigable"), *cola],
+             ["Corrida 2", "GV", *ini, "E-2", *cab_ok, *cola],
+             ["Corrida 3", "GV", None, None, None, None, None, None, None, *cola[:-1]],
+             ["Corrida 1+3", "GV", "Titulo", "Objeto", "E-13", *cab_ok, *cola[:5]]]
     (entrada / "B1_xlsx_sector_publico_anual" / "contratos_2021.xlsx").write_bytes(xlsx_bytes(cab, filas))
 
     cons.consolidar_B1_contratos_master()
-    df = pd.read_parquet(cons.OUTPUT_DIR / "contratos_master.parquet").set_index("expediente")
+    df = pd.read_parquet(cons.OUTPUT_DIR / "contratos_master.parquet").set_index("nombre")
 
-    for exp in ("E-0", "E-2", "E-3"):
-        assert df.loc[exp, "xml_datos"] == cola[0]
-        assert df.loc[exp, "zip"] == cola[2]
-        assert df.loc[exp, "fecha_de_creación"] == pd.Timestamp("2021-03-18")
-        assert df.loc[exp, "institución"] == "Diputación Foral de Gipuzkoa"
-        assert df.loc[exp, "departamento"] == "Hacienda"
-    assert df.loc["E-0", "fecha_límite_de_presentación"] == pd.Timestamp("2021-04-20 12:00")
-    assert df.loc["E-2", "url_física"] == ficha and pd.isna(df.loc["E-2", "fecha_límite_de_presentación"])
-    assert pd.isna(df.loc["E-3", "url_física"])
+    assert df["_columnas_corridas"].astype(object).where(df["_columnas_corridas"].notna(), None).to_dict() == {
+        "Bien": None, "Corrida 2": "fecha_límite_de_presentación:2",
+        "Corrida 3": "órgano_de_contratación:3",
+        "Corrida 1+3": "fecha_de_publicación_documento:1,órgano_de_contratación:3"}
+    for n in df.index:
+        assert df.loc[n, "url_física"] == ficha, n
+        assert df.loc[n, "xml_datos"] == cola[1], n
+        assert df.loc[n, "zip"] == cola[3], n
+        assert df.loc[n, "fecha_de_creación"] == pd.Timestamp("2021-03-18"), n
+    for n in ("Bien", "Corrida 2"):
+        assert df.loc[n, "institución"] == "Diputación Foral de Gipuzkoa"
+        assert df.loc[n, "departamento"] == "Hacienda"
+        assert df.loc[n, "órgano_de_contratación"] == "Alcaldía"
+    assert df.loc["Bien", "fecha_límite_de_presentación"] == pd.Timestamp("2021-04-20 12:00")
+    assert df.loc["Bien", "url_amigable"] == u.format("amigable")
+    assert pd.isna(df.loc["Corrida 2", "fecha_límite_de_presentación"])
+    assert pd.isna(df.loc["Corrida 2", "url_amigable"])
+    # corrida 3: sin órgano en el fichero (su celda traía la URL física)
+    assert pd.isna(df.loc["Corrida 3", "órgano_de_contratación"])
+    assert df.loc["Corrida 3", "id._departamento"] == "r01etpd99"
+    assert pd.isna(df.loc["Corrida 3", "departamento"])
+    # cabecera corrida 1: el expediente estaba en la fecha de publicación
+    fila = df.loc["Corrida 1+3"]
+    assert (fila["expediente"], fila["estado_de_la_tramitacion"], fila["contrato_menor"],
+            fila["entidad_que_impulsa_la_contratación"], fila["órgano_de_contratación"]) == (
+        "E-13", *cab_ok)
+    assert pd.isna(fila["fecha_de_publicación_documento"])
+    assert pd.isna(fila["id._institución"])
 
 
 def test_bilbao_importes_fechas_y_duplicados(entrada):
@@ -481,6 +513,8 @@ def test_bilbao_importes_fechas_y_duplicados(entrada):
 
     assert sorted(df.index) == ["080617000001", "080617000002"]   # 0 inicial conservado
     assert info["duplicados_eliminados"] == 1
+    # se conserva la fila tal cual está en su fichero (sin quitar espacios)
+    assert df.loc["080617000001", "contratista"] == "VICONSA, S.A."
     lic, adj = "presupuesto_de_licitacion_iva_excluido", "presupuesto_de_adjudicacion_iva_excluido"
     assert (df.loc["080617000001", lic], df.loc["080617000001", adj]) == (52990.0, 964440.0)
     assert (df.loc["080617000002", lic], df.loc["080617000002", adj]) == (1234567.89, 1100000.5)
@@ -489,6 +523,35 @@ def test_bilbao_importes_fechas_y_duplicados(entrada):
     assert df.loc["080617000002", "fecha_de_adjudicacion"] == pd.Timestamp("2008-01-08")
     assert df.loc["080617000002", "fecha_de_formalizacion"] == pd.Timestamp("2008-02-20")
     assert df["lote"].tolist() == [1, 2]
+
+
+def test_bilbao_filas_repetidas_en_un_mismo_fichero_se_conservan(entrada):
+    d = entrada / "C1_bilbao"
+    fila = "080617000001;1;Obras;Urbanización;52.990;VICONSA, S.A.;964.440;6/25/2008;15/07/2008\n"
+    # el Ayuntamiento la publica dos veces en el fichero anual…
+    (d / "bilbao_2008.csv").write_text(CAB_BILBAO + fila + fila, encoding="utf-8")
+    # …y la descarga por tipo la trae otra vez (solapamiento de descargas)
+    (d / "bilbao_tipo_obras.csv").write_text(CAB_BILBAO + fila, encoding="utf-8")
+
+    info = cons.consolidar_C1_bilbao()
+    df = pd.read_parquet(cons.OUTPUT_DIR / "bilbao_contratos.parquet")
+    assert len(df) == 2 and info["duplicados_eliminados"] == 1
+    assert set(df["_archivo_origen"]) == {"bilbao_2008.csv"}
+
+
+def test_empresas_repetidas_por_la_api_se_conservan_marcadas(entrada):
+    emp = {"name": "OBRA PUBLICA LA RIBERA SL", "registrationNumber": "09618",
+           "identificationNumber": "B00000000", "economicActivities": [{"id": 1}]}
+    otra = dict(emp, name="CEVIAM EPC SL", registrationNumber="09622")
+    pagina = {"totalItems": 3, "totalPages": 1, "currentPage": 1, "itemsOfPage": 3,
+              "items": [emp, dict(emp), otra]}
+    (entrada / "A4_api_empresas" / "empresas_p00001.json").write_text(
+        json.dumps(pagina), encoding="utf-8")
+
+    cons.consolidar_A4_empresas()
+    df = pd.read_parquet(cons.OUTPUT_DIR / "empresas_licitadoras.parquet")
+    assert df["registrationnumber"].tolist() == ["09618", "09618", "09622"]
+    assert df["_duplicado"].tolist() == [False, True, False]
 
 
 def test_poderes_distintos_con_mismo_contenido_no_se_fusionan(entrada):
@@ -501,7 +564,9 @@ def test_poderes_distintos_con_mismo_contenido_no_se_fusionan(entrada):
 
     cons.consolidar_A3_poderes()
     df = pd.read_parquet(cons.OUTPUT_DIR / "poderes_adjudicadores.parquet")
-    assert sorted(df["id"]) == [27191, 27200]
+    # los dos poderes distintos se conservan; el id repetido también, marcado
+    assert df["id"].tolist() == [27191, 27200, 27191]
+    assert df["_duplicado"].tolist() == [True, False, False]
 
 
 def test_ultimos_90d_solo_la_instantanea_mas_reciente(entrada):
