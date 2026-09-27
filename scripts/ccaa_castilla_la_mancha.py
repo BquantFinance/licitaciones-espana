@@ -1339,7 +1339,7 @@ def conceptos_a_consultar(portada):
 
 def _todos_los_enlaces(concepto, nombre):
     """¿Se toman todos los enlaces del concepto o solo los que dicen "menores"?"""
-    return concepto != CONCEPTO_ESTADISTICA and "menor" in _normalizar(nombre)
+    return concepto == CONCEPTO_MENORES or (concepto != CONCEPTO_ESTADISTICA and "menor" in _normalizar(nombre))
 
 
 def descubrir_jccm(resumen, filtro):
