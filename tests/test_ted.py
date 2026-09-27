@@ -1143,3 +1143,9 @@ class TestTedCompletitud:
         assert (fila["TITLE"], fila["CONTRACT_NUMBER"], fila["B_CONTRACTOR_SME"]) == (
             "Servicio de limpieza", "CT-7", "Y")
         assert "TED_NOTICE_URL" in pd.read_parquet(tmp_path / "ted_can_2021_ES.parquet").columns
+
+
+def test_nullable_strings_from_rebuilt_parquet():
+    assert rtc.classify_buyer(pd.NA) == (False, False)
+    assert rtc.normalize_name(pd.NA) == ""
+    assert rtc.clean_nif(pd.NA) == ""

@@ -422,7 +422,7 @@ def run(args):
         res["es_menor"]=df["conjunto"].astype(str).str.lower().values=="menores"
 
     p=os.path.join(args.output,"calidad_licitaciones_resultado.parquet")
-    res.to_parquet(p,index=False)
+    res.to_parquet(p,index=False,compression='zstd',compression_level=3,row_group_size=100000)
     size_mb = os.path.getsize(p)/1024**2
     print(f"\n  -> {p}")
     print(f"     {len(res):,} filas x {len(res.columns)} columnas ({size_mb:.0f} MB)")

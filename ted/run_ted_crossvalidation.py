@@ -224,7 +224,7 @@ def get_sara_threshold(year, tipo_contrato, is_age, is_sector):
 
 def classify_buyer(dependencia):
     """Clasifica: (is_age, is_sector)."""
-    if not dependencia or pd.isna(dependencia):
+    if pd.isna(dependencia) or not dependencia:
         return False, False
     # Sin acentos y por palabra completa: como subcadena 'ICO ' casaba con
     # 'PÚBLICO ' (todo 'Sector Público > ...' salía AGE) y 'BOE' con 'BOECILLO'
@@ -236,7 +236,7 @@ def classify_buyer(dependencia):
 
 def normalize_name(name):
     """Normaliza nombre organo para matching fuzzy."""
-    if not name or pd.isna(name):
+    if pd.isna(name) or not name:
         return ''
     s = str(name).upper().strip()
     for a, b in [('Á','A'),('É','E'),('Í','I'),('Ó','O'),('Ú','U'),
@@ -282,7 +282,7 @@ def _clave_organo_expediente(df, exp_col):
 
 def clean_nif(nif):
     """Limpia NIF: mayusculas, sin prefijo ES."""
-    if not nif or pd.isna(nif):
+    if pd.isna(nif) or not nif:
         return ''
     s = str(nif).strip().upper()
     s = re.sub(r'^ES[-\s]*', '', s)
@@ -413,7 +413,7 @@ def load_placsp(path):
     df['_ano'] = pd.to_numeric(df['ano'], errors='coerce')
     df = df[(df['_ano'] >= 2010) & (df['_ano'] <= 2027)].copy()
 
-    df['_expediente'] = df['expediente'].astype(str).replace('nan', '').str.strip()
+    df['_expediente'] = df['expediente'].map(_str_or_empty).str.strip()
     df['_fecha_adj'] = pd.to_datetime(df['fecha_adjudicacion'], errors='coerce')
     df['_tipo_contrato'] = df['tipo_contrato'].astype(str).replace('nan', '').str.strip()
     df['_procedimiento'] = df['procedimiento'].astype(str).replace('nan', '').str.strip()
@@ -1201,7 +1201,7 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
 
     # -- Marcar E1/E2/E2b --
     df_placsp['_ted_validated'] = False
-    df_placsp['_match_strategy'] = ''
+    df_placsp['_match_strategy'] = pd.Series('', index=df_placsp.index, dtype=object)
 
     # Enrich fields
     enrich_defaults = {
@@ -1211,29 +1211,30 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
         '_ted_internal_id': '',
     }
     for col, default in enrich_defaults.items():
-        df_placsp[col] = default
+        # Mutable strings avoid copying an Arrow array for every scalar update.
+        df_placsp[col] = pd.Series(default, index=df_placsp.index, dtype=object)
     df_placsp['_ted_n_ofertas'] = np.nan
     df_placsp['_ted_duration'] = np.nan
 
     for idx in matched_idx:
-        df_placsp.loc[idx, '_ted_validated'] = True
+        df_placsp.at[idx, '_ted_validated'] = True
         # Asignar estrategia correcta
         if idx in e2b_matched_idx:
-            df_placsp.loc[idx, '_match_strategy'] = 'E2b_exp_lotes'
+            df_placsp.at[idx, '_match_strategy'] = 'E2b_exp_lotes'
         else:
-            df_placsp.loc[idx, '_match_strategy'] = 'E1_E2'
+            df_placsp.at[idx, '_match_strategy'] = 'E1_E2'
         if idx in match_data:
             m = match_data[idx]
-            df_placsp.loc[idx, '_ted_id'] = m.get('ted_id', '')
-            df_placsp.loc[idx, '_ted_n_ofertas'] = pd.to_numeric(m.get('n_ofertas', np.nan), errors='coerce')
-            df_placsp.loc[idx, '_ted_cpv'] = m.get('cpv_ted', '')
-            df_placsp.loc[idx, '_ted_win_size'] = m.get('win_size', '')
-            df_placsp.loc[idx, '_ted_direct_award'] = m.get('direct_award', '')
-            df_placsp.loc[idx, '_ted_sme_part'] = m.get('sme_part', '')
-            df_placsp.loc[idx, '_ted_buyer_legal_type'] = m.get('buyer_legal_type', '')
-            df_placsp.loc[idx, '_ted_duration'] = pd.to_numeric(m.get('duration_lot', np.nan), errors='coerce')
-            df_placsp.loc[idx, '_ted_award_criterion'] = m.get('award_criterion_type', '')
-            df_placsp.loc[idx, '_ted_internal_id'] = m.get('internal_id', '')
+            df_placsp.at[idx, '_ted_id'] = m.get('ted_id', '')
+            df_placsp.at[idx, '_ted_n_ofertas'] = pd.to_numeric(m.get('n_ofertas', np.nan), errors='coerce')
+            df_placsp.at[idx, '_ted_cpv'] = m.get('cpv_ted', '')
+            df_placsp.at[idx, '_ted_win_size'] = m.get('win_size', '')
+            df_placsp.at[idx, '_ted_direct_award'] = m.get('direct_award', '')
+            df_placsp.at[idx, '_ted_sme_part'] = m.get('sme_part', '')
+            df_placsp.at[idx, '_ted_buyer_legal_type'] = m.get('buyer_legal_type', '')
+            df_placsp.at[idx, '_ted_duration'] = pd.to_numeric(m.get('duration_lot', np.nan), errors='coerce')
+            df_placsp.at[idx, '_ted_award_criterion'] = m.get('award_criterion_type', '')
+            df_placsp.at[idx, '_ted_internal_id'] = m.get('internal_id', '')
 
     # -- Marcar E3 --
     ted_enrich_cols = {
@@ -1250,51 +1251,51 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
 
     def _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols):
         """Enrich PLACSP row with TED fields from ted_valid DataFrame."""
-        df_placsp.loc[s_idx, '_ted_id'] = str(ted_valid.loc[t_idx, 'ted_notice_id'])
+        df_placsp.at[s_idx, '_ted_id'] = str(ted_valid.loc[t_idx, 'ted_notice_id'])
         for dest_col, src_col in ted_enrich_cols.items():
             if src_col in ted_valid.columns:
                 val = ted_valid.loc[t_idx, src_col]
                 if dest_col in ('_ted_n_ofertas', '_ted_duration'):
-                    df_placsp.loc[s_idx, dest_col] = pd.to_numeric(val, errors='coerce')
+                    df_placsp.at[s_idx, dest_col] = pd.to_numeric(val, errors='coerce')
                 else:
-                    df_placsp.loc[s_idx, dest_col] = str(val) if pd.notna(val) else ''
+                    df_placsp.at[s_idx, dest_col] = str(val) if pd.notna(val) else ''
 
     for s_idx, t_idx, _ in adv['e3_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E3_nif_org'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E3_nif_org'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E4 --
     for indices, t_idx, _, _ in adv['e4_matched_groups']:
         for s_idx in indices:
-            df_placsp.loc[s_idx, '_match_strategy'] = 'E4_lotes'
-            df_placsp.loc[s_idx, '_ted_validated'] = True
+            df_placsp.at[s_idx, '_match_strategy'] = 'E4_lotes'
+            df_placsp.at[s_idx, '_ted_validated'] = True
             _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E5 --
     for s_idx, t_idx, _ in adv['e5_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E5_nombre'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E5_nombre'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E3b --
     for s_idx, t_idx, _ in adv['e3b_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E3b_alias'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E3b_alias'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E7 --
     for s_idx, t_idx, _ in adv['e7_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E7_fuzzy'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E7_fuzzy'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E6 --
     for s_idx in adv['e6_matched_idx']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E6_propagacion'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E6_propagacion'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         if s_idx in adv['e6_ted_ids']:
-            df_placsp.loc[s_idx, '_ted_id'] = adv['e6_ted_ids'][s_idx]
+            df_placsp.at[s_idx, '_ted_id'] = adv['e6_ted_ids'][s_idx]
 
     # -- Missing flags --
     df_placsp['_ted_missing'] = (
