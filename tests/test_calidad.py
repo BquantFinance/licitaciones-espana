@@ -35,16 +35,18 @@ def _publicado():
     })
 
 
-def test_run_deduplica_y_usa_la_semantica_correcta(tmp_path):
+def test_run_evalua_todas_las_filas_con_la_semantica_correcta(tmp_path):
     entrada = tmp_path / "nacional.parquet"
     _publicado().to_parquet(entrada, index=False)
     args = argparse.Namespace(input=str(entrada), output=str(tmp_path / "out"), sample=None,
-                              ted=None, borme=None, sin_deduplicar=False)
+                              ted=None, borme=None, solo_ultima_version=False)
     calidad.run(args)
-    res = pd.read_parquet(tmp_path / "out" / "calidad_licitaciones_resultado.parquet")
+    todas = pd.read_parquet(tmp_path / "out" / "calidad_licitaciones_resultado.parquet")
 
-    # Una fila por licitación (la versión 'RES' de 'a')
-    assert res["id"].tolist() == ["a", "b", "c"]
+    # Se evalúan todas las entradas publicadas, marcadas por versión
+    assert todas["id"].tolist() == ["a", "a", "b", "c"]
+    assert todas["es_ultima_version"].tolist() == [False, True, True, True]
+    res = todas[todas["es_ultima_version"]].reset_index(drop=True)
     a = res.iloc[0]
     assert a["estado"] == "Resuelta"
     assert a["valor_estimado_contrato"] == 500000.0
@@ -59,14 +61,14 @@ def test_run_deduplica_y_usa_la_semantica_correcta(tmp_path):
     assert res.iloc[2]["procedimiento"] == "Contrato menor"
 
 
-def test_sin_deduplicar_conserva_todas_las_filas(tmp_path):
+def test_solo_ultima_version(tmp_path):
     entrada = tmp_path / "nacional.parquet"
     _publicado().to_parquet(entrada, index=False)
     args = argparse.Namespace(input=str(entrada), output=str(tmp_path / "out"), sample=None,
-                              ted=None, borme=None, sin_deduplicar=True)
+                              ted=None, borme=None, solo_ultima_version=True)
     calidad.run(args)
     res = pd.read_parquet(tmp_path / "out" / "calidad_licitaciones_resultado.parquet")
-    assert len(res) == 4
+    assert res["id"].tolist() == ["a", "b", "c"]
 
 
 def test_cons08_usa_el_par_con_iva_si_falta_sin_iva():

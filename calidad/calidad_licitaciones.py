@@ -18,12 +18,13 @@ Uso:
 
 Salida: calidad/calidad_licitaciones_resultado.parquet
 
-La entrada se normaliza con nacional.licitaciones.leer_placsp: una fila por
-licitacion (version mas reciente) y semantica actual de importes
-(importe_sin_iva = presupuesto base sin IVA, valor_estimado_contrato = valor
-estimado). Los parquet publicados hasta v2026.02 repetian cada licitacion en
-varias versiones (8,7M filas para 4,7M licitaciones); --sin-deduplicar
-mantiene el comportamiento anterior.
+La entrada se normaliza con nacional.licitaciones.leer_placsp (semantica
+actual de importes: importe_sin_iva = presupuesto base sin IVA,
+valor_estimado_contrato = valor estimado) y se evaluan TODAS sus filas: la
+PLACSP publica una entrada por cada actualizacion de una licitacion (8,7M
+entradas de 4,7M licitaciones en v2026.02). La salida incluye
+es_ultima_version / n_versiones para agregar por licitacion;
+--solo-ultima-version evalua solo la version mas reciente de cada una.
 ============================================================================
 """
 import pandas as pd
@@ -387,7 +388,7 @@ def run(args):
     empresas_borme = cargar_borme(args.borme) if args.borme else None
 
     print(f"\n  Cargando {args.input}...")
-    df = leer_placsp(args.input, deduplicar=not args.sin_deduplicar)
+    df = leer_placsp(args.input, solo_ultima_version=args.solo_ultima_version)
     if args.sample:
         df=df.sample(min(args.sample,len(df)),random_state=42)
         print(f"  Muestra: {len(df):,}")
@@ -443,8 +444,8 @@ def main():
     p.add_argument("-s","--sample",type=int,default=None)
     p.add_argument("--ted",default=None,help="crossval_sara.parquet")
     p.add_argument("--borme",default=None,help="borme_empresas.parquet")
-    p.add_argument("--sin-deduplicar",action="store_true",
-                   help="No reducir a una fila por licitacion (version mas reciente)")
+    p.add_argument("--solo-ultima-version",action="store_true",
+                   help="Evaluar solo la version mas reciente de cada licitacion")
     run(p.parse_args())
 
 if __name__ == "__main__":

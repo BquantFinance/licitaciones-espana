@@ -6,7 +6,7 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 
 | Fuente | Registros | Período | Tamaño |
 |--------|-----------|---------|--------|
-| Nacional (PLACSP) | 4.7M licitaciones (8.7M filas con versiones repetidas en v2026.02) | 2012-2026 | 780 MB |
+| Nacional (PLACSP) | 8.7M entradas publicadas de 4.7M licitaciones (una por versión) | 2012-2026 | 780 MB |
 | Andalucía | ~857K | 2016-2026 | 47 MB |
 | Catalunya | 20.6M | 2014-2025 | ~180 MB |
 | 🆕 Euskadi | 704K | 2005-2026 | ~160 MB |
@@ -105,7 +105,7 @@ Pipeline para validar si los contratos SARA españoles se publican efectivamente
 
 ### Resultados
 
-> ⚠️ Calculado con `licitaciones_espana.parquet` de `v2026.02` sin deduplicar: cada versión adjudicada de una misma licitación contaba como un contrato SARA distinto, la suma de lotes por expediente sumaba versiones repetidas y "negociado sin publicidad" era en realidad el código de negociado *con* publicidad. `run_ted_crossvalidation.py` ya corrige la entrada; las cifras cambiarán al regenerar.
+> ⚠️ Calculado con `licitaciones_espana.parquet` de `v2026.02` contando cada entrada del ATOM como un contrato: cada versión adjudicada de una misma licitación contaba como un contrato SARA distinto, la suma de lotes por expediente sumaba versiones repetidas y "negociado sin publicidad" era en realidad el código de negociado *con* publicidad. `run_ted_crossvalidation.py` ahora cruza solo la versión más reciente de cada licitación (`es_ultima_version`; el parquet de entrada no se modifica); las cifras cambiarán al regenerar.
 
 | Métrica | Valor |
 |---------|-------|
@@ -221,7 +221,7 @@ python borme/scripts/borme_batch_parser.py --input ./borme_pdfs --workers 8
 # 3. Anonimizar → versiones públicas con persona_hash
 python borme/scripts/borme_anonymize.py --input ./borme_pdfs --output borme/data
 
-# 4. Detectar anomalías cruzando con PLACSP (deduplica las versiones repetidas de cada licitación)
+# 4. Detectar anomalías cruzando con PLACSP (cuenta cada licitación una vez: su versión más reciente)
 python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp nacional/licitaciones_espana.parquet --output ./anomalias
 ```
 
@@ -233,18 +233,18 @@ python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp naciona
 
 Pipeline de calidad que aplica **20 indicadores** de validez, consistencia y fiabilidad sobre el dataset nacional (PLACSP), cruzando con TED y BORME.
 
-**4,727,478 licitaciones** evaluadas (una fila por licitación)
+Evalúa todas las entradas del parquet PLACSP tal como se publican: cada fila de resultado conserva `n_versiones` y `es_ultima_version`. Con `--solo-ultima-version` evalúa solo la versión más reciente de cada una de las **4,727,478 licitaciones**.
 
-> ⚠️ El parquet publicado en `v2026.02` (`calidad_licitaciones_resultado.parquet`, score medio 88.3) se calculó sobre las 8,7M filas de `licitaciones_espana.parquet` —4,7M licitaciones con versiones repetidas— y con `importe_sin_iva` = valor estimado. El pipeline ahora reduce la entrada a una fila por licitación y usa la semántica corregida de importes y procedimientos ([correcciones PLACSP](#correcciones-en-los-datos-placsp)); `--sin-deduplicar` reproduce el comportamiento anterior. La columna "Corregido" es el pipeline actual ejecutado sobre ese mismo parquet: FIA-04 sigue usando la `fecha_publicacion` antigua y VAL-01 el valor estimado cuando no hay presupuesto, hasta que se reprocesen los ATOM.
+> ⚠️ El parquet publicado en `v2026.02` (`calidad_licitaciones_resultado.parquet`, score medio 88.3) se calculó sobre las 8,7M entradas de `licitaciones_espana.parquet` sin forma de distinguir la versión vigente de cada licitación, con `importe_sin_iva` = valor estimado y con las etiquetas de procedimiento desplazadas. La columna "Corregido" es el pipeline actual con `--solo-ultima-version` sobre ese mismo parquet (una evaluación por licitación, semántica corregida de importes y procedimientos, ver [correcciones PLACSP](#correcciones-en-los-datos-placsp)): FIA-04 sigue usando la `fecha_publicacion` antigua y VAL-01 el valor estimado cuando no hay presupuesto, hasta que se reprocesen los ATOM.
 
 ### Resultados
 
-| Indicador | % Fallo v2026.02 (8,7M filas) | % Fallo corregido (4,7M licitaciones) | Descripción |
+| Indicador | % Fallo v2026.02 (8,7M entradas) | % Fallo corregido (última versión, 4,7M licitaciones) | Descripción |
 |---|---|---|---|
 | INT-VAL-01 | 22.6% | 0.8% | Importe de licitación en formato válido |
 | INT-VAL-02 | 31.8% | 5.8% | Importe de adjudicación en formato válido |
 | INT-VAL-07 | 39.2% | 12.3% | Fecha de adjudicación válida |
-| INT-VAL-09 | 23.3% | 41.4% | Código CPV válido (sube porque los contratos menores, 60% sin CPV, pasan a ser el 68% del total) |
+| INT-VAL-09 | 23.3% | 41.4% | Código CPV válido (sube porque los contratos menores, 60 % sin CPV, casi no tienen versiones: son el 38 % de las entradas pero el 68 % de las licitaciones) |
 | INT-VAL-12 | 33.4% | 7.8% | NIF/CIF adjudicatario válido (checksum) |
 | INT-VAL-14 | 1.3% | 0.5% | Contrato menor coherente con cuantía (LCSP art. 118); antes 162K derivados de acuerdo marco contaban como menores |
 | INT-CONS-01 | 1.1% | 1.4% | Si adjudicado, nº ofertas ≥ 1 |
@@ -262,7 +262,7 @@ Los indicadores se basan en el marco de calidad de PPDS, con contribuciones de J
 
 ### Menores vs Regulares
 
-Recalculado con el pipeline corregido (en `v2026.02`: 3.3M filas de menores frente a 5.4M "regulares", que eran 1.5M licitaciones con versiones repetidas):
+Recalculado con el pipeline corregido sobre la última versión de cada licitación (en `v2026.02` se comparaban 3.3M entradas de menores con 5.4M entradas "regulares", que corresponden a 1.5M licitaciones):
 
 | Indicador | Menores (3.2M) | Regulares (1.5M) | Diferencia |
 |---|---|---|---|
@@ -289,6 +289,9 @@ python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
 python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
   --ted ted/crossval_sara.parquet \
   --borme borme_empresas.parquet
+
+# Una evaluación por licitación (versión más reciente)
+python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet --solo-ultima-version
 ```
 
 ```python
@@ -326,7 +329,7 @@ Los parquet nacionales publicados hasta `v2026.02` —y todo lo calculado sobre 
 
 | Problema | Efecto | Corrección |
 |----------|--------|------------|
-| **Versiones repetidas.** Cada actualización de una licitación (anuncio, adjudicación, formalización...) es una entrada nueva del ATOM y se guardaba como una fila más | 8.693.891 filas para 4.727.478 licitaciones (hasta 15+ copias). Sumar importes infla la adjudicación ×4,7 (2.223,7 → 476,6 B€) y `importe_sin_iva` ×8 (11.764,7 → 1.476,1 B€). `licitaciones_completo_2012_2026.parquet` sí tiene una fila por licitación, pero en 23.911 casos (0,5 %) no es la versión más reciente | Una fila por `id`: la versión con `fecha_updated` más reciente |
+| **Versiones sin marcar.** La PLACSP publica una entrada nueva del ATOM por cada actualización de una licitación (anuncio, adjudicación, formalización...), y nada indicaba cuál es la vigente | 8.693.891 entradas para 4.727.478 licitaciones (hasta 15+ por licitación; 90.128 son copias exactas). Sumar importes sin filtrar cuenta la misma licitación varias veces: adjudicación ×4,7 (2.223,7 frente a 476,6 B€) e `importe_sin_iva` ×8 (11.764,7 frente a 1.476,1 B€). `licitaciones_completo_2012_2026.parquet` tiene una fila por licitación, pero en 23.911 casos (0,5 %) no es la versión más reciente | Se sirven **todas** las entradas tal como las publica la PLACSP, con `n_versiones` (entradas del mismo `id`) y `es_ultima_version` (la de `fecha_updated` más reciente). Para contar o sumar licitaciones: `df[df.es_ultima_version]` |
 | **`importe_sin_iva` era el valor estimado** ([#6](https://github.com/BquantFinance/licitaciones-espana/issues/6)): se guardaba `EstimatedOverallContractAmount` | En el conjunto `licitaciones`, el 27 % de las filas tiene `importe_sin_iva` > `importe_con_iva`, imposible para un presupuesto sin IVA | `valor_estimado_contrato` = EstimatedOverallContractAmount; `importe_sin_iva` = TaxExclusiveAmount |
 | **Etiquetas de códigos desplazadas** | "Negociado sin publicidad" etiquetaba el código 4 (negociado *con* publicidad): 41.388 filas frente a 191.039 licitaciones reales. 162.392 derivados de acuerdo marco figuraban como "Contrato menor" y los 3,3M contratos menores como "Asociación innovación". Tipos 22/32 (concesiones LCSP) sin etiqueta y 40 (colaboración público-privada) como "Concesión Servicios" | Etiquetas recalculadas desde `procedimiento_code` / `tipo_contrato_code` |
 | **CPV guardado como número** | 73.903 CPV sin el cero inicial (`9134100` en lugar de `09134100`) | CPV como texto de 8 dígitos |
@@ -342,7 +345,9 @@ python nacional/normalizar_placsp.py -i nacional/licitaciones_espana.parquet \
 ```python
 import sys; sys.path.insert(0, '.')        # desde la raíz del repo
 from nacional.licitaciones import leer_placsp
-df = leer_placsp('nacional/licitaciones_espana.parquet')  # una fila por licitación, semántica actual
+df = leer_placsp('nacional/licitaciones_espana.parquet')  # todas las entradas + n_versiones / es_ultima_version, semántica actual
+ultimas = df[df['es_ultima_version']]                      # una fila por licitación, para sumar o contar
+# o directamente: leer_placsp(ruta, solo_ultima_version=True)
 ```
 
 Sobre los parquet de `v2026.02` la normalización mueve el antiguo `importe_sin_iva` a `valor_estimado_contrato` y deja `importe_sin_iva` vacío: el presupuesto sin IVA real solo se obtiene reprocesando los ZIP de la PLACSP:
@@ -355,13 +360,13 @@ python nacional/licitaciones.py --anos 2012-2026 --solo-procesar --data-dir <zip
 
 ```
 nacional/
-├── licitaciones.py                          # Scraper ATOM → Parquet/CSV (una fila por licitación)
+├── licitaciones.py                          # Scraper ATOM → Parquet/CSV (todas las entradas, con es_ultima_version)
 ├── normalizar_placsp.py                     # Corrige parquets ya generados (ver arriba)
-├── licitaciones_espana.parquet              # v2026.02: 8,7M filas = todas las versiones de 4,7M licitaciones (965 MB)
-└── licitaciones_completo_2012_2026.parquet  # v2026.02: 4,7M filas, una por licitación (762 MB)
+├── licitaciones_espana.parquet              # v2026.02: 8,7M entradas = todas las versiones de 4,7M licitaciones (965 MB)
+└── licitaciones_completo_2012_2026.parquet  # v2026.02: 4,7M filas, una por licitación, no siempre la más reciente (762 MB)
 ```
 
-El scraper escribe `licitaciones_completo_{inicio}_{fin}.parquet/.csv` y, desde esta versión, `licitaciones_completo_{inicio}_{fin}_resultados.parquet/.csv` con una fila por resultado (`cac:TenderResult`, uno por lote): las columnas de adjudicación de la tabla principal corresponden al **primer lote**.
+El scraper escribe `licitaciones_completo_{inicio}_{fin}.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_{inicio}_{fin}_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**.
 
 ### Campos principales
 
@@ -995,8 +1000,8 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 
 | Script | Fuente | Descripción |
 |--------|--------|-------------|
-| `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML (una fila por licitación + tabla de resultados por lote) |
-| `nacional/normalizar_placsp.py` | — | Corrige parquets PLACSP ya generados: versiones repetidas, semántica de importes, etiquetas y CPV |
+| `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML (todas las entradas publicadas, marcadas con `es_ultima_version`, + tabla de resultados por lote) |
+| `nacional/normalizar_placsp.py` | — | Corrige parquets PLACSP ya generados sin eliminar filas: marca versiones, semántica de importes, etiquetas y CPV |
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x + salida reproducible |
 | `Euskadi/ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4 (solo descarga): API REST + XLSX anuales + portales municipales |
 | `Euskadi/consolidacion_euskadi.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |

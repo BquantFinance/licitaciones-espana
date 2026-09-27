@@ -1,9 +1,10 @@
 """Tests del pipeline PLACSP nacional: códigos, lotes, versiones y normalización.
 
 Cubren los errores que distorsionaban las cifras publicadas (issue #6 y
-relacionados): importes con semántica equivocada, varias versiones de la misma
-licitación contadas como contratos distintos, etiquetas de procedimiento/tipo
-de contrato desplazadas y CPV sin el cero inicial.
+relacionados): importes con semántica equivocada, etiquetas de
+procedimiento/tipo de contrato desplazadas y CPV sin el cero inicial. Las
+versiones de una misma licitación (una entrada del ATOM por actualización) se
+sirven todas: se marcan con n_versiones / es_ultima_version, nunca se borran.
 """
 
 import io
@@ -22,8 +23,8 @@ import requests
 
 from nacional import licitaciones as lic
 from nacional.licitaciones import (
-    deduplicar_versiones,
     leer_placsp,
+    marcar_versiones,
     normalizar_placsp,
     parsear_entry,
 )
@@ -181,9 +182,9 @@ class TestExportacion:
         atom.write_text(_atom(entries), encoding="utf-8")
         return lic.procesar_archivo_atom(atom)
 
-    def test_conserva_la_version_mas_reciente_aunque_se_lea_antes(self, salida):
+    def test_sirve_todas_las_entradas_y_marca_la_mas_reciente(self, salida):
         # La versión adjudicada (más reciente) aparece ANTES que la publicada:
-        # el antiguo keep='last' por orden de lectura se quedaba con la vieja.
+        # el orden de lectura no es cronológico; la marca va por atom:updated
         lics = self._procesar(salida, [
             _entry_xml("urn:1001", "2024-03-01T10:00:00.123+01:00", "RES", importe_adj="5000.00"),
             _entry_xml("urn:1001", "2024-01-15T10:00:00+01:00", "PUB"),
@@ -192,27 +193,34 @@ class TestExportacion:
         for x in lics:
             x["conjunto"] = "licitaciones"
         df = lic.exportar_datos(lics, "prueba")
-        assert len(df) == 2
-        fila = df.set_index("id").loc["urn:1001"]
-        assert fila["estado_code"] == "RES"
-        assert fila["importe_adjudicacion"] == 5000.0
+        # No se elimina ninguna entrada
+        assert len(df) == 3
+        assert df["n_versiones"].tolist() == [2, 2, 1]
+        assert df["es_ultima_version"].tolist() == [True, False, True]
+        ultima = df[df["es_ultima_version"]].set_index("id").loc["urn:1001"]
+        assert ultima["estado_code"] == "RES"
+        assert ultima["importe_adjudicacion"] == 5000.0
         # Formatos mixtos de atom:updated: ninguno se pierde como NaT
         assert df["fecha_updated"].notna().all()
 
+        guardado = pd.read_parquet(salida / "prueba.parquet")
+        assert len(guardado) == 3 and "_n" not in guardado.columns
+        assert (salida / "prueba.csv").exists()
         res = pd.read_parquet(salida / "prueba_resultados.parquet")
         assert list(res["id"]) == ["urn:1001"]
         assert res["importe_adjudicacion"].tolist() == [5000.0]
-        assert (salida / "prueba.csv").exists()
-        assert "_n" not in pd.read_parquet(salida / "prueba.parquet").columns
+        assert res["es_ultima_version"].tolist() == [True]
 
-    def test_resultados_solo_de_la_version_conservada(self, salida):
+    def test_resultados_de_todas_las_versiones(self, salida):
         lics = self._procesar(salida, [
             _entry_xml("urn:2001", "2024-01-01T00:00:00.000+01:00", "ADJ", importe_adj="100.00"),
             _entry_xml("urn:2001", "2024-05-01T00:00:00.000+02:00", "RES", importe_adj="120.00"),
         ])
         lic.exportar_datos(lics, "prueba")
         res = pd.read_parquet(salida / "prueba_resultados.parquet")
-        assert res["importe_adjudicacion"].tolist() == [120.0]
+        assert res["importe_adjudicacion"].tolist() == [100.0, 120.0]
+        assert res["es_ultima_version"].tolist() == [False, True]
+        assert res["fecha_updated"].notna().all()
 
     def test_fecha_publicacion_con_zona_horaria(self):
         s = pd.Series(["2024-01-15", "2024-01-16+01:00", None])
@@ -222,21 +230,23 @@ class TestExportacion:
         assert pd.isna(out.iloc[2])
 
 
-class TestDeduplicar:
-    def test_ultima_version_y_filas_sin_id(self):
+class TestVersiones:
+    def test_marca_la_ultima_version_sin_eliminar_filas(self):
         df = pd.DataFrame({
             "id": ["a", "a", None, "b", "a", None],
             "fecha_updated": ["2024-01-02T00:00:00+00:00", "2024-03-01T00:00:00.1+00:00", None,
                               "2024-01-01T00:00:00+00:00", None, None],
             "v": [1, 2, 3, 4, 5, 6],
         })
-        out = deduplicar_versiones(df)
-        # 'a' -> la de marzo (la fila sin fecha no gana a una fechada); sin id se conservan
-        assert out["v"].tolist() == [2, 3, 4, 6]
+        out = marcar_versiones(df)
+        assert out["v"].tolist() == [1, 2, 3, 4, 5, 6]
+        # 'a' -> la de marzo (una entrada sin fecha no gana a una fechada); sin id: una versión
+        assert out["es_ultima_version"].tolist() == [False, True, True, True, False, True]
+        assert out["n_versiones"].tolist() == [3, 3, 1, 1, 3, 1]
 
     def test_empate_gana_la_ultima_leida(self):
         df = pd.DataFrame({"id": ["x", "x"], "fecha_updated": ["2024-01-01T00:00:00+00:00"] * 2, "v": [1, 2]})
-        assert deduplicar_versiones(df)["v"].tolist() == [2]
+        assert marcar_versiones(df)["es_ultima_version"].tolist() == [False, True]
 
 
 def _parquet_publicado():
@@ -261,8 +271,14 @@ def _parquet_publicado():
 
 class TestNormalizar:
     def test_esquema_antiguo_y_etiquetas(self):
-        out = normalizar_placsp(_parquet_publicado())
-        assert out["id"].tolist() == ["u1", "u2", "u3", "c1"]
+        todas = normalizar_placsp(_parquet_publicado())
+        # No se elimina ninguna fila: la versión antigua de u1 sigue ahí, marcada
+        assert todas["id"].tolist() == ["u1", "u1", "u2", "u3", "c1"]
+        assert todas["es_ultima_version"].tolist() == [False, True, True, True, True]
+        assert todas["n_versiones"].tolist() == [2, 2, 1, 1, 1]
+        out = todas[todas["es_ultima_version"]].reset_index(drop=True)
+        assert normalizar_placsp(_parquet_publicado(), solo_ultima_version=True)["id"].tolist() == \
+            ["u1", "u2", "u3", "c1"]
         u1 = out.iloc[0]
         # importe_sin_iva antiguo = valor estimado -> se renombra y queda vacío
         assert u1["valor_estimado_contrato"] == 300000.0
@@ -285,13 +301,13 @@ class TestNormalizar:
     def test_esquema_nuevo_no_toca_importes(self):
         df = _parquet_publicado().rename(columns={"importe_sin_iva": "valor_estimado_contrato"})
         df["importe_sin_iva"] = [100000.0, 100000.0, 1000.0, np.nan, np.nan]
-        out = normalizar_placsp(df)
+        out = normalizar_placsp(df, solo_ultima_version=True)
         assert out.iloc[0]["importe_sin_iva"] == 100000.0
         assert out.iloc[0]["valor_estimado_contrato"] == 300000.0
 
     def test_no_modifica_el_dataframe_original(self):
         df = _parquet_publicado()
-        normalizar_placsp(df, deduplicar=False)
+        normalizar_placsp(df)
         assert "valor_estimado_contrato" not in df.columns
         assert df["procedimiento"].iloc[0] == "Negociado con publicidad"
 
@@ -299,9 +315,13 @@ class TestNormalizar:
         path = tmp_path / "publicado.parquet"
         pq.write_table(pa.Table.from_pandas(_parquet_publicado(), preserve_index=False), path, row_group_size=2)
         assert pq.ParquetFile(path).num_row_groups == 3
-        out = leer_placsp(path)
+        todas = leer_placsp(path)
+        assert todas["id"].tolist() == ["u1", "u1", "u2", "u3", "c1"]
+        assert todas["es_ultima_version"].tolist() == [False, True, True, True, True]
+        out = leer_placsp(path, solo_ultima_version=True)
         assert out["id"].tolist() == ["u1", "u2", "u3", "c1"]
         assert out.iloc[0]["estado_code"] == "RES"
+        assert out["n_versiones"].tolist() == [2, 1, 1, 1]
         assert "valor_estimado_contrato" in out.columns
 
     def test_cli_normalizar_placsp(self, tmp_path, monkeypatch, capsys):
@@ -312,12 +332,17 @@ class TestNormalizar:
         monkeypatch.setattr(sys, "argv", ["normalizar_placsp.py", "-i", str(entrada), "-o", str(salida)])
         cli.main()
         out = pd.read_parquet(salida)
-        assert out["id"].tolist() == ["u1", "u2", "u3", "c1"]
-        assert out["procedimiento"].tolist()[:3] == ["Negociado sin publicidad", "Contrato menor",
-                                                     "Derivado de acuerdo marco"]
+        # Todas las filas se conservan, con sus marcas de versión
+        assert out["id"].tolist() == ["u1", "u1", "u2", "u3", "c1"]
+        assert out["es_ultima_version"].tolist() == [False, True, True, True, True]
+        assert out["n_versiones"].tolist() == [2, 2, 1, 1, 1]
+        assert out["procedimiento"].tolist()[:4] == ["Negociado sin publicidad", "Negociado sin publicidad",
+                                                     "Contrato menor", "Derivado de acuerdo marco"]
         assert out["cpv_principal"].iloc[0] == "09134100"
         assert pq.ParquetFile(salida).schema_arrow.field("importe_sin_iva").type == pa.float64()
-        assert "1 versiones anteriores descartadas" in capsys.readouterr().out
+        salida_txt = capsys.readouterr().out
+        assert "Filas (todas se conservan): 5" in salida_txt
+        assert "Licitaciones distintas (es_ultima_version): 4" in salida_txt
 
 
 class _Resp:

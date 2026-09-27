@@ -17,7 +17,9 @@ Uso:
     python nacional/licitaciones.py --anos 2024-2026 --conjunto menores
     python nacional/licitaciones.py --anos 2012-2026 --solo-procesar --data-dir ./datos_placsp --output-dir ./nacional
 
-Salida (una fila por licitación, versión más reciente según atom:updated):
+Salida (todas las entradas de los ATOM, tal como las publica la PLACSP: cada
+actualización de una licitación es una entrada con el mismo id; n_versiones y
+es_ultima_version permiten contar licitaciones distintas):
     licitaciones_completo_{inicio}_{fin}.parquet/.csv
     licitaciones_completo_{inicio}_{fin}_resultados.parquet/.csv  (una fila por cac:TenderResult / lote)
 
@@ -663,23 +665,30 @@ def indices_ultima_version(ids, fechas_updated=None):
                .to_numpy())
     return np.sort(np.concatenate([ultimas, orden[~con_id]]))
 
-def deduplicar_versiones(df):
-    """Una fila por licitación: conserva la versión con atom:updated más reciente.
+def info_versiones(ids, fechas_updated=None):
+    """(es_ultima_version, n_versiones) de cada fila, sin eliminar ninguna.
 
-    Los ATOM de la PLACSP incluyen una entrada por cada actualización de la
-    licitación (anuncio, adjudicación, formalización...), así que la misma
-    licitación aparece varias veces y en varios ZIP. El orden de lectura no es
-    cronológico, por lo que keep='last' sin ordenar puede quedarse con una versión
-    antigua. Las filas sin 'id' se conservan tal cual.
+    La PLACSP publica una entrada nueva del ATOM cada vez que se actualiza una
+    licitación (anuncio, adjudicación, formalización...), con el mismo 'id'. Se
+    sirven todas tal cual; estas marcas permiten contar licitaciones distintas
+    (es_ultima_version = versión con atom:updated más reciente) sin borrar
+    registros. Las filas sin id cuentan como una versión, la última.
     """
-    if df.empty or 'id' not in df.columns:
+    ids = pd.Series(ids).reset_index(drop=True)
+    ultima = np.zeros(len(ids), dtype=bool)
+    ultima[indices_ultima_version(ids, fechas_updated)] = True
+    n_versiones = ids.map(ids.value_counts()).fillna(1).astype('int64').to_numpy()
+    return ultima, n_versiones
+
+def marcar_versiones(df):
+    """Añade n_versiones y es_ultima_version (modifica df; no elimina filas)."""
+    if 'id' not in df.columns:
         return df
-    fecha = parsear_fecha_updated(df['fecha_updated']) if 'fecha_updated' in df.columns else None
-    conservar = indices_ultima_version(df['id'], fecha)
-    resultado = df.iloc[conservar].reset_index(drop=True)
-    if fecha is not None:
-        resultado['fecha_updated'] = fecha.iloc[conservar].reset_index(drop=True)
-    return resultado
+    fecha = df['fecha_updated'] if 'fecha_updated' in df.columns else None
+    ultima, n_versiones = info_versiones(df['id'], fecha)
+    df['n_versiones'] = n_versiones
+    df['es_ultima_version'] = ultima
+    return df
 
 # Columnas de códigos que en algunos parquet publicados se guardaron como float
 COLUMNAS_CODIGO = ['tipo_contrato_code', 'subtipo_code', 'procedimiento_code',
@@ -702,30 +711,11 @@ def etiquetar(codigos, mapa):
     """Etiqueta legible a partir del código (si no está en el mapa, el propio código)."""
     return codigos.map(mapa).fillna(codigos)
 
-def normalizar_placsp(df, deduplicar=True):
-    """Lleva un DataFrame PLACSP (salida de este script o parquet publicado) a la
-    semántica actual de columnas.
-
-    Los parquet publicados hasta el release v2026.02 tienen tres problemas que
-    distorsionan cualquier suma o recuento:
-      1. 'importe_sin_iva' contenía EstimatedOverallContractAmount (valor
-         estimado), no TaxExclusiveAmount (issue #6). Si no existe la columna
-         'valor_estimado_contrato' se renombra y 'importe_sin_iva' queda vacía:
-         el presupuesto sin IVA real solo se recupera reprocesando los ATOM.
-      2. Varias versiones de la misma licitación (licitaciones_espana.parquet:
-         8,7M filas para 4,7M licitaciones). Con deduplicar=True se conserva la
-         versión más reciente (atom:updated) de cada 'id'.
-      3. Etiquetas de tipo_contrato/procedimiento erróneas y códigos guardados
-         como float (CPV sin el cero inicial). Se recalculan desde los códigos.
-    """
-    esquema_antiguo = 'importe_sin_iva' in df.columns and 'valor_estimado_contrato' not in df.columns
-
-    if deduplicar:
-        df = deduplicar_versiones(df)
-    else:
-        df = df.copy(deep=False)  # no tocar el DataFrame del llamador
-
-    if esquema_antiguo:
+def _normalizar_columnas(df):
+    """Semántica actual de importes, códigos como texto y etiquetas desde los códigos."""
+    if 'importe_sin_iva' in df.columns and 'valor_estimado_contrato' not in df.columns:
+        # Esquema de los parquet publicados hasta v2026.02: importe_sin_iva
+        # contenía EstimatedOverallContractAmount (issue #6)
         df.rename(columns={'importe_sin_iva': 'valor_estimado_contrato'}, inplace=True)
         df.insert(df.columns.get_loc('valor_estimado_contrato') + 1, 'importe_sin_iva', np.nan)
 
@@ -748,26 +738,56 @@ def normalizar_placsp(df, deduplicar=True):
         estado_code = codigos_a_texto(df['estado_code'])
         df['estado_code'] = estado_code
         df['estado'] = etiquetar(estado_code, ESTADOS)
-
     return df
 
-def leer_placsp(path, deduplicar=True):
+def normalizar_placsp(df, solo_ultima_version=False):
+    """Lleva un DataFrame PLACSP (salida de este script o parquet publicado) a la
+    semántica actual de columnas, sin eliminar ningún registro.
+
+    - Esquema de los parquet publicados hasta v2026.02: 'importe_sin_iva'
+      contenía EstimatedOverallContractAmount (valor estimado), no
+      TaxExclusiveAmount (issue #6). Si falta 'valor_estimado_contrato' se
+      renombra y 'importe_sin_iva' queda vacía (el presupuesto sin IVA real solo
+      se recupera reprocesando los ATOM).
+    - Códigos guardados como float pasan a texto (CPV con cero inicial) y las
+      etiquetas de tipo_contrato/procedimiento/estado se recalculan desde ellos.
+    - Añade n_versiones y es_ultima_version: cada actualización de una
+      licitación es una entrada del ATOM y se conserva; para contar licitaciones
+      distintas hay que filtrar es_ultima_version. solo_ultima_version=True
+      devuelve solo esas filas (para análisis; no altera los datos servidos).
+    """
+    df = df.copy(deep=False)  # no tocar el DataFrame del llamador
+    marcar_versiones(df)
+    if solo_ultima_version and 'es_ultima_version' in df.columns:
+        df = df[df['es_ultima_version']].reset_index(drop=True)
+    return _normalizar_columnas(df)
+
+def leer_placsp(path, solo_ultima_version=False):
     """Lee un parquet PLACSP y lo devuelve normalizado (ver normalizar_placsp).
 
-    La deduplicación se hace en Arrow, row group a row group, antes de pasar a
-    pandas: así también cabe en memoria licitaciones_espana.parquet (~9M filas).
+    Las marcas de versión se calculan leyendo solo id/fecha_updated; con
+    solo_ultima_version=True se filtra en Arrow, row group a row group, antes de
+    pasar a pandas (así también cabe en memoria licitaciones_espana.parquet).
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     pf = pq.ParquetFile(path)
     nombres = pf.schema_arrow.names
-    if not deduplicar or 'id' not in nombres:
-        return normalizar_placsp(pf.read().to_pandas(), deduplicar=deduplicar)
+    if 'id' not in nombres:
+        return _normalizar_columnas(pf.read().to_pandas())
 
     claves = pq.read_table(path, columns=[c for c in ('id', 'fecha_updated') if c in nombres]).to_pandas()
-    conservar = indices_ultima_version(claves['id'], claves.get('fecha_updated'))
+    ultima, n_versiones = info_versiones(claves['id'], claves.get('fecha_updated'))
     del claves
+
+    if not solo_ultima_version:
+        df = pf.read().to_pandas()
+        df['n_versiones'] = n_versiones
+        df['es_ultima_version'] = ultima
+        return _normalizar_columnas(df)
+
+    conservar = np.flatnonzero(ultima)
     partes = []
     leidas = 0
     for i in range(pf.num_row_groups):
@@ -778,7 +798,9 @@ def leer_placsp(path, deduplicar=True):
         leidas += n
     df = pa.concat_tables(partes).to_pandas()
     del partes
-    return normalizar_placsp(df, deduplicar=False)
+    df['n_versiones'] = n_versiones[conservar]
+    df['es_ultima_version'] = True
+    return _normalizar_columnas(df)
 
 def separar_resultados(licitaciones):
     """Saca de cada licitación su lista de resultados por lote ('_resultados')."""
@@ -811,7 +833,7 @@ def guardar_tabla(df, nombre):
         print(f"   ⚠ Parquet no disponible: {e}")
 
 def exportar_datos(licitaciones, nombre_base='licitaciones_completo'):
-    """Exporta licitaciones (una fila por licitación) y sus resultados por lote."""
+    """Exporta todas las entradas del ATOM (sin deduplicar) y sus resultados por lote."""
     print(f"\n💾 EXPORTANDO DATOS")
     print("=" * 60)
     
@@ -829,18 +851,19 @@ def exportar_datos(licitaciones, nombre_base='licitaciones_completo'):
     # Extraer año
     df['ano'] = df['fecha_publicacion'].dt.year
     
-    # Una fila por licitación (versión más reciente)
-    n_antes = len(df)
-    df = deduplicar_versiones(df)
-    n_despues = len(df)
-    if n_antes != n_despues:
-        print(f"   ⚠ Descartadas {n_antes - n_despues:,} versiones anteriores/duplicadas "
-              f"→ {n_despues:,} licitaciones únicas")
+    # Se sirven todas las entradas tal como las publica la PLACSP: cada
+    # actualización de una licitación es una entrada nueva con el mismo id.
+    # n_versiones / es_ultima_version permiten contar licitaciones distintas.
+    marcar_versiones(df)
+    n_licitaciones = int(df['es_ultima_version'].sum())
+    print(f"   ℹ {len(df):,} entradas de {n_licitaciones:,} licitaciones distintas "
+          f"(es_ultima_version marca la más reciente de cada una)")
     
-    # Resultados por lote de la versión conservada de cada licitación
+    # Resultados por lote de cada entrada (con la fecha y la marca de su entrada)
     df_res = pd.DataFrame(resultados)
     if not df_res.empty:
-        df_res = df_res[df_res['_n'].isin(df['_n'])].drop(columns='_n').reset_index(drop=True)
+        df_res = df_res.merge(df[['_n', 'fecha_updated', 'es_ultima_version']], on='_n', how='left')
+        df_res = df_res.drop(columns='_n')
         df_res['fecha_adjudicacion'] = parsear_fechas(df_res['fecha_adjudicacion'])
     df = df.drop(columns='_n')
     
@@ -848,14 +871,18 @@ def exportar_datos(licitaciones, nombre_base='licitaciones_completo'):
     if not df_res.empty:
         guardar_tabla(df_res, f'{nombre_base}_resultados')
     
+    # Resúmenes sobre licitaciones distintas (última versión de cada una): sumar
+    # todas las entradas contaría varias veces la misma licitación
+    ultimas = df[df['es_ultima_version']]
+    
     # Resumen por conjunto
     print(f"\n📊 RESUMEN POR CONJUNTO")
     print("=" * 60)
     if 'conjunto' in df.columns:
         for conjunto in df['conjunto'].unique():
-            df_c = df[df['conjunto'] == conjunto]
+            df_c = ultimas[ultimas['conjunto'] == conjunto]
             print(f"\n   {CONJUNTOS.get(conjunto, {}).get('nombre', conjunto)}:")
-            print(f"      Licitaciones: {len(df_c):,}")
+            print(f"      Entradas: {(df['conjunto'] == conjunto).sum():,} | Licitaciones: {len(df_c):,}")
             print(f"      Años: {df_c['ano'].min():.0f} - {df_c['ano'].max():.0f}")
             for col, etiqueta in IMPORTES_RESUMEN:
                 if col in df_c.columns:
@@ -864,17 +891,18 @@ def exportar_datos(licitaciones, nombre_base='licitaciones_completo'):
     # Resumen total
     print(f"\n📊 RESUMEN TOTAL")
     print("=" * 60)
-    print(f"   Total licitaciones: {len(df):,}")
+    print(f"   Entradas: {len(df):,} | Licitaciones distintas: {len(ultimas):,}")
     print(f"   Rango fechas: {df['ano'].min():.0f} - {df['ano'].max():.0f}")
     print(f"   Órganos únicos: {df['organo_contratante'].nunique():,}")
     print(f"   Adjudicatarios únicos: {df['adjudicatario'].nunique():,}")
     
     for col, etiqueta in IMPORTES_RESUMEN:
-        if col in df.columns:
-            print(f"   {etiqueta}: {df[col].sum()/1e9:.2f}B €")
+        if col in ultimas.columns:
+            print(f"   {etiqueta}: {ultimas[col].sum()/1e9:.2f}B €")
     if not df_res.empty:
-        print(f"   Resultados (lotes): {len(df_res):,} — adjudicado sin IVA: "
-              f"{df_res['importe_adjudicacion'].sum()/1e9:.2f}B €")
+        res_ultimas = df_res[df_res['es_ultima_version'].fillna(False).astype(bool)]
+        print(f"   Resultados (lotes) de la última versión: {len(res_ultimas):,} — adjudicado sin IVA: "
+              f"{res_ultimas['importe_adjudicacion'].sum()/1e9:.2f}B €")
     
     return df
 

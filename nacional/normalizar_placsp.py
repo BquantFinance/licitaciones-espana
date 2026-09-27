@@ -3,11 +3,13 @@
 NORMALIZAR PARQUET PLACSP YA GENERADO / PUBLICADO
 =================================================
 Corrige un parquet nacional (p. ej. los del release v2026.02) sin volver a
-descargar ni procesar los ATOM de la PLACSP:
+descargar ni procesar los ATOM de la PLACSP, sin eliminar ningún registro:
 
-  1. Una fila por licitación: conserva la versión más reciente (atom:updated).
-     licitaciones_espana.parquet tiene 8,7M filas para 4,7M licitaciones y
-     cualquier suma sobre él multiplica los importes (x4,8 en adjudicación).
+  1. Marca las versiones: la PLACSP publica una entrada por cada actualización
+     de una licitación (licitaciones_espana.parquet: 8,7M entradas de 4,7M
+     licitaciones). Se conservan todas y se añaden n_versiones y
+     es_ultima_version; sumar importes sin filtrar es_ultima_version cuenta
+     varias veces la misma licitación (x4,7 en adjudicación).
   2. Esquema antiguo de importes (issue #6): 'importe_sin_iva' contenía el
      valor estimado (EstimatedOverallContractAmount). Se renombra a
      'valor_estimado_contrato' y 'importe_sin_iva' queda vacía; el presupuesto
@@ -29,7 +31,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -38,8 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from nacional.licitaciones import (  # noqa: E402
     COLUMNAS_CODIGO,
     IMPORTES_RESUMEN,
-    indices_ultima_version,
-    normalizar_placsp,
+    _normalizar_columnas,
+    info_versiones,
 )
 
 # Columnas que normalizar_placsp devuelve como texto
@@ -63,52 +64,54 @@ def esquema_salida(esquema_entrada, df):
     return pa.schema(campos)
 
 
-def normalizar_fichero(entrada, salida, deduplicar=True):
-    """Normaliza 'entrada' y escribe 'salida'. Devuelve (filas_leidas, filas_escritas, sumas)."""
+def normalizar_fichero(entrada, salida):
+    """Normaliza 'entrada' y escribe 'salida' con todas sus filas.
+
+    Devuelve (filas, licitaciones_distintas, sumas); las sumas de importes se
+    calculan sobre la última versión de cada licitación.
+    """
     pf = pq.ParquetFile(entrada)
     nombres = pf.schema_arrow.names
 
-    conservar = None
-    if deduplicar and 'id' in nombres:
+    ultima = n_versiones = None
+    if 'id' in nombres:
         claves = pq.read_table(entrada, columns=[c for c in ('id', 'fecha_updated') if c in nombres]).to_pandas()
-        conservar = indices_ultima_version(claves['id'], claves.get('fecha_updated'))
+        ultima, n_versiones = info_versiones(claves['id'], claves.get('fecha_updated'))
         del claves
 
     writer = None
-    leidas = escritas = 0
+    escritas = distintas = 0
     sumas = {}
     try:
         for i in range(pf.num_row_groups):
-            tabla = pf.read_row_group(i)
-            n = tabla.num_rows
-            if conservar is not None:
-                desde, hasta = np.searchsorted(conservar, [leidas, leidas + n])
-                tabla = tabla.take(conservar[desde:hasta] - leidas)
-            leidas += n
-
-            df = normalizar_placsp(tabla.to_pandas(), deduplicar=False)
-            del tabla
+            df = pf.read_row_group(i).to_pandas()
+            n = len(df)
+            if ultima is not None:
+                df['n_versiones'] = n_versiones[escritas:escritas + n]
+                df['es_ultima_version'] = ultima[escritas:escritas + n]
+            df = _normalizar_columnas(df)
             if writer is None:
                 esquema = esquema_salida(pf.schema_arrow, df)
                 writer = pq.ParquetWriter(salida, esquema, compression='snappy')
             writer.write_table(pa.Table.from_pandas(df, schema=esquema, preserve_index=False))
-            escritas += len(df)
+            escritas += n
+
+            ultimas = df[df['es_ultima_version']] if 'es_ultima_version' in df.columns else df
+            distintas += len(ultimas)
             for col, _ in IMPORTES_RESUMEN:
-                if col in df.columns:
-                    sumas[col] = sumas.get(col, 0.0) + pd.to_numeric(df[col], errors='coerce').sum()
+                if col in ultimas.columns:
+                    sumas[col] = sumas.get(col, 0.0) + pd.to_numeric(ultimas[col], errors='coerce').sum()
             print(f"   [{i + 1}/{pf.num_row_groups}] {escritas:,} filas escritas", flush=True)
     finally:
         if writer is not None:
             writer.close()
-    return leidas, escritas, sumas
+    return escritas, distintas, sumas
 
 
 def main():
     parser = argparse.ArgumentParser(description='Normaliza un parquet PLACSP ya generado')
     parser.add_argument('-i', '--input', required=True, type=Path, help='Parquet de entrada')
     parser.add_argument('-o', '--output', required=True, type=Path, help='Parquet de salida')
-    parser.add_argument('--sin-deduplicar', action='store_true',
-                        help='Conservar todas las versiones de cada licitación')
     args = parser.parse_args()
 
     if args.input.resolve() == args.output.resolve():
@@ -116,17 +119,15 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"🔧 Normalizando {args.input}")
-    leidas, escritas, sumas = normalizar_fichero(args.input, args.output,
-                                                 deduplicar=not args.sin_deduplicar)
+    filas, distintas, sumas = normalizar_fichero(args.input, args.output)
 
-    print(f"\n📊 RESULTADO")
+    print("\n📊 RESULTADO")
     print("=" * 60)
-    print(f"   Filas leídas:   {leidas:,}")
-    print(f"   Filas escritas: {escritas:,}"
-          + (f" ({leidas - escritas:,} versiones anteriores descartadas)" if leidas != escritas else ""))
+    print(f"   Filas (todas se conservan): {filas:,}")
+    print(f"   Licitaciones distintas (es_ultima_version): {distintas:,}")
     for col, etiqueta in IMPORTES_RESUMEN:
         if col in sumas:
-            print(f"   {etiqueta} ({col}): {sumas[col]/1e9:,.1f}B €")
+            print(f"   {etiqueta} ({col}), última versión: {sumas[col]/1e9:,.1f}B €")
     print(f"\n✓ Escrito {args.output}")
 
 

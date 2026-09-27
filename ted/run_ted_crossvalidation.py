@@ -9,8 +9,10 @@ Reglas SARA (Sujeto a Regulacion Armonizada):
   - Se aplica sobre el Valor Estimado del Contrato (valor_estimado_contrato;
     si falta, presupuesto base sin IVA y en ultimo caso importe adjudicado)
   - Suma de lotes del mismo expediente (y organo) cuenta como un solo VEC
-  - PLACSP se lee con nacional.licitaciones.leer_placsp: una fila por
-    licitacion (version mas reciente) y semantica actual de columnas
+  - PLACSP se lee con nacional.licitaciones.leer_placsp y el cruce se hace
+    por licitacion (su version mas reciente, es_ultima_version): la PLACSP
+    publica una entrada por cada actualizacion y contarlas todas repetiria
+    el mismo contrato SARA. Los datos nacionales no se modifican.
   - Contratos menores, encargos, privados, patrimoniales: excluidos
 
 Estrategias de matching:
@@ -332,15 +334,15 @@ def _num_col(df, col):
 def load_placsp(path):
     """Carga PLACSP: adjudicaciones validas, identifica SARA.
 
-    leer_placsp deja una fila por licitacion: los parquet publicados hasta
-    v2026.02 repiten cada licitacion en varias versiones y cada version
-    adjudicada contaba como un contrato SARA distinto.
+    Se usa la version mas reciente de cada licitacion (es_ultima_version): la
+    PLACSP publica una entrada por cada actualizacion y cada version adjudicada
+    contaria como un contrato SARA distinto.
     """
     print(f"\n{'='*70}")
     print(f"  CARGA PLACSP")
     print(f"{'='*70}")
-    df = leer_placsp(path)
-    print(f"  Total licitaciones (una fila por id): {len(df):,}")
+    df = leer_placsp(path, solo_ultima_version=True)
+    print(f"  Total licitaciones (version mas reciente de cada id): {len(df):,}")
 
     # Solo adjudicaciones reales ('tipo_registro' solo existe en los parquet publicados)
     if 'tipo_registro' in df.columns:
