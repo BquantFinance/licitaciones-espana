@@ -280,6 +280,26 @@ def test_excel_titulo_enteros_y_fechas(tmp_path):
     assert df["_encabezado"].iloc[0] == "Relación de contratos menores"
 
 
+def test_excel_celdas_de_error_se_conservan_como_texto(tmp_path):
+    """Una celda de error (#N/A, #DIV/0!) es un valor del fichero: no puede
+    acabar como nulo (pandas.read_excel la convertía en NaN)."""
+    openpyxl = pytest.importorskip("openpyxl")
+    libro = openpyxl.Workbook()
+    hoja = libro.active
+    hoja.append(["Expediente", "Importe", "Adjudicatario"])
+    hoja.append(["0001", "#N/A", "#DIV/0!"])
+    hoja.append([])
+    hoja.append(["0002", 7, "NA"])
+    assert hoja["B2"].data_type == "e"
+    ruta = tmp_path / "errores.xlsx"
+    libro.save(ruta)
+    df = A.leer_tabular(ruta)["datos"][0]
+    assert df["Expediente"].tolist() == ["0001", "0002"]
+    assert df["Importe"].tolist() == ["#N/A", "7"]
+    assert df["Adjudicatario"].tolist() == ["#DIV/0!", "NA"]
+    assert df["_fila_origen"].tolist() == ["2", "4"]
+
+
 # ---------------------------------------------------------------------------
 # Descargas
 # ---------------------------------------------------------------------------

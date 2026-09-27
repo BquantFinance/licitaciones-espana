@@ -481,7 +481,22 @@ def filas_csv(ruta):
 
 
 def filas_excel(ruta, tipo):
-    motor = {"xls": "xlrd", "xlsx": "openpyxl", "ods": "odf"}[tipo]
+    if tipo == "xlsx":
+        # openpyxl directamente: pandas convierte las celdas de error (#N/A,
+        # #DIV/0!...) en nulos y se perdería el valor que muestra el fichero.
+        import openpyxl
+        with open(ruta, "rb") as f:
+            libro = openpyxl.load_workbook(f, read_only=True, data_only=True)
+            try:
+                hojas = []
+                for hoja in libro.worksheets:
+                    hoja.reset_dimensions()   # no fiarse de la dimensión declarada
+                    hojas.append((str(hoja.title), [[celda_a_texto(v) for v in fila]
+                                                    for fila in hoja.iter_rows(values_only=True)]))
+                return hojas
+            finally:
+                libro.close()
+    motor = {"xls": "xlrd", "ods": "odf"}[tipo]
     hojas = pd.read_excel(ruta, sheet_name=None, header=None, dtype=object, engine=motor,
                           keep_default_na=False, na_values=[])
     return [(str(nombre), [[celda_a_texto(v) for v in fila] for fila in df.itertuples(index=False, name=None)])

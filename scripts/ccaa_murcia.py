@@ -572,16 +572,19 @@ def _celda_texto(valor):
 def _hoja_a_df(filas, nombre, hoja, avisos):
     """Tabla de una hoja: detecta la fila de cabecera (las filas de título de
     encima se anotan en los avisos) y conserva todas las filas con algún valor."""
-    filas = [list(f) for f in filas if any(v is not None for v in f)]
-    if not filas:
+    # Número de fila original de cada fila con algún valor (para el aviso)
+    numeradas = [(i, list(f)) for i, f in enumerate(filas) if any(v is not None for v in f)]
+    if not numeradas:
         return None
+    filas = [f for _, f in numeradas]
     llenas = [sum(v is not None for v in f) for f in filas[:50]]
     maximo = max(llenas)
     umbral = 1 if maximo < 2 else max(2, math.ceil(0.6 * maximo))
     pos = next((i for i, n in enumerate(llenas[:30]) if n >= umbral), 0)
     if pos:
         titulo = " | ".join(" ".join(str(v) for v in f if v is not None) for f in filas[:pos])
-        avisos.append(f"{nombre} [{hoja}]: {pos} filas antes de la cabecera (no son datos): {titulo[:200]}")
+        avisos.append(f"{nombre} [{hoja}]: {numeradas[pos][0]} filas antes de la cabecera "
+                      f"(no son datos): {titulo[:200]}")
     ancho = max(len(f) for f in filas)
     cabecera = filas[pos] + [None] * (ancho - len(filas[pos]))
     datos = [f + [None] * (ancho - len(f)) for f in filas[pos + 1:]]
@@ -597,7 +600,14 @@ def _leer_xlsx(ruta):
     import openpyxl
 
     avisos, partes = [], []
-    libro = openpyxl.load_workbook(ruta, read_only=True, data_only=True)
+    # Se abre como fichero: openpyxl rechaza por la extensión un .xlsx publicado
+    # con nombre .xls, y el formato ya se ha decidido por el contenido.
+    fichero = open(ruta, "rb")
+    try:
+        libro = openpyxl.load_workbook(fichero, read_only=True, data_only=True)
+    except BaseException:
+        fichero.close()
+        raise
     try:
         for hoja in libro.worksheets:
             hoja.reset_dimensions()   # no fiarse de la dimensión declarada en el fichero
@@ -607,6 +617,7 @@ def _leer_xlsx(ruta):
                 partes.append(df)
     finally:
         libro.close()
+        fichero.close()
     return partes, avisos
 
 
