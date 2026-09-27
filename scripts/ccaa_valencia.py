@@ -27,6 +27,7 @@ Categorías incluidas (14):
 
 import requests
 import os
+import sys
 import time
 from pathlib import Path
 from datetime import datetime
@@ -248,21 +249,37 @@ def get_dataset_info(dataset_id):
 
 
 def download_file(url, filepath):
-    """Descarga un archivo con manejo de errores"""
+    """Descarga un archivo con manejo de errores.
+
+    Se escribe en un temporal '.part' y solo se renombra al nombre final cuando
+    la descarga termina bien: una descarga cortada (Ctrl+C, caída de red) no
+    puede quedar en disco como si estuviera completa ("Ya existe" en la
+    siguiente ejecución).
+    """
+    filepath = Path(filepath)
+    tmp_path = filepath.with_name(filepath.name + '.part')
     try:
-        response = requests.get(url, timeout=300, stream=True)
-        response.raise_for_status()
-        
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
+        with requests.get(url, timeout=300, stream=True) as response:
+            response.raise_for_status()
+
+            with open(tmp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+        os.replace(tmp_path, filepath)
         size_mb = os.path.getsize(filepath) / (1024 * 1024)
         return True, size_mb
     except requests.exceptions.Timeout:
         return False, "Timeout (5 min)"
     except Exception as e:
         return False, str(e)[:50]
+    finally:
+        # Si no se llegó a renombrar (error o interrupción), borrar el parcial
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def sanitize_filename(name):
@@ -275,37 +292,63 @@ def sanitize_filename(name):
     return name[:200].strip()
 
 
-def process_dataset(dataset_id, category_dir):
-    """Procesa un dataset y descarga sus recursos CSV"""
+def process_dataset(dataset_id, category_dir, usados=None, fallidos=None):
+    """Procesa un dataset y descarga sus recursos CSV.
+
+    usados: nombres de archivo (en minúsculas) ya asignados en la carpeta de la
+        categoría en esta ejecución. main() comparte el mismo conjunto entre los
+        datasets de una categoría para que dos recursos con el mismo nombre no
+        acaben en el mismo archivo (antes el segundo se daba por "Ya existe" y
+        se perdía, p. ej. los recursos sin año de tra-reg-paro-2017/2018/2019).
+    fallidos: lista opcional donde se anotan los errores de API o de descarga.
+    """
     print(f"\n📦 {dataset_id}")
-    
+    if usados is None:
+        usados = set()
+
     info = get_dataset_info(dataset_id)
     if not info:
+        if fallidos is not None:
+            fallidos.append(f"{dataset_id}: sin respuesta válida de la API")
         return 0, 0
-    
-    resources = info.get("resources", [])
-    
-    # Filtrar recursos CSV
-    csv_resources = [r for r in resources if r.get("format", "").upper() in ["CSV", "TEXT/CSV"]]
-    
+
+    resources = info.get("resources") or []
+
+    # Filtrar recursos CSV (CKAN puede devolver "format": null)
+    csv_resources = [r for r in resources if (r.get("format") or "").strip().upper() in ["CSV", "TEXT/CSV"]]
+
     if not csv_resources:
         print(f"  ⚠️ No hay recursos CSV (puede tener JSON/XML)")
         return 0, 0
-    
+
     downloaded = 0
     total_size = 0
-    
+
     for resource in csv_resources:
         url = resource.get("url")
-        name = resource.get("name", "data")
-        
+        name = resource.get("name") or "data"
+
         if not url:
             continue
-        
-        filename = sanitize_filename(name)
+
+        filename = sanitize_filename(name) or "data"
         if not filename.lower().endswith('.csv'):
             filename += '.csv'
-        
+
+        # Nombre repetido en la categoría: añadir el id del dataset (y un
+        # contador si hiciera falta). El orden de datasets y recursos es estable,
+        # así que cada recurso recibe el mismo nombre en cada ejecución y la
+        # reanudación ("Ya existe") sigue funcionando.
+        if filename.lower() in usados:
+            base = filename[:-4].rstrip()[:150]
+            candidato = f"{base}_{dataset_id}.csv"
+            n = 2
+            while candidato.lower() in usados:
+                candidato = f"{base}_{dataset_id}_{n}.csv"
+                n += 1
+            filename = candidato
+        usados.add(filename.lower())
+
         filepath = category_dir / filename
         
         # Verificar si ya existe
@@ -328,7 +371,9 @@ def process_dataset(dataset_id, category_dir):
             print(f"❌ {result}")
             if filepath.exists():
                 filepath.unlink()
-        
+            if fallidos is not None:
+                fallidos.append(f"{dataset_id}: {filename} ({result})")
+
         time.sleep(0.3)
     
     return downloaded, total_size
@@ -352,20 +397,22 @@ def main():
     total_size = 0
     stats = {}
     errors = []
-    
+    fallidos = []
+
     for category, datasets in DATASETS.items():
         print(f"\n{'=' * 70}")
         print(f"📁 CATEGORÍA: {category.upper()}")
         print("=" * 70)
-        
+
         category_dir = OUTPUT_DIR / category
         category_dir.mkdir(parents=True, exist_ok=True)
-        
+        usados = set()  # nombres de archivo ya asignados en esta categoría
+
         cat_files = 0
         cat_size = 0
-        
+
         for dataset_id in datasets:
-            files, size = process_dataset(dataset_id, category_dir)
+            files, size = process_dataset(dataset_id, category_dir, usados, fallidos)
             if files == 0:
                 errors.append(dataset_id)
             cat_files += files
@@ -380,7 +427,10 @@ def main():
     
     # Resumen final
     print("\n" + "=" * 70)
-    print("✅ DESCARGA COMPLETADA")
+    if fallidos:
+        print(f"⚠️ DESCARGA COMPLETADA CON ERRORES ({len(fallidos)})")
+    else:
+        print("✅ DESCARGA COMPLETADA")
     print("=" * 70)
     print(f"   Archivos descargados: {total_files}")
     print(f"   Tamaño total: {total_size:.1f} MB ({total_size/1024:.2f} GB)")
@@ -399,7 +449,12 @@ def main():
         print(f"\n⚠️ DATASETS SIN CSV ({len(errors)}):")
         for e in errors:
             print(f"   - {e}")
-    
+
+    if fallidos:
+        print(f"\n❌ ERRORES DE DESCARGA ({len(fallidos)}) - vuelve a ejecutar el script para reintentarlos:")
+        for e in fallidos:
+            print(f"   - {e}")
+
     # Guardar log
     log_file = OUTPUT_DIR / "descarga_log.txt"
     with open(log_file, "w", encoding="utf-8") as f:
@@ -420,7 +475,13 @@ def main():
             f.write("-" * 50 + "\n")
             for e in errors:
                 f.write(f"  - {e}\n")
-    
+
+        if fallidos:
+            f.write("\nERRORES DE DESCARGA:\n")
+            f.write("-" * 50 + "\n")
+            for e in fallidos:
+                f.write(f"  - {e}\n")
+
     print(f"\n📝 Log guardado: {log_file}")
     
     # Instrucciones siguientes
@@ -430,6 +491,9 @@ def main():
     print("   python ccaa_valencia_parquet.py")
     print("   (Reducirá ~5 GB a ~500-800 MB)")
 
+    # Código de salida != 0 si algo falló, para que cron/CI no lo dé por bueno
+    return 1 if fallidos else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
