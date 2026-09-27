@@ -59,10 +59,16 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
 - **PR #24** (@686f6c61, externa): regenera la PLACSP y la calidad con el parser de `627008b` (sin los commits de esta rama), sobre el inventario de 78 ZIP de v2026.02 (hasta enero de 2026). Tiene un prerelease en su fork con hashes: 8.721.484 filas, 20 indicadores, verificación PASS.
   - Su parche de TED ya está aplicado aquí (`9e945c2`), y sus dos observaciones sobre CONS-20, corregidas en `2b184a1`.
   - Propuesta al propietario, pendiente de su decisión: usar su entrega como contraste independiente de la nuestra (filas, importes e indicadores sobre el mismo inventario) y no fusionar su cadena de scripts paralela.
-- En curso al cerrar la sesión:
-  - Descarga completa de `/contracts` de Euskadi en 4 procesos por tramos de años (`scratchpad/euskadi/contratos_api_tramo.py`). Después hay que lanzar la ejecución normal para el resumen `_estado.json` y la consolidación.
-  - Procesado de la PLACSP para Elicita (§3.3).
-  - Scrapers nuevos de Extremadura y Castilla-La Mancha, hechos por agentes y sin commit hasta revisarlos.
+- **En curso** (si la sesión se corta, se pierde el directorio temporal; los scripts para reanudarlo están en `herramientas/sesion_2026_09_27/`, con su README):
+  - **Euskadi `/contracts`**: 4 procesos por tramos de años (`euskadi/contratos_api_tramo.py`) y después `euskadi/terminar.sh`, que hace la ejecución normal (`_estado.json`), consolida fuera del LFS y mide los menores por año.
+    - Las ventanas completas no se vuelven a bajar: basta con relanzar los tramos.
+  - **PLACSP para Elicita** (§3.3): `regeneracion_placsp/procesar.sh` y después `cadena.sh` (reducir, cruce TED y calidad).
+    - Luego, `comparar_publicado.py` frente a v2026.02 y las cifras de la PR #24.
+    - Por último, el release en borrador con `publicar_release.py`.
+  - **Comunidad de Madrid**: los menores se vuelven a bajar con una copia de `descarga_contratacion_comunidad_madrid_v1.py` fuera del repo (`python <copia> menores`: 126 entidades, con subdivisión por importe al llegar a 50.000 filas).
+    - La ruta `Entidad Adjudicadora` del publicado es la jerarquía completa (`Consejería de Sanidad··>SERMAS··>…>Hospital…`). Para comparar con las 125 entidades del desplegable hay que usar el primer nivel.
+  - **Scrapers nuevos**, hechos por agentes y sin revisar: Extremadura, Castilla-La Mancha, La Rioja y Valencia (`scripts/ccaa_extremadura.py`, `ccaa_castilla_la_mancha.py`, `ccaa_la_rioja.py` y `ccaa_valencia_menores.py`, con sus tests).
+    - Si hay commits `WIP (copia de seguridad, sin revisar)`, están a medio hacer: revisar, pasar los tests en los dos pandas, verificar en vivo y cerrar con su propio commit.
 
 ## 2. Reglas innegociables
 
