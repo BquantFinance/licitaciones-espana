@@ -67,6 +67,8 @@ Contratos publicados en [Tenders Electronic Daily](https://ted.europa.eu/) corre
 | API v3 eForms | 252K | 2020-2025 | ted.europa.eu/api |
 | **Consolidado** | **591K** | **2010-2025** | — |
 
+> ⚠️ En los datos publicados, 2020-2023 (y ~87 % de 2023) vienen de la API sin adjudicatario, importe, nº de ofertas ni fecha de adjudicación (anuncios anteriores a eForms), las filas de la API no tienen fecha de publicación, tipo de contrato ni procedimiento, y solo se descargaban 4 de los 7 tipos de anuncio de adjudicación (faltaban `veat`, `can-tran` y `compl`). `ted_module.py` ya usa el CSV bulk de data.europa.eu para 2020-2023, conserva todas sus columnas, pide los 7 tipos y cubre de 2006 al año en curso; hay que regenerar los datos.
+
 ### Archivos
 
 ```
@@ -182,7 +184,9 @@ Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_bo
 | Empresas | 9.2M filas, 3.3M únicas | Actos mercantiles: constituciones, disoluciones, fusiones, ampliaciones de capital... |
 | Cargos | 17M filas, 3.8M personas | Nombramientos, ceses, revocaciones — con persona hasheada (SHA-256) |
 
-> ⚠️ Los PDFs originales no se redistribuyen porque contienen nombres de personas físicas protegidos por RGPD. Se publica el scraper para descargarlos directamente desde boe.es y los datos derivados anonimizados.
+> ⚠️ Los PDFs originales no se redistribuyen porque contienen nombres de personas físicas protegidos por RGPD. Se publica el scraper para descargarlos directamente desde boe.es y los datos derivados anonimizados: solo se sustituyen por un hash los nombres de las personas de los cargos; empresa, domicilio social y actos se publican tal como aparecen en el BORME.
+>
+> Los datos publicados solo contienen la sección A. `borme_scraper.py` ahora combina los PDF del índice HTML con la API oficial de sumarios (secciones A, B y C). Faltan los boletines 2012 #173-174, 2013 #1 y 2024 #89-90: hay que volver a descargar esos días.
 
 ### Archivos
 
@@ -404,7 +408,7 @@ Datos del portal [Transparència Catalunya](https://analisi.transparenciacatalun
 | Subvenciones RAISC | 9.6M | 2014-2025 |
 | **Contratación pública** | **4.3M** | 2014-2025 |
 | ↳ Contratos regulares | 1.3M | 2014-2025 |
-| ↳ Contratos menores 🆕 | 3.0M | 2014-2025 |
+| ↳ Contratos menores 🆕 | 3.0M filas (868K distintas) | 2014-2025 |
 | Presupuestos | 3.1M | 2014-2025 |
 | Convenios | 62K | 2014-2025 |
 | RRHH | 3.4M | 2014-2025 |
@@ -415,7 +419,7 @@ Datos del portal [Transparència Catalunya](https://analisi.transparenciacatalun
 ```
 catalunya/
 ├── contratacion/
-│   ├── contractacio_menors.parquet          # 3.0M contratos menores 🆕
+│   ├── contractacio_menors.parquet          # 3.0M filas, 868K distintas (ver abajo) 🆕
 │   ├── publicaciones_pscp.parquet           # Publicaciones PSCP (ciclo completo)
 │   ├── adjudicaciones_generalitat.parquet
 │   ├── contratos_registro.parquet, fase_ejecucion.parquet, contratacion_programada.parquet
@@ -434,10 +438,13 @@ catalunya/
 
 ### 🆕 Contratos menores Catalunya
 
-Dataset nuevo con **3.024.000 registros** de contratos menores del sector público catalán:
+Dataset nuevo con **3.024.000 filas** de contratos menores del sector público catalán.
+
+> ⚠️ En el parquet publicado solo 868.063 filas son distintas: las otras 2.155.739 son copias idénticas de la misma publicación devuelta por varias consultas de fase (artefacto de la descarga, hasta 7 copias). Además la descarga se quedaba corta frente al dataset PSCP de Socrata (`ybgg-dgi6`): p.ej. 301.614 contratos menores agregados de 2025 frente a 529.780, ICS o UPF muy por debajo, por el tope de 20.000 resultados por consulta. El script ahora solo quita filas idénticas, recupera los segmentos incompletos y compara con el total de la API; los órganos más grandes necesitan una segmentación adicional por fecha (pendiente de verificar en vivo). En los parquet publicados se perdían los ceros a la izquierda de códigos postales e INE (`08002` → 8002) y el dataset `contractes-menors-a-generica` de Barcelona no se descargaba (slug erróneo); ambos corregidos.
+
 
 - **43 columnas**: `id`, `titol`, `descripcio`, `pressupostLicitacio`, `pressupostAdjudicacio`, `organ`, `idOrgan`, `codiExpedient`, `expedientId`, `esPlacsp`, `esAgregatContractes`, `esAgregatEncarrecs`, `nomPublicacioAgregada` y `fasesVigents_<FASE>_{lotsActius,dataPublicacio,idPublicacio}` para 10 fases (no incluye nombre ni NIF del adjudicatario)
-- Una fila por publicación (`id` + `descripcio`), con las fases vigentes de cada una en columnas
+- Una fila por publicación y contrato, con las fases vigentes de cada una en columnas (una publicación agregada contiene varios contratos, que se distinguen por `expedientId`)
 - Extraído de la API del portal de contratación pública (`contractaciopublica.cat`, `portal-api`) mediante paginación con sub-segmentación automática (72K requests API)
 - Fuente: [Plataforma de Serveis de Contractació Pública](https://contractaciopublica.cat)
 
@@ -457,7 +464,7 @@ Contratación pública del [País Vasco / Euskadi](https://www.contratacion.eusk
 | Vitoria contratos menores | — | Actual | Open Data Euskadi (no se consolida) |
 | **Total** | **~704K** | **2005-2026** | — |
 
-> ⚠️ Los parquet publicados de Euskadi tienen errores de consolidación ya corregidos en los scripts (hay que regenerarlos): en `revascon_historico` 31.191 de las 34.523 filas (REVASCON 2015-2018) salieron como columnas `unnamed:_N` porque el XLSX trae filas de título antes de la cabecera; en `bilbao_contratos` los importes están divididos entre 1.000 (`"52.990"` → 52,99) y la fecha de adjudicación tiene día y mes invertidos; `contratos_master` tiene los años 2011-2013 en columnas aparte y 2.748 filas duplicadas. `contratos_master` son **metadatos de anuncios**: ninguna fuente de B1 incluye importes, adjudicatario, NIF, CPV ni procedimiento, así que para 2019-2026 no hay importes de adjudicación de Euskadi.
+> ⚠️ Los parquet publicados de Euskadi tienen errores de consolidación ya corregidos en los scripts (hay que regenerarlos): en `revascon_historico` 31.191 de las 34.523 filas (REVASCON 2015-2018) salieron como columnas `unnamed:_N` porque el XLSX trae filas de título antes de la cabecera; en `bilbao_contratos` los importes están divididos entre 1.000 (`"52.990"` → 52,99) y la fecha de adjudicación tiene día y mes invertidos; `contratos_master` tiene los años 2011-2013 en columnas aparte y 18.826 filas de `contratos_2021.xlsx` con las columnas corridas 2-3 posiciones (URL en la fecha límite, expediente en la fecha de publicación…). La consolidación actual conserva todas las filas y celdas de los ficheros originales (verificado fichero a fichero): recoloca esas filas y lo indica en `_columnas_corridas`, y las filas repetidas (los JSON 2012-2013 repiten filas del de 2011; REVASCON repite contratos entre años; la API de empresas devuelve 25 empresas dos veces) se conservan marcadas en `_duplicado`. `contratos_master` son **metadatos de anuncios**: ninguna fuente de B1 incluye importes, adjudicatario, NIF, CPV ni procedimiento, así que para 2019-2026 no hay importes de adjudicación de Euskadi en los datos publicados. La API `/contracts` de KontratazioA tiene 655.518 contratos con importe y adjudicatario, pero el scraper solo obtenía una muestra de 10 (la API repetía la página 1); ver [docs/COBERTURA.md](docs/COBERTURA.md).
 
 ### Archivos
 
@@ -519,7 +526,7 @@ Datos del portal [Dades Obertes GVA](https://dadesobertes.gva.es) (CKAN API).
 
 | Categoría | Archivos | Registros | Contenido |
 |-----------|----------|-----------|-----------|
-| Contratación | 13 | 246K | REGCON 2014-2025 + DANA |
+| Contratación | 13 | 246K | REGCON 2014-2025 + DANA (2025 incompleto, ver nota) |
 | Subvenciones | 52 | 2.2M | Ayudas 2022-2025 + DANA |
 | Presupuestos | 4 | 346K | Ejecución 2024-2025 |
 | Convenios | 5 | 8K | 2018-2022 |
@@ -554,6 +561,8 @@ valencia/
 └── transporte/            # 7 archivos, 21 MB
 ```
 
+> ⚠️ Los contratos de 2025 publicados tienen solo 32 filas (formalizaciones de enero) frente a 37.432 en 2024: el script nunca volvía a descargar un fichero existente y se quedó la primera copia del año. Ahora vuelve a descargar los recursos que el portal ha actualizado (`last_modified`), descubre los años nuevos de cada serie y conserva los ceros a la izquierda de códigos postales, INE y centros (`03001`).
+
 ### 🌟 Datos únicos de Valencia
 
 - **REGIA**: Registro de lobbies único en España (grupos de interés, actividades de influencia)
@@ -574,6 +583,8 @@ Conteos observados en torno al 2026-03-23 consultando la API pública del portal
 | Licitaciones regulares (estándar, sin BRR) | ~80.9K | Operativa |
 | Contratos menores (sin BRR) | ~775.7K | Operativa |
 | **Total (sin BRR)** | **~856.7K** | **Operativa** |
+
+> ⚠️ El fichero publicado tiene 808.441 filas (hasta 2026-02-11): faltan unos 41K contratos menores. 15 segmentos del SAS superan el límite de 10.000 resultados tras las 8 dimensiones de subdivisión (273K registros); la solución prevista es partir por mes de publicación (pendiente de verificar en vivo). El script ahora incluye los códigos de estado/tipo/provincia presentes en los datos, años calculados en ejecución, descubrimiento completo de perfiles y 4 columnas JSON con todas las adjudicaciones, lotes, anuncios y campos no mapeados (19.765 expedientes con varias adjudicaciones perdían las siguientes).
 
 ### Archivos
 
@@ -638,6 +649,8 @@ Contratación pública completa de la [Comunidad de Madrid](https://contratos-pu
 | Consultas preliminares del mercado | 28 | — | — |
 | **Total** | **2,563,527** | **49,004M €** | **487M €** |
 
+> ⚠️ El portal pone cada lote, adjudicatario, prórroga o modificación adicional en una **fila de continuación** sin tipo ni referencia justo después de su contrato (el 36 % de las filas en una muestra independiente de 30.907). El dataset publicado deduplicaba por expediente + referencia + entidad y las perdió todas (queda 1). El script ahora solo descarta bloques completos repetidos en CSV distintos (consultas solapadas) y conserva los duplicados de origen, descarga también los anuncios de 2014-2016 y los menores con presupuesto ≤0 o >50.000 € de las entidades subdivididas, y vuelve a descargar los CSV acumulativos (el publicado se corta el 2025-09-30). Pendiente: los menores de entidades históricas que ya no aparecen en el desplegable (p.ej. consejerías de legislaturas anteriores). Hay que regenerar los datos.
+
 ### Archivos
 
 ```
@@ -698,6 +711,8 @@ Actividad contractual completa del [Ayuntamiento de Madrid](https://datos.madrid
 | Homologación | 1,047 | 1M € |
 | **Total** | **119,253** | **~23,400M €** |
 
+> ⚠️ datos.madrid.es migró a CKAN y renumeró los recursos: el script descubre ahora los ficheros por la API CKAN (incluido 2026), ya no descarta en silencio ficheros con nombre repetido, vuelve a bajar el año en curso y el anterior, y decodifica los CSV en CP850 (antes "Descripci¢n", "A¤o"…).
+
 ### Archivos
 
 El script `ccaa_madrid_ayuntamiento.py` genera:
@@ -749,7 +764,7 @@ Contratación pública completa de la [Xunta de Galicia](https://www.contratosde
 | Licitaciones | 50,382 | 2007-2026 |
 | **Total** | **1,685,789** | **2007-2026** |
 
-> ⚠️ En los datos publicados (`contratos_galicia.parquet` / `contratos_galicia.zip`) la columna `importe` está inflada ×10 o ×100: el scraper eliminaba el punto decimal de los importes de la API como si fuera separador de miles (674.78 → 67478). El 55 % de los contratos menores publicados supera 48.400 € (imposible por ley) y suman 547.600 M€. El scraper ya está corregido; hay que regenerar los datos. El fichero publicado solo tiene las 12 columnas base.
+> ⚠️ En los datos publicados (`contratos_galicia.parquet` / `contratos_galicia.zip`) la columna `importe` está inflada ×10 o ×100: el scraper eliminaba el punto decimal de los importes de la API como si fuera separador de miles (674.78 → 67478). El 55 % de los contratos menores publicados supera 48.400 € (imposible por ley) y suman 547.600 M€. El scraper ya está corregido; hay que regenerar los datos. El fichero publicado solo tiene las 12 columnas base; con la fase de detalle son 64, incluidas `detail_adjudicaciones_json` (adjudicatarios e importes por lote, que para las licitaciones solo están en el detalle) y `detail_campos_extra_json`. El scraper compara lo descargado con los totales que declara el portal por organismo.
 
 ### Archivos
 
@@ -830,7 +845,7 @@ Contratación centralizada del [Principado de Asturias](https://sede.asturias.es
 | Columnas | 99 |
 | Tamaño | 21 MB |
 
-> ⚠️ En el parquet publicado la columna `IVA` de 2023 está multiplicada ×10 (210/100/40/50 en lugar de 21/10/4/5) y, con pandas 3, los importes quedaban como texto. El script ya está corregido y escribe en `ccaa_asturias/`; hay que regenerar los datos.
+> ⚠️ En el parquet publicado la columna `IVA` de 2023 está multiplicada ×10 (210/100/40/50 en lugar de 21/10/4/5) y, con pandas 3, los importes quedaban como texto. El script ya está corregido y escribe en `ccaa_asturias/`; hay que regenerar los datos. Además: descarga todos los años hasta el actual (antes solo 2019-2024, y el fichero de 2025 ya existe), lee los CSV como Windows-1252 (5.099 caracteres corruptos), mantiene `Nº EXPEDIENTE ORGANO` como texto (67.440 valores pasaban a NaN) y guarda las líneas mal formadas en `lineas_descartadas_AAAA.csv` en vez de descartarlas.
 
 ### Archivos
 
@@ -1090,14 +1105,13 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 
 ---
 
-## 📈 Próximas CCAA
+## 📈 Cobertura y próximas CCAA
 
-- [x] Euskadi ✅
-- [x] Andalucía ✅
-- [x] Madrid ✅
-- [x] Galicia ✅
-- [x] Asturias ✅
-- [ ] Castilla y León
+- [x] Nacional (PLACSP), Andalucía, Asturias, Catalunya, Euskadi, Galicia, Madrid, Valencia
+- [ ] Castilla y León, Región de Murcia, Navarra, Aragón, La Rioja, Castilla-La Mancha (scrapers en desarrollo)
+- [ ] Extremadura, Canarias, Cantabria, Illes Balears, Ceuta y Melilla
+
+Qué publica cada comunidad fuera de PLACSP (sobre todo contratos menores), qué nos falta y cómo atacarlo: [docs/COBERTURA.md](docs/COBERTURA.md).
 
 ---
 
