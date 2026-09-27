@@ -38,6 +38,7 @@ def _cargar():
 
 M = _cargar()
 ANIO = datetime.now().year          # el script decide qué refrescar con el año real
+CONFIRMADOS_REALES = list(M.TRIMESTRES_CONFIRMADOS)
 TITULO_PAGINA = "Contratos e incidencias inscritas en el Registro de Contratos"
 CARPETA = "/documents/77055/621084/"
 
@@ -699,6 +700,12 @@ def test_informe_de_menores_por_trimestre(portal, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_cli(portal, tmp_path, monkeypatch):
+    # Como programa, el script usa su configuración real (sin los parches del
+    # fixture): el portal simulado publica también los trimestres confirmados
+    for anio, t in CONFIRMADOS_REALES:
+        if (anio, t) not in CONFIRMADOS:
+            portal.publicar(f"registro-contratos-{t}t-{anio}", f"{t}º Trimestre de {anio}", [
+                portal.documento(f"LISTADO CONTRATOS MENORES {t}T {anio}.xlsx", _menores_c(f"CM{t}/{anio}"))])
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--salida", str(tmp_path)])
     with pytest.raises(SystemExit) as salida:
         runpy.run_path(str(SCRIPT), run_name="__main__")

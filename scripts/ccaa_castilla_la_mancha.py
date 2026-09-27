@@ -1308,10 +1308,15 @@ def periodo_de(*textos):
         t = _normalizar(texto)
         for i, patron in enumerate(PATRONES_PERIODO):
             m = patron.search(t)
-            if m:
-                numero, clase = {0: (m.group(1), m.group(2)), 1: (ORDINALES[m.group(1)], m.group(2)),
-                                 2: (m.group(2), m.group(1))}[i]
-                return (f"{numero}T", str(numero)) if clase == "trimestre" else (f"{numero}S", None)
+            if not m:
+                continue
+            if i == 0:
+                numero, clase = m.group(1), m.group(2)
+            elif i == 1:
+                numero, clase = ORDINALES[m.group(1)], m.group(2)
+            else:
+                numero, clase = m.group(2), m.group(1)
+            return (f"{numero}T", str(numero)) if clase == "trimestre" else (f"{numero}S", None)
         if PATRON_ANUAL.search(t):
             return "anual", None
     return None, None
