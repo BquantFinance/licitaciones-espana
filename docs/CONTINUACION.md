@@ -42,6 +42,28 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
 
 **Datos para Elicita (issue #6).** El propietario pidió regenerar la PLACSP y la calidad y publicarlas en un release en **borrador**, sin tocar v2026.02. Estado y cifras en §3.3.
 
+**Sesión del 2026-09-27 (noche).** Prioridad del propietario: *el 100 % de los contratos menores para un modelo antifraude* (§3.6 y `docs/COBERTURA.md` §0 y §5).
+- Commits, todos con tests en pandas 3 y 2.2:
+  - `8a1b8f2`, `ddaff3c` (Euskadi, API `/contracts`):
+    - Un mes sin contratos llega sin `items` (`{totalItems: 0}`) y se tomaba por respuesta rota.
+    - La API sirve algunas filas dos veces, idénticas (2020-01: 5.466 filas y 5.463 ids). Una pasada DESC completa distingue esas filas repetidas en origen de una paginación inestable. Antes se partía el mes hasta días sueltos y quedaba incompleto.
+  - `9e945c2`: parche de @686f6c61 (PR #24) para TED y calidad:
+    - `pd.NA` en `classify_buyer`, `normalize_name` y `clean_nif`.
+    - Asignaciones escalares con `.at`.
+    - Parquet de calidad en zstd.
+  - `2b184a1`: INT-CONS-20 se une por versión (`id` + `fecha_updated`) y no por `expediente|nif`. Un SARA de un año sin avisos en el snapshot TED (2026) queda sin evaluar (`_ted_anio_cubierto`), no como missing.
+  - `73d6e80`: Ayuntamiento de Madrid, bloque de re-ejecuciones cerrado (§3.1.4).
+  - `8b4ccce`, `78d4f39` (Catalunya): los menores de la Generalitat se piden a `qjue-2pk9` (`ydq4-xy5b` da 404), y una descarga actualizada deja la anterior en `_historico/`.
+  - `48e4d42` (Aragón): los enlaces `http://` se piden primero por `https://`; recupera las series de menores 2024-2025 del Gobierno.
+  - `8791825` (Murcia): los menores del SMS se toman de los enlaces de la página de sector público. En vivo pasa de 155.085 filas (2020) a 748.984 (2019-2025), con NIF.
+- **PR #24** (@686f6c61, externa): regenera la PLACSP y la calidad con el parser de `627008b` (sin los commits de esta rama), sobre el inventario de 78 ZIP de v2026.02 (hasta enero de 2026). Tiene un prerelease en su fork con hashes: 8.721.484 filas, 20 indicadores, verificación PASS.
+  - Su parche de TED ya está aplicado aquí (`9e945c2`), y sus dos observaciones sobre CONS-20, corregidas en `2b184a1`.
+  - Propuesta al propietario, pendiente de su decisión: usar su entrega como contraste independiente de la nuestra (filas, importes e indicadores sobre el mismo inventario) y no fusionar su cadena de scripts paralela.
+- En curso al cerrar la sesión:
+  - Descarga completa de `/contracts` de Euskadi en 4 procesos por tramos de años (`scratchpad/euskadi/contratos_api_tramo.py`). Después hay que lanzar la ejecución normal para el resumen `_estado.json` y la consolidación.
+  - Procesado de la PLACSP para Elicita (§3.3).
+  - Scrapers nuevos de Extremadura y Castilla-La Mancha, hechos por agentes y sin commit hasta revisarlos.
+
 ## 2. Reglas innegociables
 
 1. **Servir exactamente lo que publica la administración.** No limpiar valores ni eliminar filas de origen, aunque estén duplicadas: se marcan con columnas `_...`. Solo se descartan los artefactos de nuestra propia descarga, como consultas solapadas, y siempre documentado. El objetivo del proyecto es enseñar cómo publica la administración.
@@ -86,7 +108,7 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
      - Consolidaciones A1, A2, B4 y C2.
    - **Verificado en vivo** (COBERTURA §4.1): paginación con `currentPage`, `itemsOfPage` de 50 como máximo, sin tope de 10.000, y filtros `.gt` estricto y `.lt` inclusivo.
    - **Pendiente:**
-     - Una descarga completa real: 715.569 contratos a 50 por página son unas 14.300 peticiones.
+     - Terminar la descarga completa real (715.574 contratos a 50 por página, unas 14.300 peticiones), en curso el 2026-09-27 (§1). Arreglados los meses vacíos (`8a1b8f2`) y las filas repetidas por la API (`ddaff3c`).
      - Las URLs de Vitoria y Bilbao sin filtros.
 3. **CCAA nuevas: verificadas en vivo el 2026-09-27** (`0263faf`).
    - **Castilla y León**: 16 conjuntos en 50 s.
@@ -94,17 +116,17 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
      - Los 113 contratos menores que tragaban las comillas literales se recuperan.
      - El aviso "No existen datos asociados" del histórico ya no se convierte en tabla.
      - `licitacion-de-obras-publicas` es una estadística agregada con una fila `</HTML>`, basura del portal: excluirla del descubrimiento o dejarla documentada.
-   - **Murcia**: 15.399 contratos, 244.185 menores CARM y 155.085 menores SMS.
+   - **Murcia**: 15.399 contratos, 244.185 menores CARM y 748.984 líneas de menores del SMS 2019-2025 (`8791825`; antes solo 2020, con 155.085).
      - Los `contratosOD2019`-`2023.csv` tienen entre 3 y 10 filas con campos de más, que van a `_columna_extra_N` (columnas corridas por separadores sin comillas).
    - **Aragón**: 9 tablas (106.146 contratos y 84.436 menores del Gobierno, Registro de Contratos, encargos, anuncios).
-     - Los 4 `.xls` de 2024-2025 del Gobierno dan HTTP 403 del propio servidor: reintentar.
+     - ~~Los 4 `.xls` de 2024-2025 del Gobierno dan HTTP 403~~: el CKAN los da con `http://` y el proxy rechaza HTTP plano. Arreglado en `48e4d42` (primero `https://`): 3.139 filas de 2025.
      - Revisar los ZIP "Contratos del Sector Público de Aragón 2014/2015", que se omiten como no tabulares.
    - **Pendiente:**
      - Aplicar a Castilla y León los dos arreglos de lectura de Excel de Murcia.
      - Que Aragón lea los `.xls` sin convertir las celdas de error en NaN.
-     - Evitar que un año del SMS con `.xlsx` y `.xls` a la vez entre dos veces.
+     - ~~Evitar que un año del SMS con `.xlsx` y `.xls` a la vez entre dos veces~~: el SMS ya no va por plantilla de año (`8791825`).
      - Revisión adversarial independiente de `comun/lectura_csv.py`: hasta ahora solo tiene tests, una prueba con 300 CSV aleatorios y el fichero real.
-4. **Ayuntamiento de Madrid** (`comunidad_madrid/ccaa_madrid_ayuntamiento.py`, WIP de `a07b0d3`).
+4. **Ayuntamiento de Madrid: HECHO** (`73d6e80`: 135 tests con pandas 3 y 2.2, y tablas idénticas byte a byte con `--solo-procesar` sobre la ejecución real). Queda la decisión de los identificadores truncados (abajo). Historia del bloque:
    - **Verificado con los datos reales** (una descarga completa, 169 recursos):
      - Tabla fiel y unificada: 132.087 filas cada una.
      - Por fichero cuadran filas, celdas con valor y multiconjunto de textos; en total, 2.143.400 celdas con valor, sin ningún error de posición.
@@ -137,7 +159,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | `galicia/scraper_galicia.py` | Caché SQLite y merge final |
 | `scripts/ccaa_andalucia.py` | El re-scrape completo sobrescribe la salida |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Acumular por registro. Al sembrar, quitar solo las 2,16M copias idénticas del publicado |
-| `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse |
+| `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Capa cruda hecha** (`78d4f39`: `guardar_version`). Falta que el Parquet acumule las versiones |
 | `Euskadi/ccaa_euskadi.py` | Refresco de los ficheros que "siguen cambiando" |
 
 Un workflow razonable, ya probado en la sesión anterior aunque se paró por cuota:
@@ -180,7 +202,7 @@ Desde la nube de Claude Code los portales oficiales devolvían 403 del proxy. En
   - B3 `ultimas_contrataciones_admin`.
   - Bilbao sin filtros.
 - **Catalunya.**
-  - Socrata `qjue-2pk9`, con importes en céntimos que no hay que convertir.
+  - ~~Socrata `qjue-2pk9`, con importes en céntimos que no hay que convertir~~ (`8b4ccce`).
   - AOC: RPC local e histórico.
   - Barcelona: `prorrogues-de-contractes`.
   - Comprobar si existen `ydq4-xy5b`, `jxvs-kzbu`, `w2cu-rmuv`, `wwmk-zys7` y `nuym-4erw`.
@@ -201,7 +223,33 @@ Desde la nube de Claude Code los portales oficiales devolvían 403 del proxy. En
 
 Antes de todo esto, el "paso 0": una vista regional de PLACSP por DIR3, NIF y host (§1 de COBERTURA) para medir lo que ya tenemos.
 
-### 3.6 Cierre
+### 3.6 Cobertura de contratos menores (prioridad del propietario)
+Inventario completo, veredicto por CCAA y referencias (RCSP, OIReScon) en `docs/COBERTURA.md` §0 y §5. Por orden de valor (filas con NIF) y esfuerzo:
+1. **Comunidad de Madrid**:
+   - El portal tiene 4.832.623 menores y el publicado 2,53 M. Volver a ejecutar `descarga_contratacion_comunidad_madrid_v1.py` sobre una **copia** del script fuera del repo, porque escribe en su propia carpeta, que es la de los datos LFS.
+   - El filtro de fecha "desde" (`createddate`) funciona sin entidad y sirve para recuperar las entidades que ya no salen en el desplegable.
+2. **Euskadi `/contracts`**: terminar la descarga, consolidar (`consolidar_A1_api_contratos`) y medir los menores con importe y CIF.
+3. **Galicia**: volver a ejecutar, porque el portal tiene 1.775.090 menores y el publicado 1,64 M.
+4. **Extremadura** (Registro de Contratos, XLSX trimestrales 2022-2026, ~200K con NIF) y **Castilla-La Mancha** (UCLM, caja pagadora, ficheros de la JCCM): scrapers nuevos hechos por agentes; revisar, verificar y commitear.
+5. **Catalunya**:
+   - Tabla de menores desde `ybgg-dgi6`: 381K en 2025, todos con NIF.
+   - Cruce con el RPC para dar NIF al 45 % que solo trae nombre.
+   - Que el Parquet acumule las versiones.
+6. **C. Valenciana** (~35 % hoy):
+   - XLSX trimestrales de la UV 2016-2026 (~17K/año con NIF).
+   - Buscador del Ajuntament de València (~2K/año con NIF).
+   - Registro LIGATE de la Diputación de Alicante.
+7. **Municipios con fuente propia**: Gijón (64K desde 2018, con CIF), Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife.
+8. **Bloqueados desde la nube**: ejecutar desde una IP española que no sea de la nube.
+   - `*.asturias.es` (2025-2026), `*.cantabria.es`, A Coruña, Oviedo, Avilés, Palma, zaragoza.es y dpz.es.
+   - `www.juntaandalucia.es`: CSV de menores de la Junta en el CKAN, con los ~41K del SAS.
+9. **Sin fuente pública contrato a contrato**: menores del SCS (Canarias, 89K en 2025, solo totales). Hay que pedirlo por acceso a la información.
+10. **Pestaña "Documentos" de la PLACSP**: UGR, Diputación de Granada, Melilla y unos 1.950 ayuntamientos con perfil en la PLACSP y sin menores en el 1143. Requiere extraer tablas de PDF.
+11. **Navarra y La Rioja**: ver el inventario de §5 de COBERTURA.
+
+Medir de nuevo cada fuente al incorporarla: filas por año, % con NIF válido, solape con el 1143 (deduplicar por NIF del órgano, expediente, adjudicatario, importe y fecha).
+
+### 3.7 Cierre
 - README: actualizar las secciones de las CCAA nuevas, el uso de `--semilla` y `_historico/`.
 - `requirements.txt`: añadir `odfpy` y `xlrd` si hacen falta.
 - Reescribir la descripción de la PR y hacer merge cuando todo esté verificado.
