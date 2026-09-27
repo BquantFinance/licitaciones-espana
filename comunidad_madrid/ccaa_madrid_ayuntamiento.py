@@ -841,27 +841,46 @@ class Resumen:
             print("\nSin fallos.")
 
 
+def _leer_manifiesto(ruta):
+    """Entradas de un manifiesto, o None si no se puede leer (JSON corrupto o
+    cortado, p.ej. por un disco lleno)."""
+    try:
+        entradas = json.loads(Path(ruta).read_text(encoding="utf-8"))
+    except (OSError, ValueError):          # UnicodeDecodeError y JSONDecodeError son ValueError
+        return None
+    return entradas if isinstance(entradas, dict) else None
+
+
 class Manifiesto:
     """originales/_manifiesto.json: {ruta del fichero relativa a la salida:
     entrada}. La primera vez que se guarda en cada ejecución se usa
     guardar_version (el manifiesto de la ejecución anterior queda en
     _historico/); después se sustituye de forma atómica el de esta misma
     ejecución, que se guarda tras cada descarga para que un corte (SIGHUP,
-    SIGKILL...) no deje ficheros descargados sin anotar. Si no existe pero hay
-    versiones en _historico/, se recupera la última (recuperado = su ruta)."""
+    SIGKILL...) no deje ficheros descargados sin anotar. Si no existe o no se
+    puede leer (corrupto = True; al guardar pasa a _historico/, no se borra),
+    se recupera la última versión legible de _historico/ (recuperado = su
+    ruta)."""
 
     def __init__(self, ruta):
         self.ruta = Path(ruta)
         self.entradas = {}
         self.recuperado = None
+        self.corrupto = False
         self._versionado = False
         if self.ruta.exists():
-            self.entradas = json.loads(self.ruta.read_text(encoding="utf-8"))
-        else:
-            anteriores = sorted((self.ruta.parent / HISTORICO).glob(f"{self.ruta.stem}__*{self.ruta.suffix}"))
-            if anteriores:
-                self.entradas = json.loads(anteriores[-1].read_text(encoding="utf-8"))
-                self.recuperado = anteriores[-1]
+            entradas = _leer_manifiesto(self.ruta)
+            if entradas is not None:
+                self.entradas = entradas
+                return
+            self.corrupto = True
+        anteriores = sorted((self.ruta.parent / HISTORICO).glob(f"{self.ruta.stem}__*{self.ruta.suffix}"))
+        for anterior in reversed(anteriores):      # la más reciente que se pueda leer
+            entradas = _leer_manifiesto(anterior)
+            if entradas is not None:
+                self.entradas = entradas
+                self.recuperado = anterior
+                break
 
     def guardar(self):
         contenido = json.dumps(self.entradas, ensure_ascii=False, indent=1, sort_keys=True).encode("utf-8")
@@ -1026,18 +1045,34 @@ def clave_local(manifiesto, info):
     """(ruta del fichero de un recurso relativa a la salida, clave anterior).
 
     Se reutiliza la entrada del manifiesto con el mismo id, formato y
-    clasificación (categoría, año y parte). Si el id ya existía con otra
-    clasificación, el portal lo ha reutilizado para otro fichero (en
-    datos.madrid.es el id sale de la posición del recurso): es un fichero
-    nuevo, con su propio nombre, y la clave anterior (segundo valor) deja de
-    estar listada y queda como retirada; así las versiones de dos ficheros
-    distintos nunca se mezclan ni se reetiquetan."""
+    clasificación (categoría, año y parte), o con la clasificación con que el
+    portal lo describe ahora (clasificacion_portal: un fichero que se volvió a
+    describir sirviendo los mismos bytes, ver plegar_reclasificado). Si el id
+    ya existía con otra clasificación, el portal lo ha reutilizado para otro
+    fichero (en datos.madrid.es el id sale de la posición del recurso) o solo
+    ha cambiado su descripción: la clave es la de un fichero nuevo, con su
+    propio nombre, y el segundo valor es la clave anterior. La primera
+    descarga decide: los mismos bytes que la copia vigente de la anterior son
+    el mismo fichero (se pliega en la clave anterior); si no, la anterior
+    queda como retirada. Así las versiones de dos ficheros distintos nunca se
+    mezclan ni se reetiquetan. También se devuelve la anterior si la clave
+    que casa aún no tiene copia (una ejecución cortada antes de plegarla)."""
     mismas = manifiesto.claves_de(info["dataset"], info["id"], info["formato"])
+    actual = clasificacion(info)
+
+    def anterior(excepto=None):
+        otras = [c for c in mismas if c != excepto and clasificacion(manifiesto.entradas[c]) != actual]
+        publicadas = [c for c in otras if _publicado(manifiesto.entradas[c])]
+        return (publicadas or otras or [None])[0]
+
     for clave in mismas:
-        if clasificacion(manifiesto.entradas[clave]) == clasificacion(info):
+        if clasificacion(manifiesto.entradas[clave]) == actual:
+            return clave, (None if manifiesto.entradas[clave].get("sha256") else anterior(clave))
+    for clave in mismas:
+        if tuple(manifiesto.entradas[clave].get("clasificacion_portal") or ()) == actual:
             return clave, None
     ruta = PurePosixPath(CARPETA_ORIGINALES) / DATASETS[info["dataset"]] / nombre_local(info)
-    return ruta.as_posix(), (mismas[0] if mismas else None)
+    return ruta.as_posix(), anterior()
 
 
 # ===========================================================================
@@ -1067,11 +1102,24 @@ def columnas_reconocidas(tabla, categoria):
     return len(_mapear_fichero(vacia, "", categoria, tabla.estructura))
 
 
+PATRON_CIFRA = re.compile(r"\d")
+
+
+def _sin_cifras(tabla):
+    """Ninguna celda de datos tiene una cifra (un fichero de contratos siempre
+    trae fechas, importes o números de expediente)."""
+    return not any(PATRON_CIFRA.search(c) for fila in tabla.df.itertuples(index=False, name=None) for c in fila
+                   if isinstance(c, str))
+
+
 def motivo_rechazo(tabla, previa, hay_copia, categoria):
     """Por qué una descarga tabular no es el fichero (o None).
 
     - Una sola columna: no es una tabla, sino un texto (p.ej. un mensaje de
       error del portal servido con 200 y sin HTML).
+    - Registros sin ninguna cifra y una cabecera sin ninguna columna conocida:
+      un texto con comas ('Servicio no disponible, disculpe las molestias')
+      leído como tabla de dos columnas.
     - Habiendo copia: sin ningún registro con datos; sin cabecera cuando la
       versión anterior la tenía; o con una cabecera sin ninguna columna en
       común con la de la versión anterior y en la que no se reconocen al
@@ -1084,6 +1132,9 @@ def motivo_rechazo(tabla, previa, hay_copia, categoria):
     """
     if tabla.info.get("ancho", 0) < 2:
         return "la respuesta no parece una tabla (una sola columna)"
+    if filas_con_datos(tabla) and columnas_reconocidas(tabla, categoria) == 0 and _sin_cifras(tabla):
+        return ("la respuesta no parece una tabla de contratos (ninguna columna conocida y ninguna cifra en sus "
+                "registros: p.ej. un texto de error)")
     if not hay_copia:
         return None
     if filas_con_datos(tabla) == 0:
@@ -1099,14 +1150,18 @@ def motivo_rechazo(tabla, previa, hay_copia, categoria):
     return None
 
 
-def descargar(url, destino, formato, categoria):
+def descargar(url, destino, formato, categoria, tam_ckan=None, identico_a=None):
     """Descarga `url` en `destino` sin machacar la copia anterior
     (guardar_version: si cambió, la anterior pasa a _historico/).
 
     Devuelve (estado, bytes, md5, filas con datos o None si no es una tabla)
-    con estado 'nuevo', 'actualizado' o 'sin_cambios'. Lanza ErrorDescarga,
-    sin tocar nada, si la descarga falla, está cortada, no es del formato
-    esperado, no se puede leer como tabla o no es el fichero (motivo_rechazo).
+    con estado 'nuevo', 'actualizado' o 'sin_cambios'; o 'identico' (sin
+    escribir nada) si la descarga tiene los mismos bytes que el fichero
+    `identico_a`. Lanza ErrorDescarga, sin tocar nada, si la descarga falla,
+    está cortada (menos bytes que su Content-Length o que el 'size' de CKAN,
+    `tam_ckan`: un corte en un límite de registro, o con un Content-Length
+    coherente, pasaba por un fichero válido), no es del formato esperado, no
+    se puede leer como tabla o no es el fichero (motivo_rechazo).
     """
     destino = Path(destino)
     r = _get(url)
@@ -1116,6 +1171,12 @@ def descargar(url, destino, formato, categoria):
     if esperado.isdigit() and int(esperado) != len(datos) and not cabeceras.get("Content-Encoding"):
         raise ErrorDescarga(f"descarga incompleta ({len(datos)} de {esperado} bytes)")
     comprobar_contenido(datos, formato)
+    tam = str(tam_ckan if tam_ckan is not None else "").strip()
+    if tam.isdigit() and int(tam) != len(datos):
+        raise ErrorDescarga(f"la descarga tiene {len(datos)} bytes y CKAN indica {tam} (¿cortada o no es el fichero?)")
+    if identico_a is not None and Path(identico_a).is_file() and \
+            hashlib.sha256(datos).hexdigest() == _hash_fichero(identico_a, "sha256"):
+        return "identico", len(datos), hashlib.md5(datos).hexdigest(), None
     destino.parent.mkdir(parents=True, exist_ok=True)
     parcial = destino.with_name(f".{destino.name}.part")
     filas = None
@@ -2901,8 +2962,11 @@ def main(argv=None):
     print("ACTIVIDAD CONTRACTUAL - AYUNTAMIENTO DE MADRID")
     print("=" * 70)
     print(f"Salida: {salida}")
+    if manifiesto.corrupto:
+        resumen.aviso(f"{manifiesto.ruta} no se puede leer (JSON corrupto o cortado); se conserva en _historico/ "
+                      "al guardar el nuevo")
     if manifiesto.recuperado:
-        resumen.aviso(f"No está {manifiesto.ruta}: se recupera el último guardado en _historico/ "
+        resumen.aviso(f"No está {manifiesto.ruta} o no se puede leer: se recupera el último guardado en _historico/ "
                       f"({manifiesto.recuperado.name})")
 
     if not args.solo_procesar:
