@@ -453,6 +453,15 @@ def test_contrato_publicado_otra_vez_se_marca_sin_quitar_filas(portal, tmp_path)
     assert _ejecutar(tmp_path, "--comprobar-todo") == 0
     otra = _menores(tmp_path)
     assert _v(otra["_repetido_de"]) == _v(df["_repetido_de"]) and len(otra) == 12
+    # Si el listado anterior deja de publicarse, la copia posterior ya no cuenta como repetida
+    SLEEP_REAL(1.1)
+    portal.quitar_enlace("registro-contratos-2t-2023", "CONTRATOS MENORES 2 y 3T 2023.xlsx")
+    assert _ejecutar(tmp_path) == 0
+    df = _menores(tmp_path)
+    cuarto = df[df["_archivo_origen"] == "menores/menores_2023_4T.xlsx"]
+    assert _v(cuarto["_repetido_de"]) == [None, "menores/menores_2022_1T.xls", None, None, None]
+    vigentes = df[df["_en_ultima_descarga"] & df["_repetido_de"].isna()]
+    assert vigentes["Número de registro de contrato"].tolist().count("CM005815/23") == 1
 
 
 def test_xls_binario_y_xlsx(portal, tmp_path):
@@ -689,6 +698,24 @@ def test_fallo_del_portal_no_retira_nada(portal, tmp_path, fallo, mensaje):
     despues = _menores(tmp_path)
     assert len(despues) == len(antes) and despues["_en_ultima_descarga"].all()
     assert all(e["publicado"] for e in _manifiesto(tmp_path).values())
+
+
+def test_con_una_pagina_caida_un_documento_nuevo_no_ocupa_la_ruta_de_otro(portal, tmp_path):
+    assert _ejecutar(tmp_path) == 0
+    antes = (tmp_path / "raw" / "menores" / "menores_2023_2T-3T.xlsx").read_bytes()
+    SLEEP_REAL(1.1)
+    # La página de 2T-3T 2023 falla y otra enlaza un documento nuevo del mismo trimestre y tipo:
+    # el de la página caída no se ha retirado, así que su fichero no se toca
+    portal.paginas["registro-contratos-2t-2023"] = 503
+    nuevo = portal.documento("CONTRATOS MENORES 2 y 3T 2023 (anexo).xlsx", _menores_c("CM0000099999/2023"))
+    portal.paginas["registro-contratos-1t-2024"]["documentos"].append(nuevo)
+    assert _ejecutar(tmp_path) == 1
+    menores = tmp_path / "raw" / "menores"
+    assert (menores / "menores_2023_2T-3T.xlsx").read_bytes() == antes
+    assert len(M.versiones(menores / "menores_2023_2T-3T.xlsx")) == 1
+    assert (menores / f"menores_2023_2T-3T_{nuevo['clave'][:8]}.xlsx").exists()
+    df = _menores(tmp_path)
+    assert df["_en_ultima_descarga"].all() and len(df) == 8
 
 
 def test_documento_enlazado_que_falla_conserva_la_copia(portal, tmp_path):

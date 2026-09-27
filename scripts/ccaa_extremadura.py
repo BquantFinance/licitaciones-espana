@@ -36,11 +36,14 @@ Salida (por defecto <repo>/ccaa_extremadura/):
 Columnas añadidas: _fuente (URL descargada, con su ?t=), _pagina (página que la
 enlaza), _dataset (serie), _tipo (menores, mayores, incidencias, modificaciones,
 ampliaciones_plazo, prorrogas, resoluciones u otros), _nombre_publicado (nombre
-del fichero en el portal), _anio, _trimestre ('3T'; '2T-3T' si el documento
-cubre dos), _archivo_origen (ruta en raw/), _hoja, _fecha_descarga y, de
+del fichero en el portal), _anio y _trimestre del listado ('3T'; '2T-3T' si
+cubre dos), _archivo_origen (ruta en raw/), _hoja, _fecha_descarga, en menores
+y mayores _repetido_de (el listado anterior, aún publicado, que ya traía el
+mismo número de registro; se recalcula en cada ejecución) y, de
 comun/historico.py, _primera_descarga, _ultima_descarga y _en_ultima_descarga.
 Un registro que el portal retira o modifica NO desaparece: sigue en el Parquet
-con _en_ultima_descarga=False (control del sesgo del superviviente).
+con _en_ultima_descarga=False (control del sesgo del superviviente). Los
+contratos vigentes sin repetir son _en_ultima_descarga & _repetido_de nulo.
 
 Qué se descarga:
 - Páginas: las que devuelve el buscador del portal (todas sus páginas de
@@ -95,7 +98,8 @@ FUENTES (verificado en vivo el 2026-09-27)
   2022 solo modificaciones); desde 2T 2023, un listado de INCIDENCIAS. Las de
   resumen enlazan 4 PDF cada una.
 - Formatos: .xls (BIFF) en 2022 y 1T 2023 (salvo menores 3T 2022, .xlsx) y
-  .xlsx desde 2T 2023; una hoja por fichero, cabecera en la primera fila.
+  .xlsx desde 2T 2023; una hoja por fichero, cabecera en la primera fila (en
+  mayores 1T 2022, en dos: ver abajo).
 - Tres esquemas de columnas en menores, que se unen sin perder ninguna:
   2022-1T 2023 ("Nº Contrato", "Consejería", "Órgano", "CIF/NIF Contratista",
   "Código CPV"...; 1T 2022 trae además "Usuario", "Validado" y "Fecha
@@ -107,16 +111,44 @@ FUENTES (verificado en vivo el 2026-09-27)
   "Plurianual" ni los importes sin impuestos).
 - Las API de Liferay que listarían la carpeta 621084 (headless-delivery y
   jsonws) dan 403: no hay más descubrimiento que las páginas.
+- Ejecución completa en vivo (2026-09-27, 3,5 min): 21 páginas y 79
+  documentos (17 listados de menores, 17 de mayores, 12 de incidencias, 5 de
+  modificaciones, 4 de ampliaciones de plazo, 4 de prórrogas, 4 de
+  resoluciones y 16 PDF de resumen). registro_contratos_menores: 207.702 filas
+  (listados de 2022: 62.272; 2023: 32.656; 2024: 67.504; 2025: 30.375; 1T-2T
+  2026: 14.895); todas salvo 6 con NIF del adjudicatario (99,4 % con forma de
+  NIF, CIF o NIE; el resto, NIF-IVA de otros países como DE815889909) y el
+  91 % del SES. registro_contratos_mayores: 10.539 filas;
+  registro_contratos_incidencias: 3.508. Comprobado fichero a fichero con
+  openpyxl y xlrd directos: mismas filas, mismas celdas con valor y cada texto
+  en su columna. La segunda ejecución no vuelve a pedir lo antiguo ni retira
+  nada.
+- El trimestre del listado es el de inscripción en el registro, no el de
+  adjudicación: el de 1T 2024 inscribe 34.627 contratos adjudicados en 2023.
+- El listado de menores de 4T 2023 vuelve a publicar 5.208 contratos de 1T y
+  2T-3T 2023 (y el de mayores, 20): mismo número de registro, mismo NIF y casi
+  siempre el mismo importe y expediente. No se quita ninguna fila:
+  _repetido_de dice en qué listado anterior estaba. Solo cuenta el número
+  idéntico: hay dos numeraciones (CM005815/23 y CM0000005815/2023) de
+  contratos distintos.
+- Rarezas que se sirven tal cual: mayores 1T 2022 trae la cabecera en dos
+  filas y la segunda (subcolumnas de lotes, precios unitarios y
+  clasificaciones) queda como primera fila de datos; resoluciones 1T 2023 solo
+  trae la cabecera (sin filas: no entra en el Parquet); en 2022 y 1T 2023 las
+  fechas son texto 'dd/mm/aaaa' con un espacio delante y desde 2T 2023, fechas
+  de Excel ('aaaa-mm-dd'); el listado de 2T-3T 2023 no trae CPV y 24.434
+  filas de 2024 traen el CPV '0'.
 - Serie anterior (2016-2021), de la Intervención General: estaba en
   http://www.juntaex.es/ig/relacion-de-contratos-menores (y /ig/contratos-
   menores---2021, /ig/registro-de-contratos), con ficheros en
   /filescms/ig/uploaded_files/Contratos/Menores/<año>/ (XLS trimestrales, p.ej.
   3_trimestre_2016_menores.xls, y PDF por órgano, pdf_1t/2021_1_69_1.pdf).
-  Hoy todo eso da 404 en www.juntaex.es por HTTPS; el buscador indexa las
-  mismas rutas en instituciones.juntaex.es, que desde el entorno donde se
+  Hoy todo eso da 404 en www.juntaex.es por HTTPS; los buscadores web indexan
+  las mismas rutas en instituciones.juntaex.es, que desde el entorno donde se
   escribió no responde por HTTPS (respuesta vacía) y por HTTP lo bloquea el
   proxy. La Wayback Machine guarda la página (20210418051334, 20220516210346),
-  pero tampoco era accesible. NO se descarga: pendiente de verificar desde otra red.
+  pero tampoco era accesible. NO se descarga: pendiente de verificar desde otra
+  red.
 =============================================================================
 """
 
@@ -1249,7 +1281,7 @@ class Documento:
     def metadatos(self):
         """Lo que se guarda en el manifiesto de cada fichero descargado."""
         return {"clave": self.clave, "nombre_publicado": self.nombre, "texto_enlace": self.texto,
-                "paginas": list(self.paginas), "tipo": self.tipo, "anio": self.anio,
+                "pagina": self.pagina, "paginas": list(self.paginas), "tipo": self.tipo, "anio": self.anio,
                 "trimestre": self.trimestre, "trimestres": list(self.trimestres),
                 "version_portal": self.version_portal()}
 
@@ -1343,11 +1375,11 @@ def clasificar(doc, pagina, resumen):
     if doc.tipo == "resumen_estadistico":
         doc.subtipo = subtipo_resumen(doc.nombre, doc.texto)
         trimestres = trimestres_pagina = ()
-    elif trimestres and anio_pagina and trimestres_pagina and (
-            (anio or anio_pagina, trimestres) != (anio_pagina, trimestres_pagina)):
-        resumen.avisos.append(f"{doc.nombre}: el nombre dice {etiqueta_trimestre(trimestres)} {anio or anio_pagina} "
-                              f"y la página ({doc.pagina}) {etiqueta_trimestre(trimestres_pagina)} {anio_pagina}; "
-                              "se usa el del nombre")
+    elif anio_pagina and ((anio and anio != anio_pagina)
+                          or (trimestres and trimestres_pagina and trimestres != trimestres_pagina)):
+        resumen.avisos.append(f"{doc.nombre}: el nombre dice {etiqueta_trimestre(trimestres) or ''} {anio or ''} "
+                              f"y la página ({doc.pagina}) {etiqueta_trimestre(trimestres_pagina) or ''} "
+                              f"{anio_pagina}; se usa lo que dice el nombre")
     doc.anio = anio or anio_pagina
     doc.trimestres = tuple(trimestres or trimestres_pagina)
     if doc.anio is None or (not doc.trimestres and doc.tipo != "resumen_estadistico"):
@@ -1450,19 +1482,22 @@ def descubrir(raw, resumen, comprobar_todo=False):
     return documentos, completo
 
 
-def asignar_rutas(documentos, manifiesto):
+def asignar_rutas(documentos, manifiesto, completo=True):
     """Ruta local (relativa a raw/) de cada documento: la que ya tiene en el
     manifiesto (por su clave) o <tipo>/<base><ext>. Si esa ruta es de otro
     documento que sigue enlazado, se añaden los 8 primeros caracteres del
     uuid. Un documento nuevo que cae en la ruta de otro que ya no se enlaza la
     ocupa: es una versión nueva del mismo listado (la anterior queda en
-    _historico/ y sus filas que ya no están, con _en_ultima_descarga=False)."""
+    _historico/ y sus filas que ya no están, con _en_ultima_descarga=False).
+    Con el descubrimiento incompleto (completo=False) solo se ocupa la ruta de
+    uno ya retirado: el que no se ha visto puede estar en la página que falló."""
     ruta_de = {}
     for rel, entrada in sorted(manifiesto.datos.items()):
         if entrada.get("clave"):
             ruta_de.setdefault(entrada["clave"], rel)
     enlazados = {doc.clave for doc in documentos}
-    ocupadas = {rel for clave, rel in ruta_de.items() if clave in enlazados}
+    ocupadas = {rel for clave, rel in ruta_de.items()
+                if clave in enlazados or (not completo and manifiesto.get(rel).get("publicado", True))}
     for doc in documentos:
         doc.rel = ruta_de.get(doc.clave)
     for doc in sorted((d for d in documentos if d.rel is None), key=lambda d: (d.nombre, d.clave)):
@@ -1538,7 +1573,7 @@ def comprobar_trimestres(documentos, manifiesto, resumen):
 
 def descargar_todo(raw, manifiesto, resumen, comprobar_todo=False):
     documentos, completo = descubrir(raw, resumen, comprobar_todo)
-    asignar_rutas(documentos, manifiesto)
+    asignar_rutas(documentos, manifiesto, completo)
     descargar_documentos(raw, documentos, manifiesto, resumen, comprobar_todo)
     if completo:
         retirar_no_enlazados(raw, documentos, manifiesto, resumen)
@@ -1555,7 +1590,8 @@ def archivos_serie(raw, manifiesto, tipos):
     carpeta), por año y trimestre."""
     lista = []
     for ruta in sorted(Path(raw).glob("*/*")):
-        if not ruta.is_file() or ruta.name.startswith(".") or ruta.suffix.lower() not in EXTENSIONES_TABLA:
+        if (not ruta.is_file() or ruta.name.startswith(".") or ruta.parent.name == HISTORICO
+                or ruta.suffix.lower() not in EXTENSIONES_TABLA):
             continue
         rel = manifiesto.rel(ruta)
         entrada = manifiesto.get(rel)
@@ -1578,10 +1614,14 @@ def metadatos_fichero(serie, ruta, rel, entrada):
 
 
 def marcar_repetidos(df):
-    """_repetido_de: si el número de registro del contrato (sin los espacios de
-    alrededor) ya estaba en un listado anterior, el _archivo_origen del primero;
-    si no, nulo. No se quita ninguna fila. Solo número idéntico: la numeración
-    CM005815/23 y la CM0000005815/2023 son de contratos distintos."""
+    """_repetido_de: si una fila de un listado anterior que se sigue publicando
+    trae el mismo número de registro del contrato (sin los espacios de
+    alrededor), el _archivo_origen del primero de esos listados; si no, nulo.
+    No se quita ninguna fila y se recalcula en cada ejecución: los contratos
+    vigentes sin repetir son _en_ultima_descarga & _repetido_de nulo (si el
+    listado anterior se retira, la copia posterior deja de contar como
+    repetida). Solo número idéntico: las numeraciones CM005815/23 y
+    CM0000005815/2023 son de contratos distintos."""
     df = df.copy()
     numero = pd.Series([None] * len(df), index=df.index, dtype=object)
     for columna in COLUMNAS_NUMERO:
@@ -1595,12 +1635,13 @@ def marcar_repetidos(df):
                 trimestre if isinstance(trimestre, str) else "", rel)
 
     ficheros = df[["_archivo_origen", "_anio", "_trimestre"]].drop_duplicates("_archivo_origen")
-    posicion = {f[0]: i for i, f in enumerate(sorted(ficheros.itertuples(index=False, name=None), key=orden))}
-    tabla = pd.DataFrame({"numero": numero, "posicion": df["_archivo_origen"].map(posicion),
-                          "fichero": df["_archivo_origen"]}).dropna(subset=["numero"])
-    primero = tabla.sort_values("posicion", kind="stable").drop_duplicates("numero").set_index("numero")["fichero"]
-    de = numero.map(primero).astype(object)
-    df["_repetido_de"] = de.where(de.notna() & (de != df["_archivo_origen"]), None)
+    orden_fichero = {f[0]: i for i, f in enumerate(sorted(ficheros.itertuples(index=False, name=None), key=orden))}
+    posicion = df["_archivo_origen"].map(orden_fichero)
+    tabla = pd.DataFrame({"numero": numero, "posicion": posicion, "fichero": df["_archivo_origen"]})
+    vigentes = tabla[df["_en_ultima_descarga"].astype(bool) & numero.notna()]
+    primero = vigentes.sort_values("posicion", kind="stable").drop_duplicates("numero").set_index("numero")
+    anterior = numero.map(primero["posicion"]) < posicion
+    df["_repetido_de"] = numero.map(primero["fichero"]).astype(object).where(anterior, None)
     return df
 
 

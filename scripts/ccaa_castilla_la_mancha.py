@@ -14,13 +14,20 @@ Ejecutar:  python scripts/ccaa_castilla_la_mancha.py [--salida DIR] [--desde AÑ
 Conjuntos de datos (un Parquet cada uno; columna _unidad = qué es cada fila):
     menores_junta    Junta (gestor de expedientes PICOS): XLS/XLSX/ZIP trimestrales y
                      anuales desde 2019. Una fila por contrato, con CIF, importe y fecha de
-                     publicación en PLACE. El fichero anual ("año COMPLETO") repite los de
-                     los trimestres: columna _periodo (1T..4T / anual). Hasta 2023 incluyen
-                     la UCLM.
+                     publicación en PLACE; los nombres de las columnas cambian de un año a
+                     otro ('CIF Adjudicatario(s)', 'C.I.F. Adjudicatario(s)'...) y se dejan
+                     como vienen. El fichero anual ("año COMPLETO") se solapa con los
+                     trimestrales pero no siempre es su suma (2023: 50.069 filas frente a
+                     36.451): se guardan todos y _periodo (1T..4T / anual) los distingue.
+                     Hasta 2023 incluyen la UCLM.
     caja_pagadora    Junta, menores pagados por caja pagadora: XLSX trimestral desde 2026.
                      Una fila por factura, con NIF.
-    sector_publico   "Sector público regional" 2015-2018: ZIP trimestrales con un XLSX por
-                     consejería u organismo (cada uno con su esquema) y un RAR del SESCAM.
+    sector_publico   "Sector público regional" 2015-2018: ZIP trimestrales (o semestrales)
+                     con un XLS/XLSX por consejería u organismo, cada uno con su esquema
+                     (unas 440 columnas en total), y los del SESCAM (RAR, ZIP o XLSX, uno
+                     también en XML de Excel 2003): esos son líneas de factura, ~100.000-
+                     125.000 por trimestre (_miembro dice de qué fichero sale cada fila).
+                     Algún fichero va repetido dentro del ZIP: se conserva tal cual.
     sescam           Servicio de Salud (SESCAM), 2019-: RAR/ZIP trimestrales con un XLSX por
                      tipo de compra (farmacia, suministros). OJO: CADA FILA ES UNA LÍNEA DE
                      FACTURA (gerencia, artículo, proveedor y nº de factura), NO UN CONTRATO,
@@ -77,10 +84,18 @@ Qué se descarga:
   enlazar queda como retirado (sus filas se conservan), pero solo si su página
   se ha podido leer y enlaza algún fichero: si el portal falla no se retira
   nada.
-- Los RAR se leen con libarchive-c (pip install libarchive-c; usa la
-  biblioteca libarchive del sistema) o, si no está, con rarfile y unrar, unar,
-  7z o bsdtar. Sin ninguno, el RAR se conserva y queda como PENDIENTE en el
-  resumen (código de salida 1); sus filas entran en cuanto se pueda leer.
+- Los RAR se leen con rarfile si tiene un programa (unrar, unar, 7z o bsdtar)
+  y si no (o si falla) con libarchive-c (pip install libarchive-c; usa la
+  biblioteca libarchive del sistema). libarchive 3.7 da un error de CRC con al
+  menos un RAR válido (el del SESCAM del 2º trimestre de 2016, dentro del ZIP
+  de sector público; unrar lo lee bien). Un RAR que no se puede leer se
+  conserva igual y queda como PENDIENTE en el resumen (código de salida 1); sus
+  filas entran en cuanto se pueda leer.
+- Dentro de los ZIP/RAR solo se leen como tablas los ficheros cuyo contenido
+  casa con su extensión (XLS, XLSX, CSV, HTML, XML de Excel 2003); el resto
+  (PDF, páginas web guardadas en MHTML...) se anota en los avisos y se queda
+  en el original. Una hoja .xls con 65.536 filas (el máximo del formato) se
+  avisa: puede estar truncada en origen (le pasa al SESCAM de 2015).
 
 FUENTES
 -------
@@ -93,7 +108,8 @@ Verificado en vivo el 2026-09-27 (confianza A):
     de menores 2019-2022. Los demás conceptos (formalizados, modificados, obras,
     desviaciones) no traen menores.
   - https://contratos.apps.uclm.es/contratosMenoresAnteriores.aspx: ejercicios
-    2017-2025, ~21.000-30.700 filas por ejercicio en una sola tabla (18 MB por
+    2017-2025 (30.716, 24.588, 21.299, 19.924, 26.691, 26.783, 28.747, 29.289
+    y 29.036 filas), cada uno en una sola tabla sin paginar (hasta 18 MB por
     respuesta); el POST no necesita la cookie de sesión y los mismos campos
     ocultos sirven para todos los ejercicios.
   - https://contratos.apps.uclm.es/contratosMenoresActuales.aspx: año en curso

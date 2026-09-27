@@ -301,13 +301,34 @@ def test_sondeo_encuentra_el_anio_nuevo_tras_un_salto_de_codigos(portal, tmp_pat
     assert _raw(tmp_path, cd, ANIO).read_bytes() == csv_rioja(ANIO)
     sondeo = json.loads((tmp_path / "raw" / "sondeo_codigos.json").read_text(encoding="utf-8"))
     assert sondeo["existentes"][str(cd)] == nombre(ANIO) and sondeo["existentes"]["981"] == "HTTP 403"
-    # Los demás ficheros del año no se descargan; el salto (982-1009) no se pide entero
+    # Los demás ficheros del año no se descargan; el salto (985-1009) no se pide entero
     assert all(portal.pedidas("GET", c) == 0 for c in range(980, 1017) if c != cd)
-    assert sum(portal.pedidas("HEAD", c) for c in range(990, 1009)) <= 4
+    assert sum(portal.pedidas("HEAD", c) for c in range(985, 1010)) < 10
+    # Encontrado el año que faltaba, no se sigue sondeando
+    assert max(c for metodo, c in portal.llamadas if metodo == "HEAD") < 1025
     assert f"contratos_menores: {ANIO}" not in _log(tmp_path)
 
 
+def test_sin_sondeo_se_usa_lo_que_encontraron_los_anteriores(portal, tmp_path, monkeypatch):
+    cd = _anio_nuevo_tras_un_salto(portal, monkeypatch)
+    publicado = portal.codigos[cd]
+    portal.codigos[cd] = (nombre(ANIO), b"<html><body>Mantenimiento</body></html>")
+    assert _ejecutar(tmp_path) == 1                 # lo encuentra pero no lo puede descargar
+    portal.codigos[cd] = publicado
+    assert _ejecutar(tmp_path, "--sin-sondeo") == 0
+    assert _raw(tmp_path, cd, ANIO).read_bytes() == csv_rioja(ANIO)
+
+
+def test_sin_anios_que_falten_no_se_sondea_salvo_con_comprobar_todo(portal, tmp_path):
+    assert _ejecutar(tmp_path) == 0
+    assert not any(c > 1151 for _, c in portal.llamadas)
+    assert not (tmp_path / "raw" / "sondeo_codigos.json").exists()
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 0
+    assert portal.pedidas("HEAD", 1152) == 1
+
+
 def test_sondeo_retoma_lo_encontrado_y_revisa_los_no_publicos(portal, tmp_path, monkeypatch):
+    monkeypatch.setattr(M, "MES_LIMITE_ANIO_NUEVO", 13)       # enero: aún puede no estar publicado
     monkeypatch.setattr(M, "CODIGOS_CONOCIDOS", {a: cd for a, cd in CONOCIDOS.items() if a < ANIO})
     del portal.codigos[1151]
     portal.codigos[980] = 403                      # el del año, aún no público
@@ -323,19 +344,31 @@ def test_sondeo_retoma_lo_encontrado_y_revisa_los_no_publicos(portal, tmp_path, 
     assert portal.pedidas("HEAD", 980) == 3        # sondeo, nuevo sondeo y comprobación antes de descargar
 
 
+def test_anio_en_curso_sin_encontrar_desde_febrero_es_un_error(portal, tmp_path, monkeypatch):
+    monkeypatch.setattr(M, "MES_LIMITE_ANIO_NUEVO", 1)
+    monkeypatch.setattr(M, "CODIGOS_CONOCIDOS", {a: cd for a, cd in CONOCIDOS.items() if a < ANIO})
+    del portal.codigos[1151]
+    assert _ejecutar(tmp_path, "--sin-sondeo") == 1
+    assert not any(c > 979 for _, c in portal.llamadas)           # con --sin-sondeo, ni aunque falte
+    assert f"contratos_menores {ANIO}: no se encuentra el fichero del año en curso" in _log(tmp_path)
+    assert _ejecutar(tmp_path) == 1                                # sondea y tampoco lo encuentra
+    assert portal.pedidas("HEAD", 980) == 1
+    assert sorted(set(_parquet(tmp_path)["_anio_fichero"])) == [str(a) for a in sorted(CONOCIDOS) if a < ANIO]
+
+
 def test_sondeo_anota_otros_ficheros_de_contratacion_una_vez(portal, tmp_path):
     portal.codigos[1152] = (f"contratos_ADER_{ANIO}.csv", b"x;y\r\n1;2\r\n")
-    assert _ejecutar(tmp_path) == 0
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 0
     assert f"cd=1152: contratos_ADER_{ANIO}.csv" in _log(tmp_path)
     assert portal.pedidas("GET", 1152) == 0
     antes = len(_log(tmp_path))
-    assert _ejecutar(tmp_path) == 0
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 0
     assert "contratos_ADER" not in _log(tmp_path)[antes:]
 
 
 def test_mismo_anio_con_dos_codigos_se_descargan_los_dos(portal, tmp_path):
     portal.codigos[1152] = (nombre(ANIO - 1), csv_rioja(ANIO - 1, [f"OTRO;D;T;B1;N;X;{ANIO - 1}/05/05 00:00:00.000;7"]))
-    assert _ejecutar(tmp_path) == 0
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 0
     df = _parquet(tmp_path)
     assert sorted(df.loc[df["_anio_fichero"] == str(ANIO - 1), "_recurso"]) == ["opd-1152", "opd-979"]
     assert f"contratos_menores {ANIO - 1}: publicado con más de un código (979, 1152)" in _log(tmp_path)
@@ -343,7 +376,7 @@ def test_mismo_anio_con_dos_codigos_se_descargan_los_dos(portal, tmp_path):
 
 def test_sondeo_caido_es_un_error_pero_se_descargan_los_conocidos(portal, tmp_path):
     portal.codigos[1152] = 503
-    assert _ejecutar(tmp_path) == 1
+    assert _ejecutar(tmp_path, "--comprobar-todo") == 1
     assert "sondeo de códigos nuevos" in _log(tmp_path)
     assert sorted(set(_parquet(tmp_path)["_anio_fichero"])) == [str(a) for a in sorted(CONOCIDOS)]
 

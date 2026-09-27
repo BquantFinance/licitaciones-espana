@@ -130,15 +130,21 @@ PATRON_CONTRATACION = re.compile(r"contrat|licita|adjudic|menor", re.IGNORECASE)
 CODIGOS_CONOCIDOS = {2018: 367, 2019: 379, 2020: 406, 2021: 866, 2022: 910,
                      2023: 963, 2024: 979, 2025: 1151, 2026: 1175}
 
-# Sondeo de códigos nuevos (sondear_codigos): código a código hasta
-# SONDEO_SEGUIDOS 404 seguidos y después uno de cada SONDEO_PASO hasta
-# SONDEO_ALCANCE por encima del último código existente (los saltos entre un
-# año y otro han llegado a 381 códigos). Unas 120 peticiones HEAD por
-# ejecución si no hay nada nuevo; SONDEO_MAXIMO corta un sondeo desbocado.
-SONDEO_SEGUIDOS = 20
-SONDEO_PASO = 10
+# Sondeo de códigos nuevos (sondear_codigos). Solo se hace si falta algún año
+# hasta el actual (en la práctica, cada enero) o con --comprobar-todo: uno a uno
+# hasta SONDEO_SEGUIDOS códigos seguidos sin nada, y después uno de cada
+# SONDEO_PASO hasta SONDEO_ALCANCE por encima del último código existente. Los
+# saltos entre un año y otro han llegado a 381 códigos y los datos abiertos de
+# cada año ocupan una docena de códigos seguidos, con algún hueco suelto pero
+# siempre con 4 o más seguidos. Unas 350 peticiones HEAD (unos 7 minutos);
+# SONDEO_MAXIMO corta un sondeo desbocado.
+SONDEO_SEGUIDOS = 30
+SONDEO_PASO = 3
 SONDEO_ALCANCE = 1000
 SONDEO_MAXIMO = 3000
+# Desde este mes, que no se encuentre el fichero del año en curso es un error
+# (el portal lo crea el 2 de enero: 2024 y 2025 en datos.gob.es)
+MES_LIMITE_ANIO_NUEVO = 2
 
 # Codificación de 8 bits de los CSV (ver FUENTES): se prueba después de UTF-8
 CODIFICACIONES_8_BITS = ("iso-8859-15",)
@@ -1015,10 +1021,12 @@ def serie_sondeada(existentes):
     return {cd: int(m.group(1)) for cd, nombre in existentes.items() if (m := PATRON_FICHERO.fullmatch(nombre))}
 
 
-def sondear_codigos(raw, resumen):
+def sondear_codigos(raw, resumen, buscar=()):
     """Busca en el servidor de descargas los códigos creados después de los de
     CODIGOS_CONOCIDOS. Devuelve {cd: año} de los ficheros de contratos menores
-    encontrados (en esta ejecución o en las anteriores).
+    encontrados (en esta ejecución o en las anteriores). buscar: años que
+    faltan; el sondeo para en cuanto los encuentra (sin ellos, llega hasta
+    SONDEO_ALCANCE).
 
     Los códigos son correlativos y el portal crea seguidos los datos abiertos
     de cada año, pero entre un año y otro hay saltos de cientos de códigos sin
@@ -1033,52 +1041,55 @@ def sondear_codigos(raw, resumen):
     inicio = max(CODIGOS_CONOCIDOS.values()) + 1
     existentes = {cd: nombre for cd, nombre in leer_sondeo(ruta).items() if cd >= inicio}
     previos = dict(existentes)
-    sondeados = set()
+    existe = {}                          # lo sondeado en esta ejecución: cd -> existe
 
     def probar(cd):
-        """Sondea un código; True si existe (aunque no sea público)."""
-        if len(sondeados) >= SONDEO_MAXIMO:
-            raise ErrorPortal(f"{SONDEO_MAXIMO} códigos sondeados sin llegar al final")
-        sondeados.add(cd)
-        codigo, nombre = cabecera_fichero(url_codigo(cd))
-        time.sleep(PAUSA)
-        if codigo in (404, 410):
-            return False
-        if codigo in (401, 403):
-            existentes[cd] = f"HTTP {codigo}"
-        elif 200 <= codigo < 300:
-            existentes[cd] = nombre or ""
-        else:
-            raise ErrorPortal(f"código {cd}: HTTP {codigo}", codigo)
-        return True
+        """Sondea un código (una vez por ejecución); True si existe, aunque no sea público."""
+        if cd not in existe:
+            if len(existe) >= SONDEO_MAXIMO:
+                raise ErrorPortal(f"{SONDEO_MAXIMO} códigos sondeados sin llegar al final")
+            codigo, nombre = cabecera_fichero(url_codigo(cd))
+            time.sleep(PAUSA)
+            if codigo in (404, 410):
+                existentes.pop(cd, None)
+            elif codigo in (401, 403):
+                existentes[cd] = f"HTTP {codigo}"
+            elif 200 <= codigo < 300:
+                existentes[cd] = nombre or ""
+            else:
+                raise ErrorPortal(f"código {cd}: HTTP {codigo}", codigo)
+            existe[cd] = codigo not in (404, 410)
+        return existe[cd]
 
-    def tramo(desde):
-        """Uno a uno desde `desde` hasta SONDEO_SEGUIDOS 404 seguidos; devuelve el último sondeado."""
+    def tramo(desde, paso=1):
+        """Uno a uno desde `desde`, hacia arriba (paso=1) o hacia abajo (paso=-1),
+        hasta SONDEO_SEGUIDOS códigos seguidos sin nada; devuelve el último mirado."""
         cd, seguidos = desde, 0
-        while seguidos < SONDEO_SEGUIDOS:
+        while seguidos < SONDEO_SEGUIDOS and cd >= inicio:
             seguidos = 0 if probar(cd) else seguidos + 1
-            cd += 1
-        return cd - 1
+            cd += paso
+        return cd - paso
 
     def ultimo():
         return max(existentes, default=inicio - 1)
+
+    def completo():
+        return bool(buscar) and set(buscar) <= set(serie_sondeada(existentes).values())
 
     try:
         for cd in sorted(c for c, nombre in previos.items() if nombre.startswith("HTTP ")):
             probar(cd)
         cd = tramo(ultimo() + 1) + SONDEO_PASO
-        while cd <= ultimo() + SONDEO_ALCANCE:
+        while cd <= ultimo() + SONDEO_ALCANCE and not completo():
             if probar(cd):
-                for anterior in range(cd - 1, cd - SONDEO_PASO, -1):
-                    if anterior not in sondeados:
-                        probar(anterior)
+                tramo(cd - 1, -1)        # los datos abiertos del año pueden empezar antes
                 cd = tramo(cd + 1)
             cd += SONDEO_PASO
     except ErrorPortal as e:
         resumen.fallidos.append(f"sondeo de códigos nuevos ({URL_DESCARGA}): {e}; se sigue con los conocidos")
         print(f"   ❌ sondeo: {e}")
     finally:
-        guardar_sondeo(ruta, existentes, len(sondeados))
+        guardar_sondeo(ruta, existentes, len(existe))
 
     serie = serie_sondeada(existentes)
     otros = [f"cd={cd}: {nombre} ({url_codigo(cd)})" for cd, nombre in sorted(existentes.items())
@@ -1088,7 +1099,7 @@ def sondear_codigos(raw, resumen):
                               "revisar):\n      " + "\n      ".join(otros))
     nuevos = sum(1 for cd, nombre in existentes.items() if previos.get(cd) != nombre)
     encontrados = ", ".join(f"{anio} (cd={cd})" for cd, anio in sorted(serie.items())) or "ninguno"
-    print(f"   {len(sondeados)} códigos sondeados, {nuevos} nuevos; contratos menores: {encontrados}")
+    print(f"   {len(existe)} códigos sondeados, {nuevos} nuevos; contratos menores: {encontrados}")
     return serie
 
 
@@ -1177,19 +1188,27 @@ def descargar_codigo(cd, anio, raw, manifiesto, resumen, comprobar_todo=False):
         comprobar_columnas(destino, resumen)
 
 
+def anios_sin_codigo(codigos):
+    """Años desde el primero conocido hasta el actual sin ningún código."""
+    return [anio for anio in range(min(CODIGOS_CONOCIDOS), ahora().year + 1) if anio not in codigos.values()]
+
+
 def descargar_todo(raw, manifiesto, resumen, comprobar_todo=False, sondeo=True):
+    """Códigos de la serie: los conocidos, los que encontraron los sondeos
+    anteriores y los ya descargados (aunque ya no estén en la lista ni en el
+    sondeo: si el portal ya no los sirve quedan como retirados). Se sondean
+    códigos nuevos si falta algún año hasta el actual o con --comprobar-todo."""
     codigos = {cd: anio for anio, cd in CODIGOS_CONOCIDOS.items()}
-    if sondeo:
-        print("\n🔎 Sondeo de códigos nuevos en el servidor de descargas...")
-        encontrados = sondear_codigos(raw, resumen)
-    else:                                 # lo que encontraron los sondeos anteriores
-        encontrados = serie_sondeada(leer_sondeo(Path(raw) / "sondeo_codigos.json"))
-    for cd, anio in encontrados.items():
+    for cd, anio in serie_sondeada(leer_sondeo(Path(raw) / "sondeo_codigos.json")).items():
         codigos.setdefault(cd, anio)
-    # Lo ya descargado, aunque ya no esté en la lista ni en el sondeo: si el
-    # portal ya no lo sirve se marca como retirado
     for anio, cd, _ in archivos_serie(raw):
         codigos.setdefault(cd, anio)
+    faltan = anios_sin_codigo(codigos)
+    if sondeo and (faltan or comprobar_todo):
+        print(f"\n🔎 Sondeo de códigos nuevos en el servidor de descargas"
+              f"{' (sin código: ' + ', '.join(map(str, faltan)) + ')' if faltan else ''}...")
+        for cd, anio in sondear_codigos(raw, resumen, faltan).items():
+            codigos.setdefault(cd, anio)
     anios = {}
     for cd, anio in codigos.items():
         anios.setdefault(anio, []).append(cd)
@@ -1201,8 +1220,12 @@ def descargar_todo(raw, manifiesto, resumen, comprobar_todo=False, sondeo=True):
     print(f"\n📦 {SERIE}: {DESCRIPCION}")
     for cd, anio in sorted(codigos.items(), key=lambda par: (par[1], par[0])):
         descargar_codigo(cd, anio, raw, manifiesto, resumen, comprobar_todo)
-    for anio in range(min(CODIGOS_CONOCIDOS), ahora().year + 1):
-        if anio not in anios:
+    for anio in anios_sin_codigo(codigos):
+        if anio == ahora().year and ahora().month >= MES_LIMITE_ANIO_NUEVO:
+            resumen.fallidos.append(f"{SERIE} {anio}: no se encuentra el fichero del año en curso (ni en "
+                                    "CODIGOS_CONOCIDOS ni en el sondeo); si ya está publicado, añadir su "
+                                    "código a CODIGOS_CONOCIDOS")
+        else:
             resumen.no_publicado(SERIE, anio)
 
 
@@ -1225,7 +1248,8 @@ def main(argv=None):
     parser.add_argument("--solo-descarga", action="store_true", help="no generar el Parquet")
     parser.add_argument("--solo-parquet", action="store_true", help="no descargar; solo generar el Parquet")
     parser.add_argument("--comprobar-todo", action="store_true",
-                        help="volver a pedir también los años antiguos ya descargados")
+                        help="volver a pedir también los años antiguos ya descargados y sondear "
+                             "códigos nuevos aunque no falte ningún año")
     parser.add_argument("--sin-sondeo", action="store_true",
                         help="no buscar códigos nuevos: solo los conocidos, los que encontraron los "
                              "sondeos anteriores y los ya descargados")
