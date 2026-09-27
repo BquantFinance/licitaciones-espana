@@ -2,7 +2,7 @@
 
 Qué publica cada administración, qué descargamos, qué falta y cómo atacarlo. Criterio del proyecto: servir los datos **tal como los publica la administración** (sin eliminar filas de origen, sin perder valores), guardando también los ficheros originales.
 
-Estado a 2026-09. Confianza de cada fuente: **A** = confirmada en página oficial; **M** = confirmada a medias o por fuentes secundarias (código de terceros, catálogos); **B** = inferida. Los portales oficiales no eran accesibles desde el entorno donde se redactó este documento: todo lo marcado M/B, y los scrapers nuevos, hay que verificarlo en vivo.
+Estado a 2026-09. Confianza de cada fuente: **A** = confirmada en página oficial; **M** = confirmada a medias o por fuentes secundarias (código de terceros, catálogos); **B** = inferida. Este documento se redactó sin acceso a los portales oficiales. El 2026-09-27 se verificó en vivo parte de lo pendiente (ver §4.1); lo demás marcado M/B sigue sin verificar.
 
 ## 1. Qué cubre ya PLACSP (`nacional/`)
 
@@ -53,13 +53,38 @@ Antes de raspar pliegos en HTML/PDF, el XML CODICE de cada entrada ATOM trae muc
 
 Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Público de Hacienda (no publican contrato a contrato).
 
-## 4. Pendiente de verificar en vivo
+## 4. Verificación en vivo
 
-- **PLACSP.** Existencia de los ZIP anuales de 2025 y de los mensuales 2025MM. Nº de entradas borradas por ZIP. Hueco de `agregacion` del 17 al 22 de octubre de 2025.
-- **TED.** URL del CSV bulk 2020-2023. Nombres de campo de la API (`checkQuerySyntax`). Modo `ITERATION` para superar los 15.000 anuncios por consulta.
-- **BORME.** API de sumarios (secciones A, B y C). Re-descarga de 2012-09-07/11, 2013-01-02 y 2024-05-09/10. Existencia de 2001-2008.
-- **Andalucía.** Partición por mes de publicación (o `search_after`) para los segmentos del SAS de más de 10K. Nº de documentos BRR.
-- **Catalunya.** Filtro de fechas del portal de menores para segmentar ICS, UPF y UAB. IDs de Socrata sin referencias externas (`ydq4-xy5b`, `jxvs-kzbu`, `w2cu-rmuv`, `wwmk-zys7`, `nuym-4erw`).
-- **Madrid.** Filtros de fecha para menores sin entidad. Categorías CKAN del Ayuntamiento.
-- **Euskadi.** Parámetros de la API (`currentPage` con `orderBy` y filtros de fecha). IDs de poder de REVASCON.
-- **Scrapers nuevos.** Todas sus URLs y parámetros: están escritos y probados con respuestas simuladas, no contra los portales.
+### 4.1 Verificado el 2026-09-27 (sesión con red)
+
+- **PLACSP.** `contrataciondelsectorpublico.gob.es` y `contrataciondelestado.es` sirven los ZIP (sin `Content-Length` ni `Range`; ~0,4-1 MB/s por conexión). Existen los anuales de 2025 y 2026 de los cinco conjuntos (el de 2026 se regenera a diario) y el mensual 202609. El 1403 (consultas) tiene ZIP 2022-2026 con dos ATOM cada uno; el de 2023 repite 345 entradas del de 2022, que salen como `entrada_repetida`. Las entradas CPM reales se parsean bien: 4.063 entradas y 2.262 consultas distintas en 2022-2026, frente a 3.681 filas en v2026.02.
+- **TED.** CSV bulk: `https://data.europa.eu/api/hub/store/data/ted-contract-award-notices-{año}.zip` redirige (301) a `/data-management/store/api/legacy/data/…zip/` y sirve el ZIP de 2006 a 2023 (2020: 88 MB, 2023: 111 MB). 2005 y 2024 dan 404. La API v3 acepta los 63 campos de `API_FIELDS` y los modos `PAGE_NUMBER` e `ITERATION`, que devuelve `iterationNextToken`. En una semana de 2025 no aparece nunca `winner-listed`, `buyer-contracting-entity`, `sme-part`, `subcontracting-value(-cur)`, `business-country` ni `business-identifier`.
+- **BORME.** La API de sumarios responde en JSON y en XML, y `fetch_sumario_links` la parsea bien (secciones S, A, B y C). Solo cubre desde 2009. Días concretos:
+  - 2012-09-07, 2012-09-11 y 2013-01-02: la API y el índice HTML coinciden, así que se pueden volver a descargar.
+  - 2024-05-09 y 2024-05-10: solo tienen secciones S y C tanto en la API como en el índice oficial. No es un fallo de nuestra descarga.
+  - 2001-2008: el índice HTML solo trae PDF de la sección C. La sección A en PDF por provincia empieza en 2009.
+- **Euskadi (API KontratazioA).**
+  - Volumen: `/contracts` tiene 715.569 contratos y `/contracting-notices` 717.076 anuncios.
+  - Paginación: la API ya pagina, también con `?currentPage=N` a secas. `itemsOfPage` admite como máximo 50 (100 da HTTP 400). No hay tope de 10.000 por consulta: los 93.463 contratos de 2025 se paginan hasta la última página.
+  - Filtros de fecha: `award-date.gt/.lt` aceptan AAAA-MM-DD, con `gt` estricto y `lt` inclusivo. El scraper pide `lt=hasta+1`, así que descarga un día de más que se descarta al consolidar. `/contracting-notices` filtra por `lastPublicationDate`.
+  - Hay fechas erróneas en origen, desde `0001-01-03` hasta `2031-03-26`.
+- **Catalunya (Socrata).** Existen `hb6v-jcbf`, `ybgg-dgi6` y `qjue-2pk9` (menores de la Generalitat, 10 columnas). `ydq4-xy5b` y `jxvs-kzbu` dan 404. `w2cu-rmuv`, `wwmk-zys7` y `nuym-4erw` son de presupuestos, no de contratación.
+- **Madrid Ayuntamiento.** `datos.madrid.es` es un CKAN: `package_show` de `300253-0-contratos-actividad-menores` (29 recursos) y de `216876-0-contratos-actividad` (140), con CSV, XLSX, XLS y PDF de estructura. El año va en la descripción del recurso. Las URL antiguas `egob/catalogo/…` dan 404.
+- **Scrapers nuevos.** Responden:
+  - Castilla y León: API Explore v2.1.
+  - Murcia: `contratosOD2024.csv` y `CONTRA_ContratosMenores_2024.csv`, y el CKAN de la Región.
+  - Aragón: CKAN en `/api/3` y `/ckan/api/3`.
+  - Excepciones: el CSV antiguo de licitaciones de CyL devuelve 92 bytes y el listado `transparencia.carm.es/…/SMS/Contratos_menores/` da 403.
+- **Inalcanzables desde la nube de Claude Code.** No se pueden verificar ni regenerar desde allí:
+  - `www.juntadeandalucia.es` (Andalucía) y `descargas.asturias.es` (Asturias): el túnel se corta en origen.
+  - `www.zaragoza.es`: conexión reiniciada.
+  - `datos.gob.es`: 403 de su cortafuegos (Imperva).
+
+### 4.2 Pendiente
+
+- **PLACSP.** Nº de entradas borradas por ZIP y hueco de `agregacion` del 17 al 22 de octubre de 2025. Salen del informe de procesado de la regeneración completa.
+- **Andalucía.** Partición por mes de publicación (o `search_after`) para los segmentos del SAS de más de 10K y nº de documentos BRR. Requiere una máquina que llegue a la Junta.
+- **Catalunya.** Filtro de fechas del portal de menores para segmentar ICS, UPF y UAB.
+- **Madrid Comunidad.** Filtros de fecha para menores sin entidad.
+- **Euskadi.** IDs de poder de REVASCON.
+- **Scrapers nuevos.** Ejecución completa en vivo de Castilla y León, Murcia y Aragón.

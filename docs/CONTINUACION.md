@@ -21,6 +21,23 @@ Rama: `claude/determined-albattani-5ze2p8` · PR: [#23](https://github.com/Bquan
 - README (estado real de cada fuente) y `docs/COBERTURA.md` (plan de plataformas por CCAA).
 - Comprobado: los 519 objetos LFS del repo (6,77 GB) existen en GitHub con el tamaño correcto, y la PR no modifica ningún fichero de datos.
 
+**Sesión del 2026-09-27 (con red a casi todos los portales).**
+- Suite al empezar: 524 passed, 1 skipped (necesita `xlwt`) con pandas 3.0.6 y con 2.2.3.
+- **Verificado en vivo:** ver `docs/COBERTURA.md` §4.1.
+  - Inalcanzables desde la nube de Claude Code: Andalucía (`www.juntadeandalucia.es`), Asturias (`descargas.asturias.es`), `www.zaragoza.es` y `datos.gob.es`.
+- **Publicado de PLACSP.**
+  - Normalizado con `normalizar_placsp.py`: 8.693.891 filas y 4.727.478 licitaciones distintas.
+  - Tiene **35.627 filas con `fecha_updated` nula** (3.401 en `licitaciones_completo_2012_2026`): el código antiguo convertía en NaT los `atom:updated` sin milisegundos. Una semilla por la clave exacta (id, fecha_updated) duplicaría esas entradas: hay que casarlas por contenido.
+  - Usó los ZIP mensuales de 2025 y de 202601, que hoy ya no se piden porque existe el anual.
+- **Recursos de la máquina en la nube.** 4 CPU, 15 GB de RAM y ~30 GB de disco.
+  - Con esta RAM, `nacional/licitaciones.py` no puede procesarlo todo: acumula ~10 KB por entrada y son ~10M de entradas. Hace falta procesado en streaming (en curso).
+  - Parsear cuesta ~0,5 ms por entrada.
+- **No hay forma de crear un release desde la nube.** El conector de GitHub solo lee releases y no hay `gh`. Los datos regenerados allí se pierden con el contenedor: el propietario debe publicarlos o regenerarlos en su máquina.
+- **Bloques en curso en esa sesión.** Sin commitear si no hay un commit posterior que los mencione; workflows con implementación y doble revisión adversarial:
+  - A. PLACSP: procesado en streaming y `--semilla`. Ficheros: `nacional/licitaciones.py`, `normalizar_placsp.py`, `comun/historico.py` (función genérica de semilla) y sus tests.
+  - B. Ayuntamiento de Madrid: nuevo CKAN, capa cruda con `_historico/`, tabla fiel, tabla unificada sin eliminar filas y descarga completa verificada. Ficheros: `comunidad_madrid/ccaa_madrid_ayuntamiento.py` y los `test_ayto_*`.
+  - Investigación de cobertura (petición del propietario): qué contratos menores y qué plataformas faltan por CCAA. Resultado previsto en `docs/COBERTURA.md`.
+
 **A medias (WIP, sin verificar)**, commit `757d5eb` y el commit final de la sesión anterior (ver su mensaje: dice qué quedó en verde):
 - `nacional/`: entradas CPM (el conjunto `consultas` salía vacío), `_borrados`, lectura de todas las versiones de cada ZIP y campos CODICE extra.
 - `Euskadi/`: descarga completa de la API `/contracts`, con importes y adjudicatario de 655K contratos (hoy solo hay metadatos de anuncios).
