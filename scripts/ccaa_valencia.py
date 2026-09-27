@@ -33,6 +33,9 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import guardar_version  # noqa: E402
+
 # Configuración
 BASE_URL = "https://dadesobertes.gva.es"
 API_URL = f"{BASE_URL}/api/3/action/package_show"
@@ -320,13 +323,24 @@ def get_dataset_info(dataset_id):
     return None
 
 
+def descarga_vacia(ruta, muestra=64 * 1024):
+    """True si el archivo no tiene datos: vacío, solo espacios o solo la cabecera."""
+    with open(ruta, "rb") as f:
+        inicio = f.read(muestra + 1)
+    if len(inicio) > muestra:
+        return False
+    return sum(1 for linea in inicio.splitlines() if linea.strip()) <= 1
+
+
 def download_file(url, filepath):
     """Descarga un archivo con manejo de errores.
 
     Se escribe en un temporal '.part' y solo se renombra al nombre final cuando
     la descarga termina bien: una descarga cortada (Ctrl+C, caída de red) no
     puede quedar en disco como si estuviera completa ("Ya existe" en la
-    siguiente ejecución).
+    siguiente ejecución). Si ya había copia y el contenido cambió, la anterior
+    se conserva en _historico/ (guardar_version); si la descarga llega vacía,
+    no se toca.
     """
     filepath = Path(filepath)
     tmp_path = filepath.with_name(filepath.name + '.part')
@@ -338,7 +352,16 @@ def download_file(url, filepath):
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-        os.replace(tmp_path, filepath)
+        # Una descarga vacía (o solo cabecera) es casi siempre un fallo del
+        # portal: no sustituye a la copia que ya se tenía
+        if filepath.exists() and descarga_vacia(tmp_path):
+            return False, "Descarga vacía (se conserva la copia anterior)"
+        # Nunca se machaca la copia anterior: si cambió, pasa a _historico/
+        # (control del sesgo del superviviente, ver comun/historico.py)
+        if guardar_version(filepath, desde=tmp_path) == "sin_cambios":
+            # Mismo contenido: se anota como verificado ahora (mtime) para no
+            # volver a descargarlo en cada ejecución por el last_modified del portal
+            os.utime(filepath)
         size_mb = os.path.getsize(filepath) / (1024 * 1024)
         return True, size_mb
     except requests.exceptions.Timeout:
@@ -426,6 +449,7 @@ def process_dataset(dataset_id, category_dir, usados=None, fallidos=None):
         # Verificar si ya existe. Si el portal lo ha actualizado después (datasets
         # del año en curso, listados diarios...) se vuelve a descargar: antes la
         # primera copia se quedaba para siempre (el contratos 2025 publicado tiene 32 filas)
+        # La copia anterior no se pierde: si el contenido cambió pasa a _historico/
         existia = filepath.exists()
         if existia and not recurso_actualizado(resource, filepath):
             size_mb = os.path.getsize(filepath) / (1024 * 1024)

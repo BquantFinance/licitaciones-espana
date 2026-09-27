@@ -430,7 +430,7 @@ def test_utf8_con_bom(tmp_path):
     csv.write_bytes("﻿id;nombre\n1;Elx\n".encode("utf-8"))
     salida = tmp_path / "bom.parquet"
     assert P.convert_to_parquet(csv, salida)
-    assert list(pd.read_parquet(salida).columns) == ["id", "nombre"]
+    assert list(pd.read_parquet(salida).columns) == ["id", "nombre", *P.COLUMNAS_META]
 
 
 @pytest.mark.parametrize("modo", _modos_texto())
@@ -508,7 +508,7 @@ def test_separador_correcto_aunque_haya_una_linea_mala_al_principio(tmp_path, ca
     salida = tmp_path / "coma.parquet"
     assert P.convert_to_parquet(csv, salida)
     df = pd.read_parquet(salida)
-    assert list(df.columns) == ["id", "nombre", "importe"]
+    assert list(df.columns) == ["id", "nombre", "importe", *P.COLUMNAS_META]
     assert df["id"].tolist() == [1, 3]
     capturado = capsys.readouterr()
     # pandas >= 2.1 emite ParserWarning (se cuenta); pandas 2.0 lo escribe él mismo en stderr
@@ -639,3 +639,119 @@ def test_pipeline_descarga_y_conversion(ckan, monkeypatch, tmp_path):
     assert contratos["OBJETO"].isna().sum() == 1
     assert "nan" not in contratos["OBJETO"].dropna().tolist()
     assert codigos == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Sesgo del superviviente: versiones del CSV (_historico/) y registros acumulados
+# ---------------------------------------------------------------------------
+
+CSV_V1 = b"id;cp;importe\n1;03001;10.5\n2;46001;20\n3;12001;30\n"
+CSV_V2 = b"id;cp;importe\n1;03001;10.5\n3;12001;35\n4;03002;40\n"
+
+
+def _portal_con_contratos(ckan, cuerpo):
+    recurso = _recurso("Contratos 2025", "http://gva/c2025.csv")
+    ckan.paquetes["eco-gvo-contratos-2025"] = [recurso]
+    ckan.cuerpos["http://gva/c2025.csv"] = cuerpo
+    return recurso
+
+
+def test_redescarga_conserva_registro_retirado_y_modificado(ckan, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    carpeta = tmp_path / "valencia_datos" / "contratacion"
+    carpeta.mkdir(parents=True)
+    local = carpeta / "Contratos 2025.csv"
+    recurso = _portal_con_contratos(ckan, CSV_V1)
+    V.process_dataset("eco-gvo-contratos-2025", carpeta)
+    os.utime(local, (1_000_000, 1_000_000))
+
+    # El portal retira el 2, cambia el importe del 3 y añade el 4
+    recurso["last_modified"] = "2026-01-15T10:00:00"
+    ckan.cuerpos["http://gva/c2025.csv"] = CSV_V2
+    assert V.process_dataset("eco-gvo-contratos-2025", carpeta)[0] == 1
+    assert local.read_bytes() == CSV_V2
+    historico = list((carpeta / "_historico").iterdir())
+    assert [p.read_bytes() for p in historico] == [CSV_V1]
+    assert historico[0].name == "Contratos 2025__19700112T134640Z.csv"
+
+    # Mismo contenido otra vez: ninguna versión nueva y no se vuelve a pedir
+    os.utime(local, (1_000_000, 1_000_000))
+    V.process_dataset("eco-gvo-contratos-2025", carpeta)
+    V.process_dataset("eco-gvo-contratos-2025", carpeta)
+    assert len(ckan.descargas()) == 3
+    assert len(list((carpeta / "_historico").iterdir())) == 1
+
+    assert P.main() == 0
+    df = pd.read_parquet(tmp_path / "valencia_parquet" / "contratacion" / "Contratos_2025.parquet")
+    filas = sorted(zip(df["id"], df["cp"], df["importe"], df["_en_ultima_descarga"]))
+    assert filas == [(1, "03001", 10.5, True), (2, "46001", 20.0, False), (3, "12001", 30.0, False),
+                     (3, "12001", 35.0, True), (4, "03002", 40.0, True)]
+    assert df["id"].dtype == "int64" and df["importe"].dtype == "float64"
+    viejo = "1970-01-12T13:46:40Z"
+    uno, dos, cuatro = (df[df["id"] == i].iloc[0] for i in (1, 2, 4))
+    assert uno["_primera_descarga"] == viejo and uno["_ultima_descarga"] > viejo
+    assert dos["_primera_descarga"] == dos["_ultima_descarga"] == viejo
+    assert cuatro["_primera_descarga"] > viejo
+
+
+@pytest.mark.parametrize("cuerpo", [b"", b"  \n", b"id;cp;importe\n", 503,
+                                    [b"id;cp;importe\n1;", requests.exceptions.ChunkedEncodingError("corte")]])
+def test_descarga_vacia_o_fallida_no_pierde_nada(ckan, monkeypatch, tmp_path, cuerpo):
+    monkeypatch.chdir(tmp_path)
+    carpeta = tmp_path / "valencia_datos" / "contratacion"
+    carpeta.mkdir(parents=True)
+    local = carpeta / "Contratos 2025.csv"
+    local.write_bytes(CSV_V1)
+    os.utime(local, (1_000_000, 1_000_000))
+    recurso = _portal_con_contratos(ckan, cuerpo)
+    recurso["last_modified"] = "2026-01-15T10:00:00"
+
+    fallidos = []
+    assert V.process_dataset("eco-gvo-contratos-2025", carpeta, fallidos=fallidos) == (0, 0)
+    assert len(fallidos) == 1 and len(ckan.descargas()) == 1
+    assert local.read_bytes() == CSV_V1 and os.path.getmtime(local) == 1_000_000
+    assert sorted(p.name for p in carpeta.iterdir()) == ["Contratos 2025.csv"]
+
+    assert P.main() == 0
+    df = pd.read_parquet(tmp_path / "valencia_parquet" / "contratacion" / "Contratos_2025.parquet")
+    assert df["id"].tolist() == [1, 2, 3] and df["_en_ultima_descarga"].all()
+
+
+def test_version_vacia_en_el_historico_no_marca_nada_como_retirado(tmp_path):
+    csv = tmp_path / "c.csv"
+    (tmp_path / "_historico").mkdir()
+    (tmp_path / "_historico" / "c__20250101T000000Z.csv").write_bytes(CSV_V1)
+    (tmp_path / "_historico" / "c__20250201T000000Z.csv").write_bytes(b"id;cp;importe\n")
+    (tmp_path / "_historico" / "c__otro__20250101T000000Z.csv").write_bytes(b"id;cp;importe\n9;1;1\n")
+    csv.write_bytes(CSV_V1)
+    assert P.convert_to_parquet(csv, tmp_path / "c.parquet")
+    df = pd.read_parquet(tmp_path / "c.parquet")
+    assert df["id"].tolist() == [1, 2, 3] and df["_en_ultima_descarga"].all()
+    assert set(df["_primera_descarga"]) == {"2025-01-01T00:00:00Z"}
+    assert df["cp"].tolist() == ["03001", "46001", "12001"]
+
+
+def test_una_sola_version_da_la_salida_de_siempre_mas_meta(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    carpeta = tmp_path / "valencia_datos" / "turismo"
+    carpeta.mkdir(parents=True)
+    csv = carpeta / "Hoteles.csv"
+    csv.write_bytes("id;cp;nombre;vacia;importe\n1;03001;l’Alcúdia €;;1.5\n2;46001;;;\n".encode("cp1252"))
+    os.utime(csv, (1_000_000, 1_000_000))
+    parquet = tmp_path / "valencia_parquet" / "turismo" / "Hoteles.parquet"
+    parquet.parent.mkdir(parents=True)
+    pd.DataFrame({"id": [1]}).to_parquet(parquet)  # parquet de antes, sin columnas meta
+
+    assert P.main() == 0  # aunque sea posterior al CSV, se reconstruye con meta
+    tabla = pq.read_table(parquet)
+    assert tabla.column_names == ["id", "cp", "nombre", "vacia", "importe", *P.COLUMNAS_META]
+    tipos = tabla.schema.types
+    assert str(tipos[0]) == "int64" and str(tipos[4]) == "double"
+    assert all(_es_texto(t) for t in tipos[1:4])
+    df = tabla.to_pandas()
+    assert df["cp"].tolist() == ["03001", "46001"]
+    assert df["nombre"].tolist()[0] == "l’Alcúdia €" and pd.isna(df["nombre"].iloc[1])
+    assert df["vacia"].isna().all() and df["importe"].iloc[0] == 1.5
+    assert set(df["_primera_descarga"]) == set(df["_ultima_descarga"]) == {"1970-01-12T13:46:40Z"}
+    assert df["_en_ultima_descarga"].dtype == bool and df["_en_ultima_descarga"].all()
+    assert not (tmp_path / "valencia_datos" / "turismo" / "_historico").exists()

@@ -5,15 +5,39 @@ Ejecutar después de ccaa_valencia.py
 Ejecutar: python ccaa_valencia_parquet.py
 Entrada: valencia_datos/
 Salida: valencia_parquet/
+
+Sesgo del superviviente: ccaa_valencia.py guarda en <categoría>/_historico/
+cada versión anterior de un CSV que el portal ha cambiado. El parquet de cada
+recurso se construye con TODAS las versiones (de la más antigua a la actual)
+mediante comun.historico.acumular: un registro que la administración retira o
+modifica sigue en el parquet con _en_ultima_descarga=False, y cada fila lleva
+_primera_descarga/_ultima_descarga (sello de la versión en _historico/, o el
+mtime del CSV vigente). Con una sola versión la salida es la de siempre más
+esas 3 columnas.
+
+Sin --semilla (a diferencia de otros scrapers): los parquet publicados en
+v2026.02 no pueden servir de primera descarga. Los recursos de GVA no tienen
+una clave estable común (cada dataset tiene columnas distintas, muchos sin
+identificador) y acumular compara filas completas, pero esos parquet los
+generó código incompatible con el actual (ceros a la izquierda perdidos:
+codigo_postal 3001 en vez de '03001'; cp1252 leído como latin-1; vacíos como
+texto 'nan'; recursos con el mismo nombre que se pisaban). Ninguna fila
+casaría: todo el publicado aparecería como "retirado" y duplicado.
 """
 
 import codecs
+import re
 import sys
 import warnings
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
+from datetime import datetime, timezone
 from pathlib import Path
 import os
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import COLUMNAS_META, acumular, versiones  # noqa: E402
 
 # === CONFIGURACIÓN ===
 INPUT_DIR = Path("valencia_datos")
@@ -120,35 +144,108 @@ def restaurar_ceros_iniciales(df: pd.DataFrame, csv_path: Path, encoding: str, s
     return df
 
 
+def _leer(csv_path: Path, encoding: str, sep: str, **kwargs):
+    """read_csv contando las líneas mal formadas (se descartan, pero se avisa:
+    antes se perdían en silencio). Devuelve (df, descartadas)."""
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always", pd.errors.ParserWarning)
+        df = pd.read_csv(csv_path, encoding=encoding, sep=sep, on_bad_lines='warn', **kwargs)
+    descartadas = sum(
+        str(a.message).count("Skipping line")
+        for a in avisos if issubclass(a.category, pd.errors.ParserWarning)
+    )
+    return df, descartadas
+
+
+def leer_csv(csv_path: Path, encoding: str = None, sep: str = None) -> tuple:
+    """Lee un CSV con los tipos que infiere pandas, conservando los ceros a la
+    izquierda y los vacíos como nulos. Devuelve (df, líneas descartadas)."""
+    if encoding is None:
+        encoding, sep = detect_encoding_and_sep(csv_path)
+    df, descartadas = _leer(csv_path, encoding, sep, low_memory=False)
+
+    df = restaurar_ceros_iniciales(df, csv_path, encoding, sep)
+
+    # Convertir columnas object a string para evitar errores, conservando
+    # los vacíos como nulos (astype(str) a secas los convertía en el texto 'nan')
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].where(df[col].isna(), df[col].astype(str))
+    return df, descartadas
+
+
+SELLO = re.compile(r"(\d{8})T(\d{2})(\d{2})(\d{2})Z(_\d+)?")
+
+
+def versiones_csv(csv_path: Path) -> list:
+    """[(ruta, fecha)] de las versiones del CSV, de la más antigua a la vigente.
+    fecha: sello de la versión en _historico/ o mtime del CSV vigente (UTC)."""
+    salida = []
+    for v in versiones(csv_path):
+        if v == csv_path:
+            momento = datetime.fromtimestamp(v.stat().st_mtime, timezone.utc)
+            salida.append((v, momento.strftime("%Y-%m-%dT%H:%M:%SZ")))
+            continue
+        # glob 'X__*' también casaría con las versiones de otro 'X__algo.csv'
+        m = SELLO.fullmatch(v.stem[len(csv_path.stem) + 2:])
+        if m:
+            d, hh, mm, ss = m.group(1), m.group(2), m.group(3), m.group(4)
+            salida.append((v, f"{d[:4]}-{d[4:6]}-{d[6:]}T{hh}:{mm}:{ss}Z"))
+    return salida
+
+
+def construir_registros(csv_path: Path, tmp_csv: Path) -> tuple:
+    """Registros de todas las versiones del CSV acumulados (comun.historico).
+    Devuelve (df con COLUMNAS_META, líneas descartadas, nº de versiones)."""
+    vers = versiones_csv(csv_path)
+    if len(vers) == 1:
+        # Una sola versión: exactamente la lectura de siempre + columnas meta
+        df, descartadas = leer_csv(csv_path)
+        return acumular(None, df, vers[0][1], permitir_vacio=True), descartadas, 1
+
+    # Varias versiones: se comparan como texto, tal como las sirvió el portal
+    # (leídas con tipos, un 1 en una versión y 1.0 en otra con nulos no casarían)
+    acumulado, descartadas = None, 0
+    for ruta, fecha in vers:
+        encoding, sep = detect_encoding_and_sep(ruta)
+        texto, n = _leer(ruta, encoding, sep, dtype=str)
+        descartadas += n
+        if len(texto) == 0 and acumulado is not None:
+            print(f"     ⚠️ Versión vacía ignorada (no se marca nada como retirado): {ruta.name}")
+            continue
+        # ámbito: todo el recurso (cada parquet es un único recurso)
+        acumulado = acumular(acumulado, texto, fecha, permitir_vacio=acumulado is None)
+
+    # Tipos: se vuelve a leer el texto acumulado con la misma lectura que un
+    # CSV suelto (misma inferencia de tipos y de ceros a la izquierda)
+    datos = acumulado.drop(columns=list(COLUMNAS_META))
+    try:
+        datos.to_csv(tmp_csv, sep=';', index=False, encoding='utf-8')
+        df, _ = leer_csv(tmp_csv, 'utf-8', ';')
+    finally:
+        if tmp_csv.exists():
+            tmp_csv.unlink()
+    if list(df.columns) != list(datos.columns) or len(df) != len(datos):
+        print("     ⚠️ No se pudieron inferir los tipos: se guarda como texto")
+        df = datos
+    for c in COLUMNAS_META:
+        df[c] = acumulado[c].to_numpy()
+    return df, descartadas, len(vers)
+
+
+def tiene_meta(parquet_path: Path) -> bool:
+    try:
+        return set(COLUMNAS_META) <= set(pq.read_schema(parquet_path).names)
+    except Exception:
+        return False
+
+
 def convert_to_parquet(csv_path: Path, parquet_path: Path) -> bool:
-    """Convierte un CSV a Parquet."""
+    """Convierte un CSV (todas sus versiones) a Parquet."""
     tmp_path = parquet_path.with_name(parquet_path.name + '.tmp')
     try:
-        encoding, sep = detect_encoding_and_sep(csv_path)
-
-        # Leer CSV (las líneas mal formadas se descartan, pero se cuentan y se
-        # avisa: antes se perdían en silencio)
-        with warnings.catch_warnings(record=True) as avisos:
-            warnings.simplefilter("always", pd.errors.ParserWarning)
-            df = pd.read_csv(
-                csv_path,
-                encoding=encoding,
-                sep=sep,
-                low_memory=False,
-                on_bad_lines='warn'
-            )
-        descartadas = sum(
-            str(a.message).count("Skipping line")
-            for a in avisos if issubclass(a.category, pd.errors.ParserWarning)
-        )
-
-        df = restaurar_ceros_iniciales(df, csv_path, encoding, sep)
-
-        # Convertir columnas object a string para evitar errores, conservando
-        # los vacíos como nulos (astype(str) a secas los convertía en el texto 'nan')
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].where(df[col].isna(), df[col].astype(str))
+        df, descartadas, n_versiones = construir_registros(
+            csv_path, parquet_path.with_name(parquet_path.name + '.csv.tmp'))
 
         # Columnas totalmente vacías: pandas las infiere como float64. Se guardan
         # como texto para que el esquema coincida con los demás archivos de la
@@ -156,7 +253,7 @@ def convert_to_parquet(csv_path: Path, parquet_path: Path) -> bool:
         # double y string en la misma columna).
         schema = pa.Schema.from_pandas(df, preserve_index=False)
         for i, col in enumerate(df.columns):
-            if df[col].isna().all():
+            if col not in COLUMNAS_META and df[col].isna().all():
                 schema = schema.set(i, pa.field(schema.field(i).name, pa.string()))
 
         # Guardar como Parquet en un temporal y renombrar al final: si la
@@ -174,6 +271,9 @@ def convert_to_parquet(csv_path: Path, parquet_path: Path) -> bool:
         print(f"     {len(df):,} registros | {csv_size:.1f} MB → {parquet_size:.1f} MB ({reduction:.0f}% reducción)")
         if descartadas:
             print(f"     ⚠️ {descartadas:,} líneas mal formadas descartadas")
+        retirados = int((~df['_en_ultima_descarga'].astype(bool)).sum())
+        if n_versiones > 1:
+            print(f"     📜 {n_versiones} versiones del CSV; {retirados:,} registros ya no servidos (conservados)")
 
         return True
 
@@ -228,9 +328,12 @@ def main():
             parquet_name = csv_file.stem.replace(" ", "_") + ".parquet"
             parquet_path = output_category / parquet_name
             
-            # Solo se salta si el parquet es posterior al CSV: si la descarga
-            # actualizó el CSV, se vuelve a convertir
-            if parquet_path.exists() and parquet_path.stat().st_mtime >= csv_file.stat().st_mtime:
+            # Solo se salta si el parquet es posterior a todas las versiones del
+            # CSV (si la descarga lo actualizó, se vuelve a construir) y ya
+            # lleva las columnas del histórico
+            reciente = max(v.stat().st_mtime for v, _ in versiones_csv(csv_file))
+            if (parquet_path.exists() and parquet_path.stat().st_mtime >= reciente
+                    and tiene_meta(parquet_path)):
                 print(f"  ⏭️ Ya existe: {parquet_name}")
                 total_parquet += 1
                 continue
