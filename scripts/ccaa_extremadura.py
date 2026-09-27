@@ -213,6 +213,10 @@ SERIES = {
                                        "resoluciones"),
     "registro_contratos_otros": ("otros",),
 }
+# Series en las que se marca (_repetido_de) el contrato que ya estaba en un
+# listado anterior, y columnas con su número de registro (según el esquema)
+SERIES_CON_REPETIDOS = ("registro_contratos_menores", "registro_contratos_mayores")
+COLUMNAS_NUMERO = ("Número de registro de contrato", "Nº Contrato")
 EXTENSIONES_TABLA = (".xlsx", ".xls", ".csv")
 EXTENSIONES_IMAGEN = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp")
 
@@ -245,7 +249,8 @@ ESTADOS_OK = ("nuevo", "actualizado", "sin_cambios")
 # registro servido desde otra URL u otra hoja sigue siendo el mismo.
 METADATOS_ORIGEN = ("_fuente", "_pagina", "_dataset", "_tipo", "_nombre_publicado", "_anio", "_trimestre",
                     "_archivo_origen", "_hoja", "_fecha_descarga")
-ORDEN_METADATOS = METADATOS_ORIGEN + ("_primera_descarga", "_ultima_descarga", "_en_ultima_descarga")
+ORDEN_METADATOS = METADATOS_ORIGEN + ("_repetido_de", "_primera_descarga", "_ultima_descarga",
+                                      "_en_ultima_descarga")
 
 
 def ahora():
@@ -966,13 +971,15 @@ def acumular_fichero(actual, rel, anterior, metadatos, manifiesto, resumen):
     return anterior
 
 
-def construir_parquet(destino, ficheros, raw, manifiesto, resumen):
+def construir_parquet(destino, ficheros, raw, manifiesto, resumen, derivar=None):
     """Genera `destino` con los registros acumulados de `ficheros`
     (lista de (ruta_actual, rel, metadatos)) partiendo del Parquet anterior.
 
     Las filas de ficheros que ya no se procesan (retirados, otro formato...) se
     conservan: si el fichero sigue en raw/ se vuelve a procesar con sus
-    versiones; si no, se copian tal cual del Parquet anterior.
+    versiones; si no, se copian tal cual del Parquet anterior. derivar(df) ->
+    df añade columnas calculadas sobre la tabla entera antes de escribirla
+    (no cuentan al comparar versiones: los ficheros no las traen).
     """
     destino = Path(destino)
     try:
@@ -1002,12 +1009,13 @@ def construir_parquet(destino, ficheros, raw, manifiesto, resumen):
     if not partes:
         return None
     df = pd.concat(partes, ignore_index=True, sort=False)
+    if derivar is not None:
+        df = derivar(df)
     estado = escribir_parquet(df, destino)
     retiradas = int((~df["_en_ultima_descarga"].astype(bool)).sum())
     resumen.parquets.append((destino.name, len(df), len(df.columns), retiradas))
     print(f"  💾 {destino.name}: {len(df):,} filas ({estado})")
     return df
-
 
 
 # ============================================================================
@@ -1565,15 +1573,44 @@ def metadatos_fichero(serie, ruta, rel, entrada):
             "_anio": None if anio is None else str(anio), "_trimestre": trimestre, "_archivo_origen": rel}
 
 
+def marcar_repetidos(df):
+    """_repetido_de: si el número de registro del contrato (sin los espacios de
+    alrededor) ya estaba en un listado anterior, el _archivo_origen del primero;
+    si no, nulo. No se quita ninguna fila. Solo número idéntico: la numeración
+    CM005815/23 y la CM0000005815/2023 son de contratos distintos."""
+    df = df.copy()
+    numero = pd.Series([None] * len(df), index=df.index, dtype=object)
+    for columna in COLUMNAS_NUMERO:
+        if columna in df.columns:
+            numero = numero.where(numero.notna(), df[columna])
+    numero = numero.map(lambda v: (v.strip() or None) if isinstance(v, str) else None)
+
+    def orden(fichero):
+        anio = fichero._anio if isinstance(fichero._anio, str) and fichero._anio.isdigit() else "0"
+        return int(anio), fichero._trimestre if isinstance(fichero._trimestre, str) else "", fichero._archivo_origen
+
+    ficheros = df[["_archivo_origen", "_anio", "_trimestre"]].drop_duplicates("_archivo_origen")
+    posicion = {f._archivo_origen: i for i, f in enumerate(sorted(ficheros.itertuples(index=False), key=orden))}
+    tabla = pd.DataFrame({"numero": numero, "posicion": df["_archivo_origen"].map(posicion),
+                          "fichero": df["_archivo_origen"]}).dropna(subset=["numero"])
+    primero = tabla.sort_values("posicion", kind="stable").drop_duplicates("numero").set_index("numero")["fichero"]
+    de = numero.map(primero).astype(object)
+    df["_repetido_de"] = de.where(de.notna() & (de != df["_archivo_origen"]), None)
+    return df
+
+
 def informe_trimestres(df, resumen):
-    """Filas de menores por año y trimestre (y cuántas ya no se publican)."""
+    """Filas de menores por año y trimestre (cuántas ya no se publican y cuántas
+    repiten un contrato de un listado anterior)."""
     claves = df[["_anio", "_trimestre"]].astype(object).where(df[["_anio", "_trimestre"]].notna(), "?")
     vigentes = df["_en_ultima_descarga"].astype(bool)
+    repetidas = df["_repetido_de"].notna() if "_repetido_de" in df.columns else pd.Series(False, index=df.index)
     lineas = []
     for (anio, trimestre), filas in claves.groupby(["_anio", "_trimestre"], sort=True).groups.items():
-        retiradas = int((~vigentes.loc[filas]).sum())
-        lineas.append(f"{anio} {trimestre}: {len(filas):,} filas"
-                      + (f" ({retiradas:,} ya no publicadas)" if retiradas else ""))
+        retiradas, repetidos = int((~vigentes.loc[filas]).sum()), int(repetidas.loc[filas].sum())
+        notas = [f"{retiradas:,} ya no publicadas"] if retiradas else []
+        notas += [f"{repetidos:,} ya estaban en un listado anterior (_repetido_de)"] if repetidos else []
+        lineas.append(f"{anio} {trimestre}: {len(filas):,} filas" + (f" ({'; '.join(notas)})" if notas else ""))
     resumen.informes.append(("CONTRATOS MENORES POR TRIMESTRE", lineas))
 
 
@@ -1584,7 +1621,8 @@ def generar_parquets(salida, raw, manifiesto, resumen):
                     for ruta, rel, entrada in archivos_serie(raw, manifiesto, tipos)]
         destino = Path(salida) / f"{serie}.parquet"
         if ficheros or destino.exists():
-            df = construir_parquet(destino, ficheros, raw, manifiesto, resumen)
+            derivar = marcar_repetidos if serie in SERIES_CON_REPETIDOS else None
+            df = construir_parquet(destino, ficheros, raw, manifiesto, resumen, derivar=derivar)
             if df is not None and serie == "registro_contratos_menores":
                 informe_trimestres(df, resumen)
 

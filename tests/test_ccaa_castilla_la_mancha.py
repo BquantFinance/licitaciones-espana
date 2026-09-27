@@ -64,16 +64,23 @@ def _xlsx(hojas):
 
 
 def _zip(miembros, utf8=True):
-    datos = io.BytesIO()
+    """ZIP en memoria. utf8=False: como uno hecho en Windows, con los nombres en
+    cp850 y sin la marca UTF-8 (zipfile siempre escribe UTF-8: se escribe un
+    nombre ASCII del mismo largo y después se cambian sus bytes)."""
+    datos, cambios = io.BytesIO(), {}
     with zipfile.ZipFile(datos, "w", zipfile.ZIP_DEFLATED) as archivo:
         for nombre, contenido in miembros.items():
-            info = zipfile.ZipInfo(nombre, date_time=(2024, 5, 20, 7, 19, 28))
             if not utf8:
-                # Como un ZIP hecho en Windows: nombre en cp850 y sin la marca UTF-8
-                info.filename = nombre.encode("cp850").decode("cp437")
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archivo.writestr(info, contenido)
-    return datos.getvalue()
+                crudo = nombre.encode("cp850")
+                provisional = bytes(b if b < 0x80 else 0x23 for b in crudo)
+                cambios[provisional] = crudo
+                nombre = provisional.decode("ascii")
+            archivo.writestr(zipfile.ZipInfo(nombre, date_time=(2024, 5, 20, 7, 19, 28)), contenido,
+                             zipfile.ZIP_DEFLATED)
+    resultado = datos.getvalue()
+    for provisional, crudo in sorted(cambios.items(), key=lambda c: -len(c[0])):
+        resultado = resultado.replace(provisional, crudo)
+    return resultado
 
 
 def _rar4(nombre, contenido):
