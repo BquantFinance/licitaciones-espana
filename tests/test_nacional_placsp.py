@@ -775,7 +775,10 @@ class TestDetalleCodice:
         lic.exportar_datos(lic.procesar_zip(z, "licitaciones"), "prueba")
 
         principal = pd.read_parquet(tmp_path / "prueba.parquet")
-        assert list(principal.columns) == COLUMNAS_ANTERIORES + lic.COLUMNAS_NUEVAS
+        # Procedencia (semilla / versiones de ZIP) detrás de las nuevas
+        assert list(principal.columns) == COLUMNAS_ANTERIORES + lic.COLUMNAS_NUEVAS + ["_origen", "_en_ultima_descarga"]
+        assert principal["textos_originales"].isna().all()
+        assert principal["_origen"].isna().all() and principal["_en_ultima_descarga"].all()
         assert principal["fecha_limite_pliegos"].iloc[0] == pd.Timestamp("2025-03-20")
         res = pd.read_parquet(tmp_path / "prueba_resultados.parquet")
         assert list(res.columns) == COLUMNAS_RESULTADOS_ANTERIORES + lic.COLUMNAS_NUEVAS_RESULTADOS
@@ -982,3 +985,684 @@ class TestRevisionAdversarial:
         assert destino.read_bytes() == bueno
         assert not (tmp_path / historico.HISTORICO).exists()
         assert not destino.with_name(destino.name + ".part").exists()
+
+
+# ─────────────────────────────────────────────────────────────
+# Exportación por lotes: la misma salida que con un único DataFrame
+# ─────────────────────────────────────────────────────────────
+
+def _procesar_zip_extraido(zip_path, conjunto_id, borrados, archivo_origen):
+    """Lectura de un ZIP antes de iterar_zip (commit 25769f2): se extraía a disco
+    y se leían sus ATOM en el orden de sorted(rglob('*.atom'))."""
+    import tempfile
+    zip_path = Path(zip_path)
+    zip_historico = zip_path.name if zip_path.name != archivo_origen else None
+    licitaciones, borr = [], []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(temp_dir)
+        for atom_file in sorted(Path(temp_dir).rglob("*.atom")):
+            lics = lic.procesar_archivo_atom(atom_file, borr)
+            for x in lics:
+                x["conjunto"] = conjunto_id
+                x["archivo_origen"] = archivo_origen
+                es_cpm = x.pop("tipo_registro", None) == "CPM" or conjunto_id == "consultas"
+                x["tipo_registro"] = "CPM" if es_cpm else "LICITACION"
+                x["zip_historico"] = zip_historico
+            licitaciones.extend(lics)
+    for b in borr:
+        b.update(conjunto=conjunto_id, archivo_origen=archivo_origen, zip_historico=zip_historico)
+    borrados.extend(borr)
+    return licitaciones
+
+
+def _leer_como_antes(data_dir, conjuntos, ano_inicio, ano_fin):
+    """Todas las entradas en el orden de lectura de antes de la exportación por
+    lotes: conjuntos en orden, ZIP como seleccionar_zips y de cada uno la copia
+    actual y luego las de _historico/ de la más reciente a la más antigua."""
+    licitaciones, borrados = [], []
+    for conjunto in conjuntos:
+        zips = lic.seleccionar_zips(sorted((data_dir / conjunto).glob("*.zip")), ano_inicio, ano_fin)
+        for z in zips:
+            for copia in reversed(historico.versiones(z)):
+                if copia != z and not zipfile.is_zipfile(copia):
+                    continue
+                licitaciones += _procesar_zip_extraido(copia, conjunto, borrados, z.name)
+    return licitaciones, borrados
+
+
+def _exportar_referencia(licitaciones, destino, nombre_base, borrados=None):
+    """exportar_datos antes de la exportación por lotes (commit 25769f2), sin los
+    resúmenes: un único DataFrame con todas las entradas. Es el oráculo con el
+    que se comparan las tablas escritas por lotes."""
+    detalle = lic.separar_detalle(licitaciones)
+    df = pd.DataFrame(licitaciones)
+    for col in lic.FECHAS:
+        if col in df.columns:
+            df[col] = lic.parsear_fechas(df[col])
+    if "fecha_updated" in df.columns:
+        df["fecha_updated"] = lic.parsear_fecha_updated(df["fecha_updated"])
+    df["ano"] = df["fecha_publicacion"].dt.year
+    lic.marcar_versiones(df)
+    df = lic.mover_al_final(df, lic.COLUMNAS_NUEVAS)
+    marcas = df[["_n", "fecha_updated", "es_ultima_version", "entrada_repetida"]]
+    tablas = {}
+    for nombre, filas in detalle.items():
+        if not filas:
+            continue
+        tabla = pd.DataFrame(filas).merge(marcas, on="_n", how="left").drop(columns="_n")
+        for col in lic.FECHAS_DETALLE:
+            if col in tabla.columns:
+                tabla[col] = lic.parsear_fechas(tabla[col])
+        if nombre == "resultados":
+            tabla = lic.mover_al_final(tabla, lic.COLUMNAS_NUEVAS_RESULTADOS)
+        tablas[nombre] = tabla
+    tablas = {"principal": df.drop(columns="_n"), **tablas}
+    if borrados:
+        tablas["borrados"] = lic.tabla_borrados(borrados)
+    destino.mkdir(parents=True, exist_ok=True)
+    for nombre, tabla in tablas.items():
+        base = nombre_base if nombre == "principal" else f"{nombre_base}_{nombre}"
+        tabla.to_csv(destino / f"{base}.csv", index=False, encoding="utf-8-sig")
+        tabla.to_parquet(destino / f"{base}.parquet", index=False, compression="snappy")
+    return tablas
+
+
+def _xml(id_, updated=None, estado="PUB", *, ofertas=None, pyme=None, sara=None, publicacion="2024-01-10",
+         limite=None, lotes=0, adj=None, ute=False, pliego=False, modificacion=False, criterios=0, cpm=False):
+    """Entrada sintética con las variantes que cambian el tipo de una columna
+    según el lote (enteros y nulos, booleanos, fechas NaT, columnas vacías...)."""
+    upd = f"<updated>{updated}</updated>" if updated else ""
+    anuncio = (f"""<cac-place-ext:ValidNoticeInfo><cbc-place-ext:NoticeTypeCode>DOC_CN</cbc-place-ext:NoticeTypeCode>
+        <cac-place-ext:AdditionalPublicationStatus><cac-place-ext:AdditionalPublicationDocumentReference>
+        <cbc:IssueDate>{publicacion}</cbc:IssueDate></cac-place-ext:AdditionalPublicationDocumentReference>
+        </cac-place-ext:AdditionalPublicationStatus></cac-place-ext:ValidNoticeInfo>""" if publicacion else "")
+    organo = ("<cac-place-ext:LocatedContractingParty><cac:Party><cac:PartyIdentification>"
+              "<cbc:ID schemeName=\"NIF\">S0000000A</cbc:ID></cac:PartyIdentification>"
+              f"<cac:PartyName><cbc:Name>Órgano {id_[-1]}</cbc:Name></cac:PartyName></cac:Party>"
+              "</cac-place-ext:LocatedContractingParty>")
+    if cpm:
+        return f"""<entry><id>{id_}</id>{upd}<cac-place-ext:PreliminaryMarketConsultationStatus>
+          <cbc:PreliminaryMarketConsultationID>CPM/{id_[-3:]}</cbc:PreliminaryMarketConsultationID>
+          <cbc-place-ext:PreliminaryMarketConsultationStatusCode>{estado}</cbc-place-ext:PreliminaryMarketConsultationStatusCode>
+          <cbc:ConditionTypeCode>A</cbc:ConditionTypeCode><cbc:ConditionsText>Por correo, "urgente", sí</cbc:ConditionsText>
+          <cbc:PlannedDate>2024-03-01</cbc:PlannedDate><cbc:LimitDate>2024-04-01+02:00</cbc:LimitDate>
+          <cbc:ConsultationName>Consulta {id_}</cbc:ConsultationName>{organo}
+          <cac:ProcurementProject><cbc:Name>Objeto CPM</cbc:Name><cbc:TypeCode>1</cbc:TypeCode></cac:ProcurementProject>
+          {anuncio}</cac-place-ext:PreliminaryMarketConsultationStatus></entry>"""
+    partes = []
+    for i in range(1, lotes + 1):
+        crit = "".join(f"<cac:AwardingCriteria><cbc:Description>C{k}</cbc:Description>"
+                       + (f"<cbc:WeightNumeric>{10 * k}</cbc:WeightNumeric>" if k % 2 else "")
+                       + "</cac:AwardingCriteria>" for k in range(1, criterios + 1))
+        partes.append(f"""<cac:ProcurementProjectLot><cbc:ID>{i}</cbc:ID><cac:ProcurementProject>
+          <cbc:Name>Lote {i}</cbc:Name><cac:BudgetAmount><cbc:TaxExclusiveAmount>{100 * i}</cbc:TaxExclusiveAmount>
+          </cac:BudgetAmount></cac:ProcurementProject>
+          <cac:TenderingTerms><cac:AwardingTerms>{crit}</cac:AwardingTerms></cac:TenderingTerms>
+          </cac:ProcurementProjectLot>""")
+    if adj is not None or ofertas is not None or pyme is not None:
+        ganadores = "".join(f"""<cac:WinningParty><cac:PartyIdentification><cbc:ID schemeName="NIF">B0000000{k}</cbc:ID>
+          </cac:PartyIdentification><cac:PartyName><cbc:Name>Empresa {k}, S.L.</cbc:Name></cac:PartyName></cac:WinningParty>"""
+                            for k in range(1, 3 if ute else 2))
+        importe = (f"<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount>{adj}</cbc:TaxExclusiveAmount>"
+                   "</cac:LegalMonetaryTotal>" if adj is not None else "")
+        partes.append(f"""<cac:TenderResult><cbc:ResultCode>8</cbc:ResultCode><cbc:AwardDate>2024-02-01</cbc:AwardDate>
+          {f'<cbc:ReceivedTenderQuantity>{ofertas}</cbc:ReceivedTenderQuantity>' if ofertas is not None else ''}
+          {f'<cbc:SMEAwardedIndicator>{pyme}</cbc:SMEAwardedIndicator>' if pyme is not None else ''}
+          {ganadores}<cac:AwardedTenderedProject><cbc:ProcurementProjectLotID>1</cbc:ProcurementProjectLotID>
+          {importe}</cac:AwardedTenderedProject></cac:TenderResult>""")
+    proceso = ("<cac:TenderingProcess><cbc:ProcedureCode>1</cbc:ProcedureCode>"
+               + (f"<cbc:OverThresholdIndicator>{sara}</cbc:OverThresholdIndicator>" if sara is not None else "")
+               + (f"<cac:TenderSubmissionDeadlinePeriod><cbc:EndDate>{limite}</cbc:EndDate>"
+                  "</cac:TenderSubmissionDeadlinePeriod>" if limite else "")
+               + "</cac:TenderingProcess>")
+    if pliego:
+        partes.append("<cac:LegalDocumentReference><cbc:ID>PCAP.pdf</cbc:ID><cac:Attachment><cac:ExternalReference>"
+                      f"<cbc:URI>https://x/{id_[-3:]}</cbc:URI></cac:ExternalReference></cac:Attachment>"
+                      "</cac:LegalDocumentReference>")
+    if modificacion:
+        partes.append("<cac:ContractModification><cbc:ID>M1</cbc:ID><cbc:ContractID>C1</cbc:ContractID>"
+                      "<cbc:Note>Ampliación\nen dos líneas</cbc:Note></cac:ContractModification>")
+    return f"""<entry><id>{id_}</id><link href="https://x/{id_}"/>{upd}<cac-place-ext:ContractFolderStatus>
+      <cbc:ContractFolderID>EXP/{id_[-3:]}</cbc:ContractFolderID>
+      <cbc-place-ext:ContractFolderStatusCode>{estado}</cbc-place-ext:ContractFolderStatusCode>{organo}
+      <cac:ProcurementProject><cbc:Name>Objeto {id_}</cbc:Name><cbc:TypeCode>2</cbc:TypeCode>
+      <cac:BudgetAmount><cbc:EstimatedOverallContractAmount>1000.5</cbc:EstimatedOverallContractAmount></cac:BudgetAmount>
+      <cac:RequiredCommodityClassification><cbc:ItemClassificationCode>09134100</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification></cac:ProcurementProject>
+      {''.join(partes)}{proceso}{anuncio}</cac-place-ext:ContractFolderStatus></entry>"""
+
+
+def _escenario(data_dir):
+    """ZIP de tres conjuntos con versiones en _historico/, un año con anual y
+    mensual, entradas repetidas entre ZIP, borradas y CPM."""
+    p = "licitacionesPerfilesContratanteCompleto3_"
+    d = data_dir / "licitaciones"
+    anual_2024 = d / f"{p}2024.zip"
+    # Versión antigua del anual 2024: trae L3 (ya retirada) y L1 en su primera versión
+    historico.guardar_version(anual_2024, _zip_contenido({"a.atom": _atom([
+        _xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB", limite="2024-02-30"),
+        _xml("urn:L3", "2024-01-20T10:00:00.250+01:00", "PUB", ofertas=3, pyme="true", sara="false"),
+        _borrado_xml("urn:B1", "2024-03-01T10:00:00.000+01:00"),
+    ])}))
+    _mtime(anual_2024, datetime(2024, 6, 1, 10, tzinfo=timezone.utc))
+    historico.guardar_version(anual_2024, _zip_contenido({
+        "a.atom": _atom([
+            _xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB", limite="2024-02-30"),
+            _xml("urn:L1", "2024-05-01T10:00:00.123456789+02:00", "ADJ", ofertas=5, pyme="false", adj="1234.5",
+                 lotes=2, criterios=3, ute=True, sara="true"),
+            _borrado_xml("urn:B1", "2024-03-01T10:00:00.000+01:00"),
+            _xml("urn:L2", None, "PUB", publicacion=None, pliego=True),
+        ]),
+        "sub/b.atom": _atom([
+            _xml("urn:L4", "2024-07-01T00:00:00Z", "RES", adj="99.99", pyme="true", modificacion=True),
+            _borrado_xml("urn:B2", "2024-08-01T00:00:00Z", motivo="OTRO"),
+        ]),
+    }))
+    _escribir_zip(d / f"{p}2025.zip", {"a.atom": _atom([
+        _xml("urn:L5", "2025-01-02T03:04:05.6+01:00", "PUB", sara="false", ofertas=0)])})
+    _escribir_zip(d / f"{p}202501.zip", {"a.atom": _atom([
+        _xml("urn:L5", "2025-01-02T03:04:05.6+01:00", "PUB", sara="false", ofertas=0),
+        _xml("urn:L6", "2025-01-03T00:00:00+01:00", "PUB", publicacion=None),
+        _borrado_xml("urn:B2", "2024-08-01T00:00:00Z", motivo="OTRO"),
+    ])})
+    _escribir_zip(data_dir / "consultas" / "CPM_SectorPublico_2024.zip", {"cpm.atom": _atom([
+        _xml("urn:C1", "2024-03-01T10:00:00.000+01:00", cpm=True),
+        _texto_fixture("entry_cpm.xml"),
+        _xml("urn:C2", "2024-03-02T10:00:00+01:00", "CERR", cpm=True, publicacion=None),
+    ])})
+    _escribir_zip(data_dir / "encargos" / "EMP_SectorPublico_2024.zip", {"e.atom": _atom([
+        _texto_fixture("entry_detalle.xml"), _texto_fixture("entry_lotes.xml"),
+        _xml("urn:E1", "2024-09-09T09:09:09.999+02:00", "RES", adj="10", ofertas=1)])})
+    return [c for c in lic.CONJUNTOS if c in ("licitaciones", "consultas", "encargos")]   # orden de main()
+
+
+def _tablas(destino, nombre_base):
+    return {("principal" if f.stem == nombre_base else f.stem[len(nombre_base) + 1:]): f
+            for f in destino.glob(f"{nombre_base}*.parquet")}
+
+
+# Columnas de la tabla principal que no escribía la exportación anterior:
+# textos_originales (problema 3) y la procedencia (--semilla), al final; en
+# _borrados, textos_originales (el texto de un @when que no se pudo leer)
+NUEVAS_EXPORTACION = ["textos_originales"] + lic.COLUMNAS_PROCEDENCIA
+NUEVAS_BORRADOS = ["textos_originales"]
+
+
+def _comparar_con_referencia(dir_ref, base_ref, dir_new, base_new):
+    """Mismas tablas, filas, columnas, tipos Arrow, metadatos de pandas y valores
+    (parquet y CSV) que la referencia; la principal además con
+    textos_originales y, al final, _origen y _en_ultima_descarga, y _borrados
+    con textos_originales al final."""
+    ref, nuevas = _tablas(dir_ref, base_ref), _tablas(dir_new, base_new)
+    assert sorted(ref) == sorted(nuevas)
+    for tabla, ruta_ref in ref.items():
+        ruta_new = nuevas[tabla]
+        extra = {"principal": NUEVAS_EXPORTACION, "borrados": NUEVAS_BORRADOS}.get(tabla, [])
+        t_ref, t_new = pq.read_table(ruta_ref), pq.read_table(ruta_new)
+        assert [c for c in t_new.column_names if c not in extra] == t_ref.column_names, tabla
+        if tabla == "principal":
+            assert t_new.column_names[-2:] == lic.COLUMNAS_PROCEDENCIA
+        elif extra:
+            assert t_new.column_names[-len(extra):] == extra, tabla
+        sin_extra = t_new.drop_columns(extra)
+        assert sin_extra.schema.remove_metadata() == t_ref.schema.remove_metadata(), tabla
+        assert sin_extra.equals(t_ref), tabla
+        meta_ref = json.loads(t_ref.schema.metadata[b"pandas"])
+        meta_new = json.loads(t_new.schema.metadata[b"pandas"])
+        meta_new["columns"] = [c for c in meta_new["columns"] if c["name"] not in extra]
+        assert meta_new == meta_ref, tabla
+        pd.testing.assert_frame_equal(pd.read_parquet(ruta_new).drop(columns=extra), pd.read_parquet(ruta_ref))
+        crudo_ref = ruta_ref.with_suffix(".csv").read_bytes()
+        crudo_new = ruta_new.with_suffix(".csv").read_bytes()
+        assert crudo_new.startswith(b"\xef\xbb\xbf") and crudo_new.count(b"\xef\xbb\xbf") == 1
+        cabecera = crudo_new.split(b"\n", 1)[0]
+        assert crudo_new.count(cabecera) == 1, tabla
+        if not extra:
+            assert crudo_new == crudo_ref, tabla
+        else:
+            leer = dict(dtype=str, keep_default_na=False, encoding="utf-8-sig")
+            pd.testing.assert_frame_equal(pd.read_csv(io.BytesIO(crudo_new), **leer).drop(columns=extra),
+                                          pd.read_csv(io.BytesIO(crudo_ref), **leer))
+
+
+class TestExportacionPorLotes:
+    """La exportación por lotes (y en paralelo) escribe exactamente las tablas
+    que escribía un único DataFrame con todas las entradas."""
+
+    @pytest.fixture
+    def entorno(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        monkeypatch.setattr(lic, "OUTPUT_DIR", tmp_path / "salida")
+        monkeypatch.setattr(lic.time, "sleep", lambda s: None)
+        conjuntos = _escenario(tmp_path / "zips")
+        lics, borrados = _leer_como_antes(tmp_path / "zips", conjuntos, 2012, 2026)
+        _exportar_referencia(lics, tmp_path / "ref", "ref", borrados)
+        return tmp_path, conjuntos
+
+    def _por_lotes(self, tmp_path, conjuntos, lote, procesos, nombre):
+        copias = [(c, copia, origen) for c in conjuntos for copia, origen in lic.copias_conjunto(c, 2012, 2026)]
+        destino = tmp_path / nombre
+        with lic.ExportacionPlacsp(nombre, destino, lote=lote) as exportacion:
+            lic.procesar_copias(copias, exportacion, procesos=procesos)
+            exportacion.cerrar()
+        return destino
+
+    @pytest.mark.parametrize("lote", [1, 2, 3, 1000])
+    def test_misma_salida_que_un_unico_dataframe(self, entorno, lote):
+        tmp_path, conjuntos = entorno
+        destino = self._por_lotes(tmp_path, conjuntos, lote, 1, f"lote{lote}")
+        _comparar_con_referencia(tmp_path / "ref", "ref", destino, f"lote{lote}")
+
+    def test_el_escenario_cubre_los_casos(self, entorno):
+        tmp_path, _ = entorno
+        ref = pd.read_parquet(tmp_path / "ref" / "ref.parquet")
+        assert ref["num_ofertas"].isna().any() and ref["num_ofertas"].notna().any()
+        assert set(ref["es_pyme"].map(repr)) >= {"True", "False", "None"}
+        assert set(ref["sara"].map(repr)) >= {"True", "False", "None"}
+        assert ref["ano"].isna().any() and ref["fecha_limite"].isna().any()
+        assert ref["fecha_updated"].isna().any() and (ref["tipo_registro"] == "CPM").any()
+        assert ref["entrada_repetida"].any() and ref["zip_historico"].notna().any()
+        borr = pd.read_parquet(tmp_path / "ref" / "ref_borrados.parquet")
+        assert borr["entrada_repetida"].any()
+        # La fecha imposible del ATOM ('2024-02-30') queda nula y su texto se conserva
+        salida = pd.read_parquet(self._por_lotes(tmp_path, ["licitaciones"], 1, 1, "textos") / "textos.parquet")
+        con_texto = salida.dropna(subset=["textos_originales"])
+        assert set(con_texto["textos_originales"]) == {'{"fecha_limite": "2024-02-30"}'}
+        assert con_texto["fecha_limite"].isna().all()
+        # Con un lote de una entrada cambia el tipo de ano, num_ofertas, sara... según el lote
+        partes = [lic.escribir_parte(tmp_path, f"p{i}", [x]) for i, x in
+                  enumerate(_leer_como_antes(tmp_path / "zips", ["licitaciones"], 2012, 2026)[0])]
+        tipos = {str(p["tablas"]["principal"]["tipos"]["ano"]) for p in partes}
+        assert tipos == {"int32", "double"}
+        assert {str(p["tablas"]["principal"]["tipos"]["num_ofertas"]) for p in partes} == {"int64", "null"}
+
+    def test_en_paralelo_igual_que_en_serie(self, entorno):
+        tmp_path, conjuntos = entorno
+        serie = self._por_lotes(tmp_path, conjuntos, 2, 1, "serie")
+        paralelo = self._por_lotes(tmp_path, conjuntos, 2, 3, "serie2")
+        for f in serie.glob("serie*"):
+            nombre = f.name.replace("serie", "serie2", 1)
+            assert (paralelo / nombre).read_bytes() == f.read_bytes(), f.name
+
+    def test_main_por_lotes_y_en_paralelo(self, entorno, monkeypatch, capsys):
+        tmp_path, _ = entorno
+        monkeypatch.setattr(sys, "argv", ["licitaciones.py", "--solo-procesar", "--anos", "2012-2026",
+                                          "--data-dir", str(tmp_path / "zips"), "--output-dir",
+                                          str(tmp_path / "main"), "--lote", "1", "--procesos", "2"])
+        lic.main()
+        _comparar_con_referencia(tmp_path / "ref", "ref", tmp_path / "main", "licitaciones_completo_2012_2026")
+        assert not list((tmp_path / "main").glob(".*partes*"))
+
+
+# ─────────────────────────────────────────────────────────────
+# --semilla: el release publicado como la instantánea más antigua
+# ─────────────────────────────────────────────────────────────
+
+def _semilla(filas, extra=True):
+    """Parquet con el esquema de licitaciones_espana.parquet (v2026.02):
+    importe_sin_iva = valor estimado, códigos y CPV como float, fechas date32,
+    categorías, enteros y booleanos con nulos de pandas y una columna que el
+    código actual no produce."""
+    from datetime import date
+    base = dict(expediente="EXP/:L1", objeto="Objeto urn:L1", organo_contratante="Órgano 1",
+                nif_organo="S0000000A", tipo_contrato_code=2.0, tipo_contrato="Servicios",
+                procedimiento_code=1.0, procedimiento="Abierto", estado_code="PUB", estado="Publicada",
+                importe_sin_iva=1000.5, importe_con_iva=None, importe_adjudicacion=None,
+                importe_adj_con_iva=None, adjudicatario=None, nif_adjudicatario=None, num_ofertas=None,
+                es_pyme=None, cpv_principal=9134100.0, duracion=12.0, fecha_limite=None,
+                fecha_adjudicacion=None, fecha_publicacion=date(2024, 1, 10), url="https://x/urn:L1",
+                conjunto="licitaciones", archivo_origen="licitacionesPerfilesContratanteCompleto3_202401.zip",
+                ano=2024, tipo_registro="LICITACION")
+    df = pd.DataFrame([{**base, **f} for f in filas])
+    df["fecha_updated"] = pd.to_datetime(df["fecha_updated"], utc=True, format="ISO8601").astype("datetime64[ns, UTC]")
+    for col in ("importe_sin_iva", "importe_con_iva", "importe_adjudicacion", "importe_adj_con_iva", "duracion"):
+        df[col] = df[col].astype("Float64")
+    df["num_ofertas"] = df["num_ofertas"].astype("Int64")
+    df["ano"] = df["ano"].astype("Int64")
+    df["es_pyme"] = df["es_pyme"].astype("boolean")
+    for col in ("tipo_contrato", "estado_code", "estado", "conjunto", "archivo_origen", "tipo_registro"):
+        df[col] = df[col].astype("category")
+    if extra:
+        df["columna_antigua"] = "x"
+    return df
+
+
+class TestSemilla:
+    """--semilla: se añaden solo las filas del publicado cuya clave (id,
+    fecha_updated) no está en la descarga, marcadas; la descarga no cambia."""
+
+    ACTUAL = "2024-05-01T10:00:00.123456789+02:00"   # atom:updated de urn:L1 adjudicada
+
+    @pytest.fixture
+    def entorno(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic, "OUTPUT_DIR", tmp_path / "salida")
+        monkeypatch.setattr(lic.time, "sleep", lambda s: None)
+        d = tmp_path / "zips" / "licitaciones"
+        _escribir_zip(d / "licitacionesPerfilesContratanteCompleto3_2024.zip", {"a.atom": _atom([
+            _xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB"),
+            _xml("urn:L1", self.ACTUAL, "ADJ", adj="1234.5", ofertas=5),
+            _xml("urn:L2", "2024-02-01T00:00:00Z", "PUB"),
+        ])})
+        semilla = _semilla([
+            # 0: misma clave que la 1ª versión de L1 (otro esquema de tipos) → ya está
+            dict(id="urn:L1", fecha_updated="2024-01-15T09:00:00Z"),
+            # 1 y 2: versión posterior de L1 publicada dos veces y ya retirada → se añaden las dos
+            dict(id="urn:L1", fecha_updated="2024-06-01T00:00:00.5Z", estado_code="RES", estado="Resuelta"),
+            dict(id="urn:L1", fecha_updated="2024-06-01T00:00:00.5Z", estado_code="RES", estado="Resuelta"),
+            # 3: id que la PLACSP ya no sirve → se añade
+            dict(id="urn:L9", fecha_updated="2024-03-01T00:00:00Z", expediente="EXP/:L9"),
+            # 4: fecha ilegible y el mismo contenido que la 2ª versión de L1 → ya está
+            dict(id="urn:L1", fecha_updated=None, estado_code="ADJ", estado="Adjudicada",
+                 importe_adjudicacion=1234.5, adjudicatario="Empresa 1, S.L.", nif_adjudicatario="B00000001",
+                 num_ofertas=5, fecha_adjudicacion=__import__("datetime").date(2024, 2, 1)),
+            # 5: fecha ilegible y un contenido que ya no se publica → se añade
+            dict(id="urn:L2", fecha_updated=None, estado_code="ANUL", estado="Anulada", expediente="EXP/:L2",
+                 objeto="Objeto urn:L2", url="https://x/urn:L2"),
+            # 6: fecha ilegible e id retirado → se añade
+            dict(id="urn:L8", fecha_updated=None),
+        ])
+        ruta = tmp_path / "publicado.parquet"
+        pq.write_table(pa.Table.from_pandas(semilla, preserve_index=False), ruta, row_group_size=3)
+        return tmp_path, ruta
+
+    def _exportar(self, tmp_path, nombre, semillas=(), lote=2, **kw):
+        destino = tmp_path / nombre
+        copias = [("licitaciones", c, o) for c, o in
+                  lic.copias_conjunto("licitaciones", 2024, 2024)]
+        with lic.ExportacionPlacsp(nombre, destino, lote=lote) as exportacion:
+            lic.procesar_copias(copias, exportacion)
+            resumen = exportacion.cerrar(semillas, **kw)
+        return pd.read_parquet(destino / f"{nombre}.parquet"), resumen, destino
+
+    def test_anade_solo_lo_que_falta_y_no_toca_la_descarga(self, entorno, monkeypatch):
+        tmp_path, ruta = entorno
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        sin, _, destino_sin = self._exportar(tmp_path, "sin")
+        con, resumen, destino = self._exportar(tmp_path, "con", [ruta])
+        informe = resumen["semillas"][0]
+        assert (informe["leidas"], informe["anadidas"], informe["descartadas_clave"],
+                informe["descartadas_contenido"]) == (7, 5, 1, 1)
+        # Las filas de la descarga, iguales y primero (salvo las marcas de versión);
+        # una columna vacía en la descarga toma el tipo de la semilla (nulo → double)
+        marcas = ["n_versiones", "es_ultima_version", "entrada_repetida"]
+        def valores(df):
+            return df.drop(columns=marcas).astype(object).where(df.drop(columns=marcas).notna(), None)
+        pd.testing.assert_frame_equal(valores(con.iloc[:3][list(sin.columns)]), valores(sin))
+        assert con["_origen"].iloc[:3].isna().all() and con["_en_ultima_descarga"].iloc[:3].all()
+        anadidas = con.iloc[3:].reset_index(drop=True)
+        assert anadidas["id"].tolist() == ["urn:L1", "urn:L1", "urn:L9", "urn:L2", "urn:L8"]
+        assert (anadidas["_origen"] == "release v2026.02").all() and not anadidas["_en_ultima_descarga"].any()
+        # Esquema antiguo normalizado: valor estimado, códigos como texto, CPV con cero, fechas
+        assert anadidas["valor_estimado_contrato"].tolist() == [1000.5] * 5
+        assert anadidas["importe_sin_iva"].isna().all()
+        assert anadidas["tipo_contrato_code"].tolist() == ["2"] * 5
+        assert anadidas["cpv_principal"].tolist() == ["09134100"] * 5
+        assert anadidas["duracion"].tolist() == ["12"] * 5
+        assert anadidas["fecha_publicacion"].tolist() == [pd.Timestamp("2024-01-10")] * 5
+        assert anadidas["estado"].tolist()[:2] == ["Resuelta", "Resuelta"]
+        # Columnas que la semilla no tiene: nulas; las que solo tiene ella: al final
+        assert anadidas["sara"].isna().all() and anadidas["zip_historico"].isna().all()
+        assert list(con.columns) == list(sin.columns) + ["columna_antigua"]
+        assert con["columna_antigua"].iloc[:3].isna().all() and (anadidas["columna_antigua"] == "x").all()
+        # El tipo Arrow de las columnas con valores en la descarga no cambia
+        # (n_lotes sigue siendo entero, con nulos en las filas de la semilla)
+        esquema_sin = pq.read_schema(destino_sin / "sin.parquet")
+        esquema_con = pq.read_schema(destino / "con.parquet")
+        for col in sin.columns:
+            if sin[col].notna().any():
+                assert esquema_con.field(col).type == esquema_sin.field(col).type, col
+        assert esquema_con.field("n_lotes").type == pa.int64()
+        assert anadidas["n_lotes"].isna().all()
+        # Marcas sobre la unión (la semilla se lee después de la descarga)
+        assert con["n_versiones"].tolist() == [3, 3, 2, 3, 3, 1, 2, 1]
+        assert con["es_ultima_version"].tolist() == [False, False, True, True, False, True, False, True]
+        assert con["entrada_repetida"].tolist() == [False] * 4 + [True, False, False, False]
+
+    def test_semilla_dos_veces_y_origen(self, entorno, monkeypatch):
+        tmp_path, ruta = entorno
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        una, _, _ = self._exportar(tmp_path, "una", [ruta], origen_semilla="release v2025.12")
+        dos, resumen, _ = self._exportar(tmp_path, "dos", [ruta, ruta], lote=1)
+        assert [i["anadidas"] for i in resumen["semillas"]] == [5, 0]
+        assert resumen["semillas"][1]["descartadas_clave"] == 4
+        assert resumen["semillas"][1]["descartadas_contenido"] == 3
+        pd.testing.assert_frame_equal(dos.drop(columns="_origen"), una.drop(columns="_origen"))
+        assert set(una["_origen"].dropna()) == {"release v2025.12"}
+
+    def test_semilla_con_el_esquema_de_completo(self, entorno, monkeypatch):
+        # licitaciones_completo_2012_2026.parquet: códigos como texto, fechas timestamp[ns]
+        tmp_path, _ = entorno
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        completo = _semilla([dict(id="urn:L7", fecha_updated="2024-04-01T00:00:00Z")], extra=False)
+        completo["tipo_contrato_code"] = "2.0"
+        completo["fecha_publicacion"] = pd.to_datetime(completo["fecha_publicacion"])
+        completo = completo.astype({c: "object" for c in ("conjunto", "estado", "estado_code")})
+        ruta = tmp_path / "completo.parquet"
+        completo.to_parquet(ruta, index=False)
+        con, resumen, _ = self._exportar(tmp_path, "completo", [ruta])
+        fila = con.iloc[-1]
+        assert fila["id"] == "urn:L7" and fila["tipo_contrato_code"] == "2"
+        assert fila["fecha_publicacion"] == pd.Timestamp("2024-01-10")
+
+    def test_main_con_semilla(self, entorno, monkeypatch, capsys):
+        tmp_path, ruta = entorno
+        monkeypatch.setattr(lic, "DATA_DIR", lic.DATA_DIR)
+        monkeypatch.setattr(sys, "argv", ["licitaciones.py", "--solo-procesar", "--anos", "2024-2024",
+                                          "--conjunto", "licitaciones", "--data-dir", str(tmp_path / "zips"),
+                                          "--output-dir", str(tmp_path / "main"), "--semilla", str(ruta),
+                                          "--origen-semilla", "prueba", "--sin-csv"])
+        lic.main()
+        out = pd.read_parquet(tmp_path / "main" / "licitaciones_completo_2024_2024.parquet")
+        assert (out["_origen"] == "prueba").sum() == 5
+        assert not list((tmp_path / "main").glob("*.csv"))
+        texto = capsys.readouterr().out
+        assert "7 filas leídas → 5 añadidas; descartadas: 1 con la clave presente y 1 con el contenido presente" in texto
+
+
+class TestProcedenciaYEscritura:
+    """_en_ultima_descarga con versiones de _historico/, escritura atómica de
+    las tablas finales, versiones anteriores y partes de ejecuciones muertas."""
+
+    @pytest.fixture
+    def zips(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        monkeypatch.setattr(lic, "OUTPUT_DIR", tmp_path / "salida")
+        monkeypatch.setattr(lic.time, "sleep", lambda s: None)
+        _escenario(tmp_path / "zips")
+        return tmp_path
+
+    def _exportar(self, destino, conjuntos=("licitaciones",), **kw):
+        copias = [(c, copia, o) for c in conjuntos for copia, o in lic.copias_conjunto(c, 2012, 2026)]
+        with lic.ExportacionPlacsp("t", destino, **kw) as exportacion:
+            lic.procesar_copias(copias, exportacion)
+            return exportacion.cerrar()
+
+    def test_en_ultima_descarga_por_entrada(self, zips):
+        self._exportar(zips / "out")
+        df = pd.read_parquet(zips / "out" / "t.parquet")
+        estado = {(i, z is None or pd.isna(z)): e for i, z, e in
+                  df[["id", "zip_historico", "_en_ultima_descarga"]].itertuples(index=False)}
+        # L3 solo está en la versión antigua del ZIP: retirada
+        assert estado[("urn:L3", False)] is False
+        # La 1ª versión de L1 sigue en la copia actual: su copia antigua también cuenta como publicada
+        viejas_l1 = df[(df["id"] == "urn:L1") & df["zip_historico"].notna()]
+        assert viejas_l1["_en_ultima_descarga"].all() and viejas_l1["entrada_repetida"].all()
+        # Todo lo de las copias actuales (también sin fecha: urn:L2), en la última descarga
+        assert df.loc[df["zip_historico"].isna(), "_en_ultima_descarga"].all()
+        assert df["_origen"].isna().all()
+
+    def test_una_ejecucion_interrumpida_no_deja_nada_a_medias(self, zips, monkeypatch):
+        self._exportar(zips / "out")
+        antes = {f.name: f.read_bytes() for f in (zips / "out").iterdir() if f.is_file()}
+        llamadas = []
+        original = lic._EscritorTabla.escribir
+
+        def falla(self, tabla):
+            llamadas.append(1)
+            if len(llamadas) == 3:
+                raise KeyboardInterrupt("corte")
+            return original(self, tabla)
+
+        monkeypatch.setattr(lic._EscritorTabla, "escribir", falla)
+        with pytest.raises(KeyboardInterrupt):
+            self._exportar(zips / "out", lote=1)
+        # Ni tablas truncadas ni partes: la salida anterior sigue intacta
+        assert {f.name: f.read_bytes() for f in (zips / "out").iterdir() if f.is_file()} == antes
+        assert not [d for d in (zips / "out").iterdir() if d.is_dir()]
+
+    def test_partes_de_una_ejecucion_muerta_se_borran(self, zips, capsys):
+        destino = zips / "out"
+        muerta = destino / ".t.partes-abc123"
+        muerta.mkdir(parents=True)
+        (muerta / "000000.principal.parquet").write_bytes(b"x")
+        (muerta / "pid").write_text(f"{__import__('socket').gethostname()} 999999999")
+        viva = destino / ".t.partes-def456"
+        viva.mkdir()
+        (viva / "pid").write_text(f"{__import__('socket').gethostname()} {os.getpid()}")
+        self._exportar(destino)
+        assert not muerta.exists() and viva.exists()
+        salida = capsys.readouterr().out
+        assert "Borradas las partes de una ejecución interrumpida: .t.partes-abc123" in salida
+        assert ".t.partes-def456: partes de otra ejecución" in salida
+
+    def test_la_salida_anterior_pasa_a_historico(self, zips):
+        destino = zips / "out"
+        self._exportar(destino)
+        primera = (destino / "t.parquet").read_bytes()
+        _mtime(destino / "t.parquet", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        # Misma entrada: sin cambios, no se versiona
+        assert self._exportar(destino)["rutas"]["principal"] == destino / "t.parquet"
+        assert not (destino / historico.HISTORICO).exists()
+        # Con otra salida (más conjuntos), la anterior queda en _historico/
+        self._exportar(destino, conjuntos=("licitaciones", "consultas"), csv=False)
+        versiones = historico.versiones(destino / "t.parquet")
+        assert len(versiones) == 2 and versiones[0].read_bytes() == primera
+        # --sin-csv: el CSV de la versión anterior ya no corresponde al parquet y se borra
+        assert not (destino / "t.csv").exists()
+        # Una tabla que la ejecución nueva no tiene (modificaciones) se archiva, no se pierde
+        self._exportar(destino, conjuntos=("consultas",))
+        assert not (destino / "t_modificaciones.parquet").exists()
+        assert len(historico.versiones(destino / "t_modificaciones.parquet")) == 1
+        assert not (destino / "t_modificaciones.csv").exists()
+        # Una ejecución sin ninguna entrada (p.ej. --data-dir equivocado) no toca la salida anterior
+        antes = {f.name: f.read_bytes() for f in destino.rglob("*") if f.is_file()}
+        self._exportar(destino, conjuntos=("menores",))
+        assert {f.name: f.read_bytes() for f in destino.rglob("*") if f.is_file()} == antes
+
+    def test_exportar_datos_con_cualquier_lote(self, zips):
+        lics, borrados = _leer_como_antes(zips / "zips", ["licitaciones", "consultas"], 2012, 2026)
+        uno = lic.exportar_datos(copy_lics(lics), "uno", borrados)
+        lic.OUTPUT_DIR = zips / "salida2"
+        dos = lic.exportar_datos(copy_lics(lics), "uno", borrados, lote=1)
+        pd.testing.assert_frame_equal(uno, dos)
+        for f in (zips / "salida").glob("uno*"):
+            assert (zips / "salida2" / f.name).read_bytes() == f.read_bytes(), f.name
+
+
+def copy_lics(lics):
+    """Copia de las entradas (exportar_datos saca de ellas las listas de detalle)."""
+    import copy
+    return copy.deepcopy(lics)
+
+
+class TestLecturaPorLotes:
+    def test_iterar_zip_por_lotes(self, tmp_path):
+        z = _escribir_zip(tmp_path / "licitacionesPerfilesContratanteCompleto3_2024.zip", {
+            "a.atom": _atom([_xml(f"urn:{i:03d}", T1) for i in range(5)] + [_borrado_xml("urn:B", T1)]),
+            "b.atom": _atom([_xml(f"urn:{i:03d}", T1) for i in range(5, 8)])})
+        informe = lic.nuevo_informe()
+        lotes = list(lic.iterar_zip(z, "licitaciones", informe, lote=2))
+        assert [len(l) for l, _ in lotes] == [2, 2, 2, 2]
+        assert [len(b) for _, b in lotes] == [1, 0, 0, 0]
+        assert [x["id"] for l, _ in lotes for x in l] == [x["id"] for x in lic.procesar_zip(z, "licitaciones")]
+        assert (informe["atom"], informe["entradas"], informe["borrados"], informe["filas"]) == (2, 8, 1, 8)
+
+    def test_orden_de_los_atom_como_al_extraerlos(self, tmp_path):
+        nombres = ["x.atom", "a/b.atom", "a.b/c.atom", "a/a.atom", "A.atom", "otro.txt"]
+        z = tmp_path / "f.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("dir/", "")
+            for n in nombres:
+                zf.writestr(n, "x")
+        with zipfile.ZipFile(z) as zf:
+            leidos = [i.filename for i in lic.miembros_atom(zf)]
+            zf.extractall(tmp_path / "ext")
+        extraidos = [p.relative_to(tmp_path / "ext").as_posix() for p in sorted((tmp_path / "ext").rglob("*.atom"))]
+        assert leidos == extraidos == ["A.atom", "a/a.atom", "a/b.atom", "a.b/c.atom", "x.atom"]
+
+
+class TestTextosOriginales:
+    """Ningún texto publicado pasa a nulo en silencio al convertirlo a número o fecha."""
+
+    def test_importes_y_fechas_que_no_se_pueden_convertir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic, "OUTPUT_DIR", tmp_path)
+        entrada = (_xml("urn:T1", T1, "ADJ", adj="1.234,56", ofertas=3, lotes=1, publicacion="0202-07-03")
+                   .replace("<cbc:AwardDate>2024-02-01</cbc:AwardDate>", "<cbc:AwardDate>24-12-27</cbc:AwardDate>")
+                   .replace("<cbc:EstimatedOverallContractAmount>1000.5", "<cbc:EstimatedOverallContractAmount>1000,5")
+                   .replace("<cbc:TaxExclusiveAmount>100</cbc:TaxExclusiveAmount>",
+                            "<cbc:TaxExclusiveAmount>NaN</cbc:TaxExclusiveAmount>"))
+        z = _escribir_zip(tmp_path / "licitacionesPerfilesContratanteCompleto3_2024.zip", {"a.atom": _atom([entrada])})
+        df = lic.exportar_datos(lic.procesar_zip(z, "licitaciones"), "t")
+        fila = df.iloc[0]
+        assert pd.isna(fila["valor_estimado_contrato"]) and pd.isna(fila["importe_adjudicacion"])
+        assert pd.isna(fila["fecha_publicacion"]) and pd.isna(fila["fecha_adjudicacion"])
+        assert json.loads(fila["textos_originales"]) == {
+            "valor_estimado_contrato": "1000,5",
+            "resultados[1].importe_adjudicacion": "1.234,56",
+            "lotes[1].importe_sin_iva": "NaN",
+            "resultados[1].fecha_adjudicacion": "24-12-27",
+            "fecha_adjudicacion": "24-12-27",
+            "fecha_publicacion": "0202-07-03",
+        }
+        res = pd.read_parquet(tmp_path / "t_resultados.parquet")
+        assert pd.isna(res["fecha_adjudicacion"].iloc[0]) and res["num_ofertas"].iloc[0] == 3
+
+    def test_fechas_fuera_de_rango_nulas_con_las_dos_versiones_de_pandas(self):
+        out = lic.parsear_fechas(pd.Series(["0202-07-03", "5202-11-24", "2024-01-15", "2024-02-30"]))
+        assert out.isna().tolist() == [True, True, False, True]
+
+
+class TestConsultasYEncargosReales:
+    """Entradas reales (tests/fixtures/*_real.xml): campos verificados con los ZIP."""
+
+    def test_consulta_como_en_el_release(self):
+        r = _entry("entry_cpm_real.xml")
+        # Como en v2026.02: expediente = id de la consulta y fecha_limite = LimitDate
+        assert r["expediente"] == r["id_consulta"] == "CPM-1.2023"
+        assert r["fecha_limite"] == r["fecha_limite_respuestas"] == "2023-02-23"
+        assert (r["tipo_condicion"], r["tipo_condicion_code"]) == ("S", "S")
+        assert r["motivo_tipo_condicion"] == "De acuerdo con lo establecido en el documento de consulta"
+        assert r["motivo_seleccion"].startswith("La consulta está dirigida a empresas del sector")
+        assert r["documentos_generales"] == "Documento de información detallada de la consulta"
+        assert r["documentos_generales_url"].endswith("DocumentIdParam=c0f144cc-6b35-44a2-ba20-427dfaaae1e1")
+        assert r["nif_organo"] == "S2829017I" and r["dir3_organo"] == "E05068901"
+        assert r["fecha_planificada"] == "2023-02-09" and r["tipo_registro"] == "CPM"
+        assert lic.TIPOS_CONDICION["A"] == "Tipo A"
+
+    def test_encargo_con_dos_ids_y_documento_de_formalizacion(self):
+        r = _entry("entry_encargo_real.xml")
+        adj = r["_adjudicatarios"][0]
+        assert (adj["nif_adjudicatario"], adj["tipo_id_adjudicatario"]) == ("A79365821", "NIF")
+        assert adj["ids_adjudicatario"] == "NIF:A79365821 | ID_PLATAFORMA:50011850002188"
+        assert r["documentos_generales"] == "Documento de formalización del encargo"
+        assert r["importe_sin_iva"] == r["importe_con_iva"] == 569440.21
+
+
+def test_zip_con_un_atom_corrupto_conserva_el_resto(tmp_path):
+    # Antes se extraía el ZIP entero: un miembro dañado (CRC) hacía perder todo el ZIP
+    z = tmp_path / "licitacionesPerfilesContratanteCompleto3_2024.zip"
+    with zipfile.ZipFile(z, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.atom", _atom([_xml("urn:A1", T1)]))
+        zf.writestr("b.atom", _atom([_xml("urn:B1", T1)]))
+    datos = bytearray(z.read_bytes())
+    i = datos.index(b"Objeto urn:B1")
+    datos[i:i + 6] = b"Objetx"          # mismo tamaño, CRC distinto
+    z.write_bytes(bytes(datos))
+    informes = []
+    lics = lic.procesar_zip(z, "licitaciones", informes=informes)
+    # El CRC se comprueba al acabar de leer el miembro: se conserva lo leído
+    # antes (aquí nada, el ATOM cabe en un solo bloque), los demás ATOM enteros y
+    # el error queda en el informe de procesado
+    assert [x["id"] for x in lics] == ["urn:A1"]
+    assert any("b.atom" in e and "CRC" in e and "lectura interrumpida" in e for e in informes[0]["errores"])
