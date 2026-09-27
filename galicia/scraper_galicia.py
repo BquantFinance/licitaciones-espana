@@ -3,7 +3,7 @@ Scraper COMPLETO – Contratos Públicos de Galicia
 =================================================
 TODO el histórico, TODOS los organismos, TODOS los campos posibles.
 
-    pip install requests pandas pyarrow python-dateutil
+    pip install requests pandas pyarrow python-dateutil beautifulsoup4
     python galicia/scraper_galicia.py
     python galicia/scraper_galicia.py --organismo 48
 """
@@ -13,6 +13,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import numbers
 from pathlib import Path
 import random
 import re
@@ -1054,6 +1055,9 @@ def run_base_scrape(
         "lic_total": int(previous_stats.get("lic_total", 0)),
         "completed_orgs_count": len(completed_orgs),
     }
+    # Checkpoint inicial: fija el tamaño del CSV base antes del primer organismo
+    # para poder recortar también un corte durante su escritura.
+    save_base_progress(output_dir, completed_orgs, stats=stats)
     for idx, (org_id, est_cm, est_lic) in enumerate(pending_orgs, start=1):
         org_records = []
         log(f"{'═'*60}")
@@ -1107,28 +1111,67 @@ def clean_html(val):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", val)).strip()
 
 
+def _datetime_in_ns_range(values):
+    # pandas 3 devuelve fechas fuera del rango de datetime64[ns] (p. ej. erratas
+    # como el año 0201) en vez de NaT, y asignarlas a la serie ns revienta.
+    return values.where(values.between(pd.Timestamp.min, pd.Timestamp.max))
+
+
 def parse_datetime_series(series):
     """Intenta respetar ISO primero y cae a day-first para formatos locales."""
     text = series.astype("string")
     parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
     iso_mask = text.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
 
+    # Formato explícito: sin él pandas infiere el formato del primer valor y
+    # convierte en NaT los que usan otra variante (p. ej. "2026-03-02" junto a
+    # "2026-03-01T10:00:00").
     if iso_mask.any():
         iso_values = text[iso_mask].str.replace(
             r"(Z|[+-]\d{2}:?\d{2})$",
             "",
             regex=True,
         )
-        parsed.loc[iso_mask] = pd.to_datetime(iso_values, errors="coerce")
+        parsed.loc[iso_mask] = _datetime_in_ns_range(
+            pd.to_datetime(iso_values, errors="coerce", format="ISO8601")
+        )
 
     non_iso_mask = ~iso_mask
     if non_iso_mask.any():
-        parsed.loc[non_iso_mask] = pd.to_datetime(
-            text[non_iso_mask],
-            errors="coerce",
-            dayfirst=True,
+        parsed.loc[non_iso_mask] = _datetime_in_ns_range(
+            pd.to_datetime(
+                text[non_iso_mask],
+                errors="coerce",
+                dayfirst=True,
+                format="mixed",
+            )
         )
     return parsed
+
+
+PLAIN_DECIMAL_RE = re.compile(r"-?\d+(?:\.\d{1,2})?")
+
+
+def parse_importe_value(value):
+    """
+    Importe de la API de tabla → float.
+
+    La API devuelve el importe como número JSON (674.78): se respeta tal cual.
+    Antes se le quitaba el "." como si fuera separador de miles y quedaba
+    inflado x10/x100 (674.78 → 67478). El texto se interpreta en formato
+    español ("1.234,56 €") salvo que sea un decimal simple con punto ("674.78").
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, numbers.Number):
+        return float(value)
+    text = str(value).replace("€", "").strip()
+    if not PLAIN_DECIMAL_RE.fullmatch(text):
+        text = text.replace(".", "").replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def to_dataframe(records):
@@ -1137,7 +1180,9 @@ def to_dataframe(records):
 
     df = pd.DataFrame(records)
 
-    for col in df.select_dtypes(include="object").columns:
+    # "string" además de "object": en pandas 3 el texto usa el dtype `str`, que
+    # "object" solo incluye por compatibilidad (deprecado, desaparece en pandas 4).
+    for col in df.select_dtypes(include=["object", "string"]).columns:
         df[col] = df[col].apply(clean_html)
 
     for col in df.columns:
@@ -1146,17 +1191,10 @@ def to_dataframe(records):
 
     for col in df.columns:
         if any(h in col.lower() for h in ("importe", "precio", "valor", "presupuesto")):
-            try:
-                df[col] = (
-                    df[col].astype(str)
-                    .str.replace(".", "", regex=False)
-                    .str.replace(",", ".", regex=False)
-                    .str.replace("€", "", regex=False)
-                    .str.strip()
-                    .pipe(pd.to_numeric, errors="coerce")
-                )
-            except (AttributeError, TypeError, ValueError):
-                pass
+            df[col] = pd.to_numeric(
+                df[col].map(parse_importe_value),
+                errors="coerce",
+            ).astype("float64")
 
     if "id" in df.columns and "_tipo" in df.columns:
         n = len(df)
@@ -1216,6 +1254,103 @@ def save_parquet(df, path, label=""):
     return path
 
 
+# Fechas que se guardan como datetime en Parquet (el README usa
+# df_gal['publicado'].dt.year); en el CSV van como texto ISO.
+PARQUET_DATE_COLUMNS = (
+    "publicado",
+    "modificado",
+    "detail_fecha_difusion",
+    "detail_fecha_formalizacion",
+)
+# Códigos con pinta de número que deben seguir siendo texto (hay NIF/NIPC
+# puramente numéricos de empresas portuguesas, CPs, teléfonos...).
+PARQUET_TEXT_COLUMNS = (
+    "nif",
+    "detail_referencia",
+    "detail_cp",
+    "detail_telefono",
+    "detail_fax",
+)
+
+
+def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSIZE):
+    """
+    CSV (;) → Parquet por chunks con ParquetWriter, sin cargar el CSV entero en
+    memoria (el merge final son ~1.7M filas x 62 columnas).
+
+    1ª pasada: tipo estable por columna mirando TODO el CSV (numérica solo si
+    todos sus valores lo son, como haría un read_csv completo). 2ª pasada:
+    convierte cada chunk a ese esquema y lo escribe.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    csv_path = Path(csv_path)
+    parquet_path = Path(parquet_path)
+
+    def read_chunks():
+        return pd.read_csv(
+            csv_path,
+            sep=";",
+            encoding="utf-8-sig",
+            dtype=str,
+            chunksize=chunksize,
+        )
+
+    columns = None
+    numeric = {}
+    integer = {}
+    total_rows = 0
+    for chunk in read_chunks():
+        if columns is None:
+            columns = list(chunk.columns)
+            for column in columns:
+                if column not in PARQUET_DATE_COLUMNS and column not in PARQUET_TEXT_COLUMNS:
+                    numeric[column] = integer[column] = True
+        total_rows += len(chunk)
+        for column in numeric:
+            if not numeric[column]:
+                continue
+            values = chunk[column]
+            parsed = pd.to_numeric(values, errors="coerce")
+            if (parsed.isna() & values.notna()).any():
+                numeric[column] = integer[column] = False
+            elif parsed.dtype.kind != "i":
+                # Decimales o vacíos: float64, como en un read_csv completo.
+                integer[column] = False
+    if not total_rows:
+        return None
+
+    fields = []
+    for column in columns:
+        if column in PARQUET_DATE_COLUMNS:
+            fields.append(pa.field(column, pa.timestamp("ns")))
+        elif integer.get(column):
+            fields.append(pa.field(column, pa.int64()))
+        elif numeric.get(column):
+            fields.append(pa.field(column, pa.float64()))
+        else:
+            fields.append(pa.field(column, pa.string()))
+    schema = pa.schema(fields)
+
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = parquet_path.with_name(parquet_path.name + ".tmp")
+    with pq.ParquetWriter(tmp_path, schema) as writer:
+        for chunk in read_chunks():
+            for column in columns:
+                if column in PARQUET_DATE_COLUMNS:
+                    chunk[column] = parse_datetime_series(chunk[column])
+                elif numeric.get(column):
+                    chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
+            writer.write_table(pa.Table.from_pandas(chunk, schema=schema, preserve_index=False))
+    tmp_path.replace(parquet_path)
+
+    mb = parquet_path.stat().st_size / 1024 / 1024
+    log(f"{label}Parquet: {parquet_path}")
+    log(f"{label}  {total_rows:,} filas ({mb:.1f} MB)")
+    return parquet_path
+
+
 def save_dataset(records, output_dir, csv_name, parquet_name, label=""):
     """Guarda un dataset CSV + Parquet con nombres configurables."""
     output_dir = Path(output_dir)
@@ -1268,19 +1403,26 @@ def finalize_base_parquet(output_dir, label=""):
         log_warn(f"{label}Base Parquet no generado: falta pyarrow.")
         return None
 
-    df = pd.read_csv(base_csv_path, sep=";", encoding="utf-8-sig", low_memory=False)
-    return save_parquet(df, base_parquet_path, label=label)
+    return csv_to_parquet(base_csv_path, base_parquet_path, label=label)
 
 
 def save_base_progress(output_dir, completed_orgs, stats=None):
     progress_path = Path(output_dir) / BASE_PROGRESS_NAME
+    csv_path = Path(output_dir) / BASE_CSV_NAME
     progress = {
         "saved_at": datetime.now().isoformat(),
         "completed_orgs": sorted(completed_orgs),
+        # Tamaño del CSV base que solo contiene organismos completos: al reanudar
+        # se recorta lo escrito después (organismo cortado o sin checkpoint).
+        "base_csv_bytes": csv_path.stat().st_size if csv_path.exists() else 0,
     }
     if stats:
         progress["stats"] = stats
-    progress_path.write_text(compact_json(progress), encoding="utf-8")
+    # Escritura atómica: un JSON a medio escribir dejaba --resume sin organismos
+    # completados y se volvían a añadir todos al CSV (filas duplicadas).
+    tmp_path = progress_path.with_name(progress_path.name + ".tmp")
+    tmp_path.write_text(compact_json(progress), encoding="utf-8")
+    tmp_path.replace(progress_path)
     return progress_path
 
 
@@ -1290,6 +1432,7 @@ def load_base_resume(output_dir):
     csv_path = output_dir / BASE_CSV_NAME
     completed_orgs = set()
     stats = {}
+    payload = None
 
     if progress_path.exists():
         try:
@@ -1297,7 +1440,29 @@ def load_base_resume(output_dir):
             completed_orgs = set(payload.get("completed_orgs", []))
             stats = payload.get("stats", {})
         except Exception as exc:
+            # Se infiere desde el CSV (abajo) en vez de reanudar sin organismos
+            # completados, que duplicaría todo el CSV base.
+            payload = None
+            completed_orgs = set()
+            stats = {}
             log_warn(f"No se pudo leer el progreso base: {exc}")
+
+    if payload is not None:
+        csv_bytes = payload.get("base_csv_bytes")
+        if csv_bytes is not None and csv_path.exists() and csv_path.stat().st_size > csv_bytes:
+            # Filas escritas tras el último checkpoint: organismo cortado a mitad
+            # (o sin marcar como completado). Se descartan y se vuelve a
+            # descargar, en vez de dejar filas duplicadas o una línea rota.
+            log_warn(
+                "Resume base: descartando "
+                f"{csv_path.stat().st_size - csv_bytes:,} bytes del CSV base "
+                "posteriores al último checkpoint (organismo incompleto)."
+            )
+            if csv_bytes:
+                with csv_path.open("r+b") as fh:
+                    fh.truncate(csv_bytes)
+            else:
+                csv_path.unlink()
     elif csv_path.exists():
         try:
             df = pd.read_csv(
@@ -1394,14 +1559,18 @@ def query_detail_rows(conn, records):
     return rows
 
 
-def iter_base_chunks(base_csv_path, chunksize=BASE_READ_CHUNKSIZE):
+def iter_base_chunks(base_csv_path, chunksize=BASE_READ_CHUNKSIZE, as_text=False):
     base_csv_path = Path(base_csv_path)
+    # as_text: valores tal cual están en el CSV ("" si vacío), sin inferir tipos
+    # por chunk (evita "nan", "3.0" o NIFs numéricos convertidos a float).
+    text_options = {"dtype": str, "keep_default_na": False} if as_text else {}
     yield from pd.read_csv(
         base_csv_path,
         sep=";",
         encoding="utf-8-sig",
         low_memory=False,
         chunksize=chunksize,
+        **text_options,
     )
 
 
@@ -1479,13 +1648,21 @@ def classify_detail_error(message):
     match = re.search(r"HTTP (\d+)", message)
     if match:
         status = int(match.group(1))
-    retryable = status in (403, 429) or (status is not None and status >= 500)
+    # Sin código HTTP = error de red (timeout, conexión cortada...): es
+    # transitorio, así que retryable para que --retryable-only lo rescate.
+    retryable = status is None or status in (403, 429) or status >= 500
     if "Página de detalle inválida" in message:
         retryable = True
     return retryable, status
 
 
-def fetch_detail_batch(batch, detail_delay=DETAIL_DELAY, detail_jitter=DETAIL_JITTER, store_raw=True):
+def fetch_detail_batch(
+    batch,
+    detail_delay=DETAIL_DELAY,
+    detail_jitter=DETAIL_JITTER,
+    store_raw=True,
+    stop_event=None,
+):
     session = get_detail_session()
     results = []
     if not batch:
@@ -1495,6 +1672,10 @@ def fetch_detail_batch(batch, detail_delay=DETAIL_DELAY, detail_jitter=DETAIL_JI
     for index, record in enumerate(batch):
         if index > 0:
             time.sleep(max(0.0, detail_delay + random.uniform(0, detail_jitter)))
+        if stop_event is not None and stop_event.is_set():
+            # Parada ordenada (baneo, Ctrl+C...): no lanzar más peticiones y
+            # devolver lo ya descargado para que se guarde.
+            break
 
         record_type = record["_tipo"]
         record_id = normalize_record_id(record["id"])
@@ -1618,6 +1799,7 @@ def run_detail_enrichment(
     submitted = {}
     processed = done = retryable = failed = 0
     recent_ban_errors = 0
+    stop_event = threading.Event()
 
     def submit_next(pool):
         try:
@@ -1630,47 +1812,60 @@ def run_detail_enrichment(
             detail_delay=detail_delay,
             detail_jitter=detail_jitter,
             store_raw=store_raw,
+            stop_event=stop_event,
         )
         submitted[future] = len(batch)
         return True
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for _ in range(workers * 2):
-            if not submit_next(pool):
-                break
-
-        while submitted:
-            future = next(as_completed(submitted))
-            submitted.pop(future)
-            batch_results = future.result()
-            persist_detail_results(conn, batch_results)
-
-            processed += len(batch_results)
-            done += sum(1 for item in batch_results if item["status"] == "done")
-            retryable += sum(1 for item in batch_results if item["status"] == "retryable")
-            failed += sum(1 for item in batch_results if item["status"] == "failed")
-
-            batch_ban_errors = sum(
-                1
-                for item in batch_results
-                if item["status"] == "retryable" and item["last_http_status"] in (403, 429)
-            )
-            recent_ban_errors = recent_ban_errors + batch_ban_errors if batch_ban_errors else 0
-            if recent_ban_errors >= BAN_ERROR_THRESHOLD:
-                raise ScraperError(
-                    "Posible baneo temporal en detalle HTML "
-                    f"({recent_ban_errors} respuestas 403/429 seguidas). Reintenta más tarde con --resume."
-                )
-
-            if processed % 1000 == 0 or batch_results:
-                log(
-                    "DETALLE: "
-                    f"{processed:,} procesados | done:{done:,} retryable:{retryable:,} failed:{failed:,}"
-                )
-
-            while len(submitted) < workers * 2:
+        try:
+            for _ in range(workers * 2):
                 if not submit_next(pool):
                     break
+
+            while submitted:
+                future = next(as_completed(submitted))
+                submitted.pop(future)
+                batch_results = future.result()
+                persist_detail_results(conn, batch_results)
+
+                processed += len(batch_results)
+                done += sum(1 for item in batch_results if item["status"] == "done")
+                retryable += sum(1 for item in batch_results if item["status"] == "retryable")
+                failed += sum(1 for item in batch_results if item["status"] == "failed")
+
+                batch_ban_errors = sum(
+                    1
+                    for item in batch_results
+                    if item["status"] == "retryable" and item["last_http_status"] in (403, 429)
+                )
+                recent_ban_errors = recent_ban_errors + batch_ban_errors if batch_ban_errors else 0
+                if recent_ban_errors >= BAN_ERROR_THRESHOLD:
+                    raise ScraperError(
+                        "Posible baneo temporal en detalle HTML "
+                        f"({recent_ban_errors} respuestas 403/429 seguidas). Reintenta más tarde con --resume."
+                    )
+
+                if processed % 1000 == 0 or batch_results:
+                    log(
+                        "DETALLE: "
+                        f"{processed:,} procesados | done:{done:,} retryable:{retryable:,} failed:{failed:,}"
+                    )
+
+                while len(submitted) < workers * 2:
+                    if not submit_next(pool):
+                        break
+        except BaseException:
+            # Baneo, Ctrl+C o error: sin esto el pool seguía ejecutando todos los
+            # lotes encolados contra el portal (hasta workers*2 lotes) y luego
+            # descartaba sus resultados. Se cancelan los encolados, los que están
+            # en curso paran tras su petición actual y lo descargado se guarda.
+            stop_event.set()
+            pool.shutdown(wait=True, cancel_futures=True)
+            for pending in submitted:
+                if not pending.cancelled() and pending.exception() is None:
+                    persist_detail_results(conn, pending.result())
+            raise
 
     log(
         "DETALLE COMPLETO: "
@@ -1714,9 +1909,12 @@ def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE):
 
     fieldnames = None
     total_rows = 0
-    with final_csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
+    # Se escribe a un temporal y se renombra al terminar: un merge cortado no
+    # deja un CSV final truncado que parezca completo.
+    tmp_csv_path = final_csv_path.with_name(final_csv_path.name + ".tmp")
+    with tmp_csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = None
-        for chunk in iter_base_chunks(base_csv_path, chunksize=chunksize):
+        for chunk in iter_base_chunks(base_csv_path, chunksize=chunksize, as_text=True):
             records = chunk.to_dict("records")
             detail_map = load_detail_map(conn, records)
             merged_rows = []
@@ -1741,11 +1939,11 @@ def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE):
                 writer.writerows(merged_rows)
             total_rows += len(merged_rows)
             log(f"MERGE: {total_rows:,} filas")
+    tmp_csv_path.replace(final_csv_path)
 
     parquet_path = None
     if HAS_PYARROW:
-        df = pd.read_csv(final_csv_path, sep=";", encoding="utf-8-sig", low_memory=False)
-        parquet_path = save_parquet(df, final_parquet_path, "[FINAL] ")
+        parquet_path = csv_to_parquet(final_csv_path, final_parquet_path, "[FINAL] ", chunksize=chunksize)
     return final_csv_path, parquet_path
 
 
@@ -1922,7 +2120,9 @@ def main(argv=None):
         if args.mode in ("all", "detail"):
             if not base_csv_path.exists():
                 raise ScraperError(f"No existe el base CSV: {base_csv_path}")
-            prepare_detail_outputs(output_dir, resume=args.resume)
+            # --retryable-only trabaja sobre la caché existente: sin --resume la
+            # borraba entera y después no quedaba ningún retryable que procesar.
+            prepare_detail_outputs(output_dir, resume=args.resume or args.retryable_only)
             detail_stats = run_detail_enrichment(
                 base_csv_path=base_csv_path,
                 output_dir=output_dir,
