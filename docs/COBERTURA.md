@@ -132,7 +132,9 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 - Catalunya y País Vasco los canalizan por la PSCP y KontratazioA. En País Vasco, 346 de 465 entes locales no publicaron ningún menor en la API en 2024.
 
 **Para el modelo antifraude:**
-1. Deduplicar los solapes antes de sumar (PLACSP frente a portal en CyL, Murcia desde 2022, Aragón y la UPV/EHU). Clave: NIF del órgano, expediente, adjudicatario, importe y fecha.
+1. Deduplicar los solapes antes de sumar (PLACSP frente a portal en CyL, Murcia desde 2022, Aragón y la UPV/EHU).
+   - **CyL**: por el `idEvl` de su "Enlace de publicación", que es el mismo del `url` de la PLACSP. Lo trae el 96,5 % de los menores de la Junta y, en 2019-2025, entre el 94 % y el 98 % ya están en el 1143 (medido con v2026.02; 2026 casará con la PLACSP regenerada). El portal solo añade un 2-6 %.
+   - **Resto de fuentes**: no llevan enlace ni identificador de la PLACSP. Hay que casar por contenido: NIF del órgano, expediente, adjudicatario, importe y fecha.
 2. Armonizar el NIF, que cada fuente pone en su columna (Asturias, SMS…). Las personas físicas vienen enmascaradas (`***1234**`).
 3. Separar los datasets por factura (SESCAM, relaciones de Navarra) de los que van por contrato.
 4. Plan priorizado en `docs/CONTINUACION.md` §3.6. Inventario completo en §5.
