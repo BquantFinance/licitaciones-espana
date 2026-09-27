@@ -38,7 +38,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(message)s",
     handlers=[
-        logging.FileHandler(DATA_DIR / "scraper.log", encoding="utf-8"),
+        logging.FileHandler(DATA_DIR / "scraper.log", encoding="utf-8", delay=True),
         logging.StreamHandler(),
     ],
 )
@@ -56,6 +56,12 @@ INTEGER_DEFAULTS = {
     "num_lotes": 0,
     "num_anuncios": 0,
 }
+AMOUNT_COLS = [
+    "importe_licitacion",
+    "valor_estimado",
+    "importe_adjudicacion",
+    "importe_adjudicacion_iva",
+]
 
 S = requests.Session()
 S.headers.update(
@@ -389,7 +395,7 @@ def flatten(source):
     medios = source.get("mediosPublicacion") or []
     if isinstance(medios, list):
         row["medios_publicacion"] = ";".join(
-            medio.get("codigo", "") for medio in medios if isinstance(medio, dict)
+            str(medio.get("codigo") or "") for medio in medios if isinstance(medio, dict)
         )
 
     row["num_lotes"] = len(source.get("lotes") or [])
@@ -552,6 +558,16 @@ def scrape_recursive(must, must_not, label, all_records, seen_ids, dim_idx=0, kn
                         dim_idx + 1,
                         known_total=null_count,
                     )
+            else:
+                # Sin este aviso los registros sin valor en esta dimension se perdian en silencio
+                log.warning(
+                    "  %s/null_%s: %s exclusiones, se omite la rama sin valor (%s/%s recuperados)",
+                    label,
+                    dim_name,
+                    len(excluded),
+                    f"{total_new:,}",
+                    f"{total:,}",
+                )
 
         return total_new
 
@@ -616,7 +632,22 @@ def save_parquet(records, filename):
         return None
 
     path = DATA_DIR / filename
-    records_to_dataframe(records).to_parquet(path, index=False, compression="snappy")
+    dataframe = records_to_dataframe(records)
+    # flatten() deja "" en los campos ausentes (p.ej. importe_adjudicacion sin
+    # adjudicaciones) y pyarrow no puede escribir columnas que mezclan float y str
+    for column in dataframe.columns:
+        values = dataframe[column]
+        if column in AMOUNT_COLS and pd.api.types.is_string_dtype(values.dtype):
+            try:
+                dataframe[column] = pd.to_numeric(values.where(values.ne("")))
+                continue
+            except (TypeError, ValueError):
+                pass  # importes no numericos: se guardan como texto
+        if values.dtype == object:
+            dataframe[column] = values.map(
+                lambda value: value if isinstance(value, str) or pd.isna(value) else str(value)
+            )
+    dataframe.to_parquet(path, index=False, compression="snappy")
     log.info("Guardado Parquet %s (%s)", path, f"{len(records):,}")
     return path
 

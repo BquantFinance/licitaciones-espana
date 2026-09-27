@@ -18,8 +18,11 @@ class AsturiasToParquet:
     fuerza tipos compatibles y guarda en Parquet.
     """
     
-    def __init__(self, output_dir="./asturias_data"):
+    def __init__(self, output_dir=None):
         self.base_url = "https://descargas.asturias.es/asturias/opendata/SectorPublico/contratacion"
+        # Por defecto <repo>/ccaa_asturias (ruta documentada en el README), sin depender del cwd
+        if output_dir is None:
+            output_dir = Path(__file__).resolve().parent.parent / "ccaa_asturias"
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -59,6 +62,14 @@ class AsturiasToParquet:
             encoding='latin-1'
         )
         
+        # Una página HTML (error, mantenimiento...) no contiene '§' y se lee como una
+        # sola columna: no es el CSV esperado y no debe mezclarse con los datos
+        if df.empty or len(df.columns) < 2:
+            raise ValueError(
+                f"contenido inesperado ({len(df)} filas x {len(df.columns)} columnas), "
+                "no parece el CSV separado por '§'"
+            )
+
         df.columns = [str(c).strip() for c in df.columns]
         df = self.deduplicate_columns(df)
         df['year'] = year
@@ -75,6 +86,8 @@ class AsturiasToParquet:
             logger.info(f"Processing {year}...")
             
             response = requests.get(url, timeout=180)
+            # Sin esto un 404/500 (página HTML) se parseaba como si fuera el CSV del año
+            response.raise_for_status()
             content_bytes = response.content
             
             logger.info(f"{year} - Downloaded: {len(content_bytes):,} bytes")
@@ -101,14 +114,20 @@ class AsturiasToParquet:
                           'EURO', 'IVA', 'CANTIDAD', 'NUMERO', 'Nº', 'TOTAL', 'BASE']
         
         for col in df.columns:
-            if df[col].dtype == 'object':
+            # pandas 3 lee el texto con dtype "str" (no "object"): con la comparación
+            # '== object' los importes quedaban como texto en el Parquet
+            if pd.api.types.is_string_dtype(df[col].dtype):
                 # Verificar si parece numérica por nombre
                 looks_numeric = any(pat in col.upper() for pat in numeric_patterns)
                 
                 if looks_numeric:
                     try:
+                        # Solo los valores de texto llevan formato español. Los que ya son
+                        # numéricos (años en que read_csv parseó la columna como int/float)
+                        # se conservan: quitar el '.' de 21.0 daba 210 (IVA de 2023 x10)
+                        is_text = df[col].map(lambda x: isinstance(x, str))
                         # Limpiar formato español (comas como decimales, puntos como miles)
-                        cleaned = df[col].astype(str).str.replace('.', '', regex=False)  # Quitar separadores de miles
+                        cleaned = df[col].where(is_text).astype(str).str.replace('.', '', regex=False)  # Quitar separadores de miles
                         cleaned = cleaned.str.replace(',', '.', regex=False)  # Coma decimal a punto
                         cleaned = cleaned.str.replace(' ', '', regex=False)  # Quitar espacios
                         cleaned = cleaned.str.replace('€', '', regex=False)  # Quitar símbolo euro
@@ -116,13 +135,14 @@ class AsturiasToParquet:
                         
                         # Convertir a numérico, forzar errores a NaN
                         numeric = pd.to_numeric(cleaned, errors='coerce')
+                        numeric = numeric.fillna(pd.to_numeric(df[col].where(~is_text), errors='coerce'))
                         
                         # Si más del 50% son numéricos, usar numérico
                         if numeric.notna().sum() / len(df) > 0.5:
                             df[col] = numeric
                             logger.debug(f"  {col}: numeric")
                             continue
-                    except:
+                    except Exception:
                         pass
                 
                 # Si no es numérica o falló, forzar a string
@@ -173,11 +193,19 @@ class AsturiasToParquet:
         return combined
     
     def run(self):
+        failed_years = []
         for year, filename in self.datasets.items():
-            self.process_year(year, filename)
+            if not self.process_year(year, filename):
+                failed_years.append(year)
             time.sleep(0.5)
+        if failed_years:
+            # No sobrescribir el Parquet completo con un dataset al que le faltan años
+            logger.error(f"Años con error: {failed_years}. No se guarda un Parquet parcial.")
+            return None
         return self.save_final_parquet()
 
 if __name__ == "__main__":
     processor = AsturiasToParquet()
     df = processor.run()
+    if df is None:
+        raise SystemExit(1)
