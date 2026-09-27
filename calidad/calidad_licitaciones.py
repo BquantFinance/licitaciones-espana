@@ -17,6 +17,13 @@ Uso:
     -s 200000
 
 Salida: calidad/calidad_licitaciones_resultado.parquet
+
+La entrada se normaliza con nacional.licitaciones.leer_placsp: una fila por
+licitacion (version mas reciente) y semantica actual de importes
+(importe_sin_iva = presupuesto base sin IVA, valor_estimado_contrato = valor
+estimado). Los parquet publicados hasta v2026.02 repetian cada licitacion en
+varias versiones (8,7M filas para 4,7M licitaciones); --sin-deduplicar
+mantiene el comportamiento anterior.
 ============================================================================
 """
 import pandas as pd
@@ -25,6 +32,9 @@ import re
 import argparse
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from nacional.licitaciones import leer_placsp  # noqa: E402
 
 if sys.stdout.encoding != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -79,6 +89,16 @@ def _dt(s):
     return s if pd.api.types.is_datetime64_any_dtype(s) else pd.to_datetime(s, errors="coerce")
 def _num(s):
     return s if pd.api.types.is_numeric_dtype(s) else pd.to_numeric(s, errors="coerce")
+
+def _coalesce_num(df, cols):
+    """Primer importe informado de cada fila entre 'cols' (None si no hay ninguna columna)."""
+    cols = [c for c in cols if c in df.columns]
+    if not cols:
+        return None
+    out = _num(df[cols[0]])
+    for c in cols[1:]:
+        out = out.fillna(_num(df[c]))
+    return out
 
 _NIF_LETRAS = "TRWAGMYFPDXBNJZSQVHLCKE"
 def _nif_letra(n): return _NIF_LETRAS[int(n) % 23]
@@ -160,16 +180,16 @@ def normalizar_nombre_empresa(nombre):
 def calcular_indicadores_base(df):
     r = pd.DataFrame(index=df.index)
 
-    # VAL-01
-    c = "importe_sin_iva" if "importe_sin_iva" in df.columns else "importe_con_iva" if "importe_con_iva" in df.columns else None
-    r["INT-VAL-01"] = _num(df[c]).notna() if c else np.nan
+    # VAL-01 (presupuesto base de licitacion sin/con IVA; si no, valor estimado)
+    lic = _coalesce_num(df, ["importe_sin_iva", "importe_con_iva", "valor_estimado_contrato"])
+    r["INT-VAL-01"] = lic.notna() if lic is not None else np.nan
 
     # VAL-02
     c = "importe_adjudicacion" if "importe_adjudicacion" in df.columns else "importe_adj_con_iva" if "importe_adj_con_iva" in df.columns else None
     r["INT-VAL-02"] = _num(df[c]).notna() if c else np.nan
 
     # VAL-03
-    ic = [c for c in ["importe_sin_iva","importe_con_iva","importe_adjudicacion","importe_adj_con_iva"] if c in df.columns]
+    ic = [c for c in ["importe_sin_iva","importe_con_iva","valor_estimado_contrato","importe_adjudicacion","importe_adj_con_iva"] if c in df.columns]
     if ic:
         imp = df[ic].apply(pd.to_numeric,errors="coerce")
         r["INT-VAL-03"] = (imp>=CONFIG["importe_minimo"]).any(axis=1)|imp.isna().all(axis=1)
@@ -229,13 +249,13 @@ def calcular_indicadores_base(df):
         r["INT-CONS-01"] = ~est.str.contains("adjud|formaliz|resuel",na=False)|(_num(df["num_ofertas"])>=1)
     else: r["INT-CONS-01"] = np.nan
 
-    # CONS-08
-    done=False
+    # CONS-08 (cada fila con el primer par licitacion/adjudicacion que tenga informado)
+    ok = pd.Series(True, index=df.index); usado = pd.Series(False, index=df.index); done=False
     for cl,ca in [("importe_sin_iva","importe_adjudicacion"),("importe_con_iva","importe_adj_con_iva")]:
         if cl in df.columns and ca in df.columns:
-            lic=_num(df[cl]); adj=_num(df[ca]); both=lic.notna()&adj.notna()&(lic>0)
-            r["INT-CONS-08"] = ~both|(adj<=lic*(1+CONFIG["tolerancia_adj_lic"])); done=True; break
-    if not done: r["INT-CONS-08"] = np.nan
+            lic=_num(df[cl]); adj=_num(df[ca]); both=lic.notna()&adj.notna()&(lic>0)&~usado
+            ok = ok.where(~both, adj<=lic*(1+CONFIG["tolerancia_adj_lic"])); usado|=both; done=True
+    r["INT-CONS-08"] = ok if done else np.nan
 
     # FIA-01
     if "num_ofertas" in df.columns:
@@ -255,8 +275,8 @@ def calcular_indicadores_base(df):
     else: r["INT-FIA-04"] = np.nan
 
     # FIA-08
-    c = "importe_sin_iva" if "importe_sin_iva" in df.columns else "importe_con_iva" if "importe_con_iva" in df.columns else None
-    r["INT-FIA-08"] = (_num(df[c]).isna()|(_num(df[c])<=CONFIG["pbl_outlier"])) if c else np.nan
+    pbl = _coalesce_num(df, ["importe_sin_iva", "importe_con_iva"])
+    r["INT-FIA-08"] = (pbl.isna()|(pbl<=CONFIG["pbl_outlier"])) if pbl is not None else np.nan
 
     # FIA-09
     ca = "importe_adjudicacion" if "importe_adjudicacion" in df.columns else "importe_adj_con_iva" if "importe_adj_con_iva" in df.columns else None
@@ -367,7 +387,7 @@ def run(args):
     empresas_borme = cargar_borme(args.borme) if args.borme else None
 
     print(f"\n  Cargando {args.input}...")
-    df = pd.read_parquet(args.input)
+    df = leer_placsp(args.input, deduplicar=not args.sin_deduplicar)
     if args.sample:
         df=df.sample(min(args.sample,len(df)),random_state=42)
         print(f"  Muestra: {len(df):,}")
@@ -423,6 +443,8 @@ def main():
     p.add_argument("-s","--sample",type=int,default=None)
     p.add_argument("--ted",default=None,help="crossval_sara_v2.parquet")
     p.add_argument("--borme",default=None,help="borme_empresas.parquet")
+    p.add_argument("--sin-deduplicar",action="store_true",
+                   help="No reducir a una fila por licitacion (version mas reciente)")
     run(p.parse_args())
 
 if __name__ == "__main__":

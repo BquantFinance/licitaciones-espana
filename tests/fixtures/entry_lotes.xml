@@ -1,0 +1,105 @@
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2">
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/TEST-LOTES-001</id>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=LOT001"/>
+    <title>Test lotes</title>
+    <updated>2025-06-10T09:15:00+02:00</updated>
+    <cac-place-ext:ContractFolderStatus>
+        <cbc:ContractFolderID>TEST/2025/LOTES</cbc:ContractFolderID>
+        <cbc-place-ext:ContractFolderStatusCode>RES</cbc-place-ext:ContractFolderStatusCode>
+        <cac-place-ext:LocatedContractingParty>
+            <cac:Party>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">S2800000A</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>Órgano con lotes</cbc:Name>
+                </cac:PartyName>
+            </cac:Party>
+            <cac-place-ext:ParentLocatedParty>
+                <cac:PartyName>
+                    <cbc:Name>Consejería de Pruebas</cbc:Name>
+                </cac:PartyName>
+            </cac-place-ext:ParentLocatedParty>
+        </cac-place-ext:LocatedContractingParty>
+        <cac:ProcurementProject>
+            <cbc:Name>Concesión del servicio en dos lotes</cbc:Name>
+            <cbc:TypeCode>22</cbc:TypeCode>
+            <cac:BudgetAmount>
+                <cbc:EstimatedOverallContractAmount currencyID="EUR">300000.00</cbc:EstimatedOverallContractAmount>
+                <cbc:TotalAmount currencyID="EUR">121000.00</cbc:TotalAmount>
+                <cbc:TaxExclusiveAmount currencyID="EUR">100000.00</cbc:TaxExclusiveAmount>
+            </cac:BudgetAmount>
+            <cac:RequiredCommodityClassification>
+                <cbc:ItemClassificationCode>09134100</cbc:ItemClassificationCode>
+            </cac:RequiredCommodityClassification>
+        </cac:ProcurementProject>
+        <cac:ProcurementProjectLot>
+            <cbc:ID schemeName="ID_LOTE">1</cbc:ID>
+            <cac:ProcurementProject>
+                <cbc:Name>Lote 1</cbc:Name>
+            </cac:ProcurementProject>
+        </cac:ProcurementProjectLot>
+        <cac:ProcurementProjectLot>
+            <cbc:ID schemeName="ID_LOTE">2</cbc:ID>
+            <cac:ProcurementProject>
+                <cbc:Name>Lote 2</cbc:Name>
+            </cac:ProcurementProject>
+        </cac:ProcurementProjectLot>
+        <cac:TenderResult>
+            <cbc:ResultCode>9</cbc:ResultCode>
+            <cbc:AwardDate>2025-05-20</cbc:AwardDate>
+            <cbc:ReceivedTenderQuantity>1</cbc:ReceivedTenderQuantity>
+            <cbc:SMEAwardedIndicator>true</cbc:SMEAwardedIndicator>
+            <cac:WinningParty>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">B11111111</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>EMPRESA UNO SL</cbc:Name>
+                </cac:PartyName>
+            </cac:WinningParty>
+            <cac:AwardedTenderedProject>
+                <cbc:ProcurementProjectLotID>1</cbc:ProcurementProjectLotID>
+                <cac:LegalMonetaryTotal>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">40000.00</cbc:TaxExclusiveAmount>
+                    <cbc:PayableAmount currencyID="EUR">48400.00</cbc:PayableAmount>
+                </cac:LegalMonetaryTotal>
+            </cac:AwardedTenderedProject>
+        </cac:TenderResult>
+        <cac:TenderResult>
+            <cbc:ResultCode>9</cbc:ResultCode>
+            <cbc:AwardDate>2025-05-21</cbc:AwardDate>
+            <cbc:ReceivedTenderQuantity>3</cbc:ReceivedTenderQuantity>
+            <cbc:SMEAwardedIndicator>false</cbc:SMEAwardedIndicator>
+            <cac:WinningParty>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">A22222222</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>EMPRESA DOS SA</cbc:Name>
+                </cac:PartyName>
+            </cac:WinningParty>
+            <cac:AwardedTenderedProject>
+                <cbc:ProcurementProjectLotID>2</cbc:ProcurementProjectLotID>
+                <cac:LegalMonetaryTotal>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">55000.00</cbc:TaxExclusiveAmount>
+                    <cbc:PayableAmount currencyID="EUR">66550.00</cbc:PayableAmount>
+                </cac:LegalMonetaryTotal>
+            </cac:AwardedTenderedProject>
+        </cac:TenderResult>
+        <cac:TenderingProcess>
+            <cbc:ProcedureCode>3</cbc:ProcedureCode>
+        </cac:TenderingProcess>
+        <cac-place-ext:ValidNoticeInfo>
+            <cac-place-ext:AdditionalPublicationStatus>
+                <cac-place-ext:AdditionalPublicationDocumentReference>
+                    <cbc:IssueDate>2025-03-01</cbc:IssueDate>
+                </cac-place-ext:AdditionalPublicationDocumentReference>
+            </cac-place-ext:AdditionalPublicationStatus>
+        </cac-place-ext:ValidNoticeInfo>
+    </cac-place-ext:ContractFolderStatus>
+</entry>
