@@ -34,6 +34,14 @@ def cons20_por_version(df, path):
     return pd.Series(joined["_ted_validated"].array,index=df.index,dtype="boolean")
 
 
+def limitar_cobertura_ted(df, years):
+    selected=df.loc[df["_es_sara"],["id","fecha_updated","_ted_validated","_ano"]].copy()
+    selected["_ted_validated"]=selected["_ted_validated"].astype("boolean")
+    unknown=~selected["_ano"].isin(years)&~selected["_ted_validated"].fillna(False)
+    selected.loc[unknown,"_ted_validated"]=pd.NA
+    return selected.drop(columns="_ano"),int(unknown.sum())
+
+
 def run(args):
     args.output.mkdir(parents=True,exist_ok=True)
     path_ted=args.output/"ted"
@@ -42,7 +50,8 @@ def run(args):
     marker=path_ted/"informe.json"
     provenance={"sha256_nacional":digest(args.nacional),"sha256_ted":digest(args.ted),
                 "sha256_parser":digest(args.parser_root/"nacional/licitaciones.py"),
-                "sha256_pipeline_ted":digest(args.parser_root/"ted/run_ted_crossvalidation.py")}
+                "sha256_pipeline_ted":digest(args.parser_root/"ted/run_ted_crossvalidation.py"),
+                "sha256_driver":digest(__file__)}
     if not marker.exists():
         ted=cargar(args.parser_root,"ted/run_ted_crossvalidation.py","ted_regeneracion")
         ted.OUTPUT_DIR=path_ted
@@ -52,9 +61,13 @@ def run(args):
         advanced=ted.run_advanced_matching(df,source,matched,data,consumed)
         df,missing,hc=ted.apply_results_and_report(df,matched,data,n1,n2,n2b,e2b,advanced)
         ted.save_outputs(df,missing,hc)
-        selected=df.loc[df["_es_sara"],["id","fecha_updated","_ted_validated"]]
+        years=set(pd.to_numeric(source["year"],errors="coerce").dropna().astype(int))
+        selected,unknown=limitar_cobertura_ted(df,years)
         selected.to_parquet(matching,index=False,compression="zstd")
-        marker.write_text(json.dumps(provenance|{"sara_evaluados":len(selected),"sha256_resultado":digest(matching)},indent=2)+"\n")
+        marker.write_text(json.dumps(provenance|{"sara_identificados":len(selected),
+                         "sara_evaluados":int(selected["_ted_validated"].notna().sum()),
+                         "sara_sin_cobertura_anual_ted":unknown,"anos_ted":sorted(years),
+                         "sha256_resultado":digest(matching)},indent=2)+"\n")
         del df,source,missing,hc,selected,matched,data,advanced
     else:
         report=json.loads(marker.read_text())

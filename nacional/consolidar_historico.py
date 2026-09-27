@@ -38,7 +38,7 @@ def consolidar(inventario, particiones, original, output):
                 raise ValueError("El recuento de particiones no coincide")
             db.execute("""CREATE VIEW nuevo AS SELECT *,
                 count(DISTINCT fecha_updated) OVER (PARTITION BY conjunto, id) AS n_versiones,
-                row_number() OVER (PARTITION BY conjunto, id ORDER BY fecha_updated DESC, archivo_origen DESC, entrada_origen DESC)=1 AS es_ultima_version,
+                row_number() OVER (PARTITION BY conjunto, id ORDER BY fecha_updated DESC, archivo_origen, entrada_origen)=1 AS es_ultima_version,
                 row_number() OVER (PARTITION BY conjunto, id, fecha_updated ORDER BY archivo_origen, entrada_origen)>1 AS entrada_repetida
                 FROM raw""")
             dest = str(Path(tmp) / "nacional.parquet")

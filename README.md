@@ -283,6 +283,8 @@ python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
 parquets ya publicados. Calidad rechaza entradas que aún no incluyan
 `valor_estimado_contrato`. Para recuperar `importe_sin_iva` desde los ATOM y
 recalcular los indicadores, consulta [la guía de regeneración](docs/REGENERACION_IMPORTES.md).
+Si el parquet perdió fechas de versión, usa la [reconstrucción completa desde
+los ZIP oficiales](docs/REGENERACION_COMPLETA.md), con comparación de cobertura.
 
 ```python
 import pandas as pd

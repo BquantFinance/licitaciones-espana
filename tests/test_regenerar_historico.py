@@ -82,6 +82,7 @@ def test_consolidation_counts_duplicates_without_dropping_rows(tmp_path):
     result=pd.read_parquet(output)
     assert result.es_ultima_version.sum()==1
     assert result.entrada_repetida.sum()==1
+    assert not result.loc[result.es_ultima_version,"entrada_repetida"].any()
     assert result.n_versiones.tolist()==[2]*3
     assert report["versiones"]["versiones_solo_anterior"]==0
     assert report["importes_versiones_unicas"]["filas_comparables"]==1
@@ -89,3 +90,25 @@ def test_consolidation_counts_duplicates_without_dropping_rows(tmp_path):
     with pytest.raises(FileNotFoundError):
         consolidar(inv,tmp_path,old,tmp_path/"incomplete.parquet")
     assert not (tmp_path/"incomplete.parquet").exists()
+
+
+def test_delivery_validator_detects_changed_amounts(tmp_path):
+    from calidad.calidad_licitaciones import CATALOGO
+    from nacional.validar_regeneracion import verificar
+    national=pd.DataFrame({"id":["a"],"conjunto":["licitaciones"],"archivo_origen":["test.zip"],
+                           "entrada_origen":[0],"fecha_updated":pd.to_datetime(["2026-01-01"],utc=True),
+                           "es_ultima_version":[True],"entrada_repetida":[False],"importe_sin_iva":[100.]})
+    quality=national.copy()
+    for col in CATALOGO:
+        quality[col]=True
+    quality["score_calidad"]=100.
+    n,q=tmp_path/"national.parquet",tmp_path/"quality.parquet"
+    national.to_parquet(n,index=False)
+    quality.to_parquet(q,index=False)
+    assert verificar(n,q,tmp_path/"ok.json")["resultado"]=="PASS"
+    quality["importe_sin_iva"]=200.
+    quality.to_parquet(q,index=False)
+    with pytest.raises(ValueError,match="no supera"):
+        verificar(n,q,tmp_path/"fail.json")
+    report=json.loads((tmp_path/"fail.json").read_text())
+    assert report["comprobaciones"]["filas_con_campos_nacionales_modificados"]==1

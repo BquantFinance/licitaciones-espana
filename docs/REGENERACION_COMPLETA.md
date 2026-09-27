@@ -23,6 +23,22 @@ que se perdieron al generar aquel parquet.
 Desde la raíz del checkout de trabajo, con el inventario guardado y la copia del
 parser en `artifacts/issue-6/upstream-pr23`:
 
+La revisión del parser se prepara una vez (Git LFS no debe descargar todos los
+datasets ajenos a este trabajo):
+
+```bash
+git fetch origin refs/pull/23/head
+GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach artifacts/issue-6/upstream-pr23 \
+  627008b1b40158418b432f92f1a8757e646249bf
+git -C artifacts/issue-6/upstream-pr23 apply "$(pwd)/docs/patches/pr23-ted-nulos.patch"
+git lfs pull --include='nacional/licitaciones_espana.parquet,ted/ted_es_can.parquet,borme/data/borme_empresas_pub.parquet' --exclude=''
+python -m pip install -r requirements-regeneracion.txt
+```
+
+El inventario se obtiene de las columnas `conjunto` y `archivo_origen` del
+nacional publicado, eliminando únicamente pares duplicados de ese inventario,
+no filas del dataset. Se guarda como lista de objetos JSON con esos dos campos.
+
 ```bash
 python -m nacional.descargar_fuentes \
   --inventario artifacts/issue-6/fuentes_requeridas.json \
@@ -46,6 +62,11 @@ python -m nacional.recalcular_calidad \
   --borme borme/data/borme_empresas_pub.parquet \
   --parser-root artifacts/issue-6/upstream-pr23 \
   --output artifacts/issue-6/entrega
+
+python -m nacional.validar_regeneracion \
+  --nacional artifacts/issue-6/entrega/nacional.parquet \
+  --calidad artifacts/issue-6/entrega/calidad/calidad_licitaciones_resultado.parquet \
+  --informe artifacts/issue-6/entrega/validacion.json
 ```
 
 Durante esta ejecución se solapan descarga y reconstrucción mediante
@@ -75,6 +96,10 @@ de salida. No se sobrescriben los parquets publicados.
   el resultado a calidad se une por `id` y `fecha_updated`, evitando aplicarlo a
   expedientes homónimos de otro órgano o a versiones históricas no evaluadas.
   Esas otras versiones quedan sin evaluación TED, no como falsos positivos.
+  El snapshot TED publicado cubre 2010–2025: una ausencia de coincidencia en
+  2026 también se deja sin evaluar; no se convierte en un resultado negativo.
+  Una coincidencia encontrada sí se conserva. Incluso en años cubiertos,
+  "sin coincidencia" no prueba por sí solo que el contrato no se publicara.
 - El indicador BORME sigue siendo el contraste de nombres del pipeline del
   mantenedor: no constituye una verificación fiscal o jurídica de la empresa.
 
