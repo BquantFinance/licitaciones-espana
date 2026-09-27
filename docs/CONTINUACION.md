@@ -1,47 +1,46 @@
 # Continuación del trabajo (instrucciones para la próxima sesión de Claude Code)
 
-Rama: `claude/determined-albattani-5ze2p8` · PR: [#23](https://github.com/BquantFinance/licitaciones-espana/pull/23) (no hacer merge hasta cerrar lo pendiente) · Presupuesto previsto: ~250 USD.
+Ramas:
+- `claude/continue-previous-process-wsi03z`: trabajo desde el 2026-09-27 por la tarde. Contiene toda la PR #23 más lo nuevo.
+- `claude/determined-albattani-5ze2p8`: cabeza de la [PR #23](https://github.com/BquantFinance/licitaciones-espana/pull/23).
+
+Hay que llevar a la PR los commits de la primera rama cuando el propietario lo autorice: subirlos a su rama o abrir una PR nueva. No hacer merge hasta cerrar lo pendiente.
 
 ## 0. Prompt para pegar al empezar
 
-> Continúa el trabajo de la PR #23 de BquantFinance/licitaciones-espana en la rama `claude/determined-albattani-5ze2p8`. Lee primero `docs/CONTINUACION.md`, `docs/COBERTURA.md` y `comun/historico.py`, y sigue el plan de la sección 3 en orden. Reglas innegociables en la sección 2. Cada bloque se cierra con doble verificación (sección 4) y se commitea y sube al terminarlo, sin esperar al final. Pon ultracode / usa workflows con verificación adversarial. Si tienes acceso de red a los portales oficiales, prioriza la sección 3.3 (verificación en vivo y regeneración de datos).
+> Continúa el trabajo de la PR #23 de BquantFinance/licitaciones-espana desde la rama `claude/continue-previous-process-wsi03z`. Lee primero `docs/CONTINUACION.md`, `docs/COBERTURA.md` y `comun/historico.py`, y sigue el plan de la sección 3 en orden. Reglas innegociables en la sección 2. Cada bloque se cierra con doble verificación (sección 4) y se commitea y sube al terminarlo, sin esperar al final. Usa revisores adversariales en paralelo (dos lentes por bloque). Si tienes acceso de red a los portales oficiales, prioriza la verificación en vivo (sección 3.3).
 
 ## 1. Estado
 
-**Hecho y verificado** (commits hasta `0bfd7d1`):
-- PLACSP (issue #6):
-  - Semántica de importes: `valor_estimado_contrato` / `importe_sin_iva` / `importe_con_iva`.
-  - Etiquetas de código corregidas, CPV como texto y `fecha_publicacion` del anuncio de licitación.
-  - Todas las entradas se sirven con `n_versiones` / `es_ultima_version`.
-  - `normalizar_placsp.py` corrige los parquet publicados sin re-descargar. Verificado con las 8.693.891 filas reales.
-- TED: los 7 tipos de anuncio de adjudicación y el CSV 2020-2023. BORME: parser, API de sumarios y anonimización solo de nombres de personas.
-- Euskadi: filas repetidas marcadas en `_duplicado` y recolocación de 2021 con `_columnas_corridas`. Verificado celda a celda contra los ficheros originales del commit 93fb9e6.
-- Catalunya, Valencia, Andalucía, Asturias, Galicia y Madrid: completitud de descargas y conservación de datos (ver los mensajes de commit).
-- `comun/historico.py`: módulo contra el sesgo del superviviente, con tests.
-- README (estado real de cada fuente) y `docs/COBERTURA.md` (plan de plataformas por CCAA).
-- Comprobado: los 519 objetos LFS del repo (6,77 GB) existen en GitHub con el tamaño correcto, y la PR no modifica ningún fichero de datos.
+**Entorno de la nube (lecciones del 2026-09-27).**
+- El entorno necesita acceso de red *Full*, que el propietario activa en la configuración del entorno desde la web.
+- Con ese acceso, `pypi.org` va por el proxy, pero sigue en `NO_PROXY` y la conexión directa da 403. Para instalar: `env -u NO_PROXY -u no_proxy pip install --proxy "$HTTPS_PROXY" ...`.
+- Entornos de trabajo: `/home/user/venv3` (pandas 3.0.6) y `/home/user/venv22` (pandas 2.2.3). Instala también `xlrd`, `xlwt` y `odfpy`: sin `xlwt` se salta un test.
+- La API de GitHub responde con el token que inyecta el proxy (`-H "Authorization: Bearer $GITHUB_TOKEN"`, permiso de escritura). Así se puede crear un release en borrador y subirle ficheros; el conector MCP no puede.
+- Recursos: 4 CPU, 15 GB de RAM y ~30 GB de disco. Hay que borrar las salidas de pruebas: los ZIP de toda la PLACSP ocupan ~11 GB.
 
-**Sesión del 2026-09-27 (con red a casi todos los portales).**
-- Suite al empezar: 524 passed, 1 skipped (necesita `xlwt`) con pandas 3.0.6 y con 2.2.3.
-- **Verificado en vivo:** ver `docs/COBERTURA.md` §4.1.
-  - Inalcanzables desde la nube de Claude Code: Andalucía (`www.juntadeandalucia.es`), Asturias (`descargas.asturias.es`), `www.zaragoza.es` y `datos.gob.es`.
-- **Publicado de PLACSP.**
-  - Normalizado con `normalizar_placsp.py`: 8.693.891 filas y 4.727.478 licitaciones distintas.
-  - Tiene **35.627 filas con `fecha_updated` nula** (3.401 en `licitaciones_completo_2012_2026`): el código antiguo convertía en NaT los `atom:updated` sin milisegundos. Una semilla por la clave exacta (id, fecha_updated) duplicaría esas entradas: hay que casarlas por contenido.
-  - Usó los ZIP mensuales de 2025 y de 202601, que hoy ya no se piden porque existe el anual.
-- **Recursos de la máquina en la nube.** 4 CPU, 15 GB de RAM y ~30 GB de disco.
-  - Con esta RAM, `nacional/licitaciones.py` no puede procesarlo todo: acumula ~10 KB por entrada y son ~10M de entradas. Hace falta procesado en streaming (en curso).
-  - Parsear cuesta ~0,5 ms por entrada.
-- **No hay forma de crear un release desde la nube.** El conector de GitHub solo lee releases y no hay `gh`. Los datos regenerados allí se pierden con el contenedor: el propietario debe publicarlos o regenerarlos en su máquina.
-- **Bloques en curso en esa sesión.** Sin commitear si no hay un commit posterior que los mencione; workflows con implementación y doble revisión adversarial:
-  - A. PLACSP: procesado en streaming y `--semilla`. Ficheros: `nacional/licitaciones.py`, `normalizar_placsp.py`, `comun/historico.py` (función genérica de semilla) y sus tests.
-  - B. Ayuntamiento de Madrid: nuevo CKAN, capa cruda con `_historico/`, tabla fiel, tabla unificada sin eliminar filas y descarga completa verificada. Ficheros: `comunidad_madrid/ccaa_madrid_ayuntamiento.py` y los `test_ayto_*`.
-  - Investigación de cobertura (petición del propietario): qué contratos menores y qué plataformas faltan por CCAA. Resultado previsto en `docs/COBERTURA.md`.
+**Hecho y verificado.**
+- Hasta `627008b`: las correcciones de la PR (ver la descripción de la PR y los mensajes de commit).
+- `5c3a82e`, PLACSP por lotes y `--semilla` (el WIP de la sesión anterior, cerrado):
+  - Dos revisiones adversariales con 9 arreglos, cada uno con su test (`TestSegundaRevision`).
+  - Comprobado con los ZIP reales de hoy frente al código anterior, celda a celda: consultas y encargos 2022-2026, licitaciones 2012 y agregación 2025 (250.652 entradas, pico de 1,2 GB frente a 2,7 GB).
+  - Comprobado con la semilla real v2026.02, simulando además entradas retiradas: se recuperan exactamente las que faltan.
+  - Novedades: la tabla `_semilla_contenido` (filas sin fecha del publicado que casan por contenido), la semilla en dos fases y el rechazo de sembrar desde una tabla de salida.
+- `0263faf`, comillas literales (`comun/lectura_csv.py`):
+  - En Castilla y León, 5 títulos que empiezan por comilla se tragaban 113 contratos menores. Lo usan CyL y Murcia.
+  - Verificado en vivo: CyL, Murcia y Aragón (ver §3.1.3).
+- `d2f0a1a`: `xlrd` y `odfpy` en `requirements.txt`.
+- Suite completa: 631 passed con pandas 3.0.6 y con 2.2.3.
 
-**A medias (WIP, sin verificar)**, commit `757d5eb` y el commit final de la sesión anterior (ver su mensaje: dice qué quedó en verde):
-- `nacional/`: entradas CPM (el conjunto `consultas` salía vacío), `_borrados`, lectura de todas las versiones de cada ZIP y campos CODICE extra.
-- `Euskadi/`: descarga completa de la API `/contracts`, con importes y adjudicatario de 655K contratos (hoy solo hay metadatos de anuncios).
-- Scrapers nuevos con tests simulados: `scripts/ccaa_castilla_leon.py`, `ccaa_murcia.py` y `ccaa_aragon.py`.
+**Ayuntamiento de Madrid (el WIP de `a07b0d3`).**
+- Con una sola descarga está verificado con los datos reales:
+  - 169 recursos del CKAN y 82 ficheros consolidados.
+  - Tabla fiel: 132.087 filas; en los 82 ficheros cuadran filas, celdas con valor y multiconjunto de textos.
+  - Una segunda ejecución no cambia nada.
+  - 79 de 81 CSV coinciden con el código anterior; las 2 diferencias son correcciones.
+- La revisión de re-ejecuciones encontró duplicados sin marcar al retirarse un año, con fallos pasajeros o al retocar las descripciones: ver §3.1.4.
+
+**Datos para Elicita (issue #6).** El propietario pidió regenerar la PLACSP y la calidad y publicarlas en un release en **borrador**, sin tocar v2026.02. Estado y cifras en §3.3.
 
 ## 2. Reglas innegociables
 
@@ -72,44 +71,57 @@ Rama: `claude/determined-albattani-5ze2p8` · PR: [#23](https://github.com/Bquan
 ## 3. Plan por prioridad
 
 ### 3.1 Cerrar el WIP (primero)
-0. **Estado al cerrar la sesión anterior.**
-   - Suite completa: 511 passed con pandas 3 y con 2.2.
-   - `nacional/` ya tiene una revisión adversarial con 4 arreglos, cada uno con su test (`TestRevisionAdversarial`).
-   - Hay que confirmarlo con el propietario: `n_versiones` pasa a contar versiones distintas (pares id / fecha_updated), y `entrada_repetida` marca las copias.
-   - Las filas CPM (`consultas`) no se han verificado con datos reales.
-1. **`nacional/`.**
-   - Suite en verde y revisión adversarial del diff desde `0bfd7d1`.
-   - Hallazgos de la auditoría que hay que cubrir:
-     - P1: entradas CPM → `conjunto='consultas'`.
-     - P2: `at:deleted-entry` → tabla `_borrados`.
-     - P3: refrescar los ZIP anuales del año en curso con `guardar_version`.
-     - P4: anual primero y, si da 404, mensuales, sin leer los dos a la vez.
-     - P5/P6: informe de 404 y de entradas descartadas.
-     - P9: `--anos` por defecto 2012 → año actual.
-     - P11: `entrada_repetida` para (id, fecha_updated) publicadas dos veces (unas 86K filas), con `n_versiones` sobre versiones distintas.
-     - P7: todos los `WinningParty` (UTE), `_lotes`, `_modificaciones`, criterios de adjudicación, `OverThresholdIndicator` (SARA), contadores de ofertas, `Contract/ID` e `IssueDate`, y enlaces a pliegos.
-   - No cambiar las columnas existentes.
+1. **`nacional/`: HECHO** (`5c3a82e`; ver §1).
+   - Pendiente de confirmar con el propietario: `n_versiones` cuenta versiones distintas (pares id / fecha_updated) y `entrada_repetida` marca las copias.
+   - Menores de la revisión que quedan:
+     - Una interrupción durante `_publicar` puede dejar tablas de ejecuciones distintas: hay que calcular los hashes antes y hacer después solo los `os.replace`.
+     - `--conjunto X` sustituye la salida de todos los conjuntos. La anterior queda en `_historico/` con aviso.
+     - Instantes válidos del borde (`2262-04-11T20:00Z`) quedan nulos.
+     - Formato CSV de fechas y números cuando se mezclan semillas y descarga en una columna de texto.
+     - Mutantes que sobreviven: M17, M18, M19 y M08 (ver el informe del revisor de fidelidad en el mensaje de `5c3a82e`).
 2. **`Euskadi/`: API `/contracts` y `/contracting-notices`.**
    - **Hecho y con tests:**
      - Descarga por ventanas de fecha que cuadra con `totalItems`. Aborta si la API repite página.
-     - Re-ejecuciones sin machacar: la versión anterior va a `_historico/` y una descarga caída no publica nada.
-     - Consolidaciones nuevas: A1, A2, B4 (REVASCON por poder) y C2 (Vitoria).
-   - **Pendiente, en vivo:**
-     - Que la API respete `currentPage`, `itemsOfPage`, `orderBy` y `orderType`.
-     - Que los filtros `.gt/.lt` acepten AAAA-MM-DD y si son estrictos.
-     - El máximo de registros paginables por consulta.
+     - Re-ejecuciones sin machacar.
+     - Consolidaciones A1, A2, B4 y C2.
+   - **Verificado en vivo** (COBERTURA §4.1): paginación con `currentPage`, `itemsOfPage` de 50 como máximo, sin tope de 10.000, y filtros `.gt` estricto y `.lt` inclusivo.
+   - **Pendiente:**
+     - Una descarga completa real: 715.569 contratos a 50 por página son unas 14.300 peticiones.
      - Las URLs de Vitoria y Bilbao sin filtros.
-   - **Limitación conocida:** una ventana ya completa solo se vuelve a bajar si cambia su `totalItems`.
-   - Lo que sigue es el plan original:
-   - Parámetros según código de terceros de 2025-26: `currentPage`, `itemsOfPage=50`, `orderBy`, `orderType`, filtros `award-date.gt/.lt` y `publication-date.gt/.lt`.
-   - Ventanas mensuales, comprobando en cada una que el nº de ids únicos coincide con `totalItems`.
-   - Los tests de consolidación existentes deben seguir pasando: la lógica de `_duplicado` y la recolocación de 2021 ya están verificadas con datos reales.
-3. **CCAA nuevas escritas** (Castilla y León, Murcia, Aragón). Ya revisados contra sobrescrituras, descargas vacías y valores convertidos en NaN, con los tests en verde. Pendiente:
-   - Instalar `xlrd` y probar los `.xls` (hay un test de Murcia que se salta).
-   - Aplicar a Castilla y León los dos arreglos de lectura de Excel de Murcia.
-   - Que Aragón lea los `.xls` sin convertir las celdas de error en NaN.
-   - Evitar que un año del SMS con `.xlsx` y `.xls` a la vez entre dos veces.
-   - Verificar en vivo las URLs y los ids de sus docstrings.
+3. **CCAA nuevas: verificadas en vivo el 2026-09-27** (`0263faf`).
+   - **Castilla y León**: 16 conjuntos en 50 s.
+     - Ids conocidos corregidos según el catálogo.
+     - Los 113 contratos menores que tragaban las comillas literales se recuperan.
+     - El aviso "No existen datos asociados" del histórico ya no se convierte en tabla.
+     - `licitacion-de-obras-publicas` es una estadística agregada con una fila `</HTML>`, basura del portal: excluirla del descubrimiento o dejarla documentada.
+   - **Murcia**: 15.399 contratos, 244.185 menores CARM y 155.085 menores SMS.
+     - Los `contratosOD2019`-`2023.csv` tienen entre 3 y 10 filas con campos de más, que van a `_columna_extra_N` (columnas corridas por separadores sin comillas).
+   - **Aragón**: 9 tablas (106.146 contratos y 84.436 menores del Gobierno, Registro de Contratos, encargos, anuncios).
+     - Los 4 `.xls` de 2024-2025 del Gobierno dan HTTP 403 del propio servidor: reintentar.
+     - Revisar los ZIP "Contratos del Sector Público de Aragón 2014/2015", que se omiten como no tabulares.
+   - **Pendiente:**
+     - Aplicar a Castilla y León los dos arreglos de lectura de Excel de Murcia.
+     - Que Aragón lea los `.xls` sin convertir las celdas de error en NaN.
+     - Evitar que un año del SMS con `.xlsx` y `.xls` a la vez entre dos veces.
+     - Revisión adversarial independiente de `comun/lectura_csv.py`: hasta ahora solo tiene tests, una prueba con 300 CSV aleatorios y el fichero real.
+4. **Ayuntamiento de Madrid** (`comunidad_madrid/ccaa_madrid_ayuntamiento.py`, WIP de `a07b0d3`).
+   - **Verificado con los datos reales** (una descarga completa, 169 recursos):
+     - Tabla fiel y unificada: 132.087 filas cada una.
+     - Por fichero cuadran filas, celdas con valor y multiconjunto de textos; en total, 2.143.400 celdas con valor, sin ningún error de posición.
+     - La segunda ejecución da `sin_cambios`.
+     - 79 de 81 CSV son idénticos al código anterior. En los otros dos, el nuevo recupera 43 registros que `on_bad_lines='skip'` descartaba y lee bien la cabecera de `modificados_2021`.
+   - **Revisión de re-ejecuciones**, con arreglos en curso al escribir esto (ver el commit que cierre el bloque):
+     - **BLOQUEANTE:** si el portal retira un año entero (CSV y XLSX), el XLSX se consolida y cada contrato retirado sale dos veces sin marca.
+     - Si un CSV falta en un listado, o tiene un fallo pasajero (503, o solo cabecera a principios de año), su XLSX gemelo queda consolidado para siempre y duplica las filas.
+     - Un retoque cosmético de la descripción en CKAN retira ficheros idénticos.
+     - Menores: la descarga no se compara con el `size` de CKAN, la comprobación de "menos filas" solo avisa una vez y un manifiesto corrupto aborta la ejecución.
+   - **Revisión de fidelidad:**
+     - `acuerdo_marco_2025` trae 21 campos y solo 20 nombres de cabecera. El contratante queda corrido y el promotor está en `Unnamed: 20` (3.420 valores); pasaba igual con el código anterior.
+     - Hacía falta un test de "cada fila se mapea con la cabecera de su versión".
+     - `importe_excel` no distingue una celda de texto de una numérica.
+   - **Decisión del propietario: identificadores truncados.**
+     - El CSV publicado trae `N. DE EXPEDIENTE` y NIF en notación científica de Excel (`1,45202E+11`) en unas 3.083 celdas, sobre todo en menores 2021-2024. El XLSX del mismo recurso trae el valor completo (`145202100418`) y se guarda en la capa cruda, pero no llega a las tablas.
+     - Propuesta: una columna `<col>_xlsx` en esas filas.
 
 ### 3.2 Sesgo del superviviente en los scrapers existentes
 Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la semilla del release, a cada uno:
