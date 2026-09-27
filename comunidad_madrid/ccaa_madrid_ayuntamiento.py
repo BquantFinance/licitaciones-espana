@@ -29,7 +29,9 @@ import pandas as pd
 import requests
 import re
 import os
+import unicodedata
 from pathlib import Path
+from datetime import datetime
 from bs4 import BeautifulSoup
 import warnings
 warnings.filterwarnings('ignore')
@@ -74,6 +76,13 @@ PAGINA_ACTIVIDAD_CONTRACTUAL = (
     "&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD"
     "&vgnextfmt=default"
 )
+
+# datos.madrid.es es ahora un CKAN: package_show lista todos los recursos de
+# cada dataset (las URL de recurso no se pueden deducir del año). Se prueba
+# antes que las páginas anteriores y que la lista fija de URLs de respaldo.
+CKAN_PACKAGE_SHOW = "https://datos.madrid.es/api/3/action/package_show?id="
+DATASET_MENORES = "300253-0-contratos-actividad-menores"
+DATASET_ACTIVIDAD = "216876-0-contratos-actividad"
 
 
 # ===========================================================================
@@ -667,84 +676,138 @@ def strip_normalize(col_name):
 # ===========================================================================
 # DESCUBRIMIENTO URLs
 # ===========================================================================
-def descubrir_csv_urls_menores():
-    print("  🔍 Rascando página de contratos menores...")
+def _recursos_ckan(dataset):
+    """[(texto, url)] de los recursos CSV del dataset según la API CKAN del
+    portal ([] si no responde como CKAN)."""
+    print(f"  🔍 API CKAN: {dataset}...")
     try:
-        resp = requests.get(PAGINA_CONTRATOS_MENORES, timeout=30)
+        resp = requests.get(CKAN_PACKAGE_SHOW + dataset, timeout=30)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        csv_urls = {}
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if not href.endswith('.csv'): continue
-            url = href if href.startswith('http') else f"https://datos.madrid.es{href}"
-            parent = link.find_parent(['div', 'li', 'td', 'p'])
-            context = (parent.get_text() if parent else link.get_text()).strip()
-            nombre = _extraer_nombre_menores(context, url)
-            if nombre and nombre not in csv_urls:
-                csv_urls[nombre] = url
-        if csv_urls:
-            print(f"  ✓ Encontrados {len(csv_urls)} ficheros")
-            return dict(sorted(csv_urls.items()))
+        recursos = resp.json()["result"]["resources"]
     except Exception as e:
-        print(f"  ⚠ Error: {e}")
+        print(f"  ⚠ API CKAN no disponible: {e}")
+        return []
+    enlaces = []
+    for r in recursos:
+        url = str(r.get("url") or "")
+        formato = str(r.get("format") or "").upper()
+        if not url or (formato != "CSV" and not url.lower().split("?")[0].endswith(".csv")):
+            continue
+        texto = " ".join(str(r.get(k) or "") for k in ("name", "description"))
+        enlaces.append((texto, url))
+    return enlaces
+
+
+def _enlaces_pagina(pagina, contexto_de):
+    """[(texto, url)] de los enlaces .csv de una página del portal anterior."""
+    resp = requests.get(pagina, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, 'html.parser')
+    enlaces = []
+    for link in soup.find_all('a', href=True):
+        href = link['href']
+        if not href.endswith('.csv'): continue
+        url = href if href.startswith('http') else f"https://datos.madrid.es{href}"
+        enlaces.append((contexto_de(link), url))
+    return enlaces
+
+
+def _contexto_menores(link):
+    parent = link.find_parent(['div', 'li', 'td', 'p'])
+    return (parent.get_text() if parent else link.get_text()).strip()
+
+
+def _contexto_actividad(link):
+    parent = link.find_parent(['li', 'div'])
+    grandparent = parent.find_parent(['li', 'div']) if parent else None
+    return (grandparent.get_text() if grandparent else
+            (parent.get_text() if parent else link.get_text())).strip()
+
+
+def _nombrar(enlaces, extraer):
+    """{nombre: url} sin perder ningún CSV: antes, si dos CSV distintos
+    recibían el mismo nombre (o ninguno) el segundo se descartaba en silencio;
+    ahora se numeran."""
+    csv_urls = {}
+    for contexto, url in enlaces:
+        if url in csv_urls.values():
+            continue                      # mismo fichero enlazado dos veces
+        nombre = extraer(contexto, url)
+        if nombre is None:
+            continue                      # no es de este conjunto (p.ej. menores)
+        base, n = nombre, 2
+        while nombre in csv_urls:
+            nombre, n = f"{base}_{n}", n + 1
+        csv_urls[nombre] = url
+    return csv_urls
+
+
+def _descubrir(dataset, pagina, contexto_de, extraer, respaldo):
+    enlaces = _recursos_ckan(dataset)
+    if not enlaces:
+        print("  🔍 Rascando la página del portal anterior...")
+        try:
+            enlaces = _enlaces_pagina(pagina, contexto_de)
+        except Exception as e:
+            print(f"  ⚠ Error: {e}")
+    csv_urls = _nombrar(enlaces, extraer)
+    if csv_urls:
+        print(f"  ✓ Encontrados {len(csv_urls)} ficheros")
+        return dict(sorted(csv_urls.items()))
     print("  ⚠ Usando URLs de respaldo")
-    return _urls_respaldo_menores()
+    return respaldo()
+
+
+def descubrir_csv_urls_menores():
+    return _descubrir(DATASET_MENORES, PAGINA_CONTRATOS_MENORES, _contexto_menores,
+                      _extraer_nombre_menores, _urls_respaldo_menores)
 
 
 def descubrir_csv_urls_actividad():
-    print("  🔍 Rascando página de actividad contractual...")
-    try:
-        resp = requests.get(PAGINA_ACTIVIDAD_CONTRACTUAL, timeout=30)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        csv_urls = {}
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if not href.endswith('.csv'): continue
-            url = href if href.startswith('http') else f"https://datos.madrid.es{href}"
-            parent = link.find_parent(['li', 'div'])
-            grandparent = parent.find_parent(['li', 'div']) if parent else None
-            context = (grandparent.get_text() if grandparent else
-                      (parent.get_text() if parent else link.get_text())).strip()
-            nombre = _extraer_nombre_actividad(context, url)
-            if nombre and nombre not in csv_urls:
-                csv_urls[nombre] = url
-        if csv_urls:
-            print(f"  ✓ Encontrados {len(csv_urls)} ficheros")
-            return dict(sorted(csv_urls.items()))
-    except Exception as e:
-        print(f"  ⚠ Error: {e}")
-    print("  ⚠ Usando URLs de respaldo")
-    return _urls_respaldo_actividad()
+    return _descubrir(DATASET_ACTIVIDAD, PAGINA_ACTIVIDAD_CONTRACTUAL, _contexto_actividad,
+                      _extraer_nombre_actividad, _urls_respaldo_actividad)
+
+
+def _sin_acentos(texto):
+    return ''.join(c for c in unicodedata.normalize('NFKD', texto)
+                   if not unicodedata.combining(c))
+
+
+def _nombre_por_url(prefijo, url):
+    """Nombre para un CSV sin año reconocible (antes se descartaba)."""
+    base = url.split('?')[0].rstrip('/').rsplit('/', 1)[-1].lower()
+    return f"{prefijo}_{re.sub(r'[^a-z0-9]+', '_', base).strip('_')[:60]}"
 
 
 def _extraer_nombre_menores(context, url):
-    ctx_lower = context.lower()
+    ctx_lower = _sin_acentos(context.lower())
     years = re.findall(r'20\d{2}', context) or re.findall(r'20\d{2}', url)
-    if not years: return None
+    if not years: return _nombre_por_url('menores', url)
     year = years[0]
     if year == '2021':
         if 'hasta' in ctx_lower or 'febrero' in ctx_lower: return 'menores_2021_hasta_febrero'
         elif 'desde' in ctx_lower or 'marzo' in ctx_lower: return 'menores_2021_desde_marzo'
-        return None
     return f'menores_{year}'
 
 
 def _extraer_nombre_actividad(context, url):
-    ctx_lower = context.lower()
+    ctx_lower = _sin_acentos(context.lower())
     years = re.findall(r'20\d{2}', context) or re.findall(r'20\d{2}', url)
-    if not years: return None
-    year = years[0]
-    if 'menor' in ctx_lower: return None
+    # CSV del conjunto de menores (se descargan con descubrir_csv_urls_menores);
+    # no cualquier texto que mencione "menor", que descartaba ficheros enteros
+    if ('actividad-menores' in url.lower() or '300253' in url
+            or ctx_lower.strip().startswith('contratos menores')):
+        return None
     if 'homologaci' in ctx_lower: tipo = 'homologacion'
     elif 'acuerdo marco' in ctx_lower or 'sistema din' in ctx_lower: tipo = 'acuerdo_marco'
     elif 'modificad' in ctx_lower: tipo = 'modificados'
     elif 'prorroga' in ctx_lower: tipo = 'prorrogados'
     elif 'penalidad' in ctx_lower: tipo = 'penalidades'
-    elif 'cesion' in ctx_lower or 'cesión' in ctx_lower: tipo = 'cesiones'
-    elif 'resolucion' in ctx_lower or 'resolución' in ctx_lower: tipo = 'resoluciones'
+    elif 'cesion' in ctx_lower: tipo = 'cesiones'
+    elif 'resolucion' in ctx_lower: tipo = 'resoluciones'
     else: tipo = 'formalizados'
+    if not years: return _nombre_por_url(tipo, url)
+    year = years[0]
     if year == '2021':
         if '2020' in ctx_lower and ('formalizado' in ctx_lower or 'contrato' in ctx_lower):
             return f'{tipo}_2021_anteriores'
@@ -756,27 +819,66 @@ def _extraer_nombre_actividad(context, url):
 # ===========================================================================
 # LECTURA CSV
 # ===========================================================================
+def _sigue_cambiando(nombre):
+    """Los ficheros del año en curso y del anterior (o sin año) se siguen
+    ampliando: hay que volver a bajarlos aunque ya existan."""
+    anios = re.findall(r'20\d{2}', nombre)
+    return not anios or int(anios[0]) >= datetime.now().year - 1
+
+
 def descargar_csv(nombre, url, force=False):
     filepath = CSV_DIR / f"{nombre}.csv"
-    if filepath.exists() and not force:
+    if filepath.exists() and not force and not _sigue_cambiando(nombre):
         print(f"    ✓ {nombre}.csv ya existe")
         return filepath
     print(f"    ⬇ {nombre}...", end=" ")
     try:
         resp = requests.get(url, timeout=60)
         resp.raise_for_status()
-        filepath.write_bytes(resp.content)
+        # Escritura atómica: un corte no deja un CSV a medias como si fuera bueno
+        tmp = filepath.with_name(filepath.name + ".part")
+        tmp.write_bytes(resp.content)
+        tmp.replace(filepath)
         print(f"OK ({len(resp.content)/1024:.0f} KB)")
     except Exception as e:
         print(f"ERROR: {e}")
+        if filepath.exists():
+            print(f"      se usa la descarga anterior de {nombre}.csv")
+            return filepath
         return None
     return filepath
+
+
+LETRAS_ES = set('áéíóúñüÁÉÍÓÚÑÜ')
+
+
+def _codificaciones(filepath):
+    """Codificaciones a probar, de la más a la menos probable.
+
+    Algunos CSV antiguos del portal están en la página de códigos de MS-DOS
+    (CP850): leídos como cp1252 salen "Descripci¢n", "N£mero", "A¤o" (las
+    variantes que tuvieron que añadirse a los mapeos) y el texto de todos los
+    registros queda igual de roto. Se usa CP850 cuando da más letras
+    castellanas que cp1252.
+    """
+    try:
+        crudo = Path(filepath).read_bytes()
+    except OSError:
+        crudo = b''
+
+    def letras(codificacion):
+        return sum(c in LETRAS_ES for c in crudo.decode(codificacion, errors='replace'))
+
+    un_byte = ['cp1252', 'latin-1']
+    if letras('cp850') > letras('cp1252'):
+        un_byte.insert(0, 'cp850')
+    return ['utf-8-sig', 'utf-8'] + un_byte
 
 
 def leer_csv(filepath, skiprows=0, header='infer'):
     # cp1252 antes que latin-1: latin-1 nunca falla, así que cp1252 no se probaba
     # nunca y '€', comillas tipográficas, guiones... quedaban como controles \x80-\x9f
-    for encoding in ['utf-8-sig', 'utf-8', 'cp1252', 'latin-1']:
+    for encoding in _codificaciones(filepath):
         try:
             with open(filepath, 'r', encoding=encoding) as f:
                 lines = f.readlines()

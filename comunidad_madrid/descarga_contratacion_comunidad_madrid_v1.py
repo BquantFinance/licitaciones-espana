@@ -18,14 +18,22 @@ v4 - Producción:
 
     A) CONTRATOS MENORES (99% del volumen, ~4.5M):
        - Fecha hasta NO funciona, fecha desde rompe combinada con entidad
-       - Solución: descargar por ENTIDAD ADJUDICADORA (125 entidades)
-       - Sin filtro de fecha → cada entidad tiene <50K filas
-       - Si alguna entidad supera UMBRAL → no se puede subdividir más
+       - Solución: descargar por ENTIDAD ADJUDICADORA (las del desplegable)
+       - Sin filtro de fecha; si una entidad llega a UMBRAL se subdivide por
+         rango de presupuesto (incluidos ≤0 y ≥50.000, que también existen)
+       - Ojo: los menores de entidades que ya no están en el desplegable
+         (consejerías de legislaturas anteriores...) no se descargan
 
     B) OTROS TIPOS (licitaciones, adjudicaciones, etc., ~36K):
        - Fecha hasta SÍ funciona
        - Descargar por MES + TIPO PUBLICACIÓN (como v3)
-       - Período: 2017-año actual (datos empiezan en 2017)
+       - Período: 2017-año actual por meses + un CSV por tipo con todo lo
+         publicado antes (el portal tiene anuncios desde 2014)
+
+    Cada ejecución vuelve a pedir los CSV con más de VIGENCIA_HORAS: los de
+    menores (sin fechas) acumulan los contratos nuevos y los de cada mes
+    cambian de estado, adjudicatario, prórrogas... Los más recientes se
+    saltan, así que una ejecución cortada se reanuda donde se quedó.
 
     Columnas CSV (18):
     Tipo de Publicación; Estado; Entidad Adjudicadora; Nº Expediente;
@@ -43,6 +51,7 @@ from bs4 import BeautifulSoup
 import re
 import json
 import time
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from calendar import monthrange
@@ -93,9 +102,22 @@ UMBRAL_TRUNCADO = 50000
 MAX_REINTENTOS = 3
 PAUSA_BASE = 5
 
+# Primer año de la descarga mensual de "otros tipos"; lo publicado antes va en
+# un único CSV por tipo con solo fecha hasta (el portal tiene anuncios de 2014)
+ANIO_INICIO = 2017
+
+# Un CSV descargado hace más de VIGENCIA_HORAS se vuelve a descargar (menos de
+# 24 h para que una ejecución diaria los refresque todos)
+VIGENCIA_HORAS = 20
+
 # Rangos de presupuesto para subdividir entidades truncadas (>50K)
-# La mayoría de contratos menores son <100€, necesitamos rangos muy finos abajo
+# La mayoría de contratos menores son <100€, necesitamos rangos muy finos abajo.
+# Un límite vacío es un rango abierto: hay menores con presupuesto negativo, 0
+# o por encima de 50.000 € que ningún rango cerrado recogería. Los límites son
+# inclusivos: lo que cae justo en la frontera sale en dos CSV y unificar_csvs()
+# lo deja una vez.
 RANGOS_IMPORTE = [
+    ("", "0"),
     ("0", "10"),
     ("10", "20"),
     ("20", "30"),
@@ -112,6 +134,7 @@ RANGOS_IMPORTE = [
     ("5000", "10000"),
     ("10000", "15000"),
     ("15000", "50000"),
+    ("50000", ""),
 ]
 
 
@@ -159,6 +182,17 @@ def nombre_csv_mes(anio, mes, tipo_pub):
     """Nombre para CSV de otros tipos por mes."""
     tp = re.sub(r'[^a-z0-9]+', '_', tipo_pub.lower())[:25]
     return f"{anio}_{mes:02d}_{tp}.csv"
+
+
+def nombre_csv_hasta(anio, tipo_pub):
+    """Nombre para CSV de otros tipos publicados hasta el 31-12 de `anio`."""
+    tp = re.sub(r'[^a-z0-9]+', '_', tipo_pub.lower())[:25]
+    return f"hasta_{anio}_{tp}.csv"
+
+
+def es_reciente(filepath):
+    """¿Se descargó hace menos de VIGENCIA_HORAS?"""
+    return time.time() - filepath.stat().st_mtime < VIGENCIA_HORAS * 3600
 
 
 def generar_segmentos_mensuales(anio_inicio, anio_fin):
@@ -422,7 +456,11 @@ class DescargadorComunidadMadrid:
     # -----------------------------------------------------------------------
     def _guardar(self, csv_data, filepath):
         """Guarda CSV, retorna nº de filas."""
-        filepath.write_bytes(csv_data)
+        # Escritura atómica: un corte a medias no deja un CSV truncado que la
+        # siguiente ejecución daría por bueno (o que sustituiría al anterior)
+        tmp = filepath.with_name(filepath.name + ".part")
+        tmp.write_bytes(csv_data)
+        tmp.replace(filepath)
         n_filas = csv_data.count(b'\n') - 1
         size_mb = len(csv_data) / (1024 * 1024)
         log.info(f"  ✓ {filepath.name} ({n_filas:,} filas, {size_mb:.1f} MB)")
@@ -439,11 +477,18 @@ class DescargadorComunidadMadrid:
                                    fecha_desde="", fecha_hasta="",
                                    tipo_pub=None, entidad=None,
                                    extra_params=None):
-        """Descarga un CSV con reintentos. Retorna (True/False, n_filas)."""
+        """Descarga un CSV con reintentos. Retorna (True/False, n_filas).
+
+        Un CSV ya descargado solo se salta si tiene menos de VIGENCIA_HORAS;
+        si no, se vuelve a pedir (y si falla se conserva el anterior).
+        """
         if filepath.exists() and filepath.stat().st_size > 100:
-            log.info(f"    Ya existe: {filepath.name}, skip")
-            self.stats["skip_existe"] += 1
-            return True, 0
+            if es_reciente(filepath):
+                log.info(f"    Ya existe: {filepath.name}, skip")
+                self.stats["skip_existe"] += 1
+                return True, 0
+            log.info(f"    {filepath.name} tiene más de {VIGENCIA_HORAS} h: "
+                     f"se vuelve a descargar")
 
         for intento in range(MAX_REINTENTOS):
             try:
@@ -455,7 +500,11 @@ class DescargadorComunidadMadrid:
                     n_filas = csv_data.count(b'\n') - 1
 
                     if n_filas <= 0:
-                        log.info(f"    0 filas, skip")
+                        if filepath.exists():
+                            log.warning(f"    0 filas: se conserva la descarga "
+                                        f"anterior de {filepath.name}")
+                        else:
+                            log.info(f"    0 filas, skip")
                         self.stats["skip_vacio"] += 1
                         return True, 0
 
@@ -568,6 +617,10 @@ class DescargadorComunidadMadrid:
 
             # Si sigue truncado → partir el rango por la mitad
             if ok and n_filas >= UMBRAL_TRUNCADO:
+                if not imp_desde or not imp_hasta:
+                    log.warning(f"{indent}  ⚠ Rango abierto {imp_desde}-{imp_hasta} "
+                                f"truncado ({n_filas:,} filas): no se subdivide")
+                    continue
                 low = int(imp_desde)
                 high = int(imp_hasta)
                 mid = (low + high) // 2
@@ -598,9 +651,17 @@ class DescargadorComunidadMadrid:
     # ===================================================================
     # B) OTROS TIPOS — por mes + tipo publicación (con fechas)
     # ===================================================================
-    def descargar_otros(self, anio_inicio=2017, anio_fin=datetime.now().year):
-        """Descarga tipos no menores por mes."""
+    def descargar_otros(self, anio_inicio=ANIO_INICIO, anio_fin=datetime.now().year):
+        """Descarga tipos no menores por mes.
+
+        Si se pide la serie completa (desde ANIO_INICIO o antes), lo publicado
+        antes de anio_inicio va en un CSV más por tipo, con solo fecha hasta:
+        el portal tiene anuncios desde 2014 y ninguna fecha de inicio fija
+        garantiza no dejarse los más antiguos.
+        """
         segmentos = generar_segmentos_mensuales(anio_inicio, anio_fin)
+        if anio_inicio <= ANIO_INICIO:
+            segmentos.insert(0, ("", f"31-12-{anio_inicio - 1}", anio_inicio - 1, None))
         total_meses = len(segmentos)
         total_descargas = total_meses * len(TIPOS_NO_MENORES)
 
@@ -612,11 +673,13 @@ class DescargadorComunidadMadrid:
         log.info(f"{'='*65}")
 
         for i, (desde, hasta, anio, mes) in enumerate(segmentos, 1):
-            log.info(f"\n  [{i}/{total_meses}] {mes:02d}/{anio}")
+            periodo = f"{mes:02d}/{anio}" if mes else f"hasta {hasta}"
+            log.info(f"\n  [{i}/{total_meses}] {periodo}")
 
             for tipo_pub in TIPOS_NO_MENORES:
-                fp = CSV_DIR / nombre_csv_mes(anio, mes, tipo_pub)
-                label = f"{mes:02d}/{anio} {tipo_pub[:30]}"
+                fp = CSV_DIR / (nombre_csv_mes(anio, mes, tipo_pub) if mes
+                                else nombre_csv_hasta(anio, tipo_pub))
+                label = f"{periodo} {tipo_pub[:30]}"
                 log.info(f"    → {tipo_pub[:45]}")
 
                 self._descargar_con_reintentos(
@@ -629,7 +692,7 @@ class DescargadorComunidadMadrid:
     # ===================================================================
     # DESCARGA COMPLETA
     # ===================================================================
-    def descargar_todo(self, anio_inicio=2017, anio_fin=datetime.now().year):
+    def descargar_todo(self, anio_inicio=ANIO_INICIO, anio_fin=datetime.now().year):
         self.t_inicio = time.time()
 
         log.info("=" * 65)
@@ -709,6 +772,54 @@ class DescargadorComunidadMadrid:
 # ---------------------------------------------------------------------------
 # UNIFICACIÓN DE CSVs
 # ---------------------------------------------------------------------------
+def filas_repetidas_entre_ficheros(df):
+    """Máscara de las filas cuyo registro ya ha salido en otro CSV.
+
+    Los CSV se solapan: un menor con presupuesto justo en la frontera entre
+    dos rangos sale en los dos (y el rango "hasta 0" repite los de 0 €). Pero
+    no hay que quitar duplicados sin más:
+      · dentro de un mismo CSV, filas idénticas son lo que sirve el portal y
+        se conservan;
+      · un registro puede ocupar varias filas: las que vienen sin "Tipo de
+        Publicación" son la continuación del anterior (más lotes o
+        adjudicatarios, prórrogas, modificaciones) y suelen ser idénticas
+        entre contratos distintos ("...;0,00;0,00;0,00;0,00").
+    Así que se compara el bloque entero (registro + continuaciones) y de cada
+    bloque repetido en varios CSV se dejan tantas copias como tenga el CSV que
+    más tiene (el primero en orden de nombre).
+    """
+    cols = [c for c in df.columns if c != '_archivo_fuente']
+    fichero = df['_archivo_fuente']
+    if 'Tipo de Publicación' in df.columns:
+        cabecera = df['Tipo de Publicación'].fillna('').astype(str).str.strip() != ''
+    else:
+        cabecera = pd.Series(True, index=df.index)
+    # Identificador de fila: igual solo si todas las columnas son iguales
+    fila = np.zeros(len(df), dtype=np.int64)
+    for c in cols:
+        codigos, valores = pd.factorize(df[c], use_na_sentinel=False)
+        fila = pd.factorize(fila * (len(valores) + 1) + codigos)[0]
+    claves = pd.DataFrame({
+        'f': fichero,
+        'b': cabecera.astype(int).groupby(fichero, sort=False).cumsum(),
+        'firma': pd.Series(fila, index=df.index).astype(str),
+    })
+    grupos = ['f', 'b']
+    # Firma del bloque: la de su única fila o la unión de las de todas
+    varias = claves.groupby(grupos, sort=False)['firma'].transform('size') > 1
+    if varias.any():
+        claves.loc[varias, 'firma'] = claves[varias].groupby(
+            grupos, sort=False)['firma'].transform(lambda s: '|'.join(s))
+    inicio = ~claves.duplicated(grupos)
+    bloques = claves[inicio].copy()
+    # n-ésima aparición del bloque dentro de su CSV: la 2ª copia de un CSV solo
+    # sobra si otro CSV anterior ya tenía también dos
+    bloques['n'] = bloques.groupby(['f', 'firma'], sort=False).cumcount()
+    claves['sobra'] = False
+    claves.loc[bloques.index, 'sobra'] = bloques.duplicated(['firma', 'n'])
+    return claves.groupby(grupos, sort=False)['sobra'].transform('first').astype(bool)
+
+
 def unificar_csvs():
     """Une todos los CSVs descargados en un único archivo."""
     log.info("Unificando CSVs...")
@@ -720,8 +831,11 @@ def unificar_csvs():
     dfs = []
     for csv_path in csvs:
         try:
+            # keep_default_na=False: un adjudicatario "NA" o una referencia
+            # "NULL" son texto del portal, no valores vacíos
             df = pd.read_csv(csv_path, sep=';', encoding='utf-8-sig',
-                             dtype=str, on_bad_lines='skip')
+                             dtype=str, keep_default_na=False,
+                             on_bad_lines='skip')
             if len(df) > 0:
                 df['_archivo_fuente'] = csv_path.name
                 dfs.append(df)
@@ -735,23 +849,21 @@ def unificar_csvs():
 
     df_total = pd.concat(dfs, ignore_index=True)
 
-    # Eliminar duplicados exactos (mismo registro en dos CSVs, p.ej. en la
-    # frontera entre dos rangos de importe). No solo por Nº Expediente +
-    # Referencia + Entidad: eso colapsaba lotes/adjudicatarios distintos del
-    # mismo expediente y todas las filas sin expediente ni referencia.
-    cols_presentes = [c for c in df_total.columns if c != '_archivo_fuente']
-    if cols_presentes:
-        antes = len(df_total)
-        df_total = df_total.drop_duplicates(subset=cols_presentes)
-        dupes = antes - len(df_total)
-        if dupes:
-            log.info(f"  Eliminados {dupes:,} duplicados")
+    # Solo sobra un registro repetido en dos CSV (frontera entre rangos de
+    # importe). No por Nº Expediente + Referencia + Entidad (colapsaba lotes y
+    # todas las filas de continuación) ni por filas idénticas (se perdían
+    # duplicados que sirve el portal y continuaciones de otros contratos).
+    sobran = filas_repetidas_entre_ficheros(df_total)
+    if sobran.any():
+        log.info(f"  Eliminadas {int(sobran.sum()):,} filas de registros "
+                 f"repetidos en dos CSV")
+        df_total = df_total[~sobran]
 
     salida = OUTPUT_DIR / "contratacion_comunidad_madrid_completo.csv"
     df_total.to_csv(salida, index=False, sep=';', encoding='utf-8-sig')
     size_mb = salida.stat().st_size / (1024 * 1024)
     log.info(f"\n✓ {salida}")
-    log.info(f"  {len(df_total):,} filas únicas, {size_mb:.1f} MB")
+    log.info(f"  {len(df_total):,} filas, {size_mb:.1f} MB")
     log.info(f"  Columnas: {list(df_total.columns)}")
 
 
@@ -769,13 +881,13 @@ if __name__ == "__main__":
 
     elif modo == "otros":
         d = DescargadorComunidadMadrid()
-        a1 = int(sys.argv[2]) if len(sys.argv) > 2 else 2017
+        a1 = int(sys.argv[2]) if len(sys.argv) > 2 else ANIO_INICIO
         a2 = int(sys.argv[3]) if len(sys.argv) > 3 else datetime.now().year
         d.descargar_otros(a1, a2)
 
     elif modo == "todo":
         d = DescargadorComunidadMadrid()
-        a1 = int(sys.argv[2]) if len(sys.argv) > 2 else 2017
+        a1 = int(sys.argv[2]) if len(sys.argv) > 2 else ANIO_INICIO
         a2 = int(sys.argv[3]) if len(sys.argv) > 3 else datetime.now().year
         d.descargar_todo(a1, a2)
 
@@ -790,7 +902,8 @@ Descarga de Contratación Pública - Comunidad de Madrid v4
 Uso:
   python script.py prueba           → Test: 1 entidad + 1 mes
   python script.py menores          → Solo contratos menores (por entidad)
-  python script.py otros            → Solo otros tipos (por mes, 2017-año actual)
+  python script.py otros            → Solo otros tipos (por mes, 2017-año actual
+                                      + lo publicado antes de 2017)
   python script.py otros 2020 2025  → Otros tipos, período parcial
   python script.py todo             → Todo: menores + otros
   python script.py unificar         → Une CSVs en archivo único

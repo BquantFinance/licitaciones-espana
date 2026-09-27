@@ -18,6 +18,7 @@ interaction is simulated:
 import csv
 import importlib.util
 import io
+import json
 import os
 import runpy
 import shutil
@@ -438,14 +439,36 @@ def test_ayto_leer_csv_decodes_cp1252_and_falls_back_to_latin1(tmp_path):
     df = ayto.leer_csv(cp1252)
     assert df.iloc[0].tolist() == ["“Suministro” – oficina", "1.815,00 €", "B1"]
 
-    # 0x81 is undefined in cp1252 → latin-1 fallback, no crash
+    # 0x9D is undefined in cp1252 (and no Spanish letter in CP850) → latin-1
+    # fallback, no crash
     latin1 = tmp_path / "latin1.csv"
-    latin1.write_bytes(b"OBJETO;IMPORTE;NIF\r\nA\x81B;1,00;B2\r\n")
-    assert ayto.leer_csv(latin1).iloc[0].tolist() == ["A\x81B", "1,00", "B2"]
+    latin1.write_bytes(b"OBJETO;IMPORTE;NIF\r\nA\x9dB;1,00;B2\r\n")
+    assert ayto.leer_csv(latin1).iloc[0].tolist() == ["A\x9dB", "1,00", "B2"]
 
     bom = tmp_path / "bom.csv"
     bom.write_bytes("OBJETO;IMPORTE;NIF\r\nÁrea;2,00;B3\r\n".encode("utf-8-sig"))
     assert list(ayto.leer_csv(bom).columns) == ["OBJETO", "IMPORTE", "NIF"]
+
+
+def test_ayto_leer_csv_decodes_ms_dos_cp850_files(tmp_path):
+    # Old files of the portal are CP850: read as cp1252 they gave the
+    # "Descripci¢n Centro" / "N£mero Contrato" / "A¤o" headers the mappings
+    # had to include, and every record's text was garbled the same way.
+    texto = ("Mes;A\u00f1o;Descripci\u00f3n Centro;N\u00famero Contrato;"
+             "Nombre/Raz\u00f3n Social;Importe Adjudicaci\u00f3n   (IVA Incluido)\r\n"
+             "Enero;2016;\u00c1rea de Gobierno de Cultura;300/2016/001;"
+             "Construcciones Pe\u00f1a y Mu\u00f1oz, S.L.;1.815,00\r\n")
+    ruta = tmp_path / "formalizados_2016.csv"
+    ruta.write_bytes(texto.encode("cp850"))
+    df = ayto.leer_csv(ruta)
+    assert list(df.columns)[:4] == ["Mes", "A\u00f1o", "Descripci\u00f3n Centro",
+                                    "N\u00famero Contrato"]
+    assert df.iloc[0, 4] == "Construcciones Pe\u00f1a y Mu\u00f1oz, S.L."
+    with redirect_stdout(io.StringIO()):
+        out = ayto.procesar_fichero("formalizados_2016", ruta)
+    assert out.loc[0, "centro_seccion"] == "\u00c1rea de Gobierno de Cultura"
+    assert out.loc[0, "razon_social_adjudicatario"] == "Construcciones Pe\u00f1a y Mu\u00f1oz, S.L."
+    assert out.loc[0, "n_registro_contrato"] == "300/2016/001"
 
 
 def test_ayto_leer_csv_empty_file_returns_empty_frame(tmp_path):
@@ -529,6 +552,9 @@ class _Resp:
         if self.status_code >= 400:
             raise requests.HTTPError(f"{self.status_code} Error")
 
+    def json(self):
+        return json.loads(self.text)
+
 
 def _get_datos_madrid(paginas, ficheros, llamadas):
     urls = {**ayto._urls_respaldo_menores(), **ayto._urls_respaldo_actividad()}
@@ -569,9 +595,10 @@ def test_ayto_documented_cli_end_to_end(tmp_path):
     df, log = ejecutar()
     out = trabajo / "datos_madrid_contratacion_completa"
     assert "Usando URLs de respaldo" in log
-    # every fallback URL was requested; the ones without fixture got a 404 and
-    # were skipped without aborting the run
-    assert len(llamadas) == 2 + len(ayto._urls_respaldo_menores()) + len(
+    # CKAN API and old pages (2 + 2 calls) answer nothing usable; every fallback
+    # URL was requested; the ones without fixture got a 404 and were skipped
+    # without aborting the run
+    assert len(llamadas) == 4 + len(ayto._urls_respaldo_menores()) + len(
         ayto._urls_respaldo_actividad())
     assert sorted(p.name for p in (out / "csv_originales").iterdir()) == sorted(
         f"{n}.csv" for n in FICHEROS_AYTO)
@@ -662,6 +689,92 @@ def test_ayto_discovery_names_files_by_category_and_year():
     }
 
 
+def _ckan(recursos):
+    return json.dumps({"success": True, "result": {"resources": [
+        {"format": f, "url": u, "name": n, "description": d} for f, u, n, d in recursos]}})
+
+
+def test_ayto_discovery_uses_the_ckan_api_first():
+    base = "https://datos.madrid.es/dataset/x/resource"
+    paginas = {
+        ayto.CKAN_PACKAGE_SHOW + ayto.DATASET_MENORES: _ckan([
+            ("CSV", f"{base}/m26.csv", "Contratos menores 2026", ""),
+            ("CSV", f"{base}/m21a.csv", "", "Contratos menores 2021 (hasta febrero)"),
+            ("CSV", f"{base}/m21b.csv", "", "Contratos menores 2021 (desde marzo)"),
+            ("XLSX", f"{base}/m26.xlsx", "Contratos menores 2026", ""),   # not CSV
+            ("CSV", f"{base}/sin-anio.csv", "Contratos menores", ""),     # no year
+        ]),
+        ayto.CKAN_PACKAGE_SHOW + ayto.DATASET_ACTIVIDAD: _ckan([
+            ("CSV", f"{base}/f26.csv", "2026. Contratos inscritos en el Registro", ""),
+            ("CSV", f"{base}/pr26.csv", "2026. Prórrogas de contratos", ""),
+            # two different files that get the same name: both are kept
+            ("CSV", f"{base}/am26a.csv", "2026. Contratos basados en acuerdo marco", ""),
+            ("CSV", f"{base}/am26b.csv", "2026. Contratos basados en acuerdo marco", ""),
+            ("CSV", f"{base}/am26b.csv", "2026. Contratos basados en acuerdo marco", ""),
+        ]),
+    }
+    llamadas = []
+    with patch.object(ayto.requests, "get", side_effect=_get_datos_madrid(paginas, {}, llamadas)), \
+            redirect_stdout(io.StringIO()):
+        urls_m = ayto.descubrir_csv_urls_menores()
+        urls_a = ayto.descubrir_csv_urls_actividad()
+
+    assert urls_m == {
+        "menores_2026": f"{base}/m26.csv",
+        "menores_2021_hasta_febrero": f"{base}/m21a.csv",
+        "menores_2021_desde_marzo": f"{base}/m21b.csv",
+        "menores_sin_anio_csv": f"{base}/sin-anio.csv",
+    }
+    assert urls_a == {
+        "formalizados_2026": f"{base}/f26.csv",
+        "prorrogados_2026": f"{base}/pr26.csv",
+        "acuerdo_marco_2026": f"{base}/am26a.csv",
+        "acuerdo_marco_2026_2": f"{base}/am26b.csv",
+    }
+    assert {ayto._clasificar_categoria(n) for n in urls_a} == {
+        "contratos_formalizados", "prorrogados", "acuerdo_marco"}
+    # the old pages are not requested when the API answers
+    assert ayto.PAGINA_CONTRATOS_MENORES not in llamadas
+
+
+def test_ayto_discovery_keeps_files_that_used_to_be_dropped():
+    # old portal page: an item mentioning "menores" in the text and a second
+    # file whose derived name collides were silently discarded
+    actividad = (
+        '<ul><li><div><p>2024. Contratos inscritos (no incluye contratos menores)</p></div>'
+        '<div><a href="/c/f24.csv">CSV</a></div></li>'
+        '<li><div><p>2024. Contratos inscritos, 2ª parte</p></div>'
+        '<div><a href="/c/f24b.csv">CSV</a></div></li></ul>')
+    paginas = {ayto.PAGINA_ACTIVIDAD_CONTRACTUAL: actividad}
+    with patch.object(ayto.requests, "get", side_effect=_get_datos_madrid(paginas, {}, [])), \
+            redirect_stdout(io.StringIO()):
+        urls = ayto.descubrir_csv_urls_actividad()
+    assert urls == {"formalizados_2024": "https://datos.madrid.es/c/f24.csv",
+                    "formalizados_2024_2": "https://datos.madrid.es/c/f24b.csv"}
+
+
+def test_ayto_current_and_previous_year_files_are_downloaded_again(tmp_path):
+    anio = datetime.now().year
+    for nombre in (f"menores_{anio}", f"menores_{anio - 1}", f"menores_{anio - 2}"):
+        (tmp_path / f"{nombre}.csv").write_bytes(b"viejo")
+    with patch.object(ayto, "CSV_DIR", tmp_path), \
+            patch.object(ayto.requests, "get", return_value=_Resp(content=b"nuevo")), \
+            redirect_stdout(io.StringIO()):
+        for nombre in (f"menores_{anio}", f"menores_{anio - 1}", f"menores_{anio - 2}"):
+            ayto.descargar_csv(nombre, "https://datos.madrid.es/x.csv")
+    assert (tmp_path / f"menores_{anio}.csv").read_bytes() == b"nuevo"
+    assert (tmp_path / f"menores_{anio - 1}.csv").read_bytes() == b"nuevo"
+    assert (tmp_path / f"menores_{anio - 2}.csv").read_bytes() == b"viejo"   # closed year
+
+    # a failed refresh keeps the previous download instead of losing the file
+    with patch.object(ayto, "CSV_DIR", tmp_path), \
+            patch.object(ayto.requests, "get", return_value=_Resp(status=503)), \
+            redirect_stdout(io.StringIO()):
+        ruta = ayto.descargar_csv(f"menores_{anio}", "https://datos.madrid.es/x.csv")
+    assert ruta == tmp_path / f"menores_{anio}.csv" and ruta.read_bytes() == b"nuevo"
+    assert not list(tmp_path.glob("*.part"))
+
+
 def test_ayto_discovery_falls_back_to_builtin_urls_on_http_error():
     with patch.object(ayto.requests, "get", side_effect=_get_datos_madrid({}, {}, [])), \
             redirect_stdout(io.StringIO()):
@@ -728,8 +841,11 @@ def _registros_cam():
     # Entity 38 exceeds the (scaled-down) 6-row cap: needs the amount split,
     # including a second-level split of 0-10 and 5-10, and boundary values
     # (5, 7, 10, 20, 50000) that fall in two adjacent ranges.
+    # Menores above 50,000 € and negative ones exist too (0.04% of the menores
+    # of the entities that were not split in the published data): only the
+    # open ranges "≤0" and "≥50000" reach them.
     for i, p in enumerate([1, 2, 3, 4.5, 5, 6, 7, 8, 9, 10, 10, 15, 20, 25, 49.99,
-                           120, 999.5, 14999.99, 50000]):
+                           120, 999.5, 14999.99, 50000, 59894.62, -186.3]):
         regs.append(_registro(menor, "38", f"38-{i:02d}", p))
     regs += [
         _registro(menor, "5", "5-01", 300),
@@ -750,6 +866,9 @@ def _registros_cam():
         _registro(conv, "38", "C-3", 80000, "2023-12-31"),   # outside 2024
         _registro(sin_pub, "120", "S-1", 20000, "2024-11-30"),
         _registro(cam.TIPOS_NO_MENORES[4], "5", "Q-1", 0, "2024-02-29"),
+        # published before 2017 (the portal has notices from 2014 on)
+        _registro(conv, "5", "V-1", 90000, "2014-01-20"),
+        _registro(sin_pub, "38", "V-2", 30000, "2016-12-31"),
     ]
     return regs
 
@@ -1059,6 +1178,120 @@ def test_cam_unificar_removes_exact_duplicates_only(cam_dirs):
     assert _leer_unificado(salida) == _esperado([base, otro, lote1, lote2])
 
 
+def _continuacion(adjudicatario="", nif="", importe="0,00", prorroga="0,00"):
+    """Row the portal adds after a record for another lot/awardee/extension:
+    only the last columns are filled (seen in real exports of the portal)."""
+    fila = dict.fromkeys(COLUMNAS_CAM, "")
+    fila.update({"NIF del adjudicatario": nif, "Adjudicatario": adjudicatario,
+                 "Importe de adjudicación": importe, "Importe de las modificaciones": "0,00",
+                 "Importe de las prórrogas": prorroga, "Importe de la liquidación": "0,00"})
+    return fila
+
+
+def test_cam_unificar_keeps_continuation_rows_and_source_duplicates(cam_dirs):
+    conv = cam.TIPOS_NO_MENORES[0]
+    a = _registro(conv, "5", "A-1", 1000, adjudicatario="NA")    # literal "NA"
+    b = _registro(conv, "5", "B-1", 2000)
+    c = _registro(conv, "38", "C-1", 3000)
+    prorroga = _continuacion(prorroga="1.000,00")
+    lote = _continuacion("LOTE DOS SL", "B2", "500,00")
+    mes = [a, prorroga, prorroga, lote, b, prorroga, c, c]   # c: served twice
+    m1 = _registro("Contratos menores", "120", "M-1", 50)
+    m2 = _registro("Contratos menores", "120", "M-2", 60)
+    csv_dir = cam_dirs / "csv_originales"
+    (csv_dir / "2024_03_convocatoria_anunciada_a_l.csv").write_bytes(FakePortalCAM._csv(mes))
+    # 50 € sits on the border of two amount ranges: downloaded twice
+    (csv_dir / "menores_ent120_x_imp30-50.csv").write_bytes(FakePortalCAM._csv([m1]))
+    (csv_dir / "menores_ent120_x_imp50-75.csv").write_bytes(FakePortalCAM._csv([m1, m2]))
+
+    cam.unificar_csvs()
+    df = pd.read_csv(cam_dirs / "contratacion_comunidad_madrid_completo.csv", sep=";",
+                     encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    filas = [tuple(r[c] for c in COLUMNAS_CAM) for r in [*mes, m1, m2]]
+    # same rows, same order: each continuation row still follows its record
+    assert [tuple(f) for f in df[COLUMNAS_CAM].itertuples(index=False)] == filas
+    assert df.loc[0, "Adjudicatario"] == "NA"
+
+
+def test_cam_unificar_drops_a_whole_record_repeated_in_another_csv(cam_dirs):
+    conv = cam.TIPOS_NO_MENORES[0]
+    a = _registro(conv, "5", "A-1", 1000)
+    b = _registro(conv, "5", "B-1", 2000)
+    prorroga = _continuacion(prorroga="1.000,00")
+    csv_dir = cam_dirs / "csv_originales"
+    (csv_dir / "2024_03_convocatoria_anunciada_a_l.csv").write_bytes(
+        FakePortalCAM._csv([a, prorroga, b]))
+    # the same record + its continuation again in another CSV (overlapping
+    # searches), and B with a different continuation: B is not a repeat
+    (csv_dir / "hasta_2016_convocatoria_anunciada_a_l.csv").write_bytes(
+        FakePortalCAM._csv([a, prorroga, b, _continuacion("OTRA SL", "B9", "5,00")]))
+
+    cam.unificar_csvs()
+    df = pd.read_csv(cam_dirs / "contratacion_comunidad_madrid_completo.csv", sep=";",
+                     encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    assert df["_archivo_fuente"].tolist() == ["2024_03_convocatoria_anunciada_a_l.csv"] * 3 + [
+        "hasta_2016_convocatoria_anunciada_a_l.csv"] * 2
+    assert df["Referencia"].tolist() == ["A-1", "", "B-1", "B-1", ""]
+
+
+def test_cam_otros_includes_notices_published_before_2017(cam_dirs, portal):
+    cam.DescargadorComunidadMadrid().descargar_otros(2017, 2017)
+    cam.unificar_csvs()
+
+    csv_dir = cam_dirs / "csv_originales"
+    conv, sin_pub = cam.TIPOS_NO_MENORES[0], cam.TIPOS_NO_MENORES[1]
+    assert sorted(p.name for p in csv_dir.iterdir()) == sorted([
+        cam.nombre_csv_hasta(2016, conv), cam.nombre_csv_hasta(2016, sin_pub)])
+    previas = [b for b in portal.busquedas if b["createddate"] == ""]
+    assert {b["createddate_1"] for b in previas} == {"31-12-2016"}
+    esperado = [r for r in portal.registros if r["_publicado"][:4] in ("2014", "2016")]
+    assert len(esperado) == 2
+    assert _leer_unificado(cam_dirs / "contratacion_comunidad_madrid_completo.csv") == \
+        _esperado(esperado)
+
+
+def _envejecer(ruta, horas):
+    t = datetime.now().timestamp() - horas * 3600
+    os.utime(ruta, (t, t))
+
+
+def test_cam_stale_csvs_are_downloaded_again_recent_ones_are_kept(cam_dirs, portal):
+    csv_dir = cam_dirs / "csv_originales"
+    # entity 5 downloaded two days ago, when it had a single menor
+    viejo = csv_dir / cam.nombre_csv_entidad(5, ENTIDADES_CAM["5"][0])
+    viejo.write_bytes(FakePortalCAM._csv([portal.registros[21]]))
+    _envejecer(viejo, 48)
+    # entity 120 downloaded an hour ago (interrupted run): not requested again
+    reciente = csv_dir / cam.nombre_csv_entidad(120, ENTIDADES_CAM["120"][0])
+    contenido = FakePortalCAM._csv([r for r in portal.registros
+                                    if r["Entidad Adjudicadora"] == "Canal de Isabel II"
+                                    and r["Tipo de Publicación"] == "Contratos menores"])
+    reciente.write_bytes(contenido)
+    _envejecer(reciente, 1)
+
+    cam.DescargadorComunidadMadrid().descargar_menores()
+
+    df = pd.read_csv(viejo, sep=";", encoding="utf-8-sig", dtype=str)
+    assert df["Referencia"].tolist() == ["5-01", "5-02", "5-03"]
+    assert reciente.read_bytes() == contenido
+    assert "120" not in {b["entidad_adjudicadora"] for b in portal.busquedas}
+
+
+def test_cam_failed_refresh_keeps_the_previous_csv(cam_dirs, portal):
+    viejo = cam_dirs / "csv_originales" / cam.nombre_csv_entidad(5, ENTIDADES_CAM["5"][0])
+    anterior = FakePortalCAM._csv([portal.registros[21]])
+    viejo.write_bytes(anterior)
+    _envejecer(viejo, 48)
+    portal.fallar = lambda p: p.get("entidad_adjudicadora") == "5"
+
+    d = cam.DescargadorComunidadMadrid()
+    d.descargar_menores()
+
+    assert d.stats["error"] == 1
+    assert viejo.read_bytes() == anterior
+    assert not list((cam_dirs / "csv_originales").glob("*.part"))
+
+
 def test_cam_output_dir_is_the_script_folder_not_the_cwd():
     assert cam.OUTPUT_DIR == CAM_PATH.parent
     assert cam.CSV_DIR == CAM_PATH.parent / "csv_originales"
@@ -1112,8 +1345,12 @@ def test_cam_cli_otros_defaults_reach_the_current_month(tmp_path):
     inicios = {b["createddate"] for b in portal.busquedas}
     assert "01-01-2017" in inicios
     assert f"01-{hoy.month:02d}-{hoy.year}" in inicios
-    assert len(portal.busquedas) == ((hoy.year - 2017) * 12 + hoy.month) * len(
+    # every month since 2017 + one "published up to 31-12-2016" search per type
+    assert len(portal.busquedas) == ((hoy.year - 2017) * 12 + hoy.month + 1) * len(
         cam.TIPOS_NO_MENORES)
+    anteriores = [b for b in portal.busquedas if b["createddate"] == ""]
+    assert {b["createddate_1"] for b in anteriores} == {"31-12-2016"}
+    assert len(anteriores) == len(cam.TIPOS_NO_MENORES)
 
 
 def test_cam_cli_prueba_downloads_hospital_38(tmp_path):
