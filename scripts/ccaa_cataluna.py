@@ -23,6 +23,9 @@ from datetime import datetime, timezone
 import sys
 import logging
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import guardar_version  # noqa: E402
+
 # =============================================================================
 # CONFIGURACIÓN
 # =============================================================================
@@ -177,6 +180,9 @@ def download_with_progress(url, path, desc="", timeout=600, modificado=None):
     modificado: fecha (epoch) de la última actualización en el portal. Si la copia
     local es anterior se vuelve a descargar (antes un archivo ya descargado no se
     actualizaba nunca y los datasets que crecen se quedaban congelados).
+    La copia anterior no se machaca: guardar_version la deja en _historico/ si
+    el contenido cambió (el RPC y los menores de la Generalitat son ventanas
+    móviles de 5 años: lo que sale de la ventana solo queda en esas versiones).
     """
     global stats
     
@@ -224,7 +230,7 @@ def download_with_progress(url, path, desc="", timeout=600, modificado=None):
             stats['failed'] += 1
             return False
         
-        tmp_path.replace(path)
+        guardar_version(path, desde=tmp_path)
         stats['downloaded'] += 1
         stats['bytes'] += size
         size_str = f"{size/1024:.1f}KB" if size < 1024*1024 else f"{size/1024/1024:.2f}MB"

@@ -212,6 +212,12 @@ class DescargaCatalunyaTests(unittest.TestCase):
         pedidas = self._socrata_con_fecha(2_000_000)  # el portal lo actualizó después
         self.assertTrue(any("rows.csv" in u for u in pedidas))
         self.assertEqual(csv.read_bytes(), b"id,nom\n1,nou\n")
+        # La copia anterior no se machaca: el RPC y qjue-2pk9 son ventanas móviles de 5
+        # años y lo que sale de la ventana solo queda en las versiones guardadas
+        historico = list((csv.parent / "_historico").iterdir())
+        self.assertEqual(len(historico), 1)
+        self.assertEqual(historico[0].read_bytes(), b"id,nom\n1,vell\n")
+        self.assertTrue(historico[0].name.startswith("registro__") and historico[0].suffix == ".csv")
 
         # Sin fecha en los metadatos se mantiene el comportamiento anterior (no se descarga)
         os.utime(csv, (1_000_000, 1_000_000))
