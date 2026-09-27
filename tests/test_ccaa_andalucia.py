@@ -361,6 +361,27 @@ class AndaluciaScraperTests(unittest.TestCase):
 
         self.assertEqual([record["id_expediente"] for record in records], [1, 2, 3])
 
+    def test_paginate_multisort_skips_sort_rejected_by_the_index(self):
+        # Ordenar por un campo de texto sin fielddata da HTTP 400: antes abortaba el scrape
+        # entero en el primer bloque grande que llegaba a esa ordenacion
+        def fake_es(body, timeout=None):
+            field = next(iter(body["sort"][0]))
+            if field == "titulo":
+                raise ccaa_andalucia.ScraperError("HTTP no reintentable 400: fielddata", status_code=400)
+            if body.get("from", 0):
+                return {"hits": {"hits": []}}
+            ids = {"idExpediente": [1, 2], "importeLicitacion": [3]}[field]
+            return {"hits": {"hits": [{"_source": {"idExpediente": value}} for value in ids]}}
+
+        sorts = [[{"idExpediente": "asc"}], [{"titulo": "asc"}], [{"importeLicitacion": "asc"}]]
+        with patch.object(ccaa_andalucia, "SORT_COMBOS", sorts), patch.object(ccaa_andalucia, "DELAY", 0), patch.object(
+            ccaa_andalucia, "es", side_effect=fake_es
+        ), patch.object(ccaa_andalucia.time, "sleep"), self.assertLogs(ccaa_andalucia.log, level="WARNING") as logs:
+            records = ccaa_andalucia.paginate_multisort(target=3, label="blk")
+
+        self.assertEqual([record["id_expediente"] for record in records], [1, 2, 3])
+        self.assertIn("ordenacion titulo:asc no admitida", "\n".join(logs.output))
+
     def test_scrape_recursive_uses_known_total_to_avoid_duplicate_count(self):
         with patch.object(ccaa_andalucia, "cnt") as mocked_count, patch.object(
             ccaa_andalucia,
@@ -382,7 +403,12 @@ class AndaluciaScraperTests(unittest.TestCase):
         self.assertEqual(got, 1)
         self.assertEqual(len(records), 1)
 
-    def test_get_perfiles_uses_cache_when_present(self):
+    def test_get_perfiles_uses_cache_as_seed_and_adds_new_perfiles(self):
+        # La cache no se actualizaba nunca: los perfiles nuevos solo salian por la rama null
+        responses = [
+            {"hits": {"hits": [{"_source": {"perfilContratante": {"codigo": "C"}}}]}},
+            {"hits": {"hits": []}},
+        ]
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "perfiles_cache.json"
             cache_path.write_text('["B","A"]', encoding="utf-8")
@@ -394,11 +420,66 @@ class AndaluciaScraperTests(unittest.TestCase):
             ), patch.object(
                 ccaa_andalucia,
                 "es",
-            ) as mocked_es:
+                side_effect=responses,
+            ) as mocked_es, patch.object(ccaa_andalucia.time, "sleep"):
                 perfiles = ccaa_andalucia.get_perfiles()
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
 
-        mocked_es.assert_not_called()
-        self.assertEqual(perfiles, ["A", "B"])
+        self.assertEqual(perfiles, ["A", "B", "C"])
+        self.assertEqual(cached, ["A", "B", "C"])
+        first_query = mocked_es.call_args_list[0].args[0]
+        self.assertEqual(
+            first_query["query"]["bool"]["must_not"],
+            [ccaa_andalucia.mn("perfilContratante.codigo", "A"), ccaa_andalucia.mn("perfilContratante.codigo", "B")],
+        )
+        second_query = mocked_es.call_args_list[1].args[0]
+        self.assertEqual(len(second_query["query"]["bool"]["must_not"]), 3)
+
+    def test_partition_lists_cover_codes_present_in_published_data(self):
+        # Valores de licitaciones_andalucia.parquet que faltaban en las listas (solo salian
+        # por la rama null de cada dimension)
+        for code in ["ANUL", "AP", "C", "CERR", "E", "PUBANUL", "SUS"]:
+            self.assertIn(code, ccaa_andalucia.ESTADOS)
+        for code in ["CMIN", "CONOBR"]:
+            self.assertIn(code, ccaa_andalucia.TIPOS)
+        for code in ["99", "00"]:
+            self.assertIn(code, ccaa_andalucia.PROVS)
+        self.assertIn("A", ccaa_andalucia.FPS)
+        # Antes acababa en 2026 fijo y empezaba en 2018
+        self.assertEqual(ccaa_andalucia.YEARS[-1], str(date.today().year + 1))
+        for year in ("2015", "2016", "2017", "2026", str(date.today().year)):
+            self.assertIn(year, ccaa_andalucia.YEARS)
+
+    def test_flatten_keeps_every_award_lot_notice_and_unmapped_field_as_json(self):
+        source = {
+            "idExpediente": 9,
+            "titulo": "Con lotes",
+            "perfilContratante": {"codigo": "SYBS03", "descripcion": "SAS", "codigoDir3": "A1", "nif": "Q1"},
+            "estado": {"codigo": "RES", "nombre": "Resuelta"},
+            "mediosPublicacion": [{"codigo": "BOJA"}],
+            "fechaAdjudicacion": "2026-02-01T00:00:00+0100",
+            "adjudicaciones": [
+                {"nifAdjudicatario": "A1;", "importeAdjudicacion": 10.0, "lote": 1},
+                {"nifAdjudicatario": "B2;", "importeAdjudicacion": 20.0, "lote": 2},
+            ],
+            "lotes": [{"numero": 1, "importe": 10.0}, {"numero": 2, "importe": 20.0}],
+            "anuncios": [{"tipo": "ADJ", "fechaPublicacion": "2026-02-02T09:00:00+0100"}],
+        }
+
+        record = ccaa_andalucia.flatten(source)
+
+        self.assertEqual(record["importe_adjudicacion"], 10.0)  # la columna sigue siendo la 1a
+        self.assertEqual(json.loads(record["adjudicaciones_json"]), source["adjudicaciones"])
+        self.assertEqual(json.loads(record["lotes_json"]), source["lotes"])
+        self.assertEqual(json.loads(record["anuncios_json"]), source["anuncios"])
+        self.assertEqual(
+            json.loads(record["campos_extra_json"]),
+            {"perfilContratante": source["perfilContratante"], "fechaAdjudicacion": "2026-02-01T00:00:00+0100"},
+        )
+
+        plain = ccaa_andalucia.flatten({"idExpediente": 1, "estado": {"codigo": "PUB", "nombre": "Publicada"}})
+        for column in ("adjudicaciones_json", "lotes_json", "anuncios_json", "campos_extra_json"):
+            self.assertEqual(plain[column], "")
 
     def test_build_unknown_standard_exclusions_includes_known_procs(self):
         exclusions = ccaa_andalucia.build_unknown_standard_exclusions(
@@ -583,9 +664,10 @@ class AndaluciaEndToEndTests(unittest.TestCase):
 
         self.assertIn(f"SCRAPE MENORES: {len(self.men_ids):,}", output)
         self.assertEqual(self.read_csv_ids("licitaciones_menores.csv"), self.men_ids)
-        # HIDDEN01 no sale en las ventanas de descubrimiento: se recupera por la rama null
+        # HIDDEN01 y UNIV01 no salen en las ventanas de descubrimiento: se anaden pidiendo
+        # expedientes de perfiles aun no vistos (antes solo salian por la rama null)
         cached = json.loads((self.data_dir / "perfiles_cache.json").read_text(encoding="utf-8"))
-        self.assertEqual(cached, ["CONS01", "CONS02", "SYBS03"])
+        self.assertEqual(cached, ["CONS01", "CONS02", "HIDDEN01", "SYBS03", "UNIV01"])
         sorts_used = {json.dumps(body.get("sort")) for body in self.fake.bodies}
         self.assertIn(json.dumps([{"importeLicitacion": "asc"}]), sorts_used)
 
@@ -630,6 +712,20 @@ class AndaluciaEndToEndTests(unittest.TestCase):
         menor = by_id.loc[min(self.men_ids)]  # UNIV01 con mediosPublicacion[0].codigo = null
         self.assertEqual(str(menor["codigo_procedimiento"]), "9")
         self.assertEqual(menor["medios_publicacion"], ";BOJA")
+
+        # La 2a adjudicacion (importe 5.0) solo estaba en el NIF de todos_adjudicatarios_nif
+        awards = json.loads(awarded["adjudicaciones_json"])
+        self.assertEqual([award["importeAdjudicacion"] for award in awards], [1901.0, 5.0])
+        self.assertEqual(json.loads(awarded["lotes_json"] or "[]"), [])
+
+    def test_cli_scrape_men_completes_a_stale_perfil_cache(self):
+        (self.data_dir / "perfiles_cache.json").write_text('["CONS01"]', encoding="utf-8")
+
+        self.run_cli("scrape-men")
+
+        self.assertEqual(self.read_csv_ids("licitaciones_menores.csv"), self.men_ids)
+        cached = json.loads((self.data_dir / "perfiles_cache.json").read_text(encoding="utf-8"))
+        self.assertEqual(cached, ["CONS01", "CONS02", "HIDDEN01", "SYBS03", "UNIV01"])
 
 
 if __name__ == "__main__":

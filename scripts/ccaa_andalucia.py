@@ -14,6 +14,7 @@ import logging
 import re
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 import requests
@@ -48,6 +49,8 @@ DELAY = 0.3
 PAGE_SIZE = 100
 MAX_FROM = 9900
 MAX_RETRIES = 3
+# Maximo de clausulas must_not por consulta (ramas null y descubrimiento de perfiles)
+MAX_EXCLUSIONS = 900
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 COUNT_TIMEOUT = 60
 DEFAULT_TIMEOUT = 90
@@ -83,6 +86,10 @@ S.headers.update(
 
 class ScraperError(RuntimeError):
     """Error operativo del scraper de Andalucia."""
+
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 CSV_COLS = [
@@ -120,9 +127,47 @@ CSV_COLS = [
     "num_lotes",
     "num_anuncios",
     "url_detalle",
+    "adjudicaciones_json",
+    "lotes_json",
+    "anuncios_json",
+    "campos_extra_json",
 ]
 
+# Campos del _source que flatten() lleva a columnas propias (y los subcampos que aplana)
+FLAT_SOURCE_FIELDS = {
+    "idExpediente": None,
+    "numeroExpediente": None,
+    "titulo": None,
+    "tipoContrato": {"codigo", "descripcion"},
+    "perfilContratante": {"codigo", "descripcion", "codigoDir3"},
+    "estado": {"codigo", "nombre"},
+    "importeLicitacion": None,
+    "valorEstimado": None,
+    "fechaPublicacion": None,
+    "fechaLimitePresentacion": None,
+    "codigoProcedimiento": None,
+    "codigoTipoTramitacion": None,
+    "codigoNormativa": None,
+    "formaPresentacion": None,
+    "cofinanciadoUE": None,
+    "subastaElectronica": None,
+    "sistemaRacionalizacion": None,
+    "codigosCpv": None,
+    "provinciasEjecucion": None,
+    "mediosPublicacion": {"codigo"},
+}
+# Listas que flatten() resume (primera adjudicacion, numero de lotes, fechas de anuncios):
+# se guardan tambien completas, tal como las sirve el portal
+JSON_LIST_FIELDS = {
+    "adjudicaciones": "adjudicaciones_json",
+    "lotes": "lotes_json",
+    "anuncios": "anuncios_json",
+}
+
 PROCS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+# Los valores que no estan en estas listas solo se recuperan por la rama "null" de cada
+# dimension, que agrupa todo lo demas y puede superar los 10k (multi-sort parcial). Se
+# anaden los codigos que aparecen en licitaciones_andalucia.parquet y faltaban.
 TIPOS = [
     "SERV",
     "SUM",
@@ -145,12 +190,19 @@ TIPOS = [
     "CONOBRPUB",
     "COLABPUBPR",
     "CONSERV",
+    "CONOBR",
+    "CMIN",
 ]
-ESTADOS = ["RES", "PUB", "ADJ", "EVA", "ANU", "DES", "PRE", "FOR", "REN", "PEN", "CER", "REV", "ABD", "PAA"]
+ESTADOS = [
+    "RES", "PUB", "ADJ", "EVA", "ANU", "DES", "PRE", "FOR", "REN", "PEN", "CER", "REV", "ABD", "PAA",
+    "ANUL", "AP", "C", "CERR", "E", "PUBANUL", "SUS",
+]
 TRAMS = ["O", "U", "E", "S", "N"]
-PROVS = ["04", "11", "14", "18", "21", "23", "29", "41", "51", "52", "98"]
-FPS = ["E", "P", "M", "N", "S", "O"]
-YEARS = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025", "2026"]
+PROVS = ["04", "11", "14", "18", "21", "23", "29", "41", "51", "52", "98", "99", "00"]
+FPS = ["E", "P", "M", "N", "S", "O", "A"]
+# Hasta el ano siguiente al actual (antes acababa en 2026 fijo) y desde 2000: hay
+# expedientes numerados con 2015-2017 (y anteriores) que iban todos a la rama null
+YEARS = [str(year) for year in range(2000, date.today().year + 2)]
 
 SORT_COMBOS = [
     [{"idExpediente": "asc"}],
@@ -165,6 +217,10 @@ SORT_COMBOS = [
     [{"fechaLimitePresentacion": "desc"}],
     [{"adjudicaciones.importeAdjudicacion": "asc"}],
     [{"adjudicaciones.importeAdjudicacion": "desc"}],
+    # Mas ventanas de 10k para los bloques que siguen incompletos (el portal ya ordena
+    # por fechaPublicacion en get_perfiles)
+    [{"fechaPublicacion": "asc"}],
+    [{"fechaPublicacion": "desc"}],
 ]
 
 DIMS = [
@@ -225,7 +281,8 @@ def es(body, timeout=DEFAULT_TIMEOUT):
             else:
                 body_preview = response.text[:200].replace("\n", " ").strip()
                 raise ScraperError(
-                    f"HTTP no reintentable {response.status_code} consultando Andalucia API: {body_preview}"
+                    f"HTTP no reintentable {response.status_code} consultando Andalucia API: {body_preview}",
+                    status_code=response.status_code,
                 )
         except RequestException as exc:
             last_error = exc
@@ -253,49 +310,86 @@ def mn(field, value):
     return {"match": {field: value}}
 
 
+def _perfil_code(hit):
+    perfil = hit.get("_source", {}).get("perfilContratante", {})
+    if isinstance(perfil, dict) and perfil.get("codigo"):
+        return str(perfil["codigo"])
+    return None
+
+
+def complete_perfiles(perfiles):
+    """Anade los perfiles que no salen en las ventanas de ordenacion.
+
+    Esas ventanas solo ven ~40k expedientes (en el parquet publicado darian 368 de 505
+    perfiles) y una cache antigua no incluye los perfiles nuevos: sus expedientes solo se
+    recuperaban por la rama null, que puede superar los 10k. Se piden expedientes cuyo
+    perfil no esta en la lista hasta que no aparece ninguno nuevo.
+    """
+    while len(perfiles) < MAX_EXCLUSIONS:
+        must_not = [mn("perfilContratante.codigo", code) for code in sorted(perfiles)]
+        new_codes = set()
+        for offset in range(0, MAX_FROM + PAGE_SIZE, PAGE_SIZE):
+            data = es(
+                build_query(
+                    must_not=must_not,
+                    size=PAGE_SIZE,
+                    sort=[{"idExpediente": "asc"}],
+                    offset=offset,
+                )
+            )
+            hits = data.get("hits", {}).get("hits", [])
+            new_codes.update(code for code in map(_perfil_code, hits) if code and code not in perfiles)
+            if new_codes or len(hits) < PAGE_SIZE:
+                break
+            time.sleep(0.1)
+        if not new_codes:
+            break
+        perfiles.update(new_codes)
+        log.info("  +%s perfiles fuera de las ventanas: %s codes", len(new_codes), len(perfiles))
+    return perfiles
+
+
 def get_perfiles():
     global _PERFILES
     if _PERFILES:
         return _PERFILES
 
+    perfiles = set()
     if PERFILES_CACHE_PATH.exists():
         try:
             cached = json.loads(PERFILES_CACHE_PATH.read_text(encoding="utf-8"))
             if isinstance(cached, list) and cached:
-                _PERFILES = sorted(str(value) for value in cached if value)
-                log.info("Loaded %s perfil codes from cache", len(_PERFILES))
-                return _PERFILES
+                perfiles = {str(value) for value in cached if value}
+                log.info("Loaded %s perfil codes from cache", len(perfiles))
         except (OSError, ValueError) as exc:
             log.warning("No se pudo leer la cache de perfiles: %s", exc)
 
-    log.info("Discovering perfil codes...")
-    perfiles = set()
-    discovery_sorts = [
-        ("idExpediente", "asc"),
-        ("idExpediente", "desc"),
-        ("fechaPublicacion", "asc"),
-        ("fechaPublicacion", "desc"),
-    ]
+    if not perfiles:
+        log.info("Discovering perfil codes...")
+        discovery_sorts = [
+            ("idExpediente", "asc"),
+            ("idExpediente", "desc"),
+            ("fechaPublicacion", "asc"),
+            ("fechaPublicacion", "desc"),
+        ]
 
-    for sort_field, sort_order in discovery_sorts:
-        for offset in range(0, MAX_FROM + PAGE_SIZE, PAGE_SIZE):
-            data = es(
-                build_query(
-                    size=PAGE_SIZE,
-                    sort=[{sort_field: sort_order}],
-                    offset=offset,
+        for sort_field, sort_order in discovery_sorts:
+            for offset in range(0, MAX_FROM + PAGE_SIZE, PAGE_SIZE):
+                data = es(
+                    build_query(
+                        size=PAGE_SIZE,
+                        sort=[{sort_field: sort_order}],
+                        offset=offset,
+                    )
                 )
-            )
-            hits = data.get("hits", {}).get("hits", [])
-            if not hits:
-                break
-            for hit in hits:
-                perfil = hit.get("_source", {}).get("perfilContratante", {})
-                if isinstance(perfil, dict) and perfil.get("codigo"):
-                    perfiles.add(perfil["codigo"])
-            time.sleep(0.1)
-        log.info("  %s %s: %s codes", sort_field, sort_order, len(perfiles))
+                hits = data.get("hits", {}).get("hits", [])
+                if not hits:
+                    break
+                perfiles.update(code for code in map(_perfil_code, hits) if code)
+                time.sleep(0.1)
+            log.info("  %s %s: %s codes", sort_field, sort_order, len(perfiles))
 
+    complete_perfiles(perfiles)
     _PERFILES = sorted(perfiles)
     try:
         PERFILES_CACHE_PATH.write_text(
@@ -402,7 +496,31 @@ def flatten(source):
     row["url_detalle"] = (
         f"{BASE}/perfiles-licitaciones/detalle-licitacion?idExpediente={row['id_expediente']}"
     )
+
+    # Sin esto se perdia lo que el portal sirve y no cabe en las columnas anteriores: los
+    # importes de la 2a y siguientes adjudicaciones (19.765 expedientes del parquet
+    # publicado tienen varias), el detalle de lotes y anuncios y cualquier otro campo
+    for field, column in JSON_LIST_FIELDS.items():
+        if source.get(field):
+            row[column] = _json(source[field])
+    extra = {}
+    for key, value in source.items():
+        if key in JSON_LIST_FIELDS:
+            continue
+        if key not in FLAT_SOURCE_FIELDS:
+            extra[key] = value
+            continue
+        subfields = FLAT_SOURCE_FIELDS[key]
+        items = value if isinstance(value, list) else [value]
+        if subfields and any(isinstance(item, dict) and set(item) - subfields for item in items):
+            extra[key] = value
+    if extra:
+        row["campos_extra_json"] = _json(extra)
     return row
+
+
+def _json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _dt(value):
@@ -455,7 +573,15 @@ def paginate_multisort(must=None, must_not=None, label="", target=None):
         new_this_sort = 0
 
         for offset in range(0, MAX_FROM + PAGE_SIZE, PAGE_SIZE):
-            data = es(build_query(must=must, must_not=must_not, sort=sort, offset=offset))
+            try:
+                data = es(build_query(must=must, must_not=must_not, sort=sort, offset=offset))
+            except ScraperError as exc:
+                # Un campo que el indice no deja ordenar (p. ej. texto sin fielddata) responde
+                # 400 en la primera pagina: antes abortaba todo el scrape; se prueba la siguiente
+                if offset == 0 and exc.status_code == 400:
+                    log.warning("    %s: ordenacion %s no admitida, se omite: %s", label, sort_name, exc)
+                    break
+                raise
             batch = extract(data)
             if not batch:
                 break
@@ -545,7 +671,7 @@ def scrape_recursive(must, must_not, label, all_records, seen_ids, dim_idx=0, kn
             for value in values:
                 excluded.append(mn(field, value) if isinstance(value, str) else {"match": {field: value}})
 
-            if len(excluded) < 900:
+            if len(excluded) < MAX_EXCLUSIONS:
                 null_count = cnt(must=must, must_not=excluded)
                 if null_count > 0:
                     log.info("  %s/null_%s: %s", label, dim_name, f"{null_count:,}")

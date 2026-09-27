@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import numpy as np
+from datetime import date
 from io import StringIO
 from pathlib import Path
 import time
@@ -12,13 +13,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+FIRST_YEAR = 2019
+# Último año cuyo CSV consta publicado (asturias_contracts_ALL_YEARS.parquet llega a 2024).
+# Los siguientes se piden hasta el año en curso: el fichero de un año incluye las altas
+# hasta marzo del siguiente y se publica después, así que un 404 en esos últimos años
+# significa "aún no publicado" y no es un error.
+LAST_VERIFIED_YEAR = 2024
+DATASET_TEMPLATE = "dataset-contratacion-centralizada-{year}.csv"
+
+
 class AsturiasToParquet:
     """
     Descarga TODOS los años de Asturias, maneja duplicados, 
     fuerza tipos compatibles y guarda en Parquet.
     """
     
-    def __init__(self, output_dir=None):
+    def __init__(self, output_dir=None, last_year=None):
         self.base_url = "https://descargas.asturias.es/asturias/opendata/SectorPublico/contratacion"
         # Por defecto <repo>/ccaa_asturias (ruta documentada en el README), sin depender del cwd
         if output_dir is None:
@@ -26,13 +36,12 @@ class AsturiasToParquet:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Antes la lista acababa en 2024 fija: 2025 y siguientes no se descargaban nunca
+        if last_year is None:
+            last_year = date.today().year
         self.datasets = {
-            2019: "dataset-contratacion-centralizada-2019.csv",
-            2020: "dataset-contratacion-centralizada-2020.csv",
-            2021: "dataset-contratacion-centralizada-2021.csv",
-            2022: "dataset-contratacion-centralizada-2022.csv",
-            2023: "dataset-contratacion-centralizada-2023.csv",
-            2024: "dataset-contratacion-centralizada-2024.csv",
+            year: DATASET_TEMPLATE.format(year=year)
+            for year in range(FIRST_YEAR, max(last_year, LAST_VERIFIED_YEAR) + 1)
         }
         self.all_dfs = []
     
@@ -50,16 +59,30 @@ class AsturiasToParquet:
         df.columns = cols
         return df
     
+    @staticmethod
+    def decode_content(content_bytes):
+        """Los CSV están en Windows-1252: leídos como latin-1, las comillas tipográficas,
+        guiones largos, '€' o '…' quedaban como caracteres de control invisibles
+        (\\x93, \\x96, \\x80...). latin-1 solo si el fichero no es cp1252 válido."""
+        try:
+            return content_bytes.decode('cp1252')
+        except UnicodeDecodeError:
+            return content_bytes.decode('latin-1')
+
     def parse_year(self, content_bytes, year):
         """Parsea un año."""
-        content = content_bytes.decode('latin-1')
+        content = self.decode_content(content_bytes)
+
+        # Las líneas con más campos que la cabecera se descartaban en silencio
+        # (on_bad_lines='skip'): ahora se avisa y se guardan tal cual para revisarlas
+        # (list.append devuelve None, que para pandas es "no meter la línea en la tabla")
+        bad_lines = []
         
         df = pd.read_csv(
             StringIO(content),
             sep='§',
             engine='python',
-            on_bad_lines='skip',
-            encoding='latin-1'
+            on_bad_lines=bad_lines.append,
         )
         
         # Una página HTML (error, mantenimiento...) no contiene '§' y se lee como una
@@ -70,15 +93,26 @@ class AsturiasToParquet:
                 "no parece el CSV separado por '§'"
             )
 
+        if bad_lines:
+            bad_path = self.output_dir / f"lineas_descartadas_{year}.csv"
+            bad_path.write_text(
+                "".join("§".join(fields) + "\n" for fields in bad_lines),
+                encoding="utf-8",
+            )
+            logger.warning(
+                f"{year} - {len(bad_lines):,} líneas con más campos que la cabecera "
+                f"no caben en la tabla: guardadas en {bad_path}"
+            )
+
         df.columns = [str(c).strip() for c in df.columns]
         df = self.deduplicate_columns(df)
         df['year'] = year
-        df['source_file'] = f"dataset-contratacion-centralizada-{year}.csv"
+        df['source_file'] = DATASET_TEMPLATE.format(year=year)
         
         return df
     
     def process_year(self, year, filename):
-        """Descarga y parsea un año."""
+        """Descarga y parsea un año. Devuelve None si el año aún no está publicado."""
         url = f"{self.base_url}/{filename}"
         
         try:
@@ -86,6 +120,9 @@ class AsturiasToParquet:
             logger.info(f"Processing {year}...")
             
             response = requests.get(url, timeout=180)
+            if response.status_code == 404 and year > LAST_VERIFIED_YEAR:
+                logger.warning(f"{year} - {url} no existe (404): año aún no publicado")
+                return None
             # Sin esto un 404/500 (página HTML) se parseaba como si fuera el CSV del año
             response.raise_for_status()
             content_bytes = response.content
@@ -109,16 +146,21 @@ class AsturiasToParquet:
         """
         logger.info("Forcing compatible types for Parquet...")
         
-        # Patrones de columnas numéricas (intentar convertir)
+        # Patrones de columnas numéricas (intentar convertir). Sin 'Nº'/'NUMERO': son
+        # identificadores (Nº INSCRIPCION, Nº EXPEDIENTE ORGANO...), no cantidades
         numeric_patterns = ['AÑO', 'ANO', 'YEAR', 'PRESUPUESTO', 'IMPORTE', 'IMP.', 'IMP ', 
-                          'EURO', 'IVA', 'CANTIDAD', 'NUMERO', 'Nº', 'TOTAL', 'BASE']
+                          'EURO', 'IVA', 'CANTIDAD', 'TOTAL', 'BASE']
         
         for col in df.columns:
             # pandas 3 lee el texto con dtype "str" (no "object"): con la comparación
             # '== object' los importes quedaban como texto en el Parquet
             if pd.api.types.is_string_dtype(df[col].dtype):
-                # Verificar si parece numérica por nombre
-                looks_numeric = any(pat in col.upper() for pat in numeric_patterns)
+                # Verificar si parece numérica por nombre ('Nº EXPEDIENTE ORGANO' contiene
+                # 'ANO' de ORGANO: los identificadores se excluyen explícitamente)
+                looks_numeric = (
+                    not col.upper().startswith('Nº')
+                    and any(pat in col.upper() for pat in numeric_patterns)
+                )
                 
                 if looks_numeric:
                     try:
@@ -137,11 +179,20 @@ class AsturiasToParquet:
                         numeric = pd.to_numeric(cleaned, errors='coerce')
                         numeric = numeric.fillna(pd.to_numeric(df[col].where(~is_text), errors='coerce'))
                         
-                        # Si más del 50% son numéricos, usar numérico
-                        if numeric.notna().sum() / len(df) > 0.5:
+                        # Numérica solo si TODOS los valores con contenido lo son. Con el
+                        # umbral del 50 % los demás se convertían en NaN y se perdían (p. ej.
+                        # los expedientes "SUM/2019/12" de los contratos mayores)
+                        has_value = df[col].notna() & df[col].astype(str).str.strip().ne('')
+                        not_numeric = has_value & numeric.isna()
+                        if has_value.any() and not not_numeric.any():
                             df[col] = numeric
                             logger.debug(f"  {col}: numeric")
                             continue
+                        if numeric.notna().sum() / len(df) > 0.5:
+                            logger.warning(
+                                f"  {col}: {not_numeric.sum():,} valores no numéricos "
+                                f"(p. ej. {df.loc[not_numeric, col].iloc[0]!r}): se guarda como texto"
+                            )
                     except Exception:
                         pass
                 
@@ -194,14 +245,29 @@ class AsturiasToParquet:
     
     def run(self):
         failed_years = []
+        unpublished_years = []
+        downloaded_years = []
         for year, filename in self.datasets.items():
-            if not self.process_year(year, filename):
+            result = self.process_year(year, filename)
+            if result is None:
+                unpublished_years.append(year)
+            elif result:
+                downloaded_years.append(year)
+            else:
                 failed_years.append(year)
             time.sleep(0.5)
+        # Solo pueden faltar los últimos años: un año sin fichero seguido de otro que sí
+        # existe es un hueco en los datos, no un año pendiente de publicar
+        failed_years += [
+            year for year in unpublished_years
+            if any(later > year for later in downloaded_years)
+        ]
         if failed_years:
             # No sobrescribir el Parquet completo con un dataset al que le faltan años
-            logger.error(f"Años con error: {failed_years}. No se guarda un Parquet parcial.")
+            logger.error(f"Años con error: {sorted(failed_years)}. No se guarda un Parquet parcial.")
             return None
+        if unpublished_years:
+            logger.warning(f"Años aún sin publicar (se omiten): {unpublished_years}")
         return self.save_final_parquet()
 
 if __name__ == "__main__":

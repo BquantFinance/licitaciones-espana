@@ -5,6 +5,7 @@ import runpy
 import shutil
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +20,9 @@ ccaa_asturias = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ccaa_asturias)
 
 BASE_URL = "https://descargas.asturias.es/asturias/opendata/SectorPublico/contratacion"
-YEARS = [2019, 2020, 2021, 2022, 2023, 2024]
+YEARS = [2019, 2020, 2021, 2022, 2023, 2024]  # años publicados en el parquet del repo
+# El script pide además los años posteriores hasta el actual (404 = aún no publicado)
+REQUESTED_YEARS = list(range(2019, max(date.today().year, 2024) + 1))
 HEADER = [
     "Nº INSCRIPCION",
     "{year_col}",
@@ -181,6 +184,91 @@ class AsturiasScraperTests(unittest.TestCase):
         self.assertEqual(parquet_path.read_bytes(), b"dataset previo completo")
         self.assertFalse((Path(self.tmpdir) / "sample_1000_rows.csv").exists())
 
+    # ── Completitud ──────────────────────────────────────────────────────────
+
+    def test_run_downloads_years_after_2024_and_skips_the_unpublished_last_one(self):
+        # Antes la lista acababa en 2024 fija: el CSV de 2025 no se pedía nunca
+        processor = ccaa_asturias.AsturiasToParquet(output_dir=self.tmpdir, last_year=2026)
+        contents = all_year_contents()
+        contents["dataset-contratacion-centralizada-2025.csv"] = build_year_csv(2025)[0]
+        downloads = FakeDownloads(contents)  # 2026 -> 404: aún no publicado
+
+        with patch.object(ccaa_asturias.requests, "get", side_effect=downloads.get), patch.object(
+            ccaa_asturias.time, "sleep"
+        ):
+            result = processor.run()
+
+        self.assertEqual(
+            [url.rsplit("-", 1)[-1] for url, _ in downloads.calls],
+            [f"{year}.csv" for year in range(2019, 2027)],
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(sorted(result["year"].unique().tolist()), YEARS + [2025])
+
+    def test_run_fails_when_a_recent_year_is_missing_but_a_later_one_exists(self):
+        processor = ccaa_asturias.AsturiasToParquet(output_dir=self.tmpdir, last_year=2026)
+        contents = all_year_contents()
+        contents["dataset-contratacion-centralizada-2026.csv"] = build_year_csv(2026)[0]
+        downloads = FakeDownloads(contents)  # 2025 -> 404 con 2026 publicado: hueco
+
+        with patch.object(ccaa_asturias.requests, "get", side_effect=downloads.get), patch.object(
+            ccaa_asturias.time, "sleep"
+        ):
+            result = processor.run()
+
+        self.assertIsNone(result)
+        self.assertFalse((Path(self.tmpdir) / "asturias_contracts_ALL_YEARS.parquet").exists())
+
+    def test_parse_year_decodes_windows_1252(self):
+        # Los CSV del Principado son cp1252: como latin-1, “ ” – € quedaban como \x93 \x94 \x96 \x80
+        processor = ccaa_asturias.AsturiasToParquet(output_dir=self.tmpdir)
+        content = "OBJETO§PRESUPUESTO\r\nObra “Puente” – fase 2 (5.000 €)§5.000,00\r\n".encode("cp1252")
+
+        dataframe = processor.parse_year(content, 2024)
+
+        self.assertEqual(dataframe["OBJETO"].iloc[0], "Obra “Puente” – fase 2 (5.000 €)")
+
+    def test_parse_year_keeps_lines_with_extra_fields_aside_and_warns(self):
+        processor = ccaa_asturias.AsturiasToParquet(output_dir=self.tmpdir)
+        content = (
+            "Nº INSCRIPCION§OBJETO§PRESUPUESTO\r\n"
+            " 00000001-24§Uno§10,00\r\n"
+            " 00000002-24§Dos § con separador§20,00\r\n"
+            " 00000003-24§Tres§30,00\r\n"
+        ).encode("cp1252")
+
+        logging.disable(logging.NOTSET)
+        with self.assertLogs(ccaa_asturias.logger, level="WARNING") as logs:
+            dataframe = processor.parse_year(content, 2024)
+
+        self.assertEqual(dataframe["Nº INSCRIPCION"].tolist(), [" 00000001-24", " 00000003-24"])
+        self.assertIn("1 líneas", "\n".join(logs.output))
+        saved = (Path(self.tmpdir) / "lineas_descartadas_2024.csv").read_text(encoding="utf-8")
+        self.assertEqual(saved, " 00000002-24§Dos § con separador§20,00\n")
+
+    def test_force_compatible_types_does_not_turn_text_values_into_nan(self):
+        # 'Nº EXPEDIENTE ORGANO' se convertía a float: los expedientes con letras (todos los
+        # contratos MAYOR del parquet publicado) quedaban NaN y "00123" perdía los ceros
+        processor = ccaa_asturias.AsturiasToParquet(output_dir=self.tmpdir)
+        dataframe = pd.DataFrame(
+            {
+                "Nº EXPEDIENTE ORGANO": ["4501518123", "SUM/2019/12", "00123", None],
+                "ACUERDO MARCO DEL QUE DERIVA EL CONTRATO BASADO": ["123", "456", "AM/2021/7", " "],
+                "PRESUPUESTO": ["1.234,56", "100,5", " ", None],
+            },
+            dtype=object,
+        )
+
+        dataframe = processor.force_compatible_types(dataframe)
+
+        expedientes = [None if pd.isna(value) else value for value in dataframe["Nº EXPEDIENTE ORGANO"]]
+        self.assertEqual(expedientes, ["4501518123", "SUM/2019/12", "00123", None])
+        self.assertEqual(
+            dataframe["ACUERDO MARCO DEL QUE DERIVA EL CONTRATO BASADO"].tolist(), ["123", "456", "AM/2021/7", " "]
+        )
+        self.assertTrue(pd.api.types.is_float_dtype(dataframe["PRESUPUESTO"]))
+        self.assertEqual(dataframe["PRESUPUESTO"].tolist()[:2], [1234.56, 100.5])
+
 
 class AsturiasEndToEndTests(unittest.TestCase):
     """Ejecuta el script como en el README (`python scripts/ccaa_asturias.py`) con las
@@ -213,7 +301,7 @@ class AsturiasEndToEndTests(unittest.TestCase):
 
         self.assertEqual(
             downloads.calls,
-            [(f"{BASE_URL}/dataset-contratacion-centralizada-{year}.csv", 180) for year in YEARS],
+            [(f"{BASE_URL}/dataset-contratacion-centralizada-{year}.csv", 180) for year in REQUESTED_YEARS],
         )
         output_dir = self.tmpdir / "ccaa_asturias"
         parquet_path = output_dir / "asturias_contracts_ALL_YEARS.parquet"
@@ -262,7 +350,7 @@ class AsturiasEndToEndTests(unittest.TestCase):
             self.run_script(downloads)
 
         self.assertEqual(raised.exception.code, 1)
-        self.assertEqual(len(downloads.calls), len(YEARS))
+        self.assertEqual(len(downloads.calls), len(REQUESTED_YEARS))
         self.assertEqual(parquet_path.read_bytes(), b"dataset previo completo")
 
 

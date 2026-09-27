@@ -387,6 +387,8 @@ DETAIL_EXPORT_FIELDS = [
     "detail_cambios_count",
     "detail_pairs_count",
     "detail_tables_count",
+    "detail_adjudicaciones_json",
+    "detail_campos_extra_json",
 ]
 
 
@@ -607,6 +609,34 @@ def map_table_fields(tables):
     }
 
 
+def detail_unmapped_fields(pairs, tables):
+    """Lo que la ficha ofrece y no tiene columna propia; antes solo quedaba en la caché
+    SQLite (y solo con raw activado):
+
+    - filas de las tablas de adjudicación (adjudicatario, importe... por lote): en LIC es
+      el único sitio con el adjudicatario y el importe adjudicado, y solo se contaban;
+    - etiquetas sin columna en DETAIL_FIELD_MAP y repeticiones de las mapeadas (p. ej.
+      una "Fecha formalización" por lote), de las que solo se guardaba la primera.
+    """
+    adjudicaciones = []
+    for table in tables:
+        headers = {normalize_label(header) for header in table.get("headers", [])}
+        if "adjudicatario" in headers and "importe" in headers:
+            adjudicaciones.extend(row["values"] for row in table.get("rows", []))
+    extra = []
+    seen = set()
+    for pair in pairs:
+        target_key = DETAIL_FIELD_MAP.get(pair["key"])
+        if target_key and target_key not in seen:
+            seen.add(target_key)
+            continue
+        extra.append({"section": pair["section"], "label": pair["label"], "value": pair["value"]})
+    return {
+        "detail_adjudicaciones_json": compact_json(adjudicaciones) if adjudicaciones else None,
+        "detail_campos_extra_json": compact_json(extra) if extra else None,
+    }
+
+
 def map_detail_fields(page_title, pairs, tables):
     mapped = {
         "detail_page_title": page_title,
@@ -622,6 +652,7 @@ def map_detail_fields(page_title, pairs, tables):
             continue
         mapped[target_key] = pair["value"]
         seen.add(target_key)
+    mapped.update(detail_unmapped_fields(pairs, tables))
 
     mapped["detail_presupuesto_base_eur"] = parse_amount(mapped.get("detail_presupuesto_base_text"))
     mapped["detail_valor_estimado_eur"] = parse_amount(mapped.get("detail_valor_estimado_text"))
@@ -862,11 +893,17 @@ def paginate_lic(session, org_id):
         time.sleep(DELAY)
 
     if total and total > 0:
-        ok = "✓" if len(all_recs) == total else "⚠"
+        # Por ids únicos: si la paginación repite filas (orden por fecha con empates) el
+        # número de filas cuadra aunque falten licitaciones, y to_dataframe quita el duplicado
+        unique = len({str(r.get("id")) for r in all_recs})
+        ok = "✓" if len(all_recs) == total and unique == total else "⚠"
         sys.stdout.write(f"\r    Org {org_id} LIC: {len(all_recs):,}/{total:,} {ok}          \n")
         sys.stdout.flush()
-        if len(all_recs) != total:
-            log_warn(f"Org {org_id} LIC: DESAJUSTE esperados={total:,} descargados={len(all_recs):,}")
+        if len(all_recs) != total or unique != total:
+            log_warn(
+                f"Org {org_id} LIC: DESAJUSTE esperados={total:,} descargados={len(all_recs):,} "
+                f"únicos={unique:,}"
+            )
 
     for r in all_recs:
         r["_organismo_id"] = org_id
@@ -931,6 +968,7 @@ def paginate_cm_full(session, org_id):
     first_debug = True
     total_windows = 0
     windows_with_data = 0
+    reported_total = 0
 
     # Calcular número de ventanas para progreso
     temp = now
@@ -955,6 +993,7 @@ def paginate_cm_full(session, org_id):
         total_windows += 1
 
         recs, reported = paginate_cm_window(session, org_id, ds, de)
+        reported_total = max(reported_total, reported)
 
         new_recs = []
         for r in recs:
@@ -979,6 +1018,14 @@ def paginate_cm_full(session, org_id):
 
     if all_recs:
         log(f"    Org {org_id} CM TOTAL: {len(all_recs):,} registros únicos ({windows_with_data}/{total_windows} ventanas con datos)")
+    # recordsTotal es el total del organismo (ignora las fechas): si las ventanas devuelven
+    # menos, hay contratos menores que no se han descargado (fecha fuera de
+    # [DATE_ORIGIN, hoy] o vacía, paginación inestable...). Antes no se comprobaba.
+    if len(all_recs) < reported_total:
+        log_warn(
+            f"Org {org_id} CM: DESAJUSTE el portal declara {reported_total:,} y las ventanas "
+            f"[{DATE_ORIGIN} → {date_end}] devuelven {len(all_recs):,} únicos"
+        )
 
     for r in all_recs:
         r["_organismo_id"] = org_id
@@ -1377,6 +1424,10 @@ def append_base_records(records, output_dir, label=""):
     for column in BASE_EXPORT_FIELDS:
         if column not in df.columns:
             df[column] = pd.NA
+    # El esquema fijo del CSV base descarta cualquier campo nuevo de la API: que se vea
+    dropped = [column for column in df.columns if column not in BASE_EXPORT_FIELDS]
+    if dropped:
+        log_warn(f"{label}campos de la API sin columna en el CSV base (se descartan): {dropped}")
     df = df.reindex(columns=BASE_EXPORT_FIELDS)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1894,6 +1945,11 @@ def load_detail_map(conn, records):
         }
         if row.get("mapped_json"):
             payload.update(json.loads(row["mapped_json"]))
+        if "detail_campos_extra_json" not in payload and row.get("raw_gzip"):
+            # Fichas descargadas antes de exportar estos campos: salen del crudo cacheado
+            # sin volver a pedirlas al portal
+            raw = json.loads(decompress_text(row["raw_gzip"]) or "{}")
+            payload.update(detail_unmapped_fields(raw.get("pairs", []), raw.get("tables", [])))
         payload["detail_url"] = row.get("detail_url")
         payload["detail_page_title"] = row.get("page_title")
         mapped[key] = payload

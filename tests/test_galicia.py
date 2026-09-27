@@ -84,6 +84,29 @@ DETAIL_HTML_WITH_MALFORMED_LINK = """
 </html>
 """
 
+DETAIL_HTML_WITH_AWARDS = """
+<html>
+  <head>
+    <title>Detalle procedemento: 777777 - Contratos Públicos de Galicia</title>
+  </head>
+  <body>
+    <h2>Información del procedimiento</h2>
+    <dl>
+      <dt>Referencia</dt><dd>REF-777</dd>
+      <dt>Fecha formalización:</dt><dd>01/02/2026</dd>
+      <dt>Fecha formalización:</dt><dd>15/02/2026</dd>
+      <dt>Fecha adjudicación:</dt><dd>20/01/2026</dd>
+    </dl>
+    <h3>Adjudicaciones</h3>
+    <table>
+      <tr><th>Lote</th><th>Adjudicatario</th><th>NIF</th><th>Importe</th></tr>
+      <tr><td>1</td><td>Empresa Uno SL</td><td>B11111111</td><td>1.000,00 €</td></tr>
+      <tr><td>2</td><td>Empresa Dos SA</td><td>A22222222</td><td>2.500,50 €</td></tr>
+    </table>
+  </body>
+</html>
+"""
+
 PORTAL_DETAIL_TEMPLATE = """
 <html>
   <head>
@@ -308,6 +331,93 @@ class GaliciaScraperTests(unittest.TestCase):
         self.assertEqual(mapped["detail_fecha_difusion"], "2026-03-23T00:00:00")
         self.assertEqual(mapped["detail_fecha_formalizacion"], "2026-03-24T00:00:00")
 
+    def test_parse_detail_html_exports_award_rows_and_unmapped_labels(self):
+        # Antes la tabla de adjudicaciones solo se contaba (en LIC es el único sitio con
+        # adjudicatario e importe) y las etiquetas sin columna o repetidas se perdían.
+        mapped = scraper_galicia.parse_detail_html(DETAIL_HTML_WITH_AWARDS)["mapped"]
+
+        self.assertEqual(mapped["detail_adjudicaciones_count"], 2)
+        self.assertEqual(
+            json.loads(mapped["detail_adjudicaciones_json"]),
+            [
+                {"Lote": "1", "Adjudicatario": "Empresa Uno SL", "NIF": "B11111111", "Importe": "1.000,00 €"},
+                {"Lote": "2", "Adjudicatario": "Empresa Dos SA", "NIF": "A22222222", "Importe": "2.500,50 €"},
+            ],
+        )
+        self.assertEqual(mapped["detail_fecha_formalizacion_text"], "01/02/2026")
+        self.assertEqual(
+            json.loads(mapped["detail_campos_extra_json"]),
+            [
+                {"section": "Información del procedimiento", "label": "Fecha formalización:", "value": "15/02/2026"},
+                {"section": "Información del procedimiento", "label": "Fecha adjudicación:", "value": "20/01/2026"},
+            ],
+        )
+
+        plain = scraper_galicia.parse_detail_html(DETAIL_HTML)["mapped"]
+        self.assertIsNone(plain["detail_adjudicaciones_json"])
+        self.assertIsNone(plain["detail_campos_extra_json"])
+
+    def test_merge_derives_new_detail_fields_from_raw_cache_of_old_runs(self):
+        parsed = scraper_galicia.parse_detail_html(DETAIL_HTML_WITH_AWARDS)
+        old_mapped = {
+            key: value for key, value in parsed["mapped"].items()
+            if key not in ("detail_adjudicaciones_json", "detail_campos_extra_json")
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with patch("sys.stdout", new_callable=io.StringIO):
+                scraper_galicia.append_base_records(
+                    [{"id": 777777, "_tipo": "LIC", "_organismo_id": 48, "objeto": "Obra"}], output_dir
+                )
+                conn = scraper_galicia.init_detail_db(output_dir)
+                row = detail_cache_row("LIC", 777777, 48, "done")
+                row["mapped_json"] = json.dumps(old_mapped)
+                row["raw_gzip"] = scraper_galicia.compress_text(
+                    scraper_galicia.compact_json({"pairs": parsed["pairs"], "tables": parsed["tables"]})
+                )
+                scraper_galicia.persist_detail_results(conn, [row])
+                conn.close()
+                final_csv_path, _ = scraper_galicia.merge_base_and_detail(output_dir)
+            final = pd.read_csv(final_csv_path, sep=";", dtype=str, keep_default_na=False)
+
+        awards = json.loads(final.loc[0, "detail_adjudicaciones_json"])
+        self.assertEqual([award["NIF"] for award in awards], ["B11111111", "A22222222"])
+        self.assertIn("Fecha adjudicación:", final.loc[0, "detail_campos_extra_json"])
+
+    def test_paginate_cm_full_warns_when_windows_miss_records_declared_by_portal(self):
+        # recordsTotal es el total del organismo: un CM con fecha fuera de las ventanas
+        # (aquí 1999) no se descarga nunca y antes no quedaba rastro
+        records = fake_cm_records(3)
+        records.append(dict(records[0], id=499999, publicado="1999-06-01T00:00:00+0100"))
+        portal = FakePortal(cm={48: records})
+
+        with patch.object(requests.Session, "request", autospec=True, side_effect=portal), patch.object(
+            scraper_galicia, "_LOG_PATH", None
+        ), patch.object(scraper_galicia, "DELAY", 0), patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            session = scraper_galicia.Session()
+            got = scraper_galicia.paginate_cm_full(session, 48)
+
+        self.assertEqual(sorted(record["id"] for record in got), [500000, 500001, 500002])
+        self.assertIn("Org 48 CM: DESAJUSTE el portal declara 4 y las ventanas", stdout.getvalue())
+
+    def test_paginate_lic_warns_when_repeated_rows_hide_missing_ones(self):
+        # La paginación por fecha con empates puede repetir una fila y saltarse otra: el
+        # número de filas cuadraba con recordsTotal y no se avisaba
+        with patch.object(scraper_galicia.Session, "_init", return_value=None):
+            session = scraper_galicia.Session()
+        visit = Mock(status_code=200, ok=True)
+        page1 = Mock(status_code=200, ok=True)
+        page1.json.return_value = {"recordsTotal": 3, "data": [{"id": 1}, {"id": 2}]}
+        page2 = Mock(status_code=200, ok=True)
+        page2.json.return_value = {"recordsTotal": 3, "data": [{"id": 2}]}
+
+        with patch.object(session.s, "request", side_effect=[visit, page1, page2]), patch.object(
+            scraper_galicia, "_LOG_PATH", None
+        ), patch.object(scraper_galicia, "DELAY", 0), patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            scraper_galicia.paginate_lic(session, 48)
+
+        self.assertIn("Org 48 LIC: DESAJUSTE esperados=3 descargados=3 únicos=2", stdout.getvalue())
+
     def test_parse_detail_html_tolerates_malformed_links(self):
         parsed = scraper_galicia.parse_detail_html(DETAIL_HTML_WITH_MALFORMED_LINK)
 
@@ -371,6 +481,16 @@ class GaliciaScraperTests(unittest.TestCase):
             df = pd.read_csv(output_dir / scraper_galicia.BASE_CSV_NAME, sep=";")
             self.assertEqual(list(df.columns), scraper_galicia.BASE_EXPORT_FIELDS)
             self.assertEqual(df.iloc[0]["estadoDesc"], "Publicado")
+
+    def test_append_base_records_warns_about_api_fields_without_column(self):
+        records = [{"id": 1, "_tipo": "LIC", "_organismo_id": 48, "objeto": "Obra", "fechaAdjudicacion": "2026-03-01"}]
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(scraper_galicia, "_LOG_PATH", None), patch(
+            "sys.stdout", new_callable=io.StringIO
+        ) as stdout:
+            scraper_galicia.append_base_records(records, Path(tmpdir), label="[BASE ORG 48] ")
+
+        self.assertIn("[BASE ORG 48] campos de la API sin columna en el CSV base (se descartan): ['fechaAdjudicacion']", stdout.getvalue())
 
     def test_iter_detail_batches_skips_done_cache_rows(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1001,8 +1121,9 @@ class GaliciaScraperTests(unittest.TestCase):
         self.assertIn(("C", "824000", "48"), payloads)
         self.assertIn(("CM", "CM500000", "48"), payloads)
 
-        # Final: 12 + 50 columnas (README: 62), mismas filas, detalle mapeado.
-        self.assertEqual(len(final_text.columns), 62)
+        # Final: 12 + 52 columnas (las 62 del README + adjudicaciones y campos extra en
+        # JSON), mismas filas, detalle mapeado.
+        self.assertEqual(len(final_text.columns), 64)
         self.assertEqual(len(final_text), 380)
         self.assertEqual(set(final_text["detail_status"]), {"done"})
         final_by_key = final_text.set_index(["_tipo", "id"])
