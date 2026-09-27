@@ -115,10 +115,10 @@ def extract_field(xml, pattern):
     """Extrae el texto del siguiente <dd> tras un <dt> que matchea fieldPattern."""
     if not xml:
         return None
-    flags = "is" if "i" in (pattern.flags or "") else "s"
+    flags_int = re.DOTALL | (re.IGNORECASE if pattern.flags & re.IGNORECASE else 0)
     m = re.search(
-        r"<dt>\s*(?:<[^>]+\>\s*)?" + pattern.source + "(?::\\s*)?(?:\\s*</[^>]+>)?\\s*</dt>\\s*<dd>([\\s\\S]*?)</dd>",
-        xml, flags)
+        r"<dt>\s*(?:<[^>]+\>\s*)?" + pattern.pattern + "(?::\\s*)?(?:\\s*</[^>]+>)?\\s*</dt>\\s*<dd>([\\s\\S]*?)</dd>",
+        xml, flags_int)
     return clean_text(m.group(1)) if m else None
 
 
@@ -126,11 +126,11 @@ def extract_nested_field(xml, pattern, sub_pattern):
     """Extrae un campo anidado a partir de un <dt> contenedor con sub <dl>."""
     if not xml:
         return None
-    flags = "is" if ("i" in (pattern.flags or "") or "i" in (sub_pattern.flags or "")) else "s"
+    flags_int = re.DOTALL | (re.IGNORECASE if pattern.flags & re.IGNORECASE else 0)
     m = re.search(
-        r"<dt>\s*(?:<[^>]+\>\s*)?" + pattern.source + "(?::\\s*)?(?:\\s*</[^>]+>)?\\s*</dt>\\s*<dd>\\s*<dl>[\\s\\S]*?<dt>\\s*(?:<[^>]+\>\s*)?"
-        + sub_pattern.source + "(?::\\s*)?(?:\\s*</[^>]+>)?\\s*</dt>\\s*<dd>(.*?)</dd>",
-        xml, flags)
+        r"<dt>\s*(?:<[^>]+\>\s*)?" + pattern.pattern + "(?::\\s*)?(?:\\s*</[^>]+>)?\\s*</dt>\\s*<dd>\\s*<dl>[\\s\\S]*?<dt>\\s*(?:<[^>]+\>\s*)?"
+        + sub_pattern.pattern + "(?::\\s*)?(?:\\s*</[^>]+>)?\\s*</dt>\\s*<dd>(.*?)</dd>",
+        xml, flags_int)
     return clean_text(m.group(1)) if m else None
 
 
