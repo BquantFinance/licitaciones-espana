@@ -683,11 +683,14 @@ def test_pipeline_descarga_y_consolidacion_offline(red, dirs, monkeypatch, tmp_p
 class ApiVentanas:
     """/contracts con award-date.gt/.lt (estrictos), orderBy/orderType, itemsOfPage
     y currentPage. ignora_pagina: siempre sirve la página 1 (sin_current: y sin
-    decir qué página es, así solo se nota porque se repite)."""
+    decir qué página es, así solo se nota porque se repite). inestable: la
+    página N sale de la lista girada N-1 puestos (orden distinto en cada
+    petición: se repiten filas y otras no salen)."""
 
-    def __init__(self, items, ignora_pagina=False, sin_current=False):
+    def __init__(self, items, ignora_pagina=False, sin_current=False, inestable=False):
         self.items = list(items)
         self.ignora_pagina, self.sin_current = ignora_pagina, sin_current
+        self.inestable = inestable
         self.caidas = set()             # subcadenas de URL que devuelven 503
         self.pedidas = []
 
@@ -704,7 +707,8 @@ class ApiVentanas:
                  reverse=q.get("orderType") == "DESC")
         n = int(q["itemsOfPage"])
         pagina = 1 if self.ignora_pagina else int(q["currentPage"])
-        trozo = sel[(pagina - 1) * n: pagina * n]
+        orden = sel[pagina - 1:] + sel[:pagina - 1] if self.inestable and sel else sel
+        trozo = orden[(pagina - 1) * n: pagina * n]
         data = {"totalItems": len(sel), "totalPages": -(-len(sel) // n), "itemsOfPage": len(trozo)}
         if sel:
             data["items"] = trozo
@@ -834,6 +838,47 @@ def test_api_completa_reejecucion_no_repite_ni_machaca_ventanas_completas(api_co
     g8 = df[df["id"] == "G-008$X"].set_index("awardAmount")["_en_ultima_descarga"]
     assert g8.to_dict() == {1008.0: False, 9999.0: True}
     assert df.loc[df["id"] != "G-008$X", "_en_ultima_descarga"].all()
+
+
+def test_api_completa_filas_repetidas_por_la_api_no_la_dejan_incompleta(api_completa, entrada):
+    # Como X19004620_…_1 el 2020-01-08: la API sirve dos veces la misma fila en
+    # cualquier orden, y totalItems las cuenta las dos
+    api = ApiVentanas(CONTRATOS + [dict(CONTRATOS[7])])
+    d, estado = api_completa(api)
+
+    man = _manifiesto(d, "2025-02")
+    assert man["completo"] and man["total_items"] == 3 and man["ids_unicos"] == 2
+    assert man["repetidos_api"] == {"G-008$X": 2}
+    assert not any("partido" in t for t in man["trozos"])          # no se parte
+    assert [p["orden"] for p in man["trozos"][0]["pasadas"]] == ["ASC", "DESC"]
+    assert estado["total_api"] == 13 and estado["repetidos_api"] == 1
+    assert estado["faltan"] == 0 and estado["ventanas_incompletas"] == [] and estado["sin_ventana"] == 1
+
+    # 2ª ejecución: la ventana ya está completa, solo se pide su página 1
+    api.pedidas.clear()
+    d, estado = api_completa(api)
+    febrero = [q for q in api.pedidas if q.get("award-date.gt") == "2025-01-31"]
+    assert len(febrero) == 1 and estado["faltan"] == 0
+
+    info = cons.consolidar_A1_api_contratos()
+    df = pd.read_parquet(cons.OUTPUT_DIR / "api_contratos.parquet")
+    assert set(df["id"]) == {c["id"] for c in CONTRATOS} and info["registros"] >= 12
+
+
+def test_api_completa_paginacion_inestable_no_pasa_por_filas_repetidas(api_completa, entrada):
+    # 4 contratos en febrero y páginas de 3: en ASC la página 2 repite G-201 y
+    # G-204 no sale; la pasada DESC trae otros ids, así que no son filas
+    # repetidas en origen: se suman y la ventana cuadra sin repetidos_api
+    febrero = [contrato(200 + i, f"2025-02-{10 + i:02d}") for i in range(1, 5)]
+    api = ApiVentanas([contrato(1, "2025-01-02")] + febrero, inestable=True)
+    d, estado = api_completa(api)
+
+    man = _manifiesto(d, "2025-02")
+    assert man["completo"] and man["total_items"] == man["ids_unicos"] == 4
+    assert "repetidos_api" not in man and set(man["ids"]) == {c["id"] for c in febrero}
+    asc, desc = man["trozos"][0]["pasadas"]
+    assert asc["repetidos"] == {"G-201$X": 2} and desc["repetidos"] == {"G-204$X": 2}
+    assert estado["faltan"] == 0 and estado.get("repetidos_api") == 0
 
 
 def test_download_refrescar_guarda_la_version_anterior_en_historico(red, tmp_path):

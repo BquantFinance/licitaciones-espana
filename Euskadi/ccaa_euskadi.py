@@ -47,6 +47,7 @@ import requests
 import time
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode, urljoin
@@ -605,6 +606,7 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
     una página vacía o que solo repite ids, al llegar a max_paginas o si
     parar(vistos). Lanza ApiNoPagina (sin guardar esa página) si la API devuelve
     otra página que la pedida o una página idéntica a otra ya servida en la pasada.
+    info["repetidos"]: {id: veces} de los ids servidos más de una vez en la pasada.
     """
     nombre = cfg["nombre"]
     rango = f"{desde.isoformat()}_{hasta.isoformat()}" if desde else "sin_filtro"
@@ -612,9 +614,10 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
     info = {"desde": desde.isoformat() if desde else None,
             "hasta": hasta.isoformat() if hasta else None, "orden": orden,
             "total_items": None, "paginas": 0, "items": 0, "ids_nuevos": 0,
-            "fuera_de_rango": 0, "fin": None}
+            "fuera_de_rango": 0, "fin": None, "repetidos": {}}
     pagina, respuesta = 1, primera
     firmas = set()          # ids de cada página ya servida en esta pasada
+    servidos = Counter()    # veces que la pasada sirve cada id
     while True:
         if respuesta is None:
             time.sleep(API_DELAY)
@@ -649,6 +652,7 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
         nuevos = 0
         for it in items:
             k = _clave_item(it)
+            servidos[k] += 1
             if k not in vistos:
                 vistos.add(k)
                 nuevos += 1
@@ -673,16 +677,26 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
             info["fin"] = "máximo de páginas"
             break
         pagina, respuesta = pagina + 1, None
+    info["repetidos"] = {k: n for k, n in servidos.items() if n > 1}
     return info
 
 
-def _bajar_rango(api_url, cfg, desde, hasta, carpeta, vistos, trozos, primera=None):
+def _bajar_rango(api_url, cfg, desde, hasta, carpeta, vistos, trozos, primera=None,
+                 repetidos=None):
     """
     Descarga [desde, hasta] en `carpeta`. Si totalItems supera
     API_MAX_ITEMS_VENTANA, o la paginación no llega a reunir totalItems ids
     (ni en orden ASC ni completando en DESC), se parte en dos mitades hasta
     llegar a un día. Añade los ids a `vistos` y el detalle a `trozos`.
+
+    La API sirve algunas filas dos veces, idénticas (p.ej. 2020-01-08: 293 filas,
+    291 ids). Si la pasada ASC sirve totalItems filas pero menos ids, una pasada
+    DESC completa lo decide: con los mismos ids y las mismas repeticiones son
+    filas repetidas en origen (van a `repetidos`, {id: copias}, y el trozo está
+    completo); si trae otros ids, la paginación es inestable y se suman.
     """
+    if repetidos is None:
+        repetidos = {}
     if primera is None:
         time.sleep(API_DELAY)
         primera = _get_pagina_api(_url_api(api_url, cfg, 1, "ASC", desde, hasta), cfg["nombre"], 1)
@@ -699,21 +713,36 @@ def _bajar_rango(api_url, cfg, desde, hasta, carpeta, vistos, trozos, primera=No
                  desde, hasta, total, motivo)
         trozos.append({"desde": desde.isoformat(), "hasta": hasta.isoformat(),
                        "total_items": total, "partido": motivo})
-        _bajar_rango(api_url, cfg, desde, mitad, carpeta, vistos, trozos)
-        _bajar_rango(api_url, cfg, mitad + timedelta(days=1), hasta, carpeta, vistos, trozos)
+        _bajar_rango(api_url, cfg, desde, mitad, carpeta, vistos, trozos, repetidos=repetidos)
+        _bajar_rango(api_url, cfg, mitad + timedelta(days=1), hasta, carpeta, vistos, trozos,
+                     repetidos=repetidos)
 
     if total > API_MAX_ITEMS_VENTANA and hasta > desde:
         partir(f"más de {API_MAX_ITEMS_VENTANA} por consulta")
         return
     propios = set()
-    pasadas = [_pasada(api_url, cfg, desde, hasta, "ASC", carpeta, propios, primera)]
-    if len(propios) < total:
+    asc = _pasada(api_url, cfg, desde, hasta, "ASC", carpeta, propios, primera)
+    pasadas, copias = [asc], {}
+    if len(propios) < total and asc["items"] == total and asc["repetidos"]:
+        en_desc = set()
+        desc = _pasada(api_url, cfg, desde, hasta, "DESC", carpeta, en_desc)
+        pasadas.append(desc)
+        if desc["items"] == total and en_desc == propios and desc["repetidos"] == asc["repetidos"]:
+            copias = asc["repetidos"]
+        propios |= en_desc
+    elif len(propios) < total:
         pasadas.append(_pasada(api_url, cfg, desde, hasta, "DESC", carpeta, propios))
     vistos |= propios
-    trozos.append({"desde": desde.isoformat(), "hasta": hasta.isoformat(),
-                   "total_items": total, "ids_unicos": len(propios),
-                   "completo": len(propios) == total, "pasadas": pasadas})
-    if len(propios) < total and hasta > desde:
+    for k, n in copias.items():
+        repetidos[k] = max(n, repetidos.get(k, 0))
+    filas = len(propios) + sum(n - 1 for n in copias.values())
+    trozo = {"desde": desde.isoformat(), "hasta": hasta.isoformat(),
+             "total_items": total, "ids_unicos": len(propios),
+             "completo": filas == total, "pasadas": pasadas}
+    if copias:
+        trozo["repetidos_api"] = copias
+    trozos.append(trozo)
+    if filas < total and hasta > desde:
         partir(f"paginación cortada en {len(propios)}")
 
 
@@ -767,6 +796,11 @@ def _mismas_paginas(a: Path, b: Path) -> bool:
     return pa == pb and all((a / n).read_bytes() == (b / n).read_bytes() for n in pa)
 
 
+def _filas(ids, repetidos) -> int:
+    """Filas que suman `ids` distintos con las copias de más de `repetidos` ({id: copias})."""
+    return len(ids) + sum(n - 1 for n in repetidos.values())
+
+
 def _comprobar_filtro(cfg, clave, total, total_global):
     """Una ventana acotada con tantos registros como la API sin filtro = filtro ignorado."""
     if total_global > API_ITEMS_POR_PAGINA and total >= total_global:
@@ -788,6 +822,9 @@ def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
     - Si la nueva descarga no reúne totalItems ids se repite una vez (y se queda
       el intento con más ids); si sigue incompleta se guarda igual (son datos
       reales) con completo=False y la siguiente ejecución la vuelve a intentar.
+      Las filas que la API sirve repetidas (ver _bajar_rango) cuentan:
+      completo = ids + copias de más == totalItems; van al manifiesto en
+      repetidos_api ({id: copias}).
     - Una descarga fallida (sin página 1) o vacía cuando antes había registros no
       se publica: se conserva la anterior. Una idéntica a la anterior tampoco
       (no se llena _historico/ de copias).
@@ -821,11 +858,11 @@ def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
             time.sleep(API_DELAY)
             primera = _get_pagina_api(_url_api(api_url, cfg, 1, "ASC", desde, hasta), nombre, 1)
         total = int(primera[0].get("totalItems") or 0) if primera[0] is not None else None
-        vistos, trozos = set(), []
+        vistos, trozos, repetidos = set(), [], {}
         try:
             if total is not None:
                 _comprobar_filtro(cfg, clave, total, total_global)
-            _bajar_rango(api_url, cfg, desde, hasta, tmp, vistos, trozos, primera)
+            _bajar_rango(api_url, cfg, desde, hasta, tmp, vistos, trozos, primera, repetidos)
         except ApiNoPagina:
             for parte in partes:
                 shutil.rmtree(parte, ignore_errors=True)
@@ -835,16 +872,16 @@ def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
         if mejor is None or nota > (mejor[2] is not None, len(mejor[3])):
             if mejor is not None:
                 shutil.rmtree(mejor[0], ignore_errors=True)
-            mejor = (tmp, inicio, total, vistos, trozos)
+            mejor = (tmp, inicio, total, vistos, trozos, repetidos)
         else:
             shutil.rmtree(tmp, ignore_errors=True)
-        if (total is not None and len(vistos) == total) or intento == 2:
+        if (total is not None and _filas(vistos, repetidos) == total) or intento == 2:
             break
         log.warning("  %s %s: %d ids únicos de %s — se repite la ventana",
                     nombre, clave, len(vistos), total)
         primera = None
-    tmp, inicio, total, vistos, trozos = mejor
-    completo = total is not None and len(vistos) == total
+    tmp, inicio, total, vistos, trozos, repetidos = mejor
+    completo = total is not None and _filas(vistos, repetidos) == total
     ids_previos = set(previo.get("ids", [])) if previo else set()
     if total is None or (not vistos and ids_previos):
         shutil.rmtree(tmp, ignore_errors=True)
@@ -867,26 +904,30 @@ def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
         "total_items": total, "ids_unicos": len(vistos), "completo": completo,
         "trozos": trozos, "ids": sorted(vistos, key=str),
     }
+    if repetidos:
+        manifiesto["repetidos_api"] = repetidos
     (tmp / "_ventana.json").write_text(json.dumps(manifiesto, ensure_ascii=False),
                                        encoding="utf-8")
     _publicar_ventana(tmp, final)
     nivel = logging.INFO if completo else logging.ERROR
-    log.log(nivel, "  %s %s: %d ids únicos de %s%s", nombre, clave, len(vistos), total,
+    log.log(nivel, "  %s %s: %d ids únicos de %s%s%s", nombre, clave, len(vistos), total,
+            f" (+{_filas((), repetidos)} filas que la API sirve repetidas)" if repetidos else "",
             "" if completo else " — INCOMPLETA (se reintentará en la próxima ejecución)")
     if not completo:
         stats["fail"] += 1
     return vistos
 
 
-def _resto_sin_ventana(api_url, cfg, d, ids_ventanas, total_global) -> int:
+def _resto_sin_ventana(api_url, cfg, d, ids_ventanas, total_global, repetidos=0) -> int:
     """
     Registros que no caen en ninguna ventana (sin fecha: los filtros no los
     devuelven). Se buscan en la API sin filtro, en orden DESC (los nulos suelen ir
     al final en ASC) y ASC, hasta API_MAX_ITEMS_VENTANA registros por orden.
     Devuelve cuántos se encontraron. Las páginas guardadas repiten registros de
     otras ventanas: son artefactos de la descarga y se descartan al consolidar.
+    `repetidos`: copias de más que la API sirve en las ventanas (no faltan).
     """
-    faltan = total_global - len(ids_ventanas)
+    faltan = total_global - repetidos - len(ids_ventanas)
     if faltan <= 0:
         return 0
     log.warning("  %s: las ventanas reúnen %d ids de %d — buscando %d sin fecha…",
@@ -955,14 +996,20 @@ def _descargar_api_completa(api_url: str, cfg: dict, hoy: date = None):
     refrescar = {"posteriores"} | {c for c, _, _ in ventanas[-1 - API_MESES_REFRESCO:-1]}
     ids = set()
     incompletas = []
+    repetidos = {}     # {id: copias} de todas las ventanas (se solapan en un día)
     try:
         for clave, desde, hasta in ventanas:
             ids |= _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global,
                                 refrescar=clave in refrescar)
-            if not (_leer_manifiesto(d / clave) or {}).get("completo"):
+            man = _leer_manifiesto(d / clave) or {}
+            if not man.get("completo"):
                 incompletas.append(clave)
+            for k, n in (man.get("repetidos_api") or {}).items():
+                repetidos[k] = max(n, repetidos.get(k, 0))
         ids_ventanas = set(ids)
-        estado["sin_ventana"] = _resto_sin_ventana(api_url, cfg, d, ids_ventanas, total_global)
+        estado["repetidos_api"] = _filas((), repetidos)
+        estado["sin_ventana"] = _resto_sin_ventana(api_url, cfg, d, ids_ventanas, total_global,
+                                                   estado["repetidos_api"])
     except ApiNoPagina as e:
         log.error("  %s", e)
         stats["fail"] += 1
@@ -970,7 +1017,8 @@ def _descargar_api_completa(api_url: str, cfg: dict, hoy: date = None):
         escribir_estado()
         return
     estado["ids_en_ventanas"] = len(ids_ventanas)
-    estado["faltan"] = max(0, total_global - len(ids_ventanas) - estado["sin_ventana"])
+    estado["faltan"] = max(0, total_global - estado["repetidos_api"] - len(ids_ventanas)
+                           - estado["sin_ventana"])
     estado["ventanas_incompletas"] = incompletas
     escribir_estado()
     if estado["faltan"] or incompletas:
