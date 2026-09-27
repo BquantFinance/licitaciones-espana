@@ -40,7 +40,9 @@ Procesado por lotes (memoria acotada):
     claves (id, fecha_updated) y cada tabla se escribe parte a parte con un
     esquema unificado: las mismas tablas (filas, orden, columnas, tipos y
     valores, en parquet y CSV) que con un único DataFrame. --procesos N lee N
-    copias de ZIP a la vez (misma salida). --sin-csv no escribe los CSV.
+    copias de ZIP a la vez (misma salida); si el sistema mata un proceso (p.ej.
+    por falta de memoria) la ejecución termina con error sin publicar nada.
+    --sin-csv no escribe los CSV.
     Orden de lectura (define entrada_repetida y el desempate de
     es_ultima_version): conjuntos como en CONJUNTOS, ZIP como seleccionar_zips
     y de cada ZIP la copia actual y luego las de _historico/ de la más
@@ -49,7 +51,9 @@ Procesado por lotes (memoria acotada):
     cuando están todas escritas. El parquet anterior de cada tabla no se
     pierde: pasa a <salida>/_historico/ (comun.historico.guardar_version; si
     no cambió no se toca), porque puede tener entradas de ZIP que ya no están
-    en disco; el CSV se sustituye (tiene los mismos datos que su parquet).
+    en disco; el CSV se sustituye (tiene los mismos datos que su parquet; un
+    CSV sin parquet también pasa a _historico/). Sin ninguna entrada leída no
+    se escribe ni se publica ninguna tabla (tampoco _borrados).
 
 Semilla (--semilla, repetible; el orden es la prioridad):
     Un parquet publicado (p.ej. licitaciones_espana.parquet de v2026.02) se
@@ -60,11 +64,18 @@ Semilla (--semilla, repetible; el orden es la prioridad):
     _normalizar_columnas (esquema antiguo) y conservan las columnas que el
     código actual no produce (al final). Una fila del publicado con
     fecha_updated nula (el código antiguo no supo leer ese atom:updated) se
-    añade si ninguna fila de la descarga con su id coincide en
-    CONTENIDO_SEMILLA; y al revés, una con fecha cuya clave no está tampoco se
-    añade si coincide así con una fila sin fecha ya presente (p.ej. la misma
+    añade si ninguna fila de la descarga con su id coincide en las columnas
+    de CONTENIDO_SEMILLA que tiene la semilla; si coincide, como sin fecha no
+    se puede saber si es la misma versión o una anterior igual en esas
+    columnas, va a la tabla _semilla_contenido (no se pierde ni duplica la
+    principal). Primero se siembran las filas con la clave completa de todas
+    las semillas (en su orden) y después las que no la tienen: la misma
     entrada retirada, sin fecha en licitaciones_espana y con ella en
-    licitaciones_completo): con cualquier orden de --semilla sale una vez.
+    licitaciones_completo, sale una sola vez y con su fecha con cualquier
+    orden de --semilla. Una semilla no puede ser una tabla de salida de la
+    ejecución (el publicado es la única copia histórica: usar otro
+    --output-dir) y una salida de este script (con _en_ultima_descarga)
+    necesita --origen-semilla.
     Ámbito: solo se añaden filas de los conjuntos y años de ZIP (el de
     archivo_origen) de los que esta ejecución ha leído alguna entrada de la
     copia actual; las de otros conjuntos, de otro --anos o de años sin ZIP en
@@ -82,7 +93,10 @@ Semilla (--semilla, repetible; el orden es la prioridad):
     Verificado con los datos reales: de las filas de consultas y encargos
     (18.376) y de las de los ZIP mensuales de agregación 2025/202601
     (277.570) no se añade ninguna: sus claves (o su contenido, las de fecha
-    nula) están en los ZIP anuales de hoy.
+    nula) están en los ZIP anuales de hoy. Con 1 de cada 40 entradas quitada
+    de dos ZIP reales (encargos 2024 y consultas 2023) se añaden exactamente
+    las 72 con clave completa que estaban en el publicado y las 4 sin fecha
+    cuyo id ya no está en la descarga (2026-09-27).
 
 Procedencia (tabla principal, detrás de COLUMNAS_NUEVAS; después solo las que trae una semilla):
     _origen             nulo = leída de los ZIP; si no, la semilla de la que viene
@@ -106,6 +120,8 @@ es_ultima_version permiten contar licitaciones distintas):
     licitaciones_completo_{inicio}_{fin}_modificaciones.parquet/.csv  (una por ContractModification)
     licitaciones_completo_{inicio}_{fin}_borrados.parquet/.csv        (una por entrada borrada, at:deleted-entry; al final
                                                                        textos_originales: el @when que no es un instante)
+    licitaciones_completo_{inicio}_{fin}_semilla_contenido.parquet/.csv (solo con --semilla: filas sin fecha de la
+                                                                       semilla con el contenido de una fila de la descarga)
     Las tablas de detalle llevan id, expediente y conjunto de su entrada y, al
     final, su fecha_updated / es_ultima_version / entrada_repetida: se cruzan
     con la principal por id + fecha_updated.
@@ -169,6 +185,7 @@ import io
 import itertools
 import json
 import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 import os
 import re
 import shutil
@@ -546,13 +563,21 @@ def safe_float(value):
             pass
     return None
 
+# Mayor entero que cabe con exactitud en un double. Una columna de enteros con
+# algún nulo es double (como en pandas) y Arrow no pasa a double un entero
+# mayor sin perder precisión: la exportación se caería al final
+ENTERO_MAXIMO = 2 ** 53
+
 def safe_int(value):
-    """Convierte a int; None si no es entero."""
+    """Convierte a int; None si no es entero o si no cabe con exactitud en un
+    double (|v| >= 2**53: siempre un error de origen, p.ej. 10000000000000001
+    ofertas); con numero() su texto queda en textos_originales."""
     if value:
         try:
-            return int(value)
+            entero = int(value)
         except (ValueError, TypeError):
-            pass
+            return None
+        return entero if abs(entero) < ENTERO_MAXIMO else None
     return None
 
 def numero(elem, xpath, perdidos=None, campo=None, convertir=safe_float):
@@ -822,6 +847,8 @@ def datos_consulta(status):
         'adjunto_consulta_url': unir(textos(status, 'cac:Attachment/cac:ExternalReference/cbc:URI')),
     }
 
+PATRON_FECHA = re.compile(r'\d{4}-\d{2}-\d{2}')
+
 def fecha_publicacion_licitacion(status):
     """Fecha del anuncio de licitación (DOC_CN) o, si no lo hay, del primer anuncio.
 
@@ -836,11 +863,20 @@ def fecha_publicacion_licitacion(status):
         tipo = safe_text(notice, 'cbc-place-ext:NoticeTypeCode')
         for issue in notice.findall('.//cac-place-ext:AdditionalPublicationDocumentReference/cbc:IssueDate', NS):
             if issue.text and issue.text.strip():
-                fecha = issue.text.strip()[:10]  # sin zona horaria ('2024-01-15+01:00')
+                fecha = issue.text.strip()   # con su zona ('2024-01-15+01:00'), ver abajo
                 fechas.append(fecha)
                 if tipo == 'DOC_CN':
                     fechas_licitacion.append(fecha)
-    return min(fechas_licitacion or fechas) if fechas else None
+    candidatas = fechas_licitacion or fechas
+    if not candidatas:
+        return None
+    # La más antigua por su fecha, sin zona ('2024-01-15'); una mal escrita
+    # (p.ej. '0202-07-03') no gana a una válida y, si no hay ninguna válida,
+    # se devuelve completa para que su texto quede en textos_originales
+    validas = [f for f in candidatas if PATRON_FECHA.match(f) and '1678' <= f[:4] <= '2261']
+    if validas:
+        return min(validas, key=lambda f: f[:10])[:10]
+    return min(candidatas, key=lambda f: f[:10])
 
 def parsear_entry(entry, descartes=None):
     """Parsea una entrada del ATOM: licitación (cac-place-ext:ContractFolderStatus)
@@ -1346,6 +1382,17 @@ def _tarea_copia(tarea):
                                                               archivo_origen, lote))]
     return partes, informe, salida.getvalue()
 
+def _ejecutor_procesos(procesos):
+    """Procesos para leer copias a la vez. ProcessPoolExecutor, y no
+    multiprocessing.Pool: si el sistema mata un proceso (p.ej. por falta de
+    memoria) da BrokenProcessPool en vez de esperar para siempre su resultado
+    (no se publica nada). Con spawn/forkserver cada proceso lee una sola copia
+    y se sustituye (libera su memoria); con fork no se puede."""
+    extra = {}
+    if multiprocessing.get_start_method() != 'fork' and sys.version_info >= (3, 11):
+        extra['max_tasks_per_child'] = 1
+    return ProcessPoolExecutor(procesos, **extra)
+
 def procesar_copias(copias, exportacion, informes=None, procesos=1):
     """Lee las copias de ZIP [(conjunto, copia, archivo_origen)] y añade sus
     lotes a `exportacion` (ExportacionPlacsp) en orden de lectura. Se puede
@@ -1369,8 +1416,7 @@ def procesar_copias(copias, exportacion, informes=None, procesos=1):
         total[conjunto] = total.get(conjunto, 0) + 1
     with contextlib.ExitStack() as pila:
         if procesos > 1:
-            pool = pila.enter_context(multiprocessing.Pool(procesos, maxtasksperchild=1))
-            resultados = pool.imap(_tarea_copia, tareas)
+            resultados = pila.enter_context(_ejecutor_procesos(procesos)).map(_tarea_copia, tareas)
         else:
             resultados = map(_tarea_copia, tareas)
         vistos = {}
@@ -1449,6 +1495,8 @@ FECHAS = ['fecha_limite', 'fecha_adjudicacion', 'fecha_publicacion', 'fecha_plan
 FECHAS_DETALLE = ['fecha_adjudicacion', 'fecha_formalizacion', 'fecha_inicio_contrato']
 # Tablas de detalle: cada entrada lleva su lista en '_<tabla>'
 TABLAS_DETALLE = ('resultados', 'adjudicatarios', 'lotes', 'criterios', 'modificaciones')
+# Todas las tablas que escribe la exportación (_semilla_contenido: ver --semilla)
+TABLAS_SALIDA = ('principal',) + TABLAS_DETALLE + ('borrados', 'semilla_contenido')
 
 # Rango de datetime64[ns] (1677-09-21 a 2262-04-11). Fuera de él (años mal
 # escritos como '0202-07-03' o '24-12-27') pandas 2 da NaT y pandas 3 lee la
@@ -2013,6 +2061,21 @@ def _preparar_semilla(df, tipos, origen):
             df[col] = codigos_a_texto(serie)
     return df
 
+def _sumar_informes(anterior, informe):
+    """Informe de una semilla con sus dos fases (claves completas e incompletas)."""
+    if anterior is None:
+        return informe
+    total = dict(anterior)
+    for campo in ('leidas', 'anadidas', 'descartadas_clave', 'descartadas_contenido', 'fuera_ambito'):
+        total[campo] = anterior[campo] + informe[campo]
+    total['ejemplos'] = {caso: (anterior['ejemplos'].get(caso, []) + informe['ejemplos'].get(caso, []))[:5]
+                         for caso in anterior['ejemplos']}
+    detalle = dict(anterior.get('fuera_ambito_detalle') or {})
+    for etiqueta, filas in (informe.get('fuera_ambito_detalle') or {}).items():
+        detalle[etiqueta] = detalle.get(etiqueta, 0) + filas
+    total['fuera_ambito_detalle'] = dict(sorted(detalle.items()))
+    return total
+
 _ENTEROS_PANDAS = {pa.int8(): pd.Int8Dtype(), pa.int16(): pd.Int16Dtype(), pa.int32(): pd.Int32Dtype(),
                    pa.int64(): pd.Int64Dtype(), pa.uint8(): pd.UInt8Dtype(), pa.uint16(): pd.UInt16Dtype(),
                    pa.uint32(): pd.UInt32Dtype(), pa.uint64(): pd.UInt64Dtype()}
@@ -2294,14 +2357,15 @@ class ExportacionPlacsp:
         df = _normalizar_columnas(pd.concat(trozos, ignore_index=True)) if trozos else pd.DataFrame()
         return df.reindex(columns=columnas)
 
-    def _ambito_semilla(self, pf):
+    def _ambito_semilla(self, pf, contar=None):
         """Filas de la semilla `pf` dentro del ámbito de la ejecución (ver la
         clase): las de un conjunto y año de ZIP (el de archivo_origen) que esta
         ejecución ha vuelto a leer; sin archivo_origen o sin conjunto, solo si
         ha leído todos los periodos de los que pueden venir (periodos_posibles).
         Fuera de él no se sabe si siguen publicadas (años sin ZIP en disco,
         otros conjuntos u otro --anos): no se añaden. Devuelve la máscara (None:
-        sin ámbito, todas) y {conjunto año: filas} de las de fuera."""
+        sin ámbito, todas) y {conjunto año: filas} de las de fuera (de las
+        filas `contar`, si se indican)."""
         if self.ambito is None:
             return None, {}
         n = pf.metadata.num_rows
@@ -2315,30 +2379,40 @@ class ExportacionPlacsp:
             valores.append(v)
         combos, inversa, cuentas = np.unique(np.column_stack(codigos), axis=0, return_inverse=True,
                                              return_counts=True)
+        inversa = np.asarray(inversa).reshape(-1)
+        if contar is not None:
+            cuentas = np.bincount(inversa[np.asarray(contar, dtype=bool)], minlength=len(combos))
         dentro, fuera = np.zeros(len(combos), dtype=bool), {}
         for i, (kc, ka) in enumerate(combos):
             conjunto = None if kc < 0 or valores[0][kc] is None else str(valores[0][kc])
             ano = None if ka < 0 or valores[1][ka] is None else ano_de_zip(str(valores[1][ka]))
             posibles = periodos_posibles(conjunto, ano)
             dentro[i] = bool(posibles) and posibles <= self.ambito
-            if not dentro[i]:
+            if not dentro[i] and cuentas[i]:
                 etiqueta = f"{conjunto or '(sin conjunto)'} {ano if ano is not None else '(sin año de ZIP)'}"
                 fuera[etiqueta] = fuera.get(etiqueta, 0) + int(cuentas[i])
-        return dentro[np.asarray(inversa).reshape(-1)], dict(sorted(fuera.items()))
+        return dentro[inversa], dict(sorted(fuera.items()))
 
-    def _sembrar(self, ruta, origen, contenido=None):
+    def _sembrar(self, ruta, origen, contenido=None, fase=None, indice=0):
         """Incorpora el parquet publicado `ruta` como la instantánea más antigua
         (regla de comun.historico.sembrar, por lotes): añade como partes de
         semilla sus filas del ámbito de la ejecución (_ambito_semilla) cuya
         clave (id, fecha_updated) no está en la descarga ni en las semillas
         anteriores (ni su contenido, si a una de las dos le falta la fecha) y
-        devuelve el informe."""
+        devuelve el informe. fase: 'completa' (solo sus filas con la clave
+        completa), 'incompleta' (solo las demás) o None (todas; ver cerrar).
+        Las filas sin fecha que se descartan porque su contenido ya está no se
+        pierden: van a la tabla _semilla_contenido (sin fecha no se puede
+        saber si son la misma versión o una anterior con el mismo contenido).
+        Solo se comparan las columnas de contenido que tiene la semilla (una
+        que falta no se toma como nula)."""
         hist = _historico()
-        contenido = list(CONTENIDO_SEMILLA if contenido is None else contenido)
         pf = pq.ParquetFile(ruta)
         nombres = pf.schema_arrow.names
         if 'id' not in nombres:
             raise ValueError(f'La semilla {ruta} no tiene columna id')
+        contenido = [c for c in (CONTENIDO_SEMILLA if contenido is None else contenido)
+                     if c in nombres or (c == 'valor_estimado_contrato' and 'importe_sin_iva' in nombres)]
         presentes = self._principales()
         tipos_descarga, _ = self._tipos(self._principales(semilla=False), self._columnas_principal())
 
@@ -2358,32 +2432,40 @@ class ExportacionPlacsp:
         claves_semilla = pd.DataFrame({'id': _enteros(codigos[n_p:]),
                                        'fecha_updated': fecha_s.to_pandas().reset_index(drop=True)})
         del codigos, ids_p, fecha_p
-        en_ambito, fuera = self._ambito_semilla(pf)
+        completa = (claves_semilla['id'].notna() & claves_semilla['fecha_updated'].notna()).to_numpy()
+        en_fase = (np.ones(len(completa), dtype=bool) if fase is None
+                   else completa if fase == 'completa' else ~completa)
+        en_ambito, fuera = self._ambito_semilla(pf, en_fase)
         motivo = hist.seleccionar_semilla(
             claves_nuevos, claves_semilla,
             lambda filas: self._filas(presentes, filas, contenido),
-            lambda filas: self._filas_semilla(pf, filas, contenido), en_ambito)
+            lambda filas: self._filas_semilla(pf, filas, contenido),
+            en_fase if en_ambito is None else en_ambito & en_fase)
         del claves_nuevos, claves_semilla, en_ambito
-        informe = hist.informe_semilla(motivo, origen, lambda filas, t=claves_s: t.take(filas).to_pandas())
+        filas_fase = np.flatnonzero(en_fase)   # las de la otra fase no cuentan en el informe
+        informe = hist.informe_semilla(motivo[filas_fase], origen,
+                                       lambda filas, t=claves_s: t.take(filas_fase[filas]).to_pandas())
         informe['ruta'] = str(ruta)
         informe['fuera_ambito_detalle'] = fuera
         del claves_s, ids_s, fecha_s
 
-        # Filas añadidas: partes de semilla, en el orden del fichero
-        anadir = np.flatnonzero(motivo == hist.ANADIDA)
+        # Filas añadidas (principal) y descartadas por contenido
+        # (semilla_contenido): partes de semilla, en el orden del fichero
+        destinos = [('principal', np.flatnonzero((motivo == hist.ANADIDA) & en_fase)),
+                    ('semilla_contenido', np.flatnonzero((motivo == hist.PRESENTE_CONTENIDO) & en_fase))]
         leidas = 0
         for lote in pf.iter_batches(batch_size=self.lote):
-            i, j = np.searchsorted(anadir, [leidas, leidas + lote.num_rows])
-            if i < j:
-                tabla = pa.Table.from_batches([lote]).take(anadir[i:j] - leidas)
-                df = _preparar_semilla(tabla.replace_schema_metadata(pf.schema_arrow.metadata).to_pandas(),
-                                       tipos_descarga, origen)
-                prefijo = f'semilla{len(self.informes_semilla):02d}-{self.siguiente_indice():06d}'
-                self.partes.append({'prefijo': prefijo, 'filas': len(df), 'semilla': True, 'tablas': {
-                    'principal': _tabla_parte(df, self.dir_partes / f'{prefijo}.principal.parquet',
-                                              list(df.columns), tipos_descarga)}})
+            for tabla_destino, filas in destinos:
+                i, j = np.searchsorted(filas, [leidas, leidas + lote.num_rows])
+                if i < j:
+                    tabla = pa.Table.from_batches([lote]).take(filas[i:j] - leidas)
+                    df = _preparar_semilla(tabla.replace_schema_metadata(pf.schema_arrow.metadata).to_pandas(),
+                                           tipos_descarga, origen)
+                    prefijo = f'semilla{indice:02d}-{self.siguiente_indice():06d}'
+                    self.partes.append({'prefijo': prefijo, 'filas': len(df), 'semilla': True, 'tablas': {
+                        tabla_destino: _tabla_parte(df, self.dir_partes / f'{prefijo}.{tabla_destino}.parquet',
+                                                    list(df.columns), tipos_descarga)}})
             leidas += lote.num_rows
-        self.informes_semilla.append(informe)
         return informe
 
     # --- Cierre ------------------------------------------------------------
@@ -2408,21 +2490,32 @@ class ExportacionPlacsp:
             print(f"   ⚠ Ninguna entrada leída de la descarga: no se incorporan las semillas "
                   f"({len(semillas)}) y la salida anterior no se toca")
             semillas = ()
-        for ruta in semillas or ():
-            hist.imprimir_informe_semilla(self._sembrar(Path(ruta), origen, contenido_semilla))
+        # Primero las filas con la clave completa de todas las semillas (en su
+        # orden de prioridad) y después las que no la tienen: una entrada
+        # retirada que un publicado trae sin fecha y otro con ella sale una
+        # sola vez y con su fecha, con cualquier orden de --semilla
+        rutas = [Path(ruta) for ruta in semillas or ()]
+        informes = [None] * len(rutas)
+        for fase in ('completa', 'incompleta'):
+            for k, ruta in enumerate(rutas):
+                informes[k] = _sumar_informes(informes[k], self._sembrar(ruta, origen, contenido_semilla, fase, k))
+        for informe in informes:
+            hist.imprimir_informe_semilla(informe)
+        self.informes_semilla.extend(informes)
 
         escritas, resumen = {}, {'filas': 0, 'rutas': {}, 'semillas': self.informes_semilla}
         principales = self._principales()
-        n_filas = sum(t['filas'] for t in principales)
-        if n_filas:
-            fechas, ultima, repetida = self._escribir_principal(principales, escritas, resumen)
-            self._escribir_detalle(principales, fechas, ultima, repetida, escritas)
-        else:
-            print("\n⚠️ No se encontraron registros")
+        if not sum(t['filas'] for t in principales):
+            # Ni la tabla principal ni las demás (tampoco _borrados): con
+            # tablas de ejecuciones distintas no se podrían cruzar
+            print("\n⚠️ No se encontraron registros: no se escribe ninguna tabla y la salida anterior no se toca")
+            return resumen
+        fechas, ultima, repetida = self._escribir_principal(principales, escritas, resumen)
+        self._escribir_detalle(principales, fechas, ultima, repetida, escritas)
         self._escribir_borrados(escritas)
+        self._escribir_semilla_contenido(escritas)
         self._publicar(escritas, resumen)
-        if n_filas:
-            self._imprimir_resumen(resumen)
+        self._imprimir_resumen(resumen)
         return resumen
 
     def _escribir_principal(self, principales, escritas, resumen):
@@ -2580,6 +2673,31 @@ class ExportacionPlacsp:
         escritas['borrados'] = rutas
         _borrar_partes(tablas)
 
+    def _escribir_semilla_contenido(self, escritas):
+        """Tabla _semilla_contenido: filas de las semillas sin fecha_updated que
+        no se añaden porque alguna fila de la descarga con su id tiene el mismo
+        contenido (CONTENIDO_SEMILLA). Sin fecha no se puede saber si son la
+        misma versión o una anterior igual en esas columnas: se guardan aquí,
+        con _origen, para no perder ninguna ni duplicar la principal."""
+        tablas = [p['tablas']['semilla_contenido'] for p in self.partes if 'semilla_contenido' in p['tablas']]
+        if not tablas:
+            return
+        columnas = _union_ordenada(t['columnas'] for t in tablas)
+        tipos, bool_con_nulos = self._tipos(tablas, columnas)
+        esquema = _esquema_final([(c, tipos[c]) for c in columnas], bool_con_nulos)
+        rutas = self._rutas_temporales('semilla_contenido')
+        escritor = _EscritorTabla(esquema, rutas[0], rutas[1], self.filas_grupo)
+        try:
+            for t in tablas:
+                parte = pq.read_table(t['ruta'])
+                escritor.escribir(pa.Table.from_arrays(
+                    [_convertir(parte.column(campo.name), campo.type) if campo.name in parte.column_names
+                     else pa.nulls(parte.num_rows, campo.type) for campo in esquema], schema=esquema))
+        finally:
+            escritor.cerrar()
+        escritas['semilla_contenido'] = rutas
+        _borrar_partes(tablas)
+
     def _rutas_temporales(self, tabla):
         parquet = self.dir_partes / f'final.{tabla}.parquet'
         return parquet, (parquet.with_suffix('.csv') if self.csv else None)
@@ -2591,7 +2709,7 @@ class ExportacionPlacsp:
         ejecución anterior que esta ya no produce se archiva en _historico/
         (solo si esta ha escrito la tabla principal)."""
         hist = _historico()
-        for tabla in ('principal',) + TABLAS_DETALLE + ('borrados',):
+        for tabla in TABLAS_SALIDA:
             destino = self.dir_salida / f'{self._nombre(tabla)}.parquet'
             destino_csv = destino.with_suffix('.csv')
             if tabla in escritas:
@@ -2603,6 +2721,11 @@ class ExportacionPlacsp:
                         print(f"   ⚠ {destino.name}: {antes - ahora:,} filas menos que la versión anterior "
                               f"({antes:,} → {ahora:,}; la anterior queda en _historico/). ¿Faltan ZIP en disco?")
                 estado = hist.guardar_version(destino, desde=parquet)
+                if estado == 'nuevo' and destino_csv.exists():
+                    # Un CSV sin su parquet (p.ej. de una versión antigua del
+                    # script): se guarda en _historico/ antes de sustituirlo
+                    archivado = hist.archivar(destino_csv)
+                    print(f"   ℹ {destino_csv.name} anterior (sin parquet) → {archivado.parent.name}/{archivado.name}")
                 print(f"   ✓ Parquet: {destino} ({destino.stat().st_size / 1024 / 1024:.1f} MB, "
                       f"{estado.replace('_', ' ')}"
                       + ('; la versión anterior queda en _historico/' if estado == 'actualizado' else '') + ")")
@@ -2730,14 +2853,25 @@ def main():
         DATA_DIR = args.data_dir
     if args.output_dir is not None:
         OUTPUT_DIR = args.output_dir
-    for semilla in args.semilla:
-        if not semilla.is_file():
-            parser.error(f'No existe la semilla {semilla}')
-
     # Parsear años
     partes = args.anos.split('-')
     ano_inicio = int(partes[0])
     ano_fin = int(partes[1]) if len(partes) > 1 else ano_inicio
+    nombre_base = f'licitaciones_completo_{ano_inicio}_{ano_fin}'
+
+    salidas = {(OUTPUT_DIR / f"{nombre_base if tabla == 'principal' else f'{nombre_base}_{tabla}'}.parquet").resolve()
+               for tabla in TABLAS_SALIDA}
+    for semilla in args.semilla:
+        if not semilla.is_file():
+            parser.error(f'No existe la semilla {semilla}')
+        if semilla.resolve() in salidas:
+            parser.error(f'La semilla {semilla} es una tabla de salida de esta ejecución: su versión anterior '
+                         'pasaría a _historico/ y la siguiente ejecución sembraría desde la salida. Usa otro '
+                         '--output-dir (el publicado es la única copia histórica)')
+        if '_en_ultima_descarga' in pq.ParquetFile(semilla).schema_arrow.names and not args.origen_semilla:
+            parser.error(f'La semilla {semilla} es una salida de este script (tiene _en_ultima_descarga): '
+                         "indica su procedencia con --origen-semilla (p.ej. 'release v2026.09'); si no, sus "
+                         "filas de la descarga pasarían por filas de 'release v2026.02'")
 
     # Determinar conjuntos a procesar
     if args.conjunto == 'todos':
@@ -2775,7 +2909,6 @@ def main():
     for conjunto_id in conjuntos:
         copias += [(conjunto_id, copia, origen)
                    for copia, origen in copias_conjunto(conjunto_id, ano_inicio, ano_fin, avisos)]
-    nombre_base = f'licitaciones_completo_{ano_inicio}_{ano_fin}'
     with ExportacionPlacsp(nombre_base, OUTPUT_DIR, csv=not args.sin_csv, lote=args.lote) as exportacion:
         procesar_copias(copias, exportacion, informes, procesos=args.procesos)
         imprimir_informe_procesado(informes, avisos)

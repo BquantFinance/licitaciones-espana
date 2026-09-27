@@ -16,10 +16,13 @@ de los ZIP (comun/historico.py).
 import io
 import json
 import os
+import shutil
+import signal
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timezone
+from concurrent.futures.process import BrokenProcessPool
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -1666,3 +1669,187 @@ def test_zip_con_un_atom_corrupto_conserva_el_resto(tmp_path):
     # el error queda en el informe de procesado
     assert [x["id"] for x in lics] == ["urn:A1"]
     assert any("b.atom" in e and "CRC" in e and "lectura interrumpida" in e for e in informes[0]["errores"])
+
+
+# ─────────────────────────────────────────────────────────────
+# Segunda revisión adversarial (2026-09-27): semilla por fases, tabla
+# _semilla_contenido, publicación y casos límite de los datos
+# ─────────────────────────────────────────────────────────────
+
+_TAREA_ORIGINAL = lic._tarea_copia
+
+
+def _tarea_que_muere(tarea):
+    """_tarea_copia que, en la copia de 2024, muere como con el OOM killer."""
+    if "2024" in tarea[1]:
+        os.kill(os.getpid(), signal.SIGKILL)
+    return _TAREA_ORIGINAL(tarea)
+
+
+class TestSegundaRevision:
+    P = "licitacionesPerfilesContratanteCompleto3_"
+
+    @pytest.fixture
+    def base(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        monkeypatch.setattr(lic, "OUTPUT_DIR", tmp_path / "salida")
+        monkeypatch.setattr(lic.time, "sleep", lambda s: None)
+        return tmp_path
+
+    def _zip(self, base, ano, entradas, conjunto="licitaciones", nombre=None):
+        return _escribir_zip(base / "zips" / conjunto / (nombre or f"{self.P}{ano}.zip"), {"a.atom": _atom(entradas)})
+
+    def _exportar(self, base, nombre="t", conjuntos=("licitaciones",), anos=(2012, 2026), semillas=(), lote=2, **kw):
+        copias = [(c, copia, o) for c in conjuntos for copia, o in lic.copias_conjunto(c, *anos)]
+        with lic.ExportacionPlacsp(nombre, base / "salida", lote=lote, **kw) as exportacion:
+            lic.procesar_copias(copias, exportacion)
+            resumen = exportacion.cerrar(semillas)
+        ruta = base / "salida" / f"{nombre}.parquet"
+        return (pd.read_parquet(ruta) if ruta.exists() else None), resumen
+
+    def _semilla(self, ruta, filas, sin=()):
+        df = _semilla(filas, extra=False).drop(columns=list(sin))
+        pq.write_table(pa.Table.from_pandas(df, preserve_index=False), ruta)
+        return ruta
+
+    def test_descartada_por_contenido_va_a_semilla_contenido(self, base):
+        """Una fila sin fecha del publicado igual en CONTENIDO_SEMILLA a otra
+        versión de la descarga (p.ej. antes de ampliar el plazo) no duplica la
+        principal ni se pierde: va a _semilla_contenido."""
+        self._zip(base, 2024, [_xml("urn:L1", "2024-02-20T10:00:00+01:00", "PUB", limite="2024-03-01")])
+        ruta = self._semilla(base / "publicado.parquet",
+                             [dict(id="urn:L1", fecha_updated=None, fecha_limite=date(2024, 2, 1))])
+        out, resumen = self._exportar(base, semillas=[ruta])
+        informe = resumen["semillas"][0]
+        assert (informe["anadidas"], informe["descartadas_contenido"]) == (0, 1)
+        assert out["_origen"].isna().all() and len(out) == 1
+        aparte = pd.read_parquet(base / "salida" / "t_semilla_contenido.parquet")
+        assert aparte["id"].tolist() == ["urn:L1"]
+        assert str(aparte["fecha_limite"].iloc[0])[:10] == "2024-02-01"
+        assert aparte["_origen"].tolist() == ["release v2026.02"]
+
+    @pytest.mark.parametrize("orden", [("espana", "completo"), ("completo", "espana")])
+    def test_el_orden_de_las_semillas_no_pierde_la_fecha(self, base, orden):
+        """Una entrada retirada que un publicado trae dos veces sin fecha y otro
+        con ella sale una sola vez y con su fecha, con cualquier orden: primero
+        se siembran las claves completas de todas las semillas."""
+        fecha, actual = "2024-03-05T08:00:00Z", datetime.now().year
+        for ano in range(2012, actual + 1):   # completo (sin archivo_origen) necesita todos los años
+            self._zip(base, ano, [_xml(f"urn:X{ano}", f"{ano}-02-01T00:00:00Z", "PUB")])
+        rutas = {"espana": self._semilla(base / "espana.parquet", [dict(id="urn:L1", fecha_updated=None)] * 2),
+                 "completo": self._semilla(base / "completo.parquet", [dict(id="urn:L1", fecha_updated=fecha)],
+                                           sin=("archivo_origen",))}
+        out, _ = self._exportar(base, anos=(2012, actual), semillas=[rutas[o] for o in orden])
+        fila = out[out["id"] == "urn:L1"]
+        assert len(fila) == 1 and fila["fecha_updated"].iloc[0] == pd.Timestamp(fecha)
+        aparte = pd.read_parquet(base / "salida" / "t_semilla_contenido.parquet")
+        assert aparte["id"].tolist() == ["urn:L1", "urn:L1"]
+
+    def test_semilla_sin_una_columna_de_contenido_no_duplica(self, base):
+        self._zip(base, 2024, [_xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB")])
+        ruta = self._semilla(base / "sin_url.parquet", [dict(id="urn:L1", fecha_updated=None)], sin=("url",))
+        out, resumen = self._exportar(base, semillas=[ruta])
+        assert resumen["semillas"][0]["anadidas"] == 0
+        assert (out["id"] == "urn:L1").sum() == 1
+
+    def test_sin_entradas_no_se_publica_ninguna_tabla(self, base):
+        """Tampoco _borrados: la principal y ella quedarían de ejecuciones distintas."""
+        self._zip(base, 2024, [_xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB"),
+                               _borrado_xml("urn:B1", "2024-03-01T10:00:00Z")])
+        self._exportar(base, anos=(2024, 2024))
+        antes = {f.name: f.read_bytes() for f in (base / "salida").iterdir() if f.is_file()}
+        self._zip(base, 2024, ["<entry><id>urn:L1</id><updated>2024-05-01T00:00:00Z</updated><otro/></entry>",
+                               _borrado_xml("urn:B3", "2024-06-01T10:00:00Z")])
+        _, resumen = self._exportar(base, anos=(2024, 2024))
+        assert resumen["filas"] == 0
+        assert {f.name: f.read_bytes() for f in (base / "salida").iterdir() if f.is_file()} == antes
+        assert not (base / "salida" / "_historico").exists()
+
+    @pytest.mark.parametrize("csv", [True, False])
+    def test_un_csv_sin_su_parquet_se_archiva(self, base, csv):
+        self._zip(base, 2024, [_xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB")])
+        (base / "salida").mkdir()
+        (base / "salida" / "t.csv").write_text("id\nurn:VIEJA\n", encoding="utf-8-sig")
+        self._exportar(base, anos=(2024, 2024), csv=csv)
+        archivados = list((base / "salida" / "_historico").glob("t__*.csv"))
+        assert len(archivados) == 1 and "urn:VIEJA" in archivados[0].read_text(encoding="utf-8-sig")
+
+    def _main(self, monkeypatch, *argumentos):
+        monkeypatch.setattr(sys, "argv", ["licitaciones.py", "--solo-procesar", "--conjunto", "licitaciones",
+                                          "--anos", "2024-2024", "--sin-csv", *argumentos])
+        lic.main()
+
+    def test_semilla_igual_a_una_tabla_de_salida_se_rechaza(self, base, monkeypatch):
+        """El publicado es la única copia histórica: no puede ser la salida."""
+        self._zip(base, 2024, [_xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB")])
+        (base / "nacional").mkdir()
+        publicado = self._semilla(base / "nacional" / "licitaciones_completo_2024_2024.parquet",
+                                  [dict(id="urn:R1", fecha_updated="2024-03-01T00:00:00Z")])
+        antes = publicado.read_bytes()
+        with pytest.raises(SystemExit) as error:
+            self._main(monkeypatch, "--data-dir", str(base / "zips"), "--output-dir", str(base / "nacional"),
+                       "--semilla", str(publicado))
+        assert error.value.code == 2 and publicado.read_bytes() == antes
+        assert not (base / "nacional" / "_historico").exists()
+
+    def test_semilla_que_es_una_salida_pide_su_origen(self, base, monkeypatch):
+        self._zip(base, 2024, [_xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB"),
+                               _xml("urn:L2", "2024-02-01T00:00:00Z", "PUB")])
+        self._exportar(base, anos=(2024, 2024))
+        anterior = shutil.copy(base / "salida" / "t.parquet", base / "anterior.parquet")
+        self._zip(base, 2024, [_xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB")])   # L2 retirada
+        argumentos = ["--data-dir", str(base / "zips"), "--output-dir", str(base / "otra"), "--semilla", str(anterior)]
+        with pytest.raises(SystemExit):
+            self._main(monkeypatch, *argumentos)
+        self._main(monkeypatch, *argumentos, "--origen-semilla", "release v2026.09")
+        out = pd.read_parquet(base / "otra" / "licitaciones_completo_2024_2024.parquet")
+        origen = out.set_index("id")["_origen"]
+        assert pd.isna(origen["urn:L1"]) and origen["urn:L2"] == "release v2026.09"
+
+    @pytest.mark.skipif(os.name != "posix", reason="SIGKILL")
+    def test_un_proceso_que_muere_no_deja_la_ejecucion_colgada(self, base, monkeypatch):
+        for ano in (2023, 2024, 2025):
+            self._zip(base, ano, [_xml(f"urn:L{ano}", f"{ano}-01-15T10:00:00+01:00", "PUB")])
+        monkeypatch.setattr(lic, "_tarea_copia", _tarea_que_muere)
+        copias = [("licitaciones", c, o) for c, o in lic.copias_conjunto("licitaciones", 2023, 2025)]
+        with pytest.raises(BrokenProcessPool):
+            with lic.ExportacionPlacsp("t", base / "salida", lote=1) as exportacion:
+                lic.procesar_copias(copias, exportacion, procesos=2)
+        assert not (base / "salida" / "t.parquet").exists()
+
+    @pytest.mark.parametrize("valor", ["10000000000000001", "99999999999999999999"])
+    def test_un_numero_de_ofertas_enorme_no_tumba_la_exportacion(self, base, valor):
+        """Un entero que no cabe con exactitud en un double queda nulo con su
+        texto en textos_originales (antes la exportación caía al final)."""
+        self._zip(base, 2024, [_xml("urn:L1", "2024-01-02T00:00:00Z", "PUB")])
+        self._zip(base, 2024, [_xml("urn:E1", "2024-01-01T00:00:00Z", "ADJ", adj="1", ofertas=valor)],
+                  conjunto="encargos", nombre="EMP_SectorPublico_2024.zip")
+        out, _ = self._exportar(base, conjuntos=("licitaciones", "encargos"), anos=(2024, 2024), lote=50_000)
+        fila = out[out["id"] == "urn:E1"].iloc[0]
+        assert pd.isna(fila["num_ofertas"])
+        assert json.loads(fila["textos_originales"]) == {"resultados[1].num_ofertas": valor}
+
+    def test_updated_fuera_de_rango_con_lotes_de_una_entrada(self, base):
+        """Con pandas 3, sin el rango de parsear_fecha_updated, un año 0202 en un
+        lote y nanosegundos en otro tumbaban la unificación de tipos."""
+        self._zip(base, 2024, [_xml("urn:L1", "0202-01-15T10:00:00Z", "PUB"),
+                               _xml("urn:L2", "2024-01-15T10:00:00.123456789Z", "PUB")])
+        out, _ = self._exportar(base, anos=(2024, 2024), lote=1)
+        l1 = out[out["id"] == "urn:L1"].iloc[0]
+        assert pd.isna(l1["fecha_updated"])
+        assert json.loads(l1["textos_originales"])["fecha_updated"] == "0202-01-15T10:00:00Z"
+        assert out.loc[out["id"] == "urn:L2", "fecha_updated"].iloc[0] == pd.Timestamp("2024-01-15T10:00:00.123456789Z")
+
+    def test_tipo_condicion_a_como_en_el_release(self, base):
+        """CONTENIDO_SEMILLA usa tipo_condicion para casar las consultas del
+        publicado (todas sin fecha): 'A' tiene que salir como 'Tipo A'."""
+        self._zip(base, 2024, [_xml("urn:C1", "2024-01-15T10:00:00Z", "PUB", cpm=True)],
+                  conjunto="consultas", nombre="CPM_SectorPublico_2024.zip")
+        out, _ = self._exportar(base, conjuntos=("consultas",), anos=(2024, 2024))
+        assert out[["tipo_condicion", "tipo_condicion_code"]].values.tolist() == [["Tipo A", "A"]]
+
+    def test_fecha_publicacion_valida_gana_y_la_mal_escrita_se_conserva(self):
+        status = _status_con_anuncios([("DOC_CN", ["0202-07-03+01:00", "2024-07-03+02:00"])])
+        assert lic.fecha_publicacion_licitacion(status) == "2024-07-03"
+        status = _status_con_anuncios([("DOC_CN", ["0202-07-03+01:00"])])
+        assert lic.fecha_publicacion_licitacion(status) == "0202-07-03+01:00"
