@@ -1,0 +1,57 @@
+<!-- Sintética: consulta preliminar de mercado (sindicación 1403, raíz
+     cac-place-ext:PreliminaryMarketConsultationStatus). Estructura sin
+     verificar con datos reales: licitaciones.py busca los elementos propios
+     de la CPM por nombre local a cualquier profundidad. -->
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2">
+    <id>https://contrataciondelestado.es/sindicacion/PreliminaryMarketConsultation/TEST-CPM-001</id>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_cpm&amp;idEvl=CPM001"/>
+    <title>Consulta preliminar de prueba</title>
+    <updated>2024-05-10T12:00:00.000+02:00</updated>
+    <cac-place-ext:PreliminaryMarketConsultationStatus>
+        <cbc:PreliminaryMarketConsultationID>CPM/2024/001</cbc:PreliminaryMarketConsultationID>
+        <cbc-place-ext:PreliminaryMarketConsultationStatusCode>PUB</cbc-place-ext:PreliminaryMarketConsultationStatusCode>
+        <cbc:ConsultationName>Consulta sobre plataformas de telemedicina</cbc:ConsultationName>
+        <cbc:PlannedDate>2024-09-01</cbc:PlannedDate>
+        <cbc:LimitDate>2024-06-15+02:00</cbc:LimitDate>
+        <cbc:ConditionTypeCode>1</cbc:ConditionTypeCode>
+        <cbc:ConditionsText>Participación abierta a cualquier operador</cbc:ConditionsText>
+        <cbc:ConditionTypeCode>2</cbc:ConditionTypeCode>
+        <cbc:ConditionsText>Respuestas por correo electrónico</cbc:ConditionsText>
+        <cac-place-ext:LocatedContractingParty>
+            <cac:Party>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">Q2800000J</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>Servicio de Salud de Pruebas</cbc:Name>
+                </cac:PartyName>
+            </cac:Party>
+            <cac-place-ext:ParentLocatedParty>
+                <cac:PartyName>
+                    <cbc:Name>Consejería de Sanidad</cbc:Name>
+                </cac:PartyName>
+            </cac-place-ext:ParentLocatedParty>
+        </cac-place-ext:LocatedContractingParty>
+        <cac:ProcurementProject>
+            <cbc:Name>Plataforma de telemedicina</cbc:Name>
+            <cbc:TypeCode>2</cbc:TypeCode>
+            <cac:BudgetAmount>
+                <cbc:EstimatedOverallContractAmount currencyID="EUR">1500000</cbc:EstimatedOverallContractAmount>
+            </cac:BudgetAmount>
+            <cac:RequiredCommodityClassification>
+                <cbc:ItemClassificationCode>48180000</cbc:ItemClassificationCode>
+            </cac:RequiredCommodityClassification>
+        </cac:ProcurementProject>
+        <cac-place-ext:ValidNoticeInfo>
+            <cac-place-ext:AdditionalPublicationStatus>
+                <cac-place-ext:AdditionalPublicationDocumentReference>
+                    <cbc:IssueDate>2024-05-10</cbc:IssueDate>
+                </cac-place-ext:AdditionalPublicationDocumentReference>
+            </cac-place-ext:AdditionalPublicationStatus>
+        </cac-place-ext:ValidNoticeInfo>
+    </cac-place-ext:PreliminaryMarketConsultationStatus>
+</entry>

@@ -9,9 +9,12 @@
    → 800+ poderes adjudicadores (GV, Diputaciones, Ayuntamientos, OOAA)
    → Registro de Contratos (REVASCON) + Perfil de Contratante
 
- MÓDULO A — API REST KontratazioA (JSON paginado, 10 items/pág fijo)
-   A1. Contracts        — Muestra 1000 registros (bulk = B1 XLSX)
-   A2. Contracting Notices — Muestra 1000 registros (bulk = B1 XLSX)
+ MÓDULO A — API REST KontratazioA (JSON paginado)
+   A1. Contracts        — muestra/sonda de paginación (?currentPage=N a secas)
+   A2. Contracting Notices — muestra/sonda de paginación
+   A1c/A2c. Contracts / Contracting Notices COMPLETOS (655K contratos con
+       importe, adjudicatario y CIF; 656K anuncios con presupuesto): descarga
+       por ventanas mensuales de fecha, ver dl_A_api_completa()
    A3. Contracting Authorities — 800+ poderes adjudicadores (completo)
    A4. Companies         — Empresas en Registro de Licitadores (completo)
 
@@ -19,25 +22,37 @@
    B1. Contratos Sector Público completo (2011-2026)  → XLSX anual
    B2. REVASCON agregado anual (2013-2018)            → CSV/XLSX
    B3. Contratos últimos 90 días (ventana móvil)      → XLSX
+   B4. REVASCON por poder adjudicador y año (2018-…)  → XLSX
 
  MÓDULO C — Portales municipales independientes (datos NO centralizados)
    C1. Bilbao — contratos adjudicados (2005-2026)     → CSV
-   C2. Vitoria-Gasteiz — contratos menores            → CSV
+   C2. Vitoria-Gasteiz — contratos (menores) formalizados → CSV/XLSX
 
  Notas:
    · Los módulos B1/B2/B3 son exports del mismo REVASCON → redundantes con A1
      pero se mantienen como backup y para series históricas pre-API.
    · C1/C2 son portales propios que publican datos que PUEDEN no estar en
      KontratazioA (especialmente contratos menores municipales).
+   · Sesgo del superviviente (comun/historico.py): ninguna descarga machaca la
+     anterior. Si un fichero que se vuelve a bajar ha cambiado, la versión
+     previa pasa a <carpeta>/_historico/ y la consolidación acumula todas.
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
+import html
+import re
+import shutil
+import sys
 import requests
 import time
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlencode, urljoin
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import HISTORICO, guardar_version  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -56,6 +71,10 @@ DIRS = {
     "xlsx_anual":        BASE_DIR / "B1_xlsx_sector_publico_anual",
     "revascon_hist":     BASE_DIR / "B2_revascon_historico",
     "ultimos_90d":       BASE_DIR / "B3_ultimos_90_dias",
+    "revascon_poder":    BASE_DIR / "B4_revascon_por_poder",
+    # Módulo A completo: ventanas de fecha de /contracts y /contracting-notices
+    "api_contracts_full": BASE_DIR / "A1_api_contratos_completo",
+    "api_notices_full":   BASE_DIR / "A2_api_anuncios_completo",
     # Módulo C: Portales municipales
     "bilbao":            BASE_DIR / "C1_bilbao",
     "vitoria":           BASE_DIR / "C2_vitoria_gasteiz",
@@ -118,7 +137,10 @@ def download(url: str, dest: Path, label: str = "",
     Descarga un fichero con reintentos. 404 no se reintenta.
     refrescar=True vuelve a descargarlo aunque ya exista (ficheros que siguen
     cambiando: año en curso, históricos acumulados); si falla, se conserva
-    el fichero anterior.
+    el fichero anterior. Si la nueva descarga es distinta, la anterior no se
+    machaca: pasa a <carpeta>/_historico/<nombre>__<AAAAMMDDTHHMMSSZ><ext>
+    (comun.historico.guardar_version) y la consolidación acumula todas las
+    versiones, así no se pierde lo que la administración retire o cambie.
     """
     if not refrescar and dest.exists() and dest.stat().st_size > 100:
         log.info("  SKIP  %s", dest.name)
@@ -138,15 +160,13 @@ def download(url: str, dest: Path, label: str = "",
                 return False
 
             if r.status_code == 200 and is_real_data(r.content, dest.suffix):
-                # Escritura atómica: un corte a medias no deja un fichero
-                # truncado que las siguientes ejecuciones darían por bueno
-                tmp = dest.with_name(dest.name + ".part")
-                tmp.write_bytes(r.content)
-                tmp.replace(dest)
+                # Escritura atómica (un corte a medias no deja un fichero
+                # truncado) y sin machacar la versión anterior si cambió
+                estado = guardar_version(dest, contenido=r.content)
                 size = len(r.content)
                 stats["ok"] += 1
                 stats["bytes"] += size
-                log.info("  OK   %s  (%.1f KB)", dest.name, size / 1024)
+                log.info("  OK   %s  (%.1f KB, %s)", dest.name, size / 1024, estado)
                 return True
             else:
                 log.warning("  WARN status=%s size=%d  %s",
@@ -446,9 +466,9 @@ def dl_A_api(api_urls: dict):
         if resource not in api_urls:
             log.warning("  ⚠ Endpoint %s no descubierto — saltando.", resource)
             continue
-        log.info("  ℹ La API tiene página fija de 10 items (no configurable).")
-        log.info("    Descarga bulk inviable (~27h). Usando XLSX (B1) como")
-        log.info("    fuente principal. API = muestra de %d registros.", API_SAMPLE_PAGES * 10)
+        log.info("  ℹ Muestra/sonda con ?currentPage=N a secas (hasta %d registros);",
+                 API_SAMPLE_PAGES * 10)
+        log.info("    la descarga completa es dl_A_api_completa (ventanas de fecha).")
         _paginate_api(
             api_url=api_urls[resource],
             resource_name=name,
@@ -457,6 +477,465 @@ def dl_A_api(api_urls: dict):
             max_pages=API_SAMPLE_PAGES,
             delay=0.3,        # delay corto para la muestra
         )
+
+
+# ═══════════════════════════════════════════════════════════════
+# MÓDULO A (COMPLETO) — /contracts y /contracting-notices POR VENTANAS
+# ═══════════════════════════════════════════════════════════════
+#
+# CONFIRMADO con la descarga real de 2026-02 (páginas de A1/A2):
+#   · /contracts: totalItems=655.518; cada item trae id (texto, p.ej.
+#     "G-042$24PYD1244_00001"), awardDate "AAAA-MM-DD", awardAmount,
+#     awardAmountWithoutVAT, CIF, socialReason, CPV, minorContract,
+#     contractType/ProcedureType/ProcedureStatus y _links.
+#   · /contracting-notices: totalItems=656.503; id numérico, first/
+#     lastPublicationDate, budgetWithoutVAT, sara, numberBidders…
+#   · Sin más parámetros que ?currentPage=N la API devuelve siempre la página 1
+#     (A3/A4 sí paginan) y el orden por defecto es awardDate DESC, con fechas
+#     erróneas como 2424-10-04 o 2219-03-25 al principio.
+#
+# A VERIFICAR EN VIVO (portal bloqueado desde el entorno de desarrollo; los
+# parámetros son los que usa código de terceros de 2025-26):
+#   · que con itemsOfPage/orderBy/orderType/lang la API respete currentPage
+#     (si no, se aborta con un mensaje claro: no se guardan copias de la pág. 1);
+#   · que los filtros award-date.gt/.lt y publication-date.gt/.lt acepten
+#     "AAAA-MM-DD" (si se ignoran, se aborta; si el formato no casa, las
+#     ventanas salen vacías y el resumen avisa de los registros que faltan);
+#   · si gt/lt son estrictos (se piden gt=día anterior y lt=día siguiente, así
+#     no hay huecos en ningún caso; los solapes se descartan al consolidar);
+#   · el máximo de registros paginables por consulta (API_MAX_ITEMS_VENTANA):
+#     si una ventana lo supera se parte en dos; si la paginación se corta antes
+#     de totalItems también, y un solo día se completa en orden ASC + DESC.
+#   · qué fecha filtra publication-date en los anuncios (primera o última).
+# ═══════════════════════════════════════════════════════════════
+
+API_BASE = "https://api.euskadi.eus/procurements"
+API_ITEMS_POR_PAGINA = 50
+API_MAX_ITEMS_VENTANA = 10_000
+API_ANIO_MIN = 2000          # antes: una ventana "anteriores" (que se parte si hace falta)
+API_MESES_REFRESCO = 2       # últimos meses que se vuelven a bajar siempre
+API_DELAY = 0.3
+API_IDIOMA = "SPANISH"
+
+API_COMPLETA = {
+    "contracts": {
+        "nombre": "A1_Contratos_completo", "dir": "api_contracts_full",
+        "ruta": "/contracts", "filtro": "award-date", "orden": "awardDate",
+        "campos_fecha": ("awardDate",),
+    },
+    "notices": {
+        "nombre": "A2_Anuncios_completo", "dir": "api_notices_full",
+        "ruta": "/contracting-notices", "filtro": "publication-date",
+        "orden": "lastPublicationDate",
+        "campos_fecha": ("firstPublicationDate", "lastPublicationDate"),
+    },
+}
+
+
+class ApiNoPagina(RuntimeError):
+    """La API no pagina o no filtra como se espera: seguir solo guardaría basura."""
+
+
+def _url_api(api_url: str, cfg: dict, pagina: int, orden: str = "ASC",
+             desde: date = None, hasta: date = None) -> str:
+    """URL de una página. [desde, hasta] (días incluidos) se pide como
+    gt=desde-1 y lt=hasta+1; date.min / date.max = sin ese límite."""
+    params = {"currentPage": pagina, "itemsOfPage": API_ITEMS_POR_PAGINA,
+              "orderBy": cfg["orden"], "orderType": orden, "lang": API_IDIOMA}
+    if desde is not None and desde > date.min:
+        params[cfg["filtro"] + ".gt"] = (desde - timedelta(days=1)).isoformat()
+    if hasta is not None and hasta < date.max:
+        params[cfg["filtro"] + ".lt"] = (hasta + timedelta(days=1)).isoformat()
+    sep = "&" if "?" in api_url else "?"
+    return f"{api_url}{sep}{urlencode(params)}"
+
+
+def _get_pagina_api(url: str, nombre: str, pagina: int):
+    """Como _get_pagina, pero devuelve (dict, bytes tal como llegan) o (None, None)."""
+    for attempt in range(1, RETRIES + 1):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            data = r.json() if r.status_code == 200 else None
+            if _es_pagina(data):
+                return data, r.content
+            log.warning("  %s: status %d / sin 'items' en page %d (intento %d/%d)",
+                        nombre, r.status_code, pagina, attempt, RETRIES)
+        except Exception as e:
+            log.warning("  ERR %s page %d (intento %d/%d): %s",
+                        nombre, pagina, attempt, RETRIES, e)
+        if attempt < RETRIES:
+            time.sleep(DELAY * attempt)
+    return None, None
+
+
+def _clave_item(item):
+    """Identificador de un item: su 'id' o, si no lo trae, el item entero."""
+    if isinstance(item, dict) and item.get("id") is not None:
+        return item["id"]
+    return json.dumps(item, sort_keys=True, ensure_ascii=False)
+
+
+def _fuera_de_rango(item, cfg, desde, hasta) -> bool:
+    """True si ninguna fecha del item cae en [desde-1, hasta+1] (solo estadística)."""
+    fechas = []
+    for campo in cfg["campos_fecha"]:
+        try:
+            fechas.append(date.fromisoformat(str(item.get(campo))[:10]))
+        except (TypeError, ValueError):
+            pass
+    if not fechas:
+        return False
+    lo = desde - timedelta(days=1) if desde > date.min else date.min
+    hi = hasta + timedelta(days=1) if hasta < date.max else date.max
+    return not any(lo <= f <= hi for f in fechas)
+
+
+def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
+            parar=None, max_paginas=None) -> dict:
+    """
+    Pide las páginas 1..N de [desde, hasta] (None, None = sin filtro) en `orden`,
+    guarda cada respuesta tal cual (<desde>_<hasta>_<orden>_pNNNNN.json) y añade
+    sus ids a `vistos`. Para al reunir totalItems ids, al acabar las páginas, con
+    una página vacía o que solo repite ids, al llegar a max_paginas o si
+    parar(vistos). Lanza ApiNoPagina si la API devuelve otra página que la pedida.
+    """
+    nombre = cfg["nombre"]
+    rango = f"{desde.isoformat()}_{hasta.isoformat()}" if desde else "sin_filtro"
+    etiqueta = f"{rango}_{orden.lower()}"
+    info = {"desde": desde.isoformat() if desde else None,
+            "hasta": hasta.isoformat() if hasta else None, "orden": orden,
+            "total_items": None, "paginas": 0, "items": 0, "ids_nuevos": 0,
+            "fuera_de_rango": 0, "fin": None}
+    pagina, respuesta = 1, primera
+    while True:
+        if respuesta is None:
+            time.sleep(API_DELAY)
+            respuesta = _get_pagina_api(_url_api(api_url, cfg, pagina, orden, desde, hasta),
+                                        nombre, pagina)
+        data, contenido = respuesta
+        if data is None:
+            stats["fail"] += 1
+            info["fin"] = f"página {pagina} fallida"
+            break
+        if data.get("currentPage", pagina) != pagina:
+            raise ApiNoPagina(
+                f"{nombre}: se pidió la página {pagina} de {etiqueta} y la API devolvió "
+                f"la {data.get('currentPage')} (ignora currentPage) — abortando sin "
+                f"guardar la ventana; revisar los parámetros de paginación.")
+        if pagina == 1:
+            info["total_items"] = int(data.get("totalItems") or 0)
+        items = data.get("items") or []
+        if not items:
+            info["fin"] = "página vacía"
+            break
+        (carpeta / f"{etiqueta}_p{pagina:05d}.json").write_bytes(contenido)
+        stats["ok"] += 1
+        stats["bytes"] += len(contenido)
+        nuevos = 0
+        for it in items:
+            k = _clave_item(it)
+            if k not in vistos:
+                vistos.add(k)
+                nuevos += 1
+            if desde is not None and _fuera_de_rango(it, cfg, desde, hasta):
+                info["fuera_de_rango"] += 1
+        info["paginas"] += 1
+        info["items"] += len(items)
+        info["ids_nuevos"] += nuevos
+        if len(vistos) >= info["total_items"]:
+            info["fin"] = "completa"
+            break
+        if parar is not None and parar(vistos):
+            info["fin"] = "objetivo"
+            break
+        if nuevos == 0:
+            info["fin"] = f"página {pagina} repetida"
+            break
+        if pagina >= int(data.get("totalPages") or 0):
+            info["fin"] = "última página"
+            break
+        if max_paginas and pagina >= max_paginas:
+            info["fin"] = "máximo de páginas"
+            break
+        pagina, respuesta = pagina + 1, None
+    return info
+
+
+def _bajar_rango(api_url, cfg, desde, hasta, carpeta, vistos, trozos, primera=None):
+    """
+    Descarga [desde, hasta] en `carpeta`. Si totalItems supera
+    API_MAX_ITEMS_VENTANA, o la paginación no llega a reunir totalItems ids
+    (ni en orden ASC ni completando en DESC), se parte en dos mitades hasta
+    llegar a un día. Añade los ids a `vistos` y el detalle a `trozos`.
+    """
+    if primera is None:
+        time.sleep(API_DELAY)
+        primera = _get_pagina_api(_url_api(api_url, cfg, 1, "ASC", desde, hasta), cfg["nombre"], 1)
+    if primera[0] is None:
+        stats["fail"] += 1
+        trozos.append({"desde": desde.isoformat(), "hasta": hasta.isoformat(),
+                       "completo": False, "fin": "página 1 fallida"})
+        return
+    total = int(primera[0].get("totalItems") or 0)
+
+    def partir(motivo):
+        mitad = desde + (hasta - desde) // 2
+        log.info("    %s %s…%s (%d registros, %s): se parte en dos", cfg["nombre"],
+                 desde, hasta, total, motivo)
+        trozos.append({"desde": desde.isoformat(), "hasta": hasta.isoformat(),
+                       "total_items": total, "partido": motivo})
+        _bajar_rango(api_url, cfg, desde, mitad, carpeta, vistos, trozos)
+        _bajar_rango(api_url, cfg, mitad + timedelta(days=1), hasta, carpeta, vistos, trozos)
+
+    if total > API_MAX_ITEMS_VENTANA and hasta > desde:
+        partir(f"más de {API_MAX_ITEMS_VENTANA} por consulta")
+        return
+    propios = set()
+    pasadas = [_pasada(api_url, cfg, desde, hasta, "ASC", carpeta, propios, primera)]
+    if len(propios) < total:
+        pasadas.append(_pasada(api_url, cfg, desde, hasta, "DESC", carpeta, propios))
+    vistos |= propios
+    trozos.append({"desde": desde.isoformat(), "hasta": hasta.isoformat(),
+                   "total_items": total, "ids_unicos": len(propios),
+                   "completo": len(propios) == total, "pasadas": pasadas})
+    if len(propios) < total and hasta > desde:
+        partir(f"paginación cortada en {len(propios)}")
+
+
+def _ventanas_api(hoy: date):
+    """[(clave, desde, hasta)]: anteriores a API_ANIO_MIN, un mes por ventana
+    hasta el mes de `hoy` y posteriores (fechas futuras o erróneas: 2424-10-04)."""
+    ventanas = [("anteriores", date.min, date(API_ANIO_MIN - 1, 12, 31))]
+    ini = date(API_ANIO_MIN, 1, 1)
+    while (ini.year, ini.month) <= (hoy.year, hoy.month):
+        sig = date(ini.year + (ini.month == 12), ini.month % 12 + 1, 1)
+        ventanas.append((f"{ini.year:04d}-{ini.month:02d}", ini, sig - timedelta(days=1)))
+        ini = sig
+    ventanas.append(("posteriores", ini, date.max))
+    return ventanas
+
+
+def _leer_manifiesto(carpeta: Path):
+    try:
+        return json.loads((carpeta / "_ventana.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _sello(momento: datetime) -> str:
+    return momento.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _publicar_ventana(tmp: Path, final: Path):
+    """Pone la descarga `tmp` como versión actual de la ventana; la anterior (si
+    la hay) no se borra: pasa a <dir>/_historico/<clave>__<AAAAMMDDTHHMMSSZ>/."""
+    if final.exists():
+        previo = _leer_manifiesto(final) or {}
+        try:
+            momento = datetime.fromisoformat(previo["descargado"])
+        except (KeyError, TypeError, ValueError):
+            momento = datetime.fromtimestamp(final.stat().st_mtime, timezone.utc)
+        archivo = final.parent / HISTORICO / f"{final.name}__{_sello(momento)}"
+        archivo.parent.mkdir(exist_ok=True)
+        n = 1
+        while archivo.exists():
+            archivo = archivo.with_name(f"{final.name}__{_sello(momento)}_{n}")
+            n += 1
+        final.rename(archivo)
+    tmp.rename(final)
+
+
+def _comprobar_filtro(cfg, clave, total, total_global):
+    """Una ventana acotada con tantos registros como la API sin filtro = filtro ignorado."""
+    if total_global > API_ITEMS_POR_PAGINA and total >= total_global:
+        raise ApiNoPagina(
+            f"{cfg['nombre']}: la ventana {clave} devuelve {total} registros, los mismos "
+            f"que sin filtro: la API ignora {cfg['filtro']}.gt/.lt — abortando sin "
+            f"guardar la ventana; revisar el nombre y formato del filtro.")
+
+
+def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
+    """
+    Descarga una ventana (con reanudación) y devuelve sus ids.
+
+    - Ventana ya completa y no a refrescar: solo se pide su página 1 y, si
+      totalItems no ha cambiado, se conserva sin volver a bajarla.
+    - Si hay que bajarla, se escribe en <clave>.part/ y se publica al acabar;
+      la versión anterior pasa a _historico/ (la consolidación acumula todas:
+      lo que la administración retire se conserva marcado).
+    - Si la nueva descarga no reúne totalItems ids se repite una vez; si sigue
+      incompleta se guarda igual (son datos reales) con completo=False y la
+      siguiente ejecución la vuelve a intentar.
+    """
+    nombre = cfg["nombre"]
+    final = d / clave
+    previo = _leer_manifiesto(final)
+    primera = None
+    if previo and previo.get("completo") and not refrescar:
+        time.sleep(API_DELAY)
+        primera = _get_pagina_api(_url_api(api_url, cfg, 1, "ASC", desde, hasta), nombre, 1)
+        if primera[0] is None:
+            log.warning("  %s %s: no se pudo comprobar; se conserva la descarga anterior",
+                        nombre, clave)
+            return set(previo.get("ids", []))
+        total = int(primera[0].get("totalItems") or 0)
+        _comprobar_filtro(cfg, clave, total, total_global)
+        if total == previo.get("total_items"):
+            stats["skip"] += 1
+            return set(previo.get("ids", []))
+        log.info("  %s %s: totalItems %s → %d, se vuelve a descargar (la anterior "
+                 "se conserva en %s/)", nombre, clave, previo.get("total_items"), total, HISTORICO)
+
+    tmp = d / f"{clave}.part"
+    for intento in (1, 2):
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        inicio = datetime.now(timezone.utc)
+        if primera is None:
+            time.sleep(API_DELAY)
+            primera = _get_pagina_api(_url_api(api_url, cfg, 1, "ASC", desde, hasta), nombre, 1)
+        total = int(primera[0].get("totalItems") or 0) if primera[0] is not None else None
+        vistos, trozos = set(), []
+        try:
+            if total is not None:
+                _comprobar_filtro(cfg, clave, total, total_global)
+            _bajar_rango(api_url, cfg, desde, hasta, tmp, vistos, trozos, primera)
+        except ApiNoPagina:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        completo = total is not None and len(vistos) == total
+        if completo or intento == 2:
+            break
+        log.warning("  %s %s: %d ids únicos de %s — se repite la ventana",
+                    nombre, clave, len(vistos), total)
+        primera = None
+
+    manifiesto = {
+        "clave": clave, "desde": desde.isoformat(), "hasta": hasta.isoformat(),
+        "api_url": api_url, "filtro": cfg["filtro"], "orden": cfg["orden"],
+        "items_por_pagina": API_ITEMS_POR_PAGINA, "descargado": inicio.isoformat(),
+        "total_items": total, "ids_unicos": len(vistos), "completo": completo,
+        "trozos": trozos, "ids": sorted(vistos, key=str),
+    }
+    (tmp / "_ventana.json").write_text(json.dumps(manifiesto, ensure_ascii=False),
+                                       encoding="utf-8")
+    _publicar_ventana(tmp, final)
+    nivel = logging.INFO if completo else logging.ERROR
+    log.log(nivel, "  %s %s: %d ids únicos de %s%s", nombre, clave, len(vistos), total,
+            "" if completo else " — INCOMPLETA (se reintentará en la próxima ejecución)")
+    if not completo:
+        stats["fail"] += 1
+    return vistos
+
+
+def _resto_sin_ventana(api_url, cfg, d, ids_ventanas, total_global) -> int:
+    """
+    Registros que no caen en ninguna ventana (sin fecha: los filtros no los
+    devuelven). Se buscan en la API sin filtro, en orden DESC (los nulos suelen ir
+    al final en ASC) y ASC, hasta API_MAX_ITEMS_VENTANA registros por orden.
+    Devuelve cuántos se encontraron. Las páginas guardadas repiten registros de
+    otras ventanas: son artefactos de la descarga y se descartan al consolidar.
+    """
+    faltan = total_global - len(ids_ventanas)
+    if faltan <= 0:
+        return 0
+    log.warning("  %s: las ventanas reúnen %d ids de %d — buscando %d sin fecha…",
+                cfg["nombre"], len(ids_ventanas), total_global, faltan)
+    tmp = d / "sin_ventana.part"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    inicio = datetime.now(timezone.utc)
+    vistos = set()
+
+    def encontrados(v):
+        return len(v - ids_ventanas)
+
+    pasadas = []
+    for orden in ("DESC", "ASC"):
+        pasadas.append(_pasada(api_url, cfg, None, None, orden, tmp, vistos,
+                               parar=lambda v: encontrados(v) >= faltan,
+                               max_paginas=max(1, API_MAX_ITEMS_VENTANA // API_ITEMS_POR_PAGINA)))
+        if encontrados(vistos) >= faltan:
+            break
+    nuevos = vistos - ids_ventanas
+    manifiesto = {"clave": "sin_ventana", "descargado": inicio.isoformat(), "parcial": True,
+                  "total_items": total_global, "faltaban": faltan, "completo": len(nuevos) >= faltan,
+                  "ids_unicos": len(nuevos), "trozos": [{"pasadas": pasadas}],
+                  "ids": sorted(nuevos, key=str)}
+    (tmp / "_ventana.json").write_text(json.dumps(manifiesto, ensure_ascii=False), encoding="utf-8")
+    _publicar_ventana(tmp, d / "sin_ventana")
+    return len(nuevos)
+
+
+def _descargar_api_completa(api_url: str, cfg: dict, hoy: date = None):
+    """Descarga completa de un endpoint por ventanas de fecha (ver arriba)."""
+    nombre = cfg["nombre"]
+    d = DIRS[cfg["dir"]]
+    d.mkdir(parents=True, exist_ok=True)
+    hoy = hoy or date.today()
+    log.info("=" * 60)
+    log.info("A. API REST — %s (descarga completa por ventanas de fecha)", nombre)
+    log.info("=" * 60)
+    estado = {"recurso": nombre, "api_url": api_url, "inicio": datetime.now(timezone.utc).isoformat()}
+
+    def escribir_estado():
+        estado["fin"] = datetime.now(timezone.utc).isoformat()
+        (d / "_estado.json").write_text(json.dumps(estado, ensure_ascii=False, indent=2),
+                                        encoding="utf-8")
+
+    data, _ = _get_pagina_api(_url_api(api_url, cfg, 1, "DESC"), nombre, 1)
+    if data is None:
+        log.error("  %s: no se pudo leer el total sin filtro — saltando", nombre)
+        stats["fail"] += 1
+        estado["abortado"] = "sin respuesta de la API"
+        escribir_estado()
+        return
+    total_global = int(data.get("totalItems") or 0)
+    estado["total_api"] = total_global
+    log.info("  %s: %d registros en la API", nombre, total_global)
+
+    ventanas = _ventanas_api(hoy)
+    refrescar = {"posteriores"} | {c for c, _, _ in ventanas[-1 - API_MESES_REFRESCO:-1]}
+    ids = set()
+    incompletas = []
+    try:
+        for clave, desde, hasta in ventanas:
+            ids |= _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global,
+                                refrescar=clave in refrescar)
+            if not (_leer_manifiesto(d / clave) or {}).get("completo"):
+                incompletas.append(clave)
+        ids_ventanas = set(ids)
+        estado["sin_ventana"] = _resto_sin_ventana(api_url, cfg, d, ids_ventanas, total_global)
+    except ApiNoPagina as e:
+        log.error("  %s", e)
+        stats["fail"] += 1
+        estado["abortado"] = str(e)
+        escribir_estado()
+        return
+    estado["ids_en_ventanas"] = len(ids_ventanas)
+    estado["faltan"] = max(0, total_global - len(ids_ventanas) - estado["sin_ventana"])
+    estado["ventanas_incompletas"] = incompletas
+    escribir_estado()
+    if estado["faltan"] or incompletas:
+        log.error("  %s: faltan %d de %d registros; ventanas incompletas: %s",
+                  nombre, estado["faltan"], total_global, ", ".join(incompletas) or "ninguna")
+    else:
+        log.info("  %s: completo — %d registros", nombre, total_global)
+
+
+def dl_A_api_completa(api_urls: dict, recursos=("contracts", "notices")):
+    """
+    A1c/A2c. /contracts y /contracting-notices COMPLETOS por ventanas de fecha
+    (importes, adjudicatario, CIF, presupuesto…: lo que no tiene B1).
+    Las respuestas se guardan tal cual en A1_api_contratos_completo/<ventana>/
+    y A2_api_anuncios_completo/<ventana>/ con un _ventana.json por ventana
+    (totalItems, ids únicos, trozos) y un _estado.json con el resumen.
+    Reanudable: las ventanas completas no se vuelven a bajar salvo que cambie
+    su totalItems (o sean de los últimos API_MESES_REFRESCO meses).
+    """
+    for recurso in recursos:
+        cfg = API_COMPLETA[recurso]
+        _descargar_api_completa(api_urls.get(recurso) or API_BASE + cfg["ruta"], cfg)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -552,19 +1031,169 @@ def dl_B2_revascon_historico():
         time.sleep(DELAY)
 
 
+# B3: la URL original (contrataciones_ultimos_dias) no genera nada; la de Open
+# Data es ultimas_contrataciones_admin (a verificar en vivo). Se prueba en orden.
+B3_URLS = [
+    "https://opendata.euskadi.eus/contenidos/ds_contrataciones/"
+    "ultimas_contrataciones_admin/opendata/contratos.xlsx",
+    "https://opendata.euskadi.eus/contenidos/ds_contrataciones/"
+    "contrataciones_ultimos_dias/opendata/contratos.xlsx",
+]
+
+
 def dl_B3_ultimos_90d():
     """
     B3. Snapshot de contratos de los últimos 90 días.
-    Ventana móvil con datos recientes de toda la CAE.
+    Ventana móvil con datos recientes de toda la CAE. Cada día es un fichero
+    distinto (ultimos_90d_AAAAMMDD.xlsx): las instantáneas no se sobrescriben.
     """
     log.info("=" * 60)
     log.info("B3. CONTRATOS ÚLTIMOS 90 DÍAS (snapshot)")
     log.info("=" * 60)
     d = DIRS["ultimos_90d"]
-    base = ("https://opendata.euskadi.eus/contenidos/ds_contrataciones/"
-            "contrataciones_ultimos_dias/opendata/contratos")
     hoy = datetime.now().strftime("%Y%m%d")
-    download(f"{base}.xlsx", d / f"ultimos_90d_{hoy}.xlsx", "90-días")
+    for i, url in enumerate(B3_URLS):
+        if download(url, d / f"ultimos_90d_{hoy}.xlsx", "90-días" + (" (URL antigua)" if i else "")):
+            break
+
+
+# ─────────────────────────────────────────────────────────────
+# B4. REVASCON POR PODER ADJUDICADOR Y AÑO (2018-…)
+# ─────────────────────────────────────────────────────────────
+# Desde 2019 el Registro de Contratos se publica como un dataset por poder
+# adjudicador y año ("Registro de contratos de <poder> del <AAAA>"), p.ej.
+# contratos_poder86_2020. Los IDs de poder NO son los de la API (UPV/EHU es
+# 16317 aquí y 37 en /contracting-authorities): se descubren buscando
+# "contratos_poder<ID>_<AAAA>" en las páginas del catálogo y se guardan en
+# B4_revascon_por_poder/_poderes_descubiertos.json (acumulativo: se puede
+# añadir IDs a mano).
+#
+# A VERIFICAR EN VIVO: la URL de búsqueda del catálogo (se prueban las de
+# REVASCON_CATALOGO; basta con que la página contenga enlaces a los datasets),
+# que el XLSX esté en www.euskadi.eus con el nombre doc_contratos_poder… (si no,
+# se busca el enlace en la ficha index.shtml) y el año de inicio.
+REVASCON_ANIO_MIN = 2018
+REVASCON_PODER_XLSX = ("https://www.euskadi.eus/contenidos/ds_contrataciones/"
+                       "contratos_poder{id}_{anio}/es_contracc/adjuntos/"
+                       "doc_contratos_poder{id}_{anio}.xlsx")
+REVASCON_PODER_FICHA = ("https://opendata.euskadi.eus/webopd00-dataset/es/contenidos/"
+                        "ds_contrataciones/contratos_poder{id}_{anio}/es_contracc/index.shtml")
+REVASCON_CATALOGO = [
+    # (nombre, URL con {pagina}, primera página)
+    ("opendata_euskadi",
+     "https://opendata.euskadi.eus/catalogo-datos/?r01kQry=tC:euskadi;tF:opendata;"
+     "tT:ds_contrataciones;m:documentName.LIKE.Registro%20de%20contratos;"
+     "p:Inter;pp:r01PageSize.100,r01PageNum.{pagina}", 1),
+    ("datos_gob_es",
+     "https://datos.gob.es/apidata/catalog/dataset/title/Registro%20de%20contratos.json"
+     "?_pageSize=50&_page={pagina}", 0),
+]
+REVASCON_CATALOGO_MAX_PAGINAS = 200
+# Poderes conocidos (se prueban aunque el catálogo no responda)
+REVASCON_PODERES_SEMILLA = (86, 16317)
+_RE_PODER = re.compile(r"contratos_poder(\d+)_((?:19|20)\d{2})")
+_RE_ENLACE_DATOS = re.compile(r"""href\s*=\s*["']([^"'<>]+?\.(csv|xlsx|xls|json)(?:\?[^"'<>]*)?)["']""",
+                              re.IGNORECASE)
+
+
+def _texto(ruta: Path) -> str:
+    return ruta.read_bytes().decode("utf-8", errors="replace")
+
+
+def _enlaces_datos(pagina_html: str, base_url: str):
+    """URLs absolutas de ficheros de datos (csv/xlsx/xls/json) enlazados en una página."""
+    vistos, out = set(), []
+    for href, ext in _RE_ENLACE_DATOS.findall(pagina_html):
+        url = urljoin(base_url, html.unescape(href))
+        if url not in vistos:
+            vistos.add(url)
+            out.append((url, ext.lower()))
+    return out
+
+
+def _descubrir_poderes_revascon(d: Path) -> dict:
+    """{id: {"anios": set, "fuentes": set}} con lo guardado + lo que aparezca en el catálogo."""
+    registro = d / "_poderes_descubiertos.json"
+    poderes = {}
+    try:
+        previo = json.loads(registro.read_text(encoding="utf-8"))
+        for pid, info in previo.get("poderes", {}).items():
+            poderes[int(pid)] = {"anios": set(info.get("anios", [])),
+                                 "fuentes": set(info.get("fuentes", []))}
+    except (OSError, ValueError, AttributeError):
+        pass
+    for pid in REVASCON_PODERES_SEMILLA:
+        poderes.setdefault(pid, {"anios": set(), "fuentes": set()})["fuentes"].add("semilla")
+
+    cat = d / "_catalogo"
+    cat.mkdir(parents=True, exist_ok=True)
+    for nombre, plantilla, primera in REVASCON_CATALOGO:
+        ext = ".json" if ".json" in plantilla else ".html"
+        en_esta_busqueda = set()
+        for pagina in range(primera, primera + REVASCON_CATALOGO_MAX_PAGINAS):
+            dest = cat / f"{nombre}_p{pagina:03d}{ext}"
+            if not download(plantilla.format(pagina=pagina), dest, f"catálogo {nombre} p{pagina}",
+                            refrescar=True):
+                break
+            pares = {(int(p), int(a)) for p, a in _RE_PODER.findall(_texto(dest))}
+            if not pares - en_esta_busqueda:   # vacía o repetida: fin de los resultados
+                break
+            en_esta_busqueda |= pares
+            for pid, anio in pares:
+                info = poderes.setdefault(pid, {"anios": set(), "fuentes": set()})
+                info["anios"].add(anio)
+                info["fuentes"].add(nombre)
+            time.sleep(DELAY)
+
+    registro.write_text(json.dumps({
+        "actualizado": datetime.now(timezone.utc).isoformat(),
+        "poderes": {str(pid): {"anios": sorted(v["anios"]), "fuentes": sorted(v["fuentes"])}
+                    for pid, v in sorted(poderes.items())},
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    log.info("  %d poderes adjudicadores (%d pares poder-año en el catálogo)",
+             len(poderes), sum(len(v["anios"]) for v in poderes.values()))
+    return poderes
+
+
+def _revascon_desde_ficha(pid: int, anio: int, d: Path, refrescar: bool) -> bool:
+    """Si el XLSX no está en la ruta esperada, busca el enlace en la ficha del dataset."""
+    fichas = d / "_fichas"
+    fichas.mkdir(parents=True, exist_ok=True)
+    url_ficha = REVASCON_PODER_FICHA.format(id=pid, anio=anio)
+    ficha = fichas / f"contratos_poder{pid}_{anio}.html"
+    if not download(url_ficha, ficha, f"ficha poder{pid}-{anio}", refrescar=True):
+        return False
+    ok = False
+    for url, ext in _enlaces_datos(_texto(ficha), url_ficha):
+        if f"contratos_poder{pid}_{anio}" not in url and "adjuntos" not in url:
+            continue
+        base = re.sub(r"[^\w.-]", "_", url.rsplit("/", 1)[-1].split("?")[0])
+        ok |= download(url, d / f"contratos_poder{pid}_{anio}__{base}",
+                       f"REVASCON-poder{pid}-{anio} ({base})", refrescar=refrescar)
+    return ok
+
+
+def dl_B4_revascon_por_poder():
+    """
+    B4. REVASCON por poder adjudicador y año (XLSX), para cada poder descubierto y
+    cada año desde REVASCON_ANIO_MIN (también los años que el catálogo no lista).
+    El año en curso y el anterior se vuelven a bajar (versionados en _historico/).
+    """
+    log.info("=" * 60)
+    log.info("B4. REVASCON POR PODER ADJUDICADOR (XLSX, %d-%d)", REVASCON_ANIO_MIN, YEAR_NOW)
+    log.info("=" * 60)
+    d = DIRS["revascon_poder"]
+    d.mkdir(parents=True, exist_ok=True)
+    poderes = _descubrir_poderes_revascon(d)
+    for pid in sorted(poderes):
+        for anio in range(REVASCON_ANIO_MIN, YEAR_NOW + 1):
+            refrescar = anio >= YEAR_NOW - 1
+            dest = d / f"contratos_poder{pid}_{anio}.xlsx"
+            ok = download(REVASCON_PODER_XLSX.format(id=pid, anio=anio), dest,
+                          f"REVASCON-poder{pid}-{anio}", refrescar=refrescar)
+            if not ok and anio in poderes[pid]["anios"]:
+                _revascon_desde_ficha(pid, anio, d, refrescar)
+            time.sleep(DELAY)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -608,14 +1237,34 @@ def dl_C1_bilbao():
     dest = d / f"bilbao_abiertas_{hoy}.csv"
     download(url, dest, "Bilbao-abiertas")
 
+    # Sin filtros: 165 registros solo salían en abiertas=true (ni por año ni por
+    # tipo), y las instantáneas "abiertas" antiguas no se consolidan. A verificar
+    # en vivo que sin anio/tipoContrato/abiertas se sirva todo el histórico.
+    download(f"{base}?formato=csv&idioma=es", d / "bilbao_sin_filtros.csv",
+             "Bilbao-sin-filtros", refrescar=True)
+
+
+# Datasets de Vitoria-Gasteiz en el catálogo de Open Data Euskadi. La URL de
+# los ficheros no se conoce (a verificar en vivo): se toman los enlaces a
+# CSV (o XLSX/XLS/JSON si no hay CSV) de la página del catálogo.
+VITORIA_CATALOGO = {
+    "contratos_formalizados":
+        "https://opendata.euskadi.eus/catalogo/-/contratos-formalizados/",
+    "contratos_menores_formalizados":
+        "https://opendata.euskadi.eus/catalogo/-/contratos-menores-formalizados/",
+}
+
 
 def dl_C2_vitoria():
     """
-    C2. Vitoria-Gasteiz — Contratos menores formalizados.
-    Fuente específica para menores del Ayuntamiento.
+    C2. Vitoria-Gasteiz — Contratos formalizados y contratos menores formalizados.
+    Se descargan los ficheros enlazados en la página de cada dataset del
+    catálogo (vitoria_<dataset>__<fichero>) y, además, la URL antigua de menores
+    (vitoria_menores.csv, que no genera nada: se mantiene por si vuelve).
+    Todos se vuelven a bajar en cada ejecución, versionados en _historico/.
     """
     log.info("=" * 60)
-    log.info("C2. VITORIA-GASTEIZ — CONTRATOS MENORES (CSV)")
+    log.info("C2. VITORIA-GASTEIZ — CONTRATOS (MENORES) FORMALIZADOS")
     log.info("=" * 60)
     d = DIRS["vitoria"]
     base = ("https://opendata.euskadi.eus/contenidos/ds_contrataciones/"
@@ -623,6 +1272,26 @@ def dl_C2_vitoria():
 
     download(f"{base}.csv", d / "vitoria_menores.csv", "Vitoria-menores-CSV",
              refrescar=True)   # fichero único que se va actualizando
+
+    cat = d / "_catalogo"
+    cat.mkdir(parents=True, exist_ok=True)
+    for clave, url_cat in VITORIA_CATALOGO.items():
+        pagina = cat / f"{clave}.html"
+        if not download(url_cat, pagina, f"Vitoria catálogo {clave}", refrescar=True):
+            continue
+        enlaces = _enlaces_datos(_texto(pagina), url_cat)
+        for preferido in (("csv",), ("xlsx", "xls"), ("json",)):
+            elegidos = [u for u, ext in enlaces if ext in preferido]
+            if elegidos:
+                break
+        if not elegidos:
+            log.warning("  Vitoria %s: la página del catálogo no enlaza ficheros de datos "
+                        "(revisar en vivo)", clave)
+        for url in elegidos:
+            nombre = re.sub(r"[^\w.-]", "_", url.rsplit("/", 1)[-1].split("?")[0])
+            download(url, d / f"vitoria_{clave}__{nombre}", f"Vitoria {clave} {nombre}",
+                     refrescar=True)
+            time.sleep(DELAY)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -662,10 +1331,14 @@ def main():
     dl_B1_xlsx_anual()
     dl_B2_revascon_historico()
     dl_B3_ultimos_90d()
+    dl_B4_revascon_por_poder()
 
     # ── MÓDULO C: Portales municipales ──────────────────────────
     dl_C1_bilbao()
     dl_C2_vitoria()
+
+    # ── MÓDULO A completo (lo más largo, reanudable): importes ──
+    dl_A_api_completa(api_urls)
 
     # ── RESUMEN ─────────────────────────────────────────────────
     elapsed = time.time() - t0
@@ -684,15 +1357,20 @@ def main():
     log.info("═" * 60)
 
     log.info("\nEstructura:")
-    log.info("  A1_api_contratos/          ← JSON muestra 1K registros (bulk = B1)")
-    log.info("  A2_api_anuncios/           ← JSON muestra 1K anuncios (bulk = B1)")
+    log.info("  A1_api_contratos/          ← JSON muestra (sonda de paginación)")
+    log.info("  A2_api_anuncios/           ← JSON muestra (sonda de paginación)")
+    log.info("  A1_api_contratos_completo/ ← JSON por ventana de fecha — 655K contratos con importes")
+    log.info("  A2_api_anuncios_completo/  ← JSON por ventana de fecha — 656K anuncios")
     log.info("  A3_api_poderes/            ← JSON completo — 800+ poderes adjudicadores")
     log.info("  A4_api_empresas/           ← JSON completo — empresas licitadoras")
-    log.info("  B1_xlsx_sector_publico/    ← XLSX anuales (2011-%d) — FUENTE PRINCIPAL", YEAR_NOW)
+    log.info("  B1_xlsx_sector_publico/    ← XLSX anuales (2011-%d) — metadatos de anuncios", YEAR_NOW)
     log.info("  B2_revascon_historico/     ← CSV/XLSX 2013-2018 — serie histórica")
     log.info("  B3_ultimos_90_dias/        ← XLSX snapshot reciente")
+    log.info("  B4_revascon_por_poder/     ← XLSX REVASCON por poder y año (%d-%d)",
+             REVASCON_ANIO_MIN, YEAR_NOW)
     log.info("  C1_bilbao/                 ← CSV contratos municipales (2005-%d)", YEAR_NOW)
-    log.info("  C2_vitoria_gasteiz/        ← CSV contratos menores municipales")
+    log.info("  C2_vitoria_gasteiz/        ← CSV/XLSX contratos (menores) formalizados")
+    log.info("  */_historico/              ← versiones anteriores de lo que ha cambiado")
 
 
 if __name__ == "__main__":

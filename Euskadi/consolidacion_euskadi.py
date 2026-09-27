@@ -14,29 +14,48 @@
    · A4 JSON empresas (completo)  → empresas_licitadoras.parquet
    · B2 REVASCON (2013-2018)      → revascon_historico.parquet  (pre-API)
    · C1 Bilbao CSVs               → bilbao_contratos.parquet
-   · A1/A2 muestras API           → IGNORAR (redundante con B1)
-   · B3 últimos 90d / C2 Vitoria  → IGNORAR si 404
+   · A1/A2 muestras API           → IGNORAR (sonda de paginación)
+   · A1c/A2c API completa         → api_contratos.parquet / api_anuncios.parquet
+   · B4 REVASCON por poder        → revascon_por_poder.parquet
+   · C2 Vitoria                   → vitoria_contratos.parquet
+   · B3 últimos 90d               → IGNORAR si 404
 
  Salida final:
    euskadi_parquet/
-   ├── contratos_master.parquet        ← 655K+ contratos (B1)
+   ├── contratos_master.parquet        ← 655K+ anuncios (B1, metadatos)
+   ├── api_contratos.parquet           ← 655K contratos con importes (A1c)
+   ├── api_anuncios.parquet            ← 656K anuncios con presupuesto (A2c)
    ├── poderes_adjudicadores.parquet   ← 919 poderes (A3)
    ├── empresas_licitadoras.parquet    ← 9042 empresas (A4)
    ├── revascon_historico.parquet      ← Serie 2013-2018 (B2)
+   ├── revascon_por_poder.parquet      ← REVASCON por poder 2018-… (B4)
    ├── bilbao_contratos.parquet        ← Contratos municipales (C1)
+   ├── vitoria_contratos.parquet       ← Contratos (menores) formalizados (C2)
    ├── stats.json                      ← Estadísticas consolidación
    └── README.md                       ← Documentación
+
+ Versiones (comun/historico.py): lo que la descarga vuelve a bajar y ha
+ cambiado deja la versión anterior en <carpeta>/_historico/. Cada fichero (o
+ ventana de la API) se consolida acumulando todas sus versiones: las filas que
+ la administración retira o cambia se conservan con _primera_descarga,
+ _ultima_descarga y _en_ultima_descarga. En B1/B2/B3/C1 esas columnas solo
+ aparecen si algún fichero tiene más de una versión (con una sola el resultado
+ es el de siempre); en los datasets nuevos (A1c/A2c/B4/C2) siempre.
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
 import json
 import logging
+import re
 import sys
 import warnings
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import COLUMNAS_META, HISTORICO, acumular, versiones  # noqa: E402
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
@@ -60,6 +79,9 @@ PATHS = {
     "ultimos_90d":     INPUT_DIR / "B3_ultimos_90_dias",
     "bilbao":          INPUT_DIR / "C1_bilbao",
     "vitoria":         INPUT_DIR / "C2_vitoria_gasteiz",
+    "revascon_poder":  INPUT_DIR / "B4_revascon_por_poder",
+    "api_contracts_full": INPUT_DIR / "A1_api_contratos_completo",
+    "api_notices_full":   INPUT_DIR / "A2_api_anuncios_completo",
 }
 
 # Los JSON 2011-2013 de B1 traen los mismos campos que el XLSX con otros
@@ -233,8 +255,69 @@ def load_json_pages(directory: Path) -> pd.DataFrame:
     return df
 
 
+_SELLO_VERSION = re.compile(r"__(\d{8}T\d{6}Z)(?:_\d+)?$")
+
+
+def _fecha_version(ruta: Path) -> str:
+    """Fecha (UTC, ISO) de una versión: el sello de _historico/ o, para la
+    versión actual, la fecha de modificación del fichero."""
+    m = _SELLO_VERSION.search(ruta.stem if ruta.is_file() else ruta.name)
+    if m:
+        momento = datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ")
+        return momento.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(ruta.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _acumular_versiones(rutas, leer, etiqueta: str = "", **kwargs):
+    """
+    Lee cada versión de un fichero (de la más antigua a la actual) con `leer` y
+    las acumula (comun.historico.acumular): ninguna fila vista alguna vez se
+    pierde. Las versiones vacías o ilegibles no se acumulan (una descarga vacía
+    no retira nada). Devuelve None si no hay ninguna con filas.
+    """
+    acc = None
+    for r in rutas:
+        try:
+            df = leer(r)
+        except Exception as e:
+            log.warning("  Error leyendo %s: %s", r.name, e)
+            continue
+        if df is None or len(df) == 0:
+            log.info("  %s: versión %s vacía — no se acumula", etiqueta or r.name, r.name)
+            continue
+        acc = acumular(acc, df, _fecha_version(r), **kwargs)
+    return acc
+
+
+def _leer_xlsx(f: Path):
+    """(DataFrame, leído con xlrd) de un XLSX, corrigiendo filas de título y mojibake."""
+    try:
+        # Intentar leer con openpyxl (xlsx)
+        df = pd.read_excel(f, engine="openpyxl")
+        # REVASCON 2015-2018 trae filas de título antes de la cabecera: la
+        # 1ª fila (vacía) se toma como cabecera y todo sale "Unnamed: N".
+        # Se relee usando como cabecera la 1ª fila con ≥ mitad de celdas.
+        if len(df.columns) and all(str(c).startswith("Unnamed") for c in df.columns):
+            llenas = df.notna().sum(axis=1)
+            filas = llenas.index[llenas >= len(df.columns) / 2]
+            if len(filas):
+                df = pd.read_excel(f, engine="openpyxl", header=int(filas[0]) + 1)
+        return df.rename(columns=CABECERAS_MOJIBAKE), False
+    except Exception as e:
+        # Fallback: intentar con xlrd (xls)
+        try:
+            return pd.read_excel(f, engine="xlrd"), True
+        except Exception as e2:
+            raise ValueError(f"{e} / {e2}") from e2
+
+
 def load_xlsx_files(directory: Path, pattern: str = "*.xlsx") -> pd.DataFrame:
-    """Carga y concatena todos los XLSX de un directorio."""
+    """
+    Carga y concatena todos los XLSX de un directorio. Si un fichero tiene
+    versiones anteriores en _historico/ se acumulan todas (añade las columnas
+    _primera_descarga, _ultima_descarga y _en_ultima_descarga a sus filas); con
+    una sola versión el resultado es el de siempre.
+    """
     frames = []
     xlsx_files = sorted(directory.glob(pattern))
 
@@ -243,40 +326,30 @@ def load_xlsx_files(directory: Path, pattern: str = "*.xlsx") -> pd.DataFrame:
         return pd.DataFrame()
 
     for f in xlsx_files:
+        vers = versiones(f)
         try:
-            # Intentar leer con openpyxl (xlsx)
-            df = pd.read_excel(f, engine="openpyxl")
-            # REVASCON 2015-2018 trae filas de título antes de la cabecera: la
-            # 1ª fila (vacía) se toma como cabecera y todo sale "Unnamed: N".
-            # Se relee usando como cabecera la 1ª fila con ≥ mitad de celdas.
-            if len(df.columns) and all(str(c).startswith("Unnamed") for c in df.columns):
-                llenas = df.notna().sum(axis=1)
-                filas = llenas.index[llenas >= len(df.columns) / 2]
-                if len(filas):
-                    df = pd.read_excel(f, engine="openpyxl", header=int(filas[0]) + 1)
-            df = df.rename(columns=CABECERAS_MOJIBAKE)
-            if len(df) > 0:
-                # Añadir columna de origen (año del fichero)
-                year_str = f.stem.split("_")[-1]
-                df["_archivo_origen"] = f.name
-                # Solo si es un año (no la fecha AAAAMMDD de una instantánea)
-                if year_str.isdigit() and len(year_str) == 4:
-                    df["_year"] = int(year_str)
-
-                frames.append(df)
-                log.info("  %s: %d filas × %d cols", f.name, len(df), len(df.columns))
+            if len(vers) > 1:
+                df = _acumular_versiones(vers, lambda r: _leer_xlsx(r)[0], f.name)
+                df, xlrd = (pd.DataFrame() if df is None else df), False
             else:
-                log.info("  %s: vacío — saltando", f.name)
+                df, xlrd = _leer_xlsx(f)
         except Exception as e:
-            # Fallback: intentar con xlrd (xls)
-            try:
-                df = pd.read_excel(f, engine="xlrd")
-                if len(df) > 0:
-                    df["_archivo_origen"] = f.name
-                    frames.append(df)
-                    log.info("  %s: %d filas × %d cols (xlrd)", f.name, len(df), len(df.columns))
-            except Exception as e2:
-                log.warning("  Error leyendo %s: %s / %s", f.name, e, e2)
+            log.warning("  Error leyendo %s: %s", f.name, e)
+            continue
+        if len(df) > 0:
+            # Añadir columna de origen (año del fichero)
+            year_str = f.stem.split("_")[-1]
+            df["_archivo_origen"] = f.name
+            # Solo si es un año (no la fecha AAAAMMDD de una instantánea)
+            if not xlrd and year_str.isdigit() and len(year_str) == 4:
+                df["_year"] = int(year_str)
+
+            frames.append(df)
+            log.info("  %s: %d filas × %d cols%s%s", f.name, len(df), len(df.columns),
+                     " (xlrd)" if xlrd else "",
+                     f" ({len(vers)} versiones)" if len(vers) > 1 else "")
+        else:
+            log.info("  %s: vacío — saltando", f.name)
 
     if not frames:
         return pd.DataFrame()
@@ -287,9 +360,27 @@ def load_xlsx_files(directory: Path, pattern: str = "*.xlsx") -> pd.DataFrame:
     return df
 
 
+def _leer_csv(f: Path, encoding: str = "utf-8") -> pd.DataFrame:
+    """CSV como texto con separador detectado; si no es `encoding`, latin-1."""
+    # Detectar separador
+    head = f.read_bytes()[:2000].decode(encoding, errors="replace")
+    sep = ";" if head.count(";") > head.count(",") else ","
+    # Todo como texto: si no, read_csv convierte expedientes como
+    # "080617000001" en número (pierde el 0 inicial) e importes como
+    # "52.990" en 52,99 antes de poder tratarlos como formato español
+    try:
+        return pd.read_csv(f, sep=sep, encoding=encoding, low_memory=False,
+                           on_bad_lines="skip", dtype=str)
+    except UnicodeDecodeError:
+        # Reintentar con latin-1
+        return pd.read_csv(f, sep=sep, encoding="latin-1", low_memory=False,
+                           on_bad_lines="skip", dtype=str)
+
+
 def load_csv_files(directory: Path, pattern: str = "*.csv",
                    encoding: str = "utf-8") -> pd.DataFrame:
-    """Carga y concatena todos los CSV de un directorio."""
+    """Carga y concatena todos los CSV de un directorio (con sus versiones de
+    _historico/ acumuladas si las tiene, como load_xlsx_files)."""
     frames = []
     csv_files = sorted(directory.glob(pattern))
 
@@ -298,38 +389,24 @@ def load_csv_files(directory: Path, pattern: str = "*.csv",
         return pd.DataFrame()
 
     for f in csv_files:
-        if f.stat().st_size < 100:
+        vers = [v for v in versiones(f) if v.stat().st_size >= 100]
+        if not vers:
             log.info("  %s: demasiado pequeño — saltando", f.name)
             continue
         try:
-            # Detectar separador
-            head = f.read_bytes()[:2000].decode(encoding, errors="replace")
-            sep = ";" if head.count(";") > head.count(",") else ","
-
-            # Todo como texto: si no, read_csv convierte expedientes como
-            # "080617000001" en número (pierde el 0 inicial) e importes como
-            # "52.990" en 52,99 antes de poder tratarlos como formato español
-            df = pd.read_csv(f, sep=sep, encoding=encoding, low_memory=False,
-                             on_bad_lines="skip", dtype=str)
-            if len(df) > 0:
-                df["_archivo_origen"] = f.name
-                frames.append(df)
-                log.info("  %s: %d filas × %d cols (sep='%s')",
-                         f.name, len(df), len(df.columns), sep)
-        except UnicodeDecodeError:
-            # Reintentar con latin-1
-            try:
-                df = pd.read_csv(f, sep=sep, encoding="latin-1", low_memory=False,
-                                 on_bad_lines="skip", dtype=str)
-                if len(df) > 0:
-                    df["_archivo_origen"] = f.name
-                    frames.append(df)
-                    log.info("  %s: %d filas × %d cols (latin-1)",
-                             f.name, len(df), len(df.columns))
-            except Exception as e2:
-                log.warning("  Error leyendo %s: %s", f.name, e2)
+            if len(vers) > 1:
+                df = _acumular_versiones(vers, lambda r: _leer_csv(r, encoding), f.name)
+                df = pd.DataFrame() if df is None else df
+            else:
+                df = _leer_csv(vers[0], encoding)
         except Exception as e:
             log.warning("  Error leyendo %s: %s", f.name, e)
+            continue
+        if len(df) > 0:
+            df["_archivo_origen"] = f.name
+            frames.append(df)
+            log.info("  %s: %d filas × %d cols%s", f.name, len(df), len(df.columns),
+                     f" ({len(vers)} versiones)" if len(vers) > 1 else "")
 
     if not frames:
         return pd.DataFrame()
@@ -366,6 +443,143 @@ def save_parquet(df: pd.DataFrame, dest: Path, label: str) -> dict:
         "tamaño_mb": round(size_mb, 2),
         "lista_columnas": df.columns.tolist(),
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# LECTURA "TAL CUAL" (datasets nuevos: A1c/A2c, B4, C2)
+# ─────────────────────────────────────────────────────────────
+# Todas las celdas como texto (no se pierden ceros a la izquierda ni se
+# reinterpretan importes o fechas), todas las columnas (también las vacías) y
+# todas las filas. Las filas con más campos que la cabecera no se descartan:
+# los campos sobrantes se unen al último (con el separador) y se avisa.
+
+def _nombres_unicos(nombres) -> list:
+    """Cabeceras vacías → columna_N; repetidas → nombre.1, nombre.2… (como pandas)."""
+    out, usados = [], set()
+    for j, n in enumerate(nombres, 1):
+        n = str(n).strip() if n is not None and not (isinstance(n, float) and pd.isna(n)) else ""
+        n = n or f"columna_{j}"
+        candidato, k = n, 0
+        while candidato in usados:
+            k += 1
+            candidato = f"{n}.{k}"
+        usados.add(candidato)
+        out.append(candidato)
+    return out
+
+
+def _normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
+    """minúsculas y _ en vez de espacios (como el resto de datasets), sin repetir nombres."""
+    df.columns = _nombres_unicos(
+        [c if str(c).startswith("_") else str(c).strip().lower().replace(" ", "_")
+         for c in df.columns])
+    return df
+
+
+def _hoja_con_cabecera(raw: pd.DataFrame) -> pd.DataFrame:
+    """Hoja leída sin cabecera → DataFrame con la 1ª fila con ≥ la mitad de las
+    celdas de la fila más llena como cabecera (salta títulos y filas vacías)."""
+    raw = raw.dropna(how="all")
+    if raw.empty:
+        return pd.DataFrame()
+    llenas = raw.notna().sum(axis=1)
+    umbral = max(1.0, llenas.max() / 2)
+    fila = llenas.index[llenas >= umbral][0]
+    datos = raw.loc[raw.index > fila].copy()
+    datos.columns = _nombres_unicos(raw.loc[fila].tolist())
+    # columnas sin cabecera ni datos: formato de la hoja, no del registro
+    vacias = [c for c in datos.columns if c.startswith("columna_") and datos[c].isna().all()]
+    return datos.drop(columns=vacias).reset_index(drop=True)
+
+
+def _leer_csv_texto(ruta: Path) -> pd.DataFrame:
+    import io
+    crudo = ruta.read_bytes()
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            texto = crudo.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    primera = texto.split("\n", 1)[0]
+    sep = max((";", ",", "\t", "|"), key=primera.count)
+    try:
+        return pd.read_csv(io.StringIO(texto), sep=sep, dtype=str, keep_default_na=False)
+    except pd.errors.ParserError:
+        n = len(pd.read_csv(io.StringIO(primera + "\n"), sep=sep, dtype=str).columns)
+        irregulares = []
+
+        def unir(campos):
+            irregulares.append(len(campos))
+            return campos[:n - 1] + [sep.join(campos[n - 1:])]
+
+        df = pd.read_csv(io.StringIO(texto), sep=sep, dtype=str, keep_default_na=False,
+                         engine="python", on_bad_lines=unir)
+        log.warning("  %s: %d líneas con más campos que la cabecera (unidos en la última "
+                    "columna, no se descartan)", ruta.name, len(irregulares))
+        return df
+
+
+def leer_tabla_texto(ruta: Path) -> pd.DataFrame:
+    """CSV / XLSX / XLS / JSON publicado → DataFrame de texto, sin perder nada.
+    En un Excel con varias hojas se leen todas (columna _hoja)."""
+    ext = ruta.suffix.lower()
+    if ext == ".csv":
+        return _leer_csv_texto(ruta)
+    if ext in (".xlsx", ".xls"):
+        hojas = pd.read_excel(ruta, sheet_name=None, header=None, dtype=str,
+                              engine="openpyxl" if ext == ".xlsx" else "xlrd")
+        tablas = {n: _hoja_con_cabecera(h) for n, h in hojas.items()}
+        tablas = {n: t for n, t in tablas.items() if len(t.columns)}
+        if len(tablas) <= 1:
+            return next(iter(tablas.values()), pd.DataFrame())
+        return pd.concat([t.assign(_hoja=n) for n, t in tablas.items()],
+                         ignore_index=True, sort=False)
+    if ext == ".json":
+        datos = json.loads(ruta.read_bytes().decode("utf-8-sig"))
+        if isinstance(datos, dict):
+            datos = datos.get("result", datos)
+            if isinstance(datos, dict):
+                datos = next((v for v in datos.values() if isinstance(v, list)), [datos])
+        filas = [{k: (v if isinstance(v, str) or v is None
+                      else json.dumps(v, ensure_ascii=False)) for k, v in d.items()}
+                 for d in datos if isinstance(d, dict)]
+        return pd.DataFrame(filas, dtype=object)
+    raise ValueError(f"formato no soportado: {ruta.name}")
+
+
+def _texto_para_parquet(df: pd.DataFrame) -> pd.DataFrame:
+    """Columnas de datos como texto: nulos y "" → nulo; el resto, tal cual (sin
+    convertir "nan"/"None" literales, como haría safe_str_columns)."""
+    for c in df.columns:
+        if c in COLUMNAS_META or not (df[c].dtype == object or pd.api.types.is_string_dtype(df[c])):
+            continue
+        df[c] = pd.Series([None if v is None or (isinstance(v, float) and pd.isna(v))
+                           or v is pd.NA or v == "" else str(v) for v in df[c]],
+                          index=df.index, dtype=object)
+    return df
+
+
+def guardar_parquet_completo(df: pd.DataFrame, dest: Path, label: str) -> dict:
+    """Como save_parquet pero conservando TODAS las columnas (también las vacías)."""
+    if df.empty:
+        log.warning("  %s: DataFrame vacío — no se genera Parquet", label)
+        return {"registros": 0, "columnas": 0, "tamaño_mb": 0}
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(dest, index=False, engine="pyarrow")
+    size_mb = dest.stat().st_size / (1024 * 1024)
+    log.info("  ✓ %s: %d filas × %d cols → %.1f MB", label, len(df), len(df.columns), size_mb)
+    return {"registros": len(df), "columnas": len(df.columns),
+            "tamaño_mb": round(size_mb, 2), "lista_columnas": df.columns.tolist()}
+
+
+def _marcar_duplicados(df: pd.DataFrame, grupo=None) -> int:
+    """_duplicado = fila idéntica a otra anterior (sin contar columnas "_"),
+    dentro de `grupo` si se indica. Se conservan todas."""
+    datos = [c for c in df.columns if not str(c).startswith("_")]
+    subset = datos + ([grupo] if grupo else [])
+    df["_duplicado"] = df.duplicated(subset=subset) if datos else False
+    return int(df["_duplicado"].sum())
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -756,6 +970,288 @@ def consolidar_B3_ultimos_90d() -> dict:
     return save_parquet(df, dest, "ultimos_90d")
 
 
+# ─────────────────────────────────────────────────────────────
+# A1c/A2c — API KontratazioA completa (ventanas de fecha)
+# ─────────────────────────────────────────────────────────────
+
+_ORDEN_VENTANAS = {"anteriores": 0, "posteriores": 2, "sin_ventana": 3}   # meses: 1
+
+
+def _leer_manifiesto(carpeta: Path) -> dict:
+    try:
+        return json.loads((carpeta / "_ventana.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _fecha_ventana(carpeta: Path) -> str:
+    """Fecha de descarga de una versión de ventana (manifiesto; si no, el sello)."""
+    try:
+        momento = datetime.fromisoformat(_leer_manifiesto(carpeta)["descargado"])
+        return momento.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (KeyError, TypeError, ValueError):
+        return _fecha_version(carpeta)
+
+
+def _versiones_ventanas(src: Path) -> dict:
+    """{ventana: [carpetas de sus versiones, de la más antigua a la actual]}.
+    Las .part (descargas a medias) no cuentan."""
+    out = {}
+    for p in src.iterdir():
+        if p.is_dir() and not p.name.startswith(("_", ".")) and not p.name.endswith(".part"):
+            out.setdefault(p.name, []).append(p)
+    hist = src / HISTORICO
+    if hist.is_dir():
+        for p in hist.iterdir():
+            if p.is_dir() and "__" in p.name:
+                out.setdefault(p.name.split("__", 1)[0], []).append(p)
+    for lista in out.values():
+        lista.sort(key=_fecha_ventana)
+    return out
+
+
+def _es_nulo(v) -> bool:
+    return v is None or (isinstance(v, float) and v != v)
+
+
+def _tipar_json(df: pd.DataFrame) -> pd.DataFrame:
+    """Columnas del JSON aplanado que Parquet no admite tal cual: listas y
+    objetos → su JSON; mezcla de tipos (texto y números…) → texto (el JSON del
+    valor). Los números, booleanos y textos homogéneos se quedan como vienen."""
+    for c in df.columns:
+        s = df[c]
+        if s.dtype != object:
+            continue
+        tipos = {type(v) for v in s if not _es_nulo(v)}
+        if tipos <= {str} or tipos <= {bool}:
+            continue
+        df[c] = s.map(lambda v: None if _es_nulo(v)
+                      else v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
+    return df
+
+
+def _items_ventana(carpeta: Path, clave: str) -> pd.DataFrame:
+    """
+    Items de las páginas de una versión de ventana. Un mismo item en varias
+    páginas (pasadas ASC y DESC, trozos de una ventana partida, páginas que se
+    desplazan) es un artefacto de nuestra descarga y se queda una vez; repetido
+    dentro de una misma página lo sirve así la API y se conservan todas las
+    copias (se marcan luego en _duplicado).
+    """
+    filas, claves, paginas = [], [], []
+    for f in sorted(carpeta.glob("*_p[0-9]*.json")):
+        try:
+            data = json.loads(f.read_bytes())
+        except ValueError as e:
+            log.warning("  Error leyendo %s/%s: %s", carpeta.name, f.name, e)
+            continue
+        for it in data.get("items") or []:
+            filas.append(it)
+            claves.append(json.dumps(it, sort_keys=True, ensure_ascii=False))
+            paginas.append(f.name)
+    if not filas:
+        return pd.DataFrame()
+    k = pd.Series(claves)
+    copia = k.groupby([pd.Series(paginas), k]).cumcount()
+    queda = (~pd.DataFrame({"k": k, "c": copia}).duplicated()).to_numpy()
+    df = pd.json_normalize([it for it, q in zip(filas, queda) if q], sep="_")
+    df = _tipar_json(df)
+    df["_ventana"] = clave
+    df["_archivo_origen"] = [f"{carpeta.name}/{p}" for p, q in zip(paginas, queda) if q]
+    return df
+
+
+def consolidar_api_completa(clave_path: str, nombre: str, fuente: str) -> dict:
+    """
+    A1c/A2c → api_contratos.parquet / api_anuncios.parquet
+    Todos los items de todas las versiones de cada ventana de fecha:
+    - las versiones de una ventana se acumulan (comun.historico.acumular): lo
+      retirado o cambiado por la administración queda con
+      _en_ultima_descarga=False; una versión incompleta (o la búsqueda de
+      registros sin fecha, "sin_ventana") no marca nada como retirado;
+    - un item idéntico en dos ventanas (solape de los límites gt/lt o
+      "sin_ventana") es un artefacto de la descarga: se queda una vez, en la
+      primera ventana (meses, anteriores, posteriores, sin_ventana);
+    - _duplicado: idéntico a otro que la API sirve en la misma página;
+      _id_repetido: el mismo id en más de una fila (versiones de un registro
+      cambiado o registros distintos con el mismo id).
+    Columnas: el JSON aplanado (contractType_name, _links_self_href…), con los
+    números y booleanos como vienen en la API.
+    """
+    log.info("=" * 60)
+    log.info("%s (JSON API por ventanas → Parquet)", fuente)
+    log.info("=" * 60)
+    src = PATHS[clave_path]
+    if not src.exists():
+        log.warning("  Directorio no encontrado: %s", src)
+        return {"registros": 0, "error": "directorio no encontrado"}
+
+    ventanas = _versiones_ventanas(src)
+    frames, n_versiones = [], 0
+    for clave in sorted(ventanas, key=lambda c: (_ORDEN_VENTANAS.get(c, 1), c)):
+        acc = None
+        for carpeta in ventanas[clave]:
+            man = _leer_manifiesto(carpeta)
+            df = _items_ventana(carpeta, clave)
+            if df.empty:
+                continue
+            df["_ambito"] = "completa" if man.get("completo") and not man.get("parcial") else "parcial"
+            if acc is not None:
+                acc["_ambito"] = "completa"
+            acc = acumular(acc, df, _fecha_ventana(carpeta), ambito=["_ambito"],
+                           ignorar=("_archivo_origen", "_ambito", "_fecha_descarga"))
+            n_versiones += 1
+        if acc is not None:
+            frames.append(acc.drop(columns="_ambito"))
+    if not frames:
+        return {"registros": 0, "error": "sin datos"}
+
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    contenido = [c for c in df.columns if not c.startswith("_")]
+    k = pd.util.hash_pandas_object(df[contenido], index=False).to_numpy()
+    copia = pd.Series(k).groupby([df["_ventana"].to_numpy(), k]).cumcount().to_numpy()
+    grupos = df.groupby([k, copia], sort=False)
+    df["_primera_descarga"] = grupos["_primera_descarga"].transform("min")
+    df["_ultima_descarga"] = grupos["_ultima_descarga"].transform("max")
+    df["_en_ultima_descarga"] = grupos["_en_ultima_descarga"].transform("max").astype(bool)
+    solape = pd.DataFrame({"k": k, "c": copia}).duplicated().to_numpy()
+    n_solape = int(solape.sum())
+    df = df[~solape].reset_index(drop=True)
+    if n_solape:
+        log.info("  %d items repetidos entre ventanas (solape de la descarga) descartados", n_solape)
+
+    df["_duplicado"] = df.duplicated(subset=contenido)
+    df["_id_repetido"] = df["id"].duplicated(keep=False) if "id" in df.columns else False
+    df["_fuente"] = fuente
+    info = guardar_parquet_completo(df, OUTPUT_DIR / f"{nombre}.parquet", nombre)
+    info.update({"ventanas": len(ventanas), "versiones": n_versiones,
+                 "solapes_descartados": n_solape,
+                 "duplicados_marcados": int(df["_duplicado"].sum()),
+                 "ids_repetidos": int(df["_id_repetido"].sum()),
+                 "retirados_o_cambiados": int((~df["_en_ultima_descarga"]).sum())})
+    try:
+        estado = json.loads((src / "_estado.json").read_text(encoding="utf-8"))
+        info["api"] = {k: estado.get(k) for k in ("total_api", "faltan", "ventanas_incompletas",
+                                                   "abortado", "fin")}
+    except (OSError, ValueError):
+        pass
+    return info
+
+
+def consolidar_A1_api_contratos() -> dict:
+    """A1c → api_contratos.parquet: 655K contratos con awardAmount, CIF, socialReason…"""
+    return consolidar_api_completa("api_contracts_full", "api_contratos", "A1_api_contratos_completo")
+
+
+def consolidar_A2_api_anuncios() -> dict:
+    """A2c → api_anuncios.parquet: 656K anuncios con budgetWithoutVAT, SARA, licitadores…"""
+    return consolidar_api_completa("api_notices_full", "api_anuncios", "A2_api_anuncios_completo")
+
+
+# ─────────────────────────────────────────────────────────────
+# B4 — REVASCON por poder adjudicador y año
+# ─────────────────────────────────────────────────────────────
+
+_RE_FICHERO_PODER = re.compile(r"^contratos_poder(\d+)_(\d{4})(?:__.+)?\.(?:xlsx|xls|csv)$",
+                               re.IGNORECASE)
+
+
+def consolidar_B4_revascon_por_poder() -> dict:
+    """
+    B4 → revascon_por_poder.parquet
+    Un fichero por poder y año, todas las versiones acumuladas, con unión de
+    columnas (nombres en minúsculas con _), todas las celdas como texto
+    (importes y fechas tal como vienen en el XLSX) y _poder_id / _año del
+    nombre del fichero. Las filas idénticas a otra se conservan (_duplicado).
+    """
+    log.info("=" * 60)
+    log.info("B4. REVASCON POR PODER (XLSX → Parquet)")
+    log.info("=" * 60)
+    src = PATHS["revascon_poder"]
+    if not src.exists():
+        log.warning("  Directorio no encontrado: %s", src)
+        return {"registros": 0, "error": "directorio no encontrado"}
+
+    frames = []
+    for f in sorted(p for p in src.iterdir() if p.is_file() and _RE_FICHERO_PODER.match(p.name)):
+        df = _acumular_versiones(versiones(f), lambda r: _normalizar_columnas(leer_tabla_texto(r)),
+                                 f.name)
+        if df is None:
+            continue
+        m = _RE_FICHERO_PODER.match(f.name)
+        df["_poder_id"] = m.group(1)
+        df["_año"] = int(m.group(2))
+        df["_archivo_origen"] = f.name
+        frames.append(df)
+        log.info("  %s: %d filas × %d cols", f.name, len(df), len(df.columns))
+    if not frames:
+        return {"registros": 0, "error": "sin datos"}
+
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    n_dupes = _marcar_duplicados(df)
+    df["_fuente"] = "B4_revascon_por_poder"
+    info = guardar_parquet_completo(_texto_para_parquet(df), OUTPUT_DIR / "revascon_por_poder.parquet",
+                                    "revascon_por_poder")
+    info.update({"duplicados_marcados": n_dupes, "ficheros": len(frames),
+                 "poderes": int(df["_poder_id"].nunique())})
+    return info
+
+
+# ─────────────────────────────────────────────────────────────
+# C2 — Vitoria-Gasteiz
+# ─────────────────────────────────────────────────────────────
+
+_RE_FICHERO_VITORIA = re.compile(r"^vitoria_(.+?)(?:__(.+))?\.(?:csv|xlsx|xls|json)$", re.IGNORECASE)
+
+
+def consolidar_C2_vitoria() -> dict:
+    """
+    C2 → vitoria_contratos.parquet
+    Contratos formalizados y contratos menores formalizados de Vitoria-Gasteiz
+    (vitoria_<dataset>__<fichero>) y la URL antigua de menores
+    (vitoria_menores.csv → _dataset "menores"), todas las versiones acumuladas,
+    como texto, con unión de columnas. _duplicado dentro de cada _dataset.
+    """
+    log.info("=" * 60)
+    log.info("C2. VITORIA-GASTEIZ (CSV/XLSX → Parquet)")
+    log.info("=" * 60)
+    src = PATHS["vitoria"]
+    if not src.exists():
+        log.warning("  Directorio no encontrado: %s", src)
+        return {"registros": 0, "error": "directorio no encontrado"}
+
+    frames = []
+    for f in sorted(p for p in src.iterdir() if p.is_file() and _RE_FICHERO_VITORIA.match(p.name)):
+        df = _acumular_versiones(versiones(f), lambda r: _normalizar_columnas(leer_tabla_texto(r)),
+                                 f.name)
+        if df is None:
+            continue
+        df["_dataset"] = _RE_FICHERO_VITORIA.match(f.name).group(1)
+        df["_archivo_origen"] = f.name
+        frames.append(df)
+        log.info("  %s: %d filas × %d cols", f.name, len(df), len(df.columns))
+    if not frames:
+        return {"registros": 0, "error": "sin datos"}
+
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    n_dupes = _marcar_duplicados(df, grupo="_dataset")
+    df["_fuente"] = "C2_vitoria"
+    info = guardar_parquet_completo(_texto_para_parquet(df), OUTPUT_DIR / "vitoria_contratos.parquet",
+                                    "vitoria_contratos")
+    info["duplicados_marcados"] = n_dupes
+    return info
+
+
+# Datasets añadidos en 2026-09. Solo figuran en stats.json → "datasets" (y en
+# el README) si generan datos; si no, van a "datasets_sin_datos".
+CONSOLIDACIONES_NUEVAS = [
+    ("api_contratos", consolidar_A1_api_contratos),
+    ("api_anuncios", consolidar_A2_api_anuncios),
+    ("revascon_por_poder", consolidar_B4_revascon_por_poder),
+    ("vitoria_contratos", consolidar_C2_vitoria),
+]
+
+
 # ═══════════════════════════════════════════════════════════════
 # GENERACIÓN DE DOCUMENTACIÓN
 # ═══════════════════════════════════════════════════════════════
@@ -807,6 +1303,22 @@ def generar_readme(all_stats: dict):
             "fuente": "B3 (Open Data)",
             "desc": "Snapshot contratos últimos 90 días (ventana móvil)",
         },
+        "api_contratos": {
+            "fuente": "A1c (API KontratazioA /contracts)",
+            "desc": "Contratos con importe (awardAmount), adjudicatario (CIF, socialReason), CPV y fechas",
+        },
+        "api_anuncios": {
+            "fuente": "A2c (API KontratazioA /contracting-notices)",
+            "desc": "Anuncios con presupuesto sin IVA, procedimiento, SARA y nº de licitadores",
+        },
+        "revascon_por_poder": {
+            "fuente": "B4 (Open Data, REVASCON por poder)",
+            "desc": "Registro de contratos por poder adjudicador y año (2018-…), celdas como texto",
+        },
+        "vitoria_contratos": {
+            "fuente": "C2 (Open Data Euskadi, Vitoria-Gasteiz)",
+            "desc": "Contratos formalizados y contratos menores formalizados de Vitoria-Gasteiz",
+        },
     }
 
     for key, info in all_stats.items():
@@ -820,9 +1332,13 @@ def generar_readme(all_stats: dict):
     readme += f"""
 ## Notas sobre redundancia
 
-- **contratos_master** (B1) es la fuente principal de contratos y subsume los
-  datos que la API expone en A1/A2 (solo muestras de 1K registros). Las
-  muestras API **no se incluyen** en la consolidación.
+- **contratos_master** (B1) son metadatos de anuncios (sin importes ni
+  adjudicatario). Los importes, adjudicatario y CIF están en **api_contratos**
+  (API /contracts completa, por ventanas de fecha) y **revascon_por_poder**.
+  Las muestras A1/A2 (sonda de paginación) **no se incluyen**.
+- Versiones: lo que se vuelve a descargar y ha cambiado deja la versión
+  anterior en `_historico/`; las filas retiradas o cambiadas por la
+  administración se conservan con `_en_ultima_descarga=False`.
 - **revascon_historico** (B2) contiene datos 2013-2018 con formato más rico
   que B1 para ese período. Hay solapamiento con contratos_master.
 - **bilbao_contratos** (C1) puede incluir contratos menores municipales que
@@ -897,6 +1413,15 @@ def main():
     all_stats["bilbao_contratos"]       = consolidar_C1_bilbao()
     all_stats["ultimos_90d"]            = consolidar_B3_ultimos_90d()
 
+    # Fuentes nuevas: solo se listan en "datasets" si generan datos
+    sin_datos = {}
+    for clave, consolidar in CONSOLIDACIONES_NUEVAS:
+        info = consolidar()
+        if info.get("registros", 0) > 0:
+            all_stats[clave] = info
+        else:
+            sin_datos[clave] = info
+
     # ── Generar documentación ───────────────────────────────
     log.info("=" * 60)
     log.info("DOCUMENTACIÓN")
@@ -908,6 +1433,7 @@ def main():
         "input_dir": INPUT_DIR.name,     # relativo al script (sin rutas locales)
         "output_dir": OUTPUT_DIR.name,
         "datasets": all_stats,
+        "datasets_sin_datos": sin_datos,
     }
     (OUTPUT_DIR / "stats.json").write_text(
         json.dumps(stats_out, ensure_ascii=False, indent=2, default=str),

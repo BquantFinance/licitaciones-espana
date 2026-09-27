@@ -7,9 +7,12 @@ descargar ni procesar los ATOM de la PLACSP, sin eliminar ningún registro:
 
   1. Marca las versiones: la PLACSP publica una entrada por cada actualización
      de una licitación (licitaciones_espana.parquet: 8,7M entradas de 4,7M
-     licitaciones). Se conservan todas y se añaden n_versiones y
-     es_ultima_version; sumar importes sin filtrar es_ultima_version cuenta
-     varias veces la misma licitación (x4,7 en adjudicación).
+     licitaciones) y a veces la misma entrada (mismo id y fecha_updated) más
+     de una vez. Se conservan todas y se añaden n_versiones (versiones
+     distintas: pares id / fecha_updated distintos), es_ultima_version (una
+     fila por id) y entrada_repetida (True en la 2ª y siguientes apariciones
+     de una misma entrada); sumar importes sin filtrar es_ultima_version
+     cuenta varias veces la misma licitación (x4,7 en adjudicación).
   2. Esquema antiguo de importes (issue #6): 'importe_sin_iva' contenía el
      valor estimado (EstimatedOverallContractAmount). Se renombra a
      'valor_estimado_contrato' y 'importe_sin_iva' queda vacía; el presupuesto
@@ -40,7 +43,7 @@ from nacional.licitaciones import (  # noqa: E402
     COLUMNAS_CODIGO,
     IMPORTES_RESUMEN,
     _normalizar_columnas,
-    info_versiones,
+    marcas_version,
 )
 
 # Columnas que normalizar_placsp devuelve como texto
@@ -73,11 +76,13 @@ def normalizar_fichero(entrada, salida):
     pf = pq.ParquetFile(entrada)
     nombres = pf.schema_arrow.names
 
-    ultima = n_versiones = None
+    ultima = n_versiones = repetida = None
     if 'id' in nombres:
         claves = pq.read_table(entrada, columns=[c for c in ('id', 'fecha_updated') if c in nombres]).to_pandas()
-        ultima, n_versiones = info_versiones(claves['id'], claves.get('fecha_updated'))
+        ultima, n_versiones, repetida = marcas_version(claves['id'], claves.get('fecha_updated'))
         del claves
+        print(f"   ℹ {int(repetida.sum()):,} entradas repetidas (mismo id y fecha_updated): "
+              f"se conservan con entrada_repetida=True")
 
     writer = None
     escritas = distintas = 0
@@ -89,6 +94,7 @@ def normalizar_fichero(entrada, salida):
             if ultima is not None:
                 df['n_versiones'] = n_versiones[escritas:escritas + n]
                 df['es_ultima_version'] = ultima[escritas:escritas + n]
+                df['entrada_repetida'] = repetida[escritas:escritas + n]
             df = _normalizar_columnas(df)
             if writer is None:
                 esquema = esquema_salida(pf.schema_arrow, df)
