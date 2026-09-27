@@ -131,6 +131,8 @@ def html_pagina(descripcion, documentos, titulo=TITULO_PAGINA):
             f'<meta property="og:title" content="{titulo}"/>'
             f'<meta property="og:description" content="{descripcion}"/></head><body>'
             '<a href="/w/otra-pagina">Otra página</a><img src="/documents/77055/110341/ico_organizador.png">'
+            '<a href="/documents/77055/110341/logoJuntaEx.JPG/0d940219-8fd9-c7fe-c537-7ed2fb7dbf3f?t=1617807334949">'
+            'Junta de Extremadura</a>'
             f'<h2>{descripcion}</h2><ul>{enlaces}</ul></body></html>').encode("utf-8")
 
 
@@ -740,6 +742,17 @@ def test_solo_procesar_no_descarga(portal, tmp_path):
     assert _ejecutar(tmp_path, "--solo-procesar") == 0
     assert len(portal.llamadas) == llamadas
     assert len(_menores(tmp_path)) == 7
+
+
+def test_sin_cambios_el_parquet_no_cambia(portal, tmp_path):
+    # Con pandas 3 las columnas leídas del Parquet anterior son 'str' y las de
+    # un Excel 'object': el fichero no debe cambiar por eso
+    assert _ejecutar(tmp_path) == 0
+    antes = {p.name: p.read_bytes() for p in tmp_path.glob("*.parquet")}
+    SLEEP_REAL(1.1)
+    assert _ejecutar(tmp_path, "--solo-procesar") == 0
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.parquet")} == antes
+    assert not (tmp_path / "_historico").exists()
 
 
 def test_salida_por_defecto_en_el_repo():

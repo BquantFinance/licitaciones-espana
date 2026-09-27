@@ -479,6 +479,9 @@ def test_uclm_un_postback_por_ejercicio_con_los_campos_del_formulario(portal, tm
     actuales = df[df["_periodo"] == "en curso"]
     assert actuales[["Un.Funcional", "Nif", "_anio"]].values.tolist() == [["01110C0021", "05679241N", str(ANIO)]]
     assert _v(anteriores["Un.Funcional"]) == [None] * 3
+    # Unión de esquemas entre ficheros: la columna que solo trae el último no se pierde
+    assert list(df.columns[:7]) == ["Nif", "Proveedor", "Expediente", "Objeto", "Duración", "Adjudicado",
+                                    "Un.Funcional"]
     assert df["_fuente"].tolist() == [M.URL_UCLM_ANTERIORES] * 3 + [M.URL_UCLM_ACTUALES]
     man = _manifiesto(tmp_path)
     assert man[f"uclm/{ANIO - 1}/contratosMenoresAnteriores_{ANIO - 1}.html"]["filas"] == 2
@@ -638,6 +641,33 @@ def test_fichero_modificado_conserva_las_filas_anteriores(portal, tmp_path):
     assert df.loc[df["_anio"] == str(VIEJO), "_en_ultima_descarga"].all()
     raw = tmp_path / "raw" / "menores_junta" / str(ANIO) / Path(url).name
     assert len(M.versiones(raw)) == 2
+
+
+def test_segunda_ejecucion_solo_lee_lo_que_se_ha_vuelto_a_comprobar(portal, tmp_path, monkeypatch):
+    assert _ejecutar(tmp_path) == 0
+    SLEEP_REAL(1.1)
+    leidos = []
+    leer = M.leer_tabla
+    monkeypatch.setattr(M, "leer_tabla", lambda ruta: leidos.append(Path(ruta).name) or leer(ruta))
+    assert _ejecutar(tmp_path) == 0
+    # Los ficheros de años cerrados no se vuelven a pedir ni a leer (millones de
+    # filas del SESCAM): sus filas salen del Parquet anterior
+    assert sorted(leidos) == sorted([f"Contratos_menores_primer_trimestre_{ANIO}_JCCM.xlsx",
+                                     "Contratos_menores_primer_trimestre_caja_pagadora.XLSX",
+                                     f"contratosMenoresAnteriores_{ANIO - 1}.html",
+                                     f"contratosMenoresActuales_{ANIO}.html"])
+    sescam = _parquet(tmp_path, "sescam")
+    assert len(sescam) == 2 and sescam["_en_ultima_descarga"].all()
+
+
+def test_fichero_que_ya_no_esta_en_raw_conserva_sus_filas(portal, tmp_path):
+    assert _ejecutar(tmp_path) == 0
+    antes = _parquet(tmp_path, "sescam")
+    (tmp_path / "raw" / "sescam" / str(VIEJO) / "CM_PRIMER_TRIMESTRE_SESCAM.zip").unlink()
+    assert _ejecutar(tmp_path, "--solo-parquet") == 0
+    despues = _parquet(tmp_path, "sescam")
+    pd.testing.assert_frame_equal(despues, antes)
+    assert f"sescam/{VIEJO}/CM_PRIMER_TRIMESTRE_SESCAM.zip ya no está en raw/" in _log(tmp_path)
 
 
 def test_solo_se_vuelven_a_pedir_el_anio_actual_y_el_anterior(portal, tmp_path):

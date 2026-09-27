@@ -878,13 +878,19 @@ def leer_tabla(ruta):
 # ----------------------------------------------------------------------------
 
 def _como_texto(serie):
-    """Serie de texto (None = nulo) para escribirla como string en Parquet."""
+    """Serie de texto (None = nulo) para escribirla como string en Parquet.
+    Siempre de tipo object: con pandas 3 una columna leída del Parquet anterior
+    es 'str' y una leída de un Excel, 'object', y los metadatos de pandas del
+    Parquet cambiarían sin que cambie ningún dato (una versión más en
+    _historico/ en cada ejecución)."""
     if isinstance(serie.dtype, pd.StringDtype):
         return serie
     valores = serie.astype(object)
     if pd.api.types.infer_dtype(valores, skipna=True) in ("string", "empty"):
         return valores
-    return valores.map(lambda v: v if isinstance(v, str) else (None if pd.isna(v) else str(v)))
+    # sin Series.map: en pandas 3 devuelve 'str'
+    return pd.Series([v if isinstance(v, str) else (None if pd.isna(v) else str(v)) for v in valores],
+                     index=serie.index, dtype=object)
 
 
 def ordenar_columnas(df):
