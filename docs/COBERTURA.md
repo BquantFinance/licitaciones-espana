@@ -4,6 +4,82 @@ Qué publica cada administración, qué descargamos, qué falta y cómo atacarlo
 
 Estado a 2026-09. Confianza de cada fuente: **A** = confirmada en página oficial; **M** = confirmada a medias o por fuentes secundarias (código de terceros, catálogos); **B** = inferida. Este documento se redactó sin acceso a los portales oficiales. El 2026-09-27 se verificó en vivo parte de lo pendiente (ver §4.1); lo demás marcado M/B sigue sin verificar.
 
+## 0. Contratos menores: qué tenemos (medición del 2026-09-27)
+
+Objetivo del propietario: el 100 % de los contratos menores (LCSP art. 118 y 63.4) para un modelo antifraude.
+
+**Método.**
+- **PLACSP:** contratos menores distintos (un `id`) del feed 1143 en `licitaciones_espana.parquet` (v2026.02), con año de adjudicación 2018-2025.
+  - Región: la del NUTS de ejecución, presente en el 100 % de las filas.
+  - Tipo de órgano: el prefijo del DIR3 del órgano, presente en el 77,5 % (A = autonómica, L01 = ayuntamiento, L02/L03 = diputación, cabildo o consell, E = Estado, U = universidad).
+- **Fuentes regionales:** contratos distintos por su clave en cada fuente.
+- Scripts: `scratchpad/cobertura/medir_placsp.py` y `contar_regionales.py`, de la sesión del 2026-09-27.
+
+**PLACSP 1143 por comunidad y tipo de órgano (2018-2025):**
+
+| CCAA | Total | Autonómica | Ayuntamientos | Diput./Cabildo/Consell | Estado | Universidades | Sin DIR3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| C. Valenciana | 499.558 | 26.171 | 276.508 | 22.821 | 21.269 | 36.338 | 99.769 |
+| Castilla-La Mancha | 449.657 | 70.664 | 161.992 | 52.172 | 8.146 | 66 | 143.137 |
+| Andalucía | 398.332 | **41** | 204.540 | 30.771 | 53.602 | 41.755 | 44.334 |
+| Murcia | 351.311 | 61.457 | 90.115 | 5 | 11.768 | 138.768 | 49.190 |
+| Castilla y León | 322.615 | 140.024 | 65.472 | 73.297 | 16.569 | 1 | 21.087 |
+| Madrid | 271.983 | **230** | 54.837 | 23 | 157.902 | 1.757 | 46.167 |
+| Canarias | 253.897 | 25.064 | 77.664 | 17.117 | 18.790 | 386 | 108.624 |
+| Cantabria | 84.316 | 10.329 | 23.197 | 0 | 3.165 | 1 | 46.990 |
+| Galicia | 83.525 | **10** | 41.129 | 7.294 | 15.938 | 1 | 16.651 |
+| Aragón | 77.812 | 13.627 | 25.027 | 780 | 14.485 | 1.870 | 12.573 |
+| Extremadura | 71.745 | 4.912 | 41.911 | 7.148 | 5.200 | 0 | 11.206 |
+| País Vasco | 69.396 | **15** | **5.236** | 4 | 8.783 | 36.888 | 18.248 |
+| Illes Balears | 56.341 | 13.296 | 10.923 | 4.434 | 3.627 | 0 | 22.433 |
+| **Catalunya** | 31.267 | **49** | **66** | 85 | 13.986 | 0 | 16.958 |
+| Asturias | 27.493 | 2.096 | 17.768 | 4 | 4.002 | 6 | 2.981 |
+| Ceuta | 24.748 | 2.363 | 0 | 0 | 3.964 | 0 | 18.421 |
+| La Rioja | 15.110 | **1** | 11.830 | 0 | 1.238 | 0 | 2.032 |
+| Melilla | 3.294 | 1 | 0 | 0 | 2.413 | 0 | 880 |
+| **Navarra** | 3.128 | **7** | **6** | 0 | 1.747 | 12 | 1.231 |
+| (sin región) | 79.323 | 5.042 | 7.787 | 3.015 | 33.414 | 2.573 | 23.649 |
+
+En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en la plataforma propia de la comunidad o del ayuntamiento.
+
+**Fuentes regionales que ya tenemos (contratos menores distintos por año):**
+
+| CCAA | Fuente | 2018 | 2019 | 2020 | 2021 | 2022 | 2023 | 2024 | 2025 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Catalunya | RPC (`contratos_registro`, Generalitat + locales + universidades; ventana móvil de 5 años) | 5 | 22 | 6.316 | 402.546 | 414.021 | 426.680 | 371.466 | 186.417 |
+| Catalunya | PSCP (`contractacio_menors`) | 1.424 | 1.913 | 2.387 | 20.550 | 24.107 | 27.085 | 34.079 | 49.207 |
+| Madrid | Comunidad (portal de contratación) | 206.629 | 174.992 | 171.760 | 164.473 | 320.026 | 439.322 | 384.677 | 215.353 |
+| Madrid | Ayuntamiento (datos.madrid.es) | 7.857 | 8.772 | 6.152 | 6.753 | 6.566 | 5.719 | 5.535 | 4.730 |
+| Galicia | Xunta (contratosdegalicia) | 156.608 | 186.075 | 181.151 | 204.315 | 200.331 | 191.457 | 221.827 | 251.968 |
+| Andalucía | Junta (buscador; faltan ~41K del SAS) | 30.786 | 77.237 | 59.366 | 96.777 | 64.945 | 106.580 | 126.517 | 115.696 |
+| Asturias | Principado (contratación centralizada) | – | 96.758 | 98.490 | 69.208 | 44.312 | 38.010 | 19.742 | – |
+| Murcia | CARM (datosabiertos) | 20.223 | 24.633 | 17.892 | 18.810 | 19.906 | 21.313 | 21.452 | 20.987 |
+| Murcia | SMS (**solo 2020**) | – | – | 155.085 | – | – | – | – | – |
+| Castilla y León | Junta + SACYL (analisis.datosabiertos.jcyl.es) | 346 | 14.168 | 14.833 | 19.475 | 20.660 | 21.238 | 22.089 | 19.516 |
+| Aragón | Gobierno (menores por año) + Registro (2023+) | 15.690 | 18.808 | 13.088 | 10.795 | 2.946 | 7.919 | 4.867 | 3.624 |
+| C. Valenciana | REGCON (adjudicación directa; aproximado) | 5.806 | 5.351 | 5.038 | 6.184 | 6.354 | 5.217 | 10.169 | 108 |
+| País Vasco | KontratazioA: **anuncios** de menores, sin importe ni adjudicatario | 4.728 | 59.854 | 63.172 | 59.144 | 91.149 | 99.620 | 92.883 | 86.809 |
+
+**Primeras conclusiones:**
+- **No hay cobertura del 100 %.**
+- **Huecos totales:**
+  - Navarra: ni en PLACSP ni en fuentes regionales.
+  - Gobierno de La Rioja.
+  - Menores del País Vasco con importe y adjudicatario: la API `/contracts` está escrita pero no se ha ejecutado entera.
+  - Ayuntamientos vascos y catalanes anteriores a la ventana del RPC.
+- **Huecos parciales:**
+  - SMS de Murcia: solo 2020; los demás años no están en la misma URL (HTTP 404).
+  - Aragón: 2024-2025 del Gobierno (el servidor da 403) y el Ayuntamiento de Zaragoza.
+  - Andalucía: 41K del SAS.
+  - Asturias: después de 2024.
+  - Generalitat Valenciana: el REGCON parece traer pocos menores (~5-10K/año) frente al tamaño de la comunidad.
+  - Organismos autonómicos que en PLACSP publican pocos menores en proporción (Extremadura 4.912, Asturias 2.096 y Canarias 25.064 en 8 años).
+- **Solapes:** CyL, Murcia (CARM desde 2022) y Aragón publican parte de sus menores en PLACSP y también en su portal: hay que deduplicar antes de sumar, por NIF del órgano, expediente, adjudicatario, importe y fecha.
+- **Pendiente:**
+  - Contrastar con los totales oficiales (RCSP y OIRESCON) por CCAA para dar un % de cobertura.
+  - El inventario de plataformas por CCAA (§2-§3, en curso).
+  - Repetir la medición con la PLACSP regenerada, hasta septiembre de 2026.
+
 ## 1. Qué cubre ya PLACSP (`nacional/`)
 
 | Feed | Contenido | Cobertura autonómica |
