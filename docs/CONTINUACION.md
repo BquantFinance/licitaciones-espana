@@ -67,6 +67,7 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - Por último, el release en borrador con `publicar_release.py`.
   - **Comunidad de Madrid**: los menores se vuelven a bajar con una copia de `descarga_contratacion_comunidad_madrid_v1.py` fuera del repo (`python <copia> menores`: 126 entidades, con subdivisión por importe al llegar a 50.000 filas).
     - La ruta `Entidad Adjudicadora` del publicado es la jerarquía completa (`Consejería de Sanidad··>SERMAS··>…>Hospital…`). Para comparar con las 125 entidades del desplegable hay que usar el primer nivel.
+  - **Galicia**: listado de menores sin detalle HTML, fuera del repo: `python galicia/scraper_galicia.py base --skip-lic --output $TRABAJO/galicia --log-path $TRABAJO/galicia/scraper.log --workers 3`. El portal tiene 1.775.090 menores y el publicado 1,64 M. Después, `merge` y contraste con el publicado.
   - **Scrapers nuevos**, hechos por agentes y sin revisar: Extremadura, Castilla-La Mancha, La Rioja y Valencia (`scripts/ccaa_extremadura.py`, `ccaa_castilla_la_mancha.py`, `ccaa_la_rioja.py` y `ccaa_valencia_menores.py`, con sus tests).
     - Si hay commits `WIP (copia de seguridad, sin revisar)`, están a medio hacer: revisar, pasar los tests en los dos pandas, verificar en vivo y cerrar con su propio commit.
 
