@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 ═══════════════════════════════════════════════════════════════════════════════
@@ -45,8 +44,10 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────────────────────
 
-INPUT_DIR  = Path("datos_euskadi_contratacion_v4")
-OUTPUT_DIR = Path("euskadi_parquet")
+# Rutas relativas al script (no al cwd), igual que en ccaa_euskadi.py
+SCRIPT_DIR = Path(__file__).resolve().parent
+INPUT_DIR  = SCRIPT_DIR / "datos_euskadi_contratacion_v4"
+OUTPUT_DIR = SCRIPT_DIR / "euskadi_parquet"
 
 # Subdirectorios de entrada (del scraper v4)
 PATHS = {
@@ -61,12 +62,69 @@ PATHS = {
     "vitoria":         INPUT_DIR / "C2_vitoria_gasteiz",
 }
 
+# Los JSON 2011-2013 de B1 traen los mismos campos que el XLSX con otros
+# nombres (comprobado con los ficheros reales): se renombran antes de
+# concatenar para que esos años no queden en columnas aparte.
+B1_JSON_A_XLSX = {
+    "documentName": "Nombre",
+    "documentDescription": "Descripción",
+    "procedureCollection": "Colección",
+    "friendlyUrl": "URL amigable",
+    "physicalUrl": "URL física",
+    "dataXML": "XML datos",
+    "metadataXML": "XML metadatos",
+    "contratacion_titulo_contrato": "Titulo del Contrato",
+    "contratacion_objeto_contrato": "Objeto del Contrato",
+    "contratacion_tipo_anuncio": "Tipo de Anuncio",
+    "contratacion_fecha_de_publicacion_documento": "Fecha de publicación documento",
+    "contratacion_expediente": "Expediente",
+    "contratacion_estado_tramitacion": "Estado de la tramitacion",
+    "contratacion_contrato_menor": "Contrato menor",
+    "contratacion_adjudicacion": "Adjudicación",
+    "contratacion_subsanacion": "Subsanación",
+    "contratacion_apertura_plicas": "Apertura de plicas",
+    "contratacion_acuerdos_mesa_contratacion": "Acuerdos de la mesa de contratacion",
+    "contratacion_ambito_geografico": "Ámbito geográfico del poder adjudicador",
+    "contratacion_poder_adjudicador_url": "URL del Logo del Poder Adjudicador",
+    "contratacion_poder_adjudicador_titulo": "Título del Logo del Poder Adjudicador",
+    "contratacion_entidad_impulsora": "Entidad que impulsa la contratación",
+    "contratacion_organo_contratacion": "Órgano de Contratación",
+    "contratacion_fecha_limite_presentacion": "Fecha límite de presentación",
+}
+
+# Cabeceras con mojibake en los XLSX B1 2022-2026 (sin corregir, esos años
+# quedan en columnas distintas a las de 2014-2021)
+CABECERAS_MOJIBAKE = {
+    "Colecciï¿½n": "Colección",
+    "Acrï¿½nimo (nombre corto) del procedimiento":
+        "Acrónimo (nombre corto) del procedimiento",
+    "Fecha de resoluciï¿½n": "Fecha de resolución",
+}
+
+# contratos_2021.xlsx: en ~18.8K filas faltan las primeras celdas a partir de
+# "Fecha límite de presentación" y el resto está corrido 2 columnas a la
+# izquierda (3 si falta también "URL física"): URL en la fecha límite, zip en
+# "XML datos", fecha en "XML metadatos", institución en "Fecha de creación"…
+B1_COLS_CORRIDAS = [
+    "fecha_límite_de_presentación", "url_amigable", "url_física", "xml_datos",
+    "xml_metadatos", "zip", "fecha_de_creación", "id._institución", "institución",
+    "id._departamento", "departamento",
+]
+
+# REVASCON 2013-2014 (CSV) llama distinto a 3 campos del XLSX 2015-2018
+REVASCON_CSV_A_XLSX = {
+    "estado_de_contrato": "estado_contrato",
+    "título": "título_de_contrato",
+    "código_de_contrato": "código_identificador_del_contrato",
+}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("consolidar_euskadi_v4.log", encoding="utf-8"),
+        logging.FileHandler(SCRIPT_DIR / "consolidar_euskadi_v4.log",
+                            encoding="utf-8", delay=True),
     ],
 )
 log = logging.getLogger(__name__)
@@ -81,9 +139,56 @@ stats = {}
 def safe_str_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Convierte columnas object a string para evitar tipos mixtos en Parquet."""
     for col in df.columns:
-        if df[col].dtype == "object":
+        # pandas 3 lee el texto con dtype "str" (no "object"): sin la 2ª
+        # condición sus "" no se convierten en nulos como en pandas 2.
+        if df[col].dtype == "object" or pd.api.types.is_string_dtype(df[col]):
             df[col] = df[col].astype(str).replace({"nan": None, "None": None, "": None})
     return df
+
+
+def parse_importes(s: pd.Series) -> pd.Series:
+    """
+    Convierte importes en formato español ("1.455.954,56", "52.990") a float.
+    pd.to_numeric() leería "52.990" como 52,99 y dejaría en NaN todo lo que
+    lleve coma decimal o varios puntos de miles.
+    """
+    if pd.api.types.is_numeric_dtype(s):
+        return s
+    txt = s.astype("string").str.replace("€", "", regex=False).str.strip()
+    es = txt.str.fullmatch(r"-?\d{1,3}(?:\.\d{3})+(?:,\d+)?|-?\d+,\d+")
+    es = es.fillna(False).astype(bool)
+    txt[es] = txt[es].str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    return pd.to_numeric(txt.astype(object), errors="coerce")
+
+
+FORMATOS_FECHA = ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y", "ISO8601")
+
+
+def parse_fechas(s: pd.Series) -> pd.Series:
+    """
+    Convierte fechas de texto a datetime probando varios formatos valor a valor.
+    pd.to_datetime(dayfirst=True) deduce UN formato del primer valor y deja en
+    NaT los que no lo siguen (p.ej. "24/09/2013" en una columna con
+    "07/11/2014 10:00"). Si la columna viene en mes/día/año (hay valores con el
+    2º campo > 12 y ninguno con el 1º > 12) se interpreta así y no día/mes.
+    """
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+    txt = s.astype("string").str.strip()
+    partes = txt.str.extract(r"^(\d{1,2})/(\d{1,2})/\d{4}")
+    p1 = pd.to_numeric(partes[0].astype(object), errors="coerce")
+    p2 = pd.to_numeric(partes[1].astype(object), errors="coerce")
+    formatos = FORMATOS_FECHA
+    if (p2 > 12).sum() > (p1 > 12).sum():
+        formatos = tuple(f.replace("%d/%m", "%m/%d") for f in formatos)
+    out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    for fmt in formatos:
+        falta = out.isna() & txt.notna()
+        if not falta.any():
+            break
+        out[falta] = pd.to_datetime(txt[falta].astype(object), format=fmt,
+                                    errors="coerce")
+    return out
 
 
 def load_json_pages(directory: Path) -> pd.DataFrame:
@@ -128,14 +233,22 @@ def load_xlsx_files(directory: Path, pattern: str = "*.xlsx") -> pd.DataFrame:
         try:
             # Intentar leer con openpyxl (xlsx)
             df = pd.read_excel(f, engine="openpyxl")
+            # REVASCON 2015-2018 trae filas de título antes de la cabecera: la
+            # 1ª fila (vacía) se toma como cabecera y todo sale "Unnamed: N".
+            # Se relee usando como cabecera la 1ª fila con ≥ mitad de celdas.
+            if len(df.columns) and all(str(c).startswith("Unnamed") for c in df.columns):
+                llenas = df.notna().sum(axis=1)
+                filas = llenas.index[llenas >= len(df.columns) / 2]
+                if len(filas):
+                    df = pd.read_excel(f, engine="openpyxl", header=int(filas[0]) + 1)
+            df = df.rename(columns=CABECERAS_MOJIBAKE)
             if len(df) > 0:
                 # Añadir columna de origen (año del fichero)
                 year_str = f.stem.split("_")[-1]
-                try:
-                    df["_archivo_origen"] = f.name
+                df["_archivo_origen"] = f.name
+                # Solo si es un año (no la fecha AAAAMMDD de una instantánea)
+                if year_str.isdigit() and len(year_str) == 4:
                     df["_year"] = int(year_str)
-                except ValueError:
-                    df["_archivo_origen"] = f.name
 
                 frames.append(df)
                 log.info("  %s: %d filas × %d cols", f.name, len(df), len(df.columns))
@@ -180,8 +293,11 @@ def load_csv_files(directory: Path, pattern: str = "*.csv",
             head = f.read_bytes()[:2000].decode(encoding, errors="replace")
             sep = ";" if head.count(";") > head.count(",") else ","
 
+            # Todo como texto: si no, read_csv convierte expedientes como
+            # "080617000001" en número (pierde el 0 inicial) e importes como
+            # "52.990" en 52,99 antes de poder tratarlos como formato español
             df = pd.read_csv(f, sep=sep, encoding=encoding, low_memory=False,
-                             on_bad_lines="skip")
+                             on_bad_lines="skip", dtype=str)
             if len(df) > 0:
                 df["_archivo_origen"] = f.name
                 frames.append(df)
@@ -191,7 +307,7 @@ def load_csv_files(directory: Path, pattern: str = "*.csv",
             # Reintentar con latin-1
             try:
                 df = pd.read_csv(f, sep=sep, encoding="latin-1", low_memory=False,
-                                 on_bad_lines="skip")
+                                 on_bad_lines="skip", dtype=str)
                 if len(df) > 0:
                     df["_archivo_origen"] = f.name
                     frames.append(df)
@@ -298,6 +414,7 @@ def consolidar_B1_contratos_master() -> dict:
 
             if items and len(items) > 0:
                 df_json = pd.json_normalize(items, sep="_")
+                df_json = df_json.rename(columns=B1_JSON_A_XLSX)
                 year_str = f.stem.split("_")[-1]
                 df_json["_archivo_origen"] = f.name
                 try:
@@ -322,13 +439,30 @@ def consolidar_B1_contratos_master() -> dict:
     # ── Limpieza básica ──────────────────────────────────────
     # Normalizar nombres de columnas (minúsculas, sin espacios extra)
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    # "" y nulo cuentan igual (las claves ausentes en un JSON son "" en otro)
+    df = safe_str_columns(df)
+    datos = [c for c in df.columns if not c.startswith("_")]
 
-    # Eliminar filas completamente vacías
-    df = df.dropna(how="all")
+    # Recolocar las filas corridas (la fecha límite trae una URL)
+    cols = B1_COLS_CORRIDAS
+    if all(c in df.columns for c in cols):
+        limite = df[cols[0]].astype("string")
+        corrida = limite.str.startswith("http").fillna(False).astype(bool)
+        salto3 = corrida & limite.str.contains("/es_doc/data/").fillna(False).astype(bool)
+        for salto, filas in ((3, salto3), (2, corrida & ~salto3)):
+            if filas.any():
+                df.loc[filas, cols[salto:]] = df.loc[filas, cols[:-salto]].to_numpy()
+                df.loc[filas, cols[:salto]] = None
+        if corrida.any():
+            log.info("  Recolocadas %d filas con columnas corridas", int(corrida.sum()))
 
-    # Eliminar duplicados exactos si los hay
+    # Eliminar filas completamente vacías (sin contar _archivo_origen/_year)
+    df = df.dropna(how="all", subset=datos)
+
+    # Eliminar duplicados exactos si los hay, sin contar el fichero de origen:
+    # los JSON 2012 y 2013 son subconjuntos del de 2011.
     n_antes = len(df)
-    df = df.drop_duplicates()
+    df = df.drop_duplicates(subset=datos)
     n_dupes = n_antes - len(df)
     if n_dupes:
         log.info("  Eliminados %d duplicados exactos", n_dupes)
@@ -338,13 +472,13 @@ def consolidar_B1_contratos_master() -> dict:
     for col in df.columns:
         if any(kw in col for kw in ("importe", "valor", "precio", "presupuesto",
                                      "iva", "canon", "monto")):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = parse_importes(df[col])
 
-    # Intentar parsear fechas
+    # Intentar parsear fechas ("data" no: casaba con las URL dataXML/metadataXML)
     for col in df.columns:
-        if any(kw in col for kw in ("fecha", "date", "data")):
+        if any(kw in col for kw in ("fecha", "date")):
             try:
-                df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+                df[col] = parse_fechas(df[col])
             except Exception:
                 pass
 
@@ -354,7 +488,10 @@ def consolidar_B1_contratos_master() -> dict:
     dest = OUTPUT_DIR / "contratos_master.parquet"
     info = save_parquet(df, dest, "contratos_master")
     info["duplicados_eliminados"] = n_dupes
-    info["rango_años"] = f"2011-{datetime.now().year}"
+    if "_year" in df.columns and df["_year"].notna().any():
+        info["rango_años"] = f"{int(df['_year'].min())}-{int(df['_year'].max())}"
+    else:
+        info["rango_años"] = f"2011-{datetime.now().year}"
     return info
 
 
@@ -384,15 +521,20 @@ def consolidar_A3_poderes() -> dict:
             df[col] = df[col].apply(lambda x: json.dumps(x, ensure_ascii=False)
                                     if isinstance(x, (list, dict)) else x)
 
-    # El campo 'id' de la API es el índice dentro de la página (1-10),
-    # NO un identificador único. Usamos dedup por contenido completo.
+    # 'id' es el identificador del poder adjudicador (p.ej. 27191, el de
+    # _links.self.href), no el índice en la página: dos poderes con distinto
+    # id son distintos aunque coincida el resto. Si la paginación se desplaza
+    # durante la descarga, el mismo id sale dos veces: se queda el último.
     content_cols = [c for c in df.columns
                     if c not in ("id", "_fuente", "_archivo_origen")
                     and not c.startswith("_")]
     n_antes = len(df)
-    df = df.drop_duplicates(subset=content_cols if content_cols else None)
+    if "id" in df.columns:
+        df = df.drop_duplicates(subset=["id"], keep="last")
+    else:
+        df = df.drop_duplicates(subset=content_cols if content_cols else None)
     if len(df) < n_antes:
-        log.info("  Deduplicados %d → %d (contenido completo)", n_antes, len(df))
+        log.info("  Deduplicados %d → %d", n_antes, len(df))
 
     df["_fuente"] = "A3_api_poderes"
     dest = OUTPUT_DIR / "poderes_adjudicadores.parquet"
@@ -455,14 +597,17 @@ def consolidar_B2_revascon() -> dict:
 
     frames = []
 
-    # Cargar CSVs
+    # Cargar CSVs (nombres normalizados antes de concatenar para que casen
+    # con los del XLSX y no queden columnas duplicadas)
     df_csv = load_csv_files(src, "revascon_*.csv")
     if not df_csv.empty:
-        frames.append(df_csv)
+        df_csv.columns = [c.strip().lower().replace(" ", "_") for c in df_csv.columns]
+        frames.append(df_csv.rename(columns=REVASCON_CSV_A_XLSX))
 
     # Cargar XLSXs
     df_xlsx = load_xlsx_files(src, "revascon_*.xlsx")
     if not df_xlsx.empty:
+        df_xlsx.columns = [c.strip().lower().replace(" ", "_") for c in df_xlsx.columns]
         frames.append(df_xlsx)
 
     if not frames:
@@ -471,9 +616,16 @@ def consolidar_B2_revascon() -> dict:
     df = pd.concat(frames, ignore_index=True, sort=False)
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
-    # Eliminar duplicados
+    # Importes: texto "1.455.954,56" en el XLSX y numéricos en el CSV → float
+    # (solo "importe*": "iva_del_importe_de_licitación" es texto "21%(...)")
+    for col in df.columns:
+        if col.startswith("importe"):
+            df[col] = parse_importes(df[col])
+
+    # Eliminar duplicados (sin contar el fichero de origen: el mismo contrato
+    # aparece idéntico en varios XLSX anuales)
     n_antes = len(df)
-    df = df.drop_duplicates()
+    df = df.drop_duplicates(subset=[c for c in df.columns if not c.startswith("_")])
     n_dupes = n_antes - len(df)
     if n_dupes:
         log.info("  Eliminados %d duplicados", n_dupes)
@@ -503,24 +655,39 @@ def consolidar_C1_bilbao() -> dict:
     if df.empty:
         return {"registros": 0, "error": "sin datos"}
 
+    # Cada ejecución guarda una instantánea bilbao_abiertas_AAAAMMDD.csv:
+    # solo se usa la más reciente (si no, se acumulan versiones del mismo contrato)
+    snaps = sorted(f for f in df["_archivo_origen"].unique()
+                   if f.startswith("bilbao_abiertas_"))
+    if len(snaps) > 1:
+        df = df[~df["_archivo_origen"].isin(snaps[:-1])].copy()
+
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
     # Bilbao descarga por año Y por tipo → posibles duplicados
     n_antes = len(df)
     # Excluir columna de origen para comparar
     compare_cols = [c for c in df.columns if not c.startswith("_")]
+    # Los ficheros difieren en espacios finales ("VICONSA, S.A. " vs
+    # "VICONSA, S.A."): sin quitarlos el mismo contrato se cuenta dos veces
+    for col in compare_cols:
+        df[col] = df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
     df = df.drop_duplicates(subset=compare_cols)
     n_dupes = n_antes - len(df)
     if n_dupes:
         log.info("  Eliminados %d duplicados (solapamiento año/tipo)", n_dupes)
 
-    # Tipado
+    # Tipado (importes "1.234.567,89" y fechas dd/mm o mm/dd según la columna)
     for col in df.columns:
+        if col == "lote":   # el CSV se lee como texto; numérico si no se pierde nada
+            num = pd.to_numeric(df[col], errors="coerce")
+            if num.notna().sum() == df[col].notna().sum():
+                df[col] = num
         if any(kw in col for kw in ("importe", "valor", "precio", "presupuesto")):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = parse_importes(df[col])
         if any(kw in col for kw in ("fecha", "date")):
             try:
-                df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+                df[col] = parse_fechas(df[col])
             except Exception:
                 pass
 
@@ -544,7 +711,10 @@ def consolidar_B3_ultimos_90d() -> dict:
         log.info("  No disponible (404 en descarga)")
         return {"registros": 0, "nota": "no disponible (404)"}
 
-    df = load_xlsx_files(src, "ultimos_*.xlsx")
+    # Cada ejecución guarda una instantánea (ultimos_90d_AAAAMMDD.xlsx) y las
+    # ventanas se solapan: solo se consolida la más reciente
+    snaps = sorted(src.glob("ultimos_*.xlsx"))
+    df = load_xlsx_files(src, snaps[-1].name) if snaps else pd.DataFrame()
     if df.empty:
         log.info("  Sin datos")
         return {"registros": 0, "nota": "sin datos"}
@@ -682,7 +852,7 @@ def main():
     # Verificar que exista el directorio de entrada
     if not INPUT_DIR.exists():
         log.error("Directorio de entrada no encontrado: %s", INPUT_DIR)
-        log.error("Ejecuta primero el scraper: python descarga_euskadi_v4.py")
+        log.error("Ejecuta primero el scraper: python ccaa_euskadi.py")
         sys.exit(1)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -705,8 +875,8 @@ def main():
     # Stats JSON
     stats_out = {
         "fecha": datetime.now().isoformat(),
-        "input_dir": str(INPUT_DIR),
-        "output_dir": str(OUTPUT_DIR),
+        "input_dir": INPUT_DIR.name,     # relativo al script (sin rutas locales)
+        "output_dir": OUTPUT_DIR.name,
         "datasets": all_stats,
     }
     (OUTPUT_DIR / "stats.json").write_text(
