@@ -1006,7 +1006,8 @@ def _versiones_ventanas(src: Path) -> dict:
             if p.is_dir() and "__" in p.name:
                 out.setdefault(p.name.split("__", 1)[0], []).append(p)
     for lista in out.values():
-        lista.sort(key=_fecha_ventana)
+        # a igual fecha (mismo segundo), la de _historico/ es la anterior
+        lista.sort(key=lambda p: (_fecha_ventana(p), p.parent.name != HISTORICO))
     return out
 
 

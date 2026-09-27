@@ -12,7 +12,9 @@ import importlib.util
 import io
 import json
 import re
+from datetime import date
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest import mock
 
 import openpyxl
@@ -658,3 +660,180 @@ def test_pipeline_descarga_y_consolidacion_offline(red, dirs, monkeypatch, tmp_p
     assert bil.loc["260101000002", "presupuesto_de_adjudicacion_iva_excluido"] == 50000.0
     emp = pd.read_parquet(out / "empresas_licitadoras.parquet")
     assert {"name", "identificationnumber", "registrationnumber"} <= set(emp.columns)
+
+
+# ─────────────────────────────────────────────────────────────
+# Módulo A completo: /contracts por ventanas de fecha
+# ─────────────────────────────────────────────────────────────
+
+class ApiVentanas:
+    """/contracts con award-date.gt/.lt (estrictos), orderBy/orderType, itemsOfPage
+    y currentPage. ignora_pagina: siempre sirve la página 1 (sin_current: y sin
+    decir qué página es, así solo se nota porque se repite)."""
+
+    def __init__(self, items, ignora_pagina=False, sin_current=False):
+        self.items = list(items)
+        self.ignora_pagina, self.sin_current = ignora_pagina, sin_current
+        self.caidas = set()             # subcadenas de URL que devuelven 503
+        self.pedidas = []
+
+    def __call__(self, url):
+        q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+        self.pedidas.append(q)
+        if any(c in url for c in self.caidas):
+            return Resp(503, b"<html>503 Service Unavailable</html>", "text/html")
+        gt, lt = q.get("award-date.gt"), q.get("award-date.lt")
+        sel = [it for it in self.items if (gt is None and lt is None) or (
+            it.get("awardDate") and (gt is None or it["awardDate"] > gt)
+            and (lt is None or it["awardDate"] < lt))]
+        sel.sort(key=lambda it: (it.get("awardDate") is None, it.get("awardDate") or "", it["id"]),
+                 reverse=q.get("orderType") == "DESC")
+        n = int(q["itemsOfPage"])
+        pagina = 1 if self.ignora_pagina else int(q["currentPage"])
+        trozo = sel[(pagina - 1) * n: pagina * n]
+        data = {"totalItems": len(sel), "totalPages": max(1, -(-len(sel) // n)),
+                "itemsOfPage": len(trozo), "items": trozo}
+        if not self.sin_current:
+            data["currentPage"] = pagina
+        return resp_json(data)
+
+
+def contrato(i, fecha):
+    return {"id": f"G-{i:03d}$X", "awardDate": fecha, "awardAmount": 1000.0 + i,
+            "CIF": f"B{i:08d}", "socialReason": f"EMPRESA {i}, S.L."}
+
+
+# 4 + 3 en 2025-01 (se parte: más de API_MAX_ITEMS_VENTANA), 2 en 2025-02,
+# 1 anterior a 2025, 1 con fecha errónea (posteriores) y 1 sin fecha
+CONTRATOS = ([contrato(i, f) for i, f in enumerate(
+    ["2025-01-02", "2025-01-05", "2025-01-05", "2025-01-10",
+     "2025-01-20", "2025-01-25", "2025-01-31", "2025-02-03", "2025-02-28",
+     "1999-06-30", "2424-10-04"], 1)] + [contrato(12, None)])
+URL_CONTRATOS = "https://api.euskadi.eus/procurements/contracts"
+HOY = date(2025, 3, 15)
+
+
+@pytest.fixture
+def api_completa(red, dirs, monkeypatch):
+    """Páginas de 3, ventanas de hasta 5 registros, meses desde 2025 y sin
+    refresco de meses (solo 'posteriores')."""
+    monkeypatch.setattr(ccaa, "API_ITEMS_POR_PAGINA", 3)
+    monkeypatch.setattr(ccaa, "API_MAX_ITEMS_VENTANA", 5)
+    monkeypatch.setattr(ccaa, "API_ANIO_MIN", 2025)
+    monkeypatch.setattr(ccaa, "API_MESES_REFRESCO", 0)
+    monkeypatch.setattr(ccaa, "API_DELAY", 0)
+    rutas, _ = red
+
+    def bajar(api):
+        rutas[URL_CONTRATOS] = api
+        ccaa._descargar_api_completa(URL_CONTRATOS, ccaa.API_COMPLETA["contracts"], hoy=HOY)
+        d = ccaa.DIRS["api_contracts_full"]
+        return d, json.loads((d / "_estado.json").read_text(encoding="utf-8"))
+    return bajar
+
+
+def _manifiesto(d, clave):
+    return json.loads((d / clave / "_ventana.json").read_text(encoding="utf-8"))
+
+
+def test_api_completa_por_ventanas_cuadra_con_totalItems(api_completa, entrada):
+    d, estado = api_completa(ApiVentanas(CONTRATOS))
+
+    assert estado["total_api"] == 12 and estado["faltan"] == 0
+    assert estado["ventanas_incompletas"] == [] and estado["sin_ventana"] == 1
+    esperados = {"anteriores": 1, "2025-01": 7, "2025-02": 2, "2025-03": 0, "posteriores": 1}
+    for clave, n in esperados.items():
+        man = _manifiesto(d, clave)
+        assert man["completo"] and man["total_items"] == man["ids_unicos"] == len(man["ids"]) == n
+    # 2025-01 (7 > 5) se parte en dos mitades que cuadran por separado
+    trozos = _manifiesto(d, "2025-01")["trozos"]
+    assert trozos[0]["partido"].startswith("más de 5")
+    assert [t["total_items"] for t in trozos[1:]] == [4, 3] and all(t["completo"] for t in trozos[1:])
+    assert not list(d.glob("*.part")) and not (d / "_historico").exists()
+
+    # La consolidación deja cada contrato una vez (solapes de sin_ventana fuera)
+    info = cons.consolidar_A1_api_contratos()
+    df = pd.read_parquet(cons.OUTPUT_DIR / "api_contratos.parquet")
+    assert info["registros"] == len(df) == 12
+    assert set(df["id"]) == {c["id"] for c in CONTRATOS} and not df["id"].duplicated().any()
+    assert df.set_index("id").loc["G-008$X", "awardAmount"] == 1008.0
+
+
+@pytest.mark.parametrize("sin_current", [False, True])
+def test_api_completa_pagina_repetida_aborta_sin_guardar(api_completa, sin_current, caplog):
+    api = ApiVentanas(CONTRATOS, ignora_pagina=True, sin_current=sin_current)
+    d, estado = api_completa(api)
+
+    assert "ignora currentPage" in estado["abortado"]
+    assert "ignora currentPage" in caplog.text and ccaa.stats["fail"] >= 1
+    # anteriores (1 registro, 1 página) sí se guarda; 2025-01 no deja nada
+    assert _manifiesto(d, "anteriores")["completo"]
+    assert not list(d.glob("2025-01*")) and not list(d.glob("*.part"))
+    assert not (d / "2025-02").exists() and not (d / "sin_ventana").exists()
+
+
+def test_api_completa_reejecucion_no_repite_ni_machaca_ventanas_completas(api_completa, entrada):
+    api = ApiVentanas(CONTRATOS)
+    d, _ = api_completa(api)
+    antes = {f: f.read_bytes() for f in d.glob("*/*.json")}
+
+    # 2ª ejecución con los mismos datos: solo la página 1 de cada ventana completa
+    api.pedidas.clear()
+    d, estado = api_completa(api)
+    assert estado["faltan"] == 0 and estado["ventanas_incompletas"] == []
+    enero = [q for q in api.pedidas if q.get("award-date.gt", "").startswith("2024-12-31")]
+    assert len(enero) == 1 and enero[0]["currentPage"] == "1"
+    assert not any(q.get("award-date.lt") == "2025-01-17" for q in api.pedidas)  # sin trozos
+    assert {f: f.read_bytes() for f in d.glob("*/*.json")} == antes
+    assert not (d / "_historico").exists()        # 'posteriores' y sin_ventana idénticas
+
+    # 3ª: 2025-02 cambia (un contrato nuevo y otro con otro importe): se vuelve a
+    # bajar y la versión anterior queda entera en _historico/
+    cambiado = dict(CONTRATOS[7], awardAmount=9999.0)
+    api.items = CONTRATOS[:7] + [cambiado] + CONTRATOS[8:] + [contrato(13, "2025-02-14")]
+    d, estado = api_completa(api)
+    assert estado["faltan"] == 0
+    # (sin_ventana también cambia: sus páginas traen el nuevo totalItems global)
+    hist = {h.name.split("__")[0]: h for h in (d / "_historico").iterdir()}
+    assert set(hist) == {"2025-02", "sin_ventana"}
+    assert json.loads((hist["2025-02"] / "_ventana.json").read_text(encoding="utf-8"))["total_items"] == 2
+    assert _manifiesto(d, "2025-02")["total_items"] == 3
+    intactas = ("anteriores", "2025-01", "2025-03", "posteriores")
+    assert {f: b for f, b in antes.items() if f.parent.name in intactas} == \
+        {f: f.read_bytes() for f in d.glob("*/*.json") if f.parent.name in intactas}
+
+    # 4ª: la API falla en 'posteriores' (que se refresca): no se publica nada
+    # vacío ni se archiva la descarga buena
+    api.caidas.add("award-date.gt=2025-03-31")
+    post = (d / "posteriores" / "_ventana.json").read_bytes()
+    d, _ = api_completa(api)
+    assert (d / "posteriores" / "_ventana.json").read_bytes() == post
+    assert {h.name.split("__")[0] for h in (d / "_historico").iterdir()} == set(hist)
+    assert not list(d.glob("*.part"))
+
+    # La consolidación acumula las dos versiones de 2025-02
+    info = cons.consolidar_A1_api_contratos()
+    df = pd.read_parquet(cons.OUTPUT_DIR / "api_contratos.parquet")
+    assert info["registros"] == len(df) == 14       # 12 + nuevo + versión anterior
+    g8 = df[df["id"] == "G-008$X"].set_index("awardAmount")["_en_ultima_descarga"]
+    assert g8.to_dict() == {1008.0: False, 9999.0: True}
+    assert df.loc[df["id"] != "G-008$X", "_en_ultima_descarga"].all()
+
+
+def test_download_refrescar_guarda_la_version_anterior_en_historico(red, tmp_path):
+    rutas, _ = red
+    url = "https://opendata.euskadi.eus/x/contratos.csv"
+    dest = tmp_path / "C2_vitoria_gasteiz" / "vitoria_menores.csv"
+    dest.parent.mkdir()
+    v1 = ("exp;importe\n" + "A-1;100\n" * 40).encode()
+    v2 = ("exp;importe\n" + "A-1;150\n" * 40).encode()
+    rutas[url] = Resp(200, v1, "text/csv")
+    assert ccaa.download(url, dest, refrescar=True)
+    assert ccaa.download(url, dest, refrescar=True)          # igual: no se versiona
+    assert not (dest.parent / "_historico").exists()
+    rutas[url] = Resp(200, v2, "text/csv")
+    assert ccaa.download(url, dest, refrescar=True)
+    assert dest.read_bytes() == v2
+    hist = list((dest.parent / "_historico").iterdir())
+    assert len(hist) == 1 and hist[0].name.startswith("vitoria_menores__")
+    assert hist[0].suffix == ".csv" and hist[0].read_bytes() == v1

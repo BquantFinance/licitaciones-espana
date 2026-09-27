@@ -597,7 +597,8 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
     guarda cada respuesta tal cual (<desde>_<hasta>_<orden>_pNNNNN.json) y añade
     sus ids a `vistos`. Para al reunir totalItems ids, al acabar las páginas, con
     una página vacía o que solo repite ids, al llegar a max_paginas o si
-    parar(vistos). Lanza ApiNoPagina si la API devuelve otra página que la pedida.
+    parar(vistos). Lanza ApiNoPagina (sin guardar esa página) si la API devuelve
+    otra página que la pedida o una página idéntica a otra ya servida en la pasada.
     """
     nombre = cfg["nombre"]
     rango = f"{desde.isoformat()}_{hasta.isoformat()}" if desde else "sin_filtro"
@@ -607,6 +608,7 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
             "total_items": None, "paginas": 0, "items": 0, "ids_nuevos": 0,
             "fuera_de_rango": 0, "fin": None}
     pagina, respuesta = 1, primera
+    firmas = set()          # ids de cada página ya servida en esta pasada
     while True:
         if respuesta is None:
             time.sleep(API_DELAY)
@@ -628,6 +630,13 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
         if not items:
             info["fin"] = "página vacía"
             break
+        firma = tuple(_clave_item(it) for it in items)
+        if firma in firmas:
+            raise ApiNoPagina(
+                f"{nombre}: la página {pagina} de {etiqueta} repite una página anterior "
+                f"(la API ignora currentPage) — abortando sin guardar la ventana; "
+                f"revisar los parámetros de paginación.")
+        firmas.add(firma)
         (carpeta / f"{etiqueta}_p{pagina:05d}.json").write_bytes(contenido)
         stats["ok"] += 1
         stats["bytes"] += len(contenido)
@@ -651,7 +660,7 @@ def _pasada(api_url, cfg, desde, hasta, orden, carpeta, vistos, primera=None,
         if nuevos == 0:
             info["fin"] = f"página {pagina} repetida"
             break
-        if pagina >= int(data.get("totalPages") or 0):
+        if data.get("totalPages") is not None and pagina >= int(data["totalPages"] or 0):
             info["fin"] = "última página"
             break
         if max_paginas and pagina >= max_paginas:
@@ -745,6 +754,13 @@ def _publicar_ventana(tmp: Path, final: Path):
     tmp.rename(final)
 
 
+def _mismas_paginas(a: Path, b: Path) -> bool:
+    """¿Las dos descargas de una ventana tienen las mismas páginas, byte a byte?"""
+    pa = sorted(f.name for f in a.glob("*_p[0-9]*.json"))
+    pb = sorted(f.name for f in b.glob("*_p[0-9]*.json"))
+    return pa == pb and all((a / n).read_bytes() == (b / n).read_bytes() for n in pa)
+
+
 def _comprobar_filtro(cfg, clave, total, total_global):
     """Una ventana acotada con tantos registros como la API sin filtro = filtro ignorado."""
     if total_global > API_ITEMS_POR_PAGINA and total >= total_global:
@@ -763,9 +779,12 @@ def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
     - Si hay que bajarla, se escribe en <clave>.part/ y se publica al acabar;
       la versión anterior pasa a _historico/ (la consolidación acumula todas:
       lo que la administración retire se conserva marcado).
-    - Si la nueva descarga no reúne totalItems ids se repite una vez; si sigue
-      incompleta se guarda igual (son datos reales) con completo=False y la
-      siguiente ejecución la vuelve a intentar.
+    - Si la nueva descarga no reúne totalItems ids se repite una vez (y se queda
+      el intento con más ids); si sigue incompleta se guarda igual (son datos
+      reales) con completo=False y la siguiente ejecución la vuelve a intentar.
+    - Una descarga fallida (sin página 1) o vacía cuando antes había registros no
+      se publica: se conserva la anterior. Una idéntica a la anterior tampoco
+      (no se llena _historico/ de copias).
     """
     nombre = cfg["nombre"]
     final = d / clave
@@ -786,8 +805,9 @@ def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
         log.info("  %s %s: totalItems %s → %d, se vuelve a descargar (la anterior "
                  "se conserva en %s/)", nombre, clave, previo.get("total_items"), total, HISTORICO)
 
-    tmp = d / f"{clave}.part"
-    for intento in (1, 2):
+    partes = (d / f"{clave}.part", d / f"{clave}.reintento.part")
+    mejor = None
+    for intento, tmp in enumerate(partes, 1):
         shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir(parents=True)
         inicio = datetime.now(timezone.utc)
@@ -801,14 +821,38 @@ def _ventana_api(api_url, cfg, d, clave, desde, hasta, total_global, refrescar):
                 _comprobar_filtro(cfg, clave, total, total_global)
             _bajar_rango(api_url, cfg, desde, hasta, tmp, vistos, trozos, primera)
         except ApiNoPagina:
-            shutil.rmtree(tmp, ignore_errors=True)
+            for parte in partes:
+                shutil.rmtree(parte, ignore_errors=True)
             raise
-        completo = total is not None and len(vistos) == total
-        if completo or intento == 2:
+        # El reintento no sustituye a un intento que reunió más ids
+        nota = (total is not None, len(vistos))
+        if mejor is None or nota > (mejor[2] is not None, len(mejor[3])):
+            if mejor is not None:
+                shutil.rmtree(mejor[0], ignore_errors=True)
+            mejor = (tmp, inicio, total, vistos, trozos)
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if (total is not None and len(vistos) == total) or intento == 2:
             break
         log.warning("  %s %s: %d ids únicos de %s — se repite la ventana",
                     nombre, clave, len(vistos), total)
         primera = None
+    tmp, inicio, total, vistos, trozos = mejor
+    completo = total is not None and len(vistos) == total
+    ids_previos = set(previo.get("ids", [])) if previo else set()
+    if total is None or (not vistos and ids_previos):
+        shutil.rmtree(tmp, ignore_errors=True)
+        stats["fail"] += 1
+        log.error("  %s %s: %s — no se publica; se conserva la descarga anterior",
+                  nombre, clave, "sin respuesta de la API" if total is None
+                  else f"0 registros (antes {len(ids_previos)})")
+        return ids_previos
+    if (previo and previo.get("total_items") == total
+            and bool(previo.get("completo")) == completo and _mismas_paginas(tmp, final)):
+        shutil.rmtree(tmp, ignore_errors=True)
+        stats["skip"] += 1
+        log.info("  %s %s: sin cambios (%d ids)", nombre, clave, len(vistos))
+        return vistos
 
     manifiesto = {
         "clave": clave, "desde": desde.isoformat(), "hasta": hasta.isoformat(),
@@ -851,17 +895,24 @@ def _resto_sin_ventana(api_url, cfg, d, ids_ventanas, total_global) -> int:
         return len(v - ids_ventanas)
 
     pasadas = []
-    for orden in ("DESC", "ASC"):
-        pasadas.append(_pasada(api_url, cfg, None, None, orden, tmp, vistos,
-                               parar=lambda v: encontrados(v) >= faltan,
-                               max_paginas=max(1, API_MAX_ITEMS_VENTANA // API_ITEMS_POR_PAGINA)))
-        if encontrados(vistos) >= faltan:
-            break
+    try:
+        for orden in ("DESC", "ASC"):
+            pasadas.append(_pasada(api_url, cfg, None, None, orden, tmp, vistos,
+                                   parar=lambda v: encontrados(v) >= faltan,
+                                   max_paginas=max(1, API_MAX_ITEMS_VENTANA // API_ITEMS_POR_PAGINA)))
+            if encontrados(vistos) >= faltan:
+                break
+    except ApiNoPagina:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     nuevos = vistos - ids_ventanas
     manifiesto = {"clave": "sin_ventana", "descargado": inicio.isoformat(), "parcial": True,
                   "total_items": total_global, "faltaban": faltan, "completo": len(nuevos) >= faltan,
                   "ids_unicos": len(nuevos), "trozos": [{"pasadas": pasadas}],
                   "ids": sorted(nuevos, key=str)}
+    if not nuevos or _mismas_paginas(tmp, d / "sin_ventana"):
+        shutil.rmtree(tmp, ignore_errors=True)   # nada nuevo: se conserva la anterior
+        return len(nuevos)
     (tmp / "_ventana.json").write_text(json.dumps(manifiesto, ensure_ascii=False), encoding="utf-8")
     _publicar_ventana(tmp, d / "sin_ventana")
     return len(nuevos)
