@@ -66,7 +66,6 @@ VERIFICAR EN VIVO (el sandbox donde se escribió no llega a los portales):
 
 import argparse
 import codecs
-import csv
 import datetime as dt
 import json
 import math
@@ -87,6 +86,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, leer_registros, versiones  # noqa: E402
+from comun.lectura_csv import registros_csv  # noqa: E402
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -502,13 +502,15 @@ def _nombres_columnas(cabecera):
 
 
 def _leer_csv_tolerante(ruta, sep, codificacion):
-    """Lectura con el módulo csv que no descarta nada: los campos que sobran
-    respecto a la cabecera van a columnas _columna_extra_N."""
-    csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
+    """Lectura que no descarta nada: como el módulo csv, pero una comilla
+    literal al principio de un campo no se traga los registros siguientes
+    (comun.lectura_csv); los campos que sobran respecto a la cabecera van a
+    columnas _columna_extra_N. Devuelve (df, filas con campos de más,
+    comillas literales)."""
     with open(ruta, encoding=codificacion, newline="") as f:
-        filas = [fila for fila in csv.reader(f, delimiter=sep) if fila]
+        filas, literales = registros_csv(f.read(), sep)
     if not filas:
-        return pd.DataFrame(), 0
+        return pd.DataFrame(), 0, 0
     nombres = _nombres_columnas(filas[0])
     ancho = max(len(fila) for fila in filas)
     nombres += [f"_columna_extra_{k}" for k in range(1, ancho - len(nombres) + 1)]
@@ -517,7 +519,7 @@ def _leer_csv_tolerante(ruta, sep, codificacion):
     extra = [c for c in nombres if c.startswith("_columna_extra_")]
     con_extra = int(df[extra].notna().any(axis=1).sum()) if extra else 0
     vacias = [c for c in extra if df[c].isna().all()]
-    return df.drop(columns=vacias), con_extra
+    return df.drop(columns=vacias), con_extra, literales
 
 
 def leer_csv(ruta):
@@ -536,12 +538,27 @@ def leer_csv(ruta):
     except pd.errors.EmptyDataError:
         return pd.DataFrame(), [f"{ruta.name}: fichero sin cabecera ni filas"]
     except (pd.errors.ParserError, pd.errors.ParserWarning):
-        df, con_extra = _leer_csv_tolerante(ruta, sep, codificacion)
+        df, con_extra, literales = _leer_csv_tolerante(ruta, sep, codificacion)
         if con_extra:
             avisos.append(f"{ruta.name}: {con_extra:,} filas con más campos que la cabecera; "
                           "los campos de más se conservan en columnas _columna_extra_N")
+        if literales:
+            avisos.append(f"{ruta.name}: {literales:,} comillas literales al principio de un campo "
+                          "(se conservan en el texto; sin ellas se tragarían los registros siguientes)")
     if codificacion != "utf-16":
         lineas = _lineas_de_datos(ruta)
+        if lineas != len(df):
+            # Puede ser una comilla literal que se traga registros enteros:
+            # se vuelve a leer sin que lo haga (comun.lectura_csv)
+            tolerante, con_extra, literales = _leer_csv_tolerante(ruta, sep, codificacion)
+            if literales and len(tolerante) > len(df):
+                avisos.append(f"{ruta.name}: {literales:,} comillas literales al principio de un campo se "
+                              f"tragaban {len(tolerante) - len(df):,} registros; se leen sin tragárselos "
+                              "(la comilla se conserva en el texto)")
+                if con_extra:
+                    avisos.append(f"{ruta.name}: {con_extra:,} filas con más campos que la cabecera; "
+                                  "los campos de más se conservan en columnas _columna_extra_N")
+                df = tolerante
         if lineas != len(df):
             avisos.append(f"{ruta.name}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
                           "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")

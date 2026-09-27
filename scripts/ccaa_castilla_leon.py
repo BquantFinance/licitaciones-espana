@@ -71,7 +71,6 @@ VERIFICAR EN VIVO (el sandbox donde se escribió no llega a los portales):
 
 import argparse
 import codecs
-import csv
 import datetime as dt
 import json
 import math
@@ -92,6 +91,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, leer_registros, versiones  # noqa: E402
+from comun.lectura_csv import registros_csv  # noqa: E402
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -108,21 +108,25 @@ MAX_RESULTADOS_API = 10_000   # offset + limit que admite la API v2.1
 # Histórico del perfil de contratante anterior al 17-4-2018 (fichero estático)
 URL_HISTORICO = "https://datosabiertos.jcyl.es/web/jcyl/risp/es/sector-publico/licitaciones/1284165771488.csv"
 PARQUET_HISTORICO = "licitaciones_perfil_historico.parquet"
+# Aviso que sirve el portal en vez del fichero cuando un dataset no tiene datos
+SIN_DATOS = "No existen datos asociados a este dataset"
+MOTIVO_SIN_DATOS = "el portal indica que no hay datos"
 
 # Datasets de contratación que se buscan en el catálogo
 PATRON_CONTRATACION = re.compile(r"contrat|licitac|adjudica", re.IGNORECASE)
 
-# Respaldo: se piden siempre, aunque el catálogo no los liste (ids a verificar)
+# Respaldo: se piden siempre, aunque el catálogo no los liste. Verificados en
+# vivo el 2026-09-27 contra el catálogo (los demás que lista se descubren solos)
 DATASETS_CONOCIDOS = {
     "contratos-ordinarios": "Contratos ordinarios",
     "contratos-menores": "Contratos menores",
     "contratos-modificados": "Contratos modificados (desde 2019)",
     "contratos-basados-en-acuerdo-marco": "Contratos basados en acuerdo marco",
-    "contratos-desistidos-renunciados-desiertos": "Contratos desistidos, renunciados y desiertos",
+    "contratos-desistimiento-renuncia-desierto": "Contratos: desistimiento, renuncia, desierto",
     "contratos-de-emergencia": "Contratos de emergencia",
     "contratos-menores-sacyl": "Contratos menores SACYL (desde 2018)",
     "contratos-ordinarios-sacyl": "Contratos ordinarios SACYL",
-    "contratos-basados-en-acuerdo-marco-sacyl": "Contratos basados en acuerdo marco SACYL",
+    "contratos-basados-en-acuerdo-marco-de-sacyl": "Contratos basados en acuerdo marco de SACYL",
 }
 
 SALIDA = Path(__file__).resolve().parent.parent / "ccaa_castilla_leon"
@@ -265,6 +269,10 @@ def validar_contenido(ruta, tipo):
     formato = formato_contenido(cabeza)
     if formato in ("html", "xml"):
         return f"la respuesta es {formato.upper()}, no {tipo.upper()}"
+    if SIN_DATOS.encode() in cabeza and os.path.getsize(ruta) < 4096:
+        # El portal sirve un aviso en lugar del fichero (verificado en vivo el
+        # 2026-09-27 con el histórico del perfil): no es una tabla de 1 fila
+        return f"{MOTIVO_SIN_DATOS}: '{SIN_DATOS}'"
     if tipo in ("xlsx", "xls"):
         return None if formato in ("xlsx", "xls") else f"se esperaba una hoja de cálculo y llegó {formato}"
     return None if formato == tipo else f"se esperaba {tipo.upper()} y llegó {formato}"
@@ -505,13 +513,15 @@ def _nombres_columnas(cabecera):
 
 
 def _leer_csv_tolerante(ruta, sep, codificacion):
-    """Lectura con el módulo csv que no descarta nada: los campos que sobran
-    respecto a la cabecera van a columnas _columna_extra_N."""
-    csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
+    """Lectura que no descarta nada: como el módulo csv, pero una comilla
+    literal al principio de un campo no se traga los registros siguientes
+    (comun.lectura_csv); los campos que sobran respecto a la cabecera van a
+    columnas _columna_extra_N. Devuelve (df, filas con campos de más,
+    comillas literales)."""
     with open(ruta, encoding=codificacion, newline="") as f:
-        filas = [fila for fila in csv.reader(f, delimiter=sep) if fila]
+        filas, literales = registros_csv(f.read(), sep)
     if not filas:
-        return pd.DataFrame(), 0
+        return pd.DataFrame(), 0, 0
     nombres = _nombres_columnas(filas[0])
     ancho = max(len(fila) for fila in filas)
     nombres += [f"_columna_extra_{k}" for k in range(1, ancho - len(nombres) + 1)]
@@ -520,7 +530,7 @@ def _leer_csv_tolerante(ruta, sep, codificacion):
     extra = [c for c in nombres if c.startswith("_columna_extra_")]
     con_extra = int(df[extra].notna().any(axis=1).sum()) if extra else 0
     vacias = [c for c in extra if df[c].isna().all()]
-    return df.drop(columns=vacias), con_extra
+    return df.drop(columns=vacias), con_extra, literales
 
 
 def leer_csv(ruta):
@@ -539,12 +549,27 @@ def leer_csv(ruta):
     except pd.errors.EmptyDataError:
         return pd.DataFrame(), [f"{ruta.name}: fichero sin cabecera ni filas"]
     except (pd.errors.ParserError, pd.errors.ParserWarning):
-        df, con_extra = _leer_csv_tolerante(ruta, sep, codificacion)
+        df, con_extra, literales = _leer_csv_tolerante(ruta, sep, codificacion)
         if con_extra:
             avisos.append(f"{ruta.name}: {con_extra:,} filas con más campos que la cabecera; "
                           "los campos de más se conservan en columnas _columna_extra_N")
+        if literales:
+            avisos.append(f"{ruta.name}: {literales:,} comillas literales al principio de un campo "
+                          "(se conservan en el texto; sin ellas se tragarían los registros siguientes)")
     if codificacion != "utf-16":
         lineas = _lineas_de_datos(ruta)
+        if lineas != len(df):
+            # Puede ser una comilla literal que se traga registros enteros:
+            # se vuelve a leer sin que lo haga (comun.lectura_csv)
+            tolerante, con_extra, literales = _leer_csv_tolerante(ruta, sep, codificacion)
+            if literales and len(tolerante) > len(df):
+                avisos.append(f"{ruta.name}: {literales:,} comillas literales al principio de un campo se "
+                              f"tragaban {len(tolerante) - len(df):,} registros; se leen sin tragárselos "
+                              "(la comilla se conserva en el texto)")
+                if con_extra:
+                    avisos.append(f"{ruta.name}: {con_extra:,} filas con más campos que la cabecera; "
+                                  "los campos de más se conservan en columnas _columna_extra_N")
+                df = tolerante
         if lineas != len(df):
             avisos.append(f"{ruta.name}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
                           "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")
@@ -928,6 +953,8 @@ def procesar_historico(raw, manifiesto, resumen, comprobar_todo=False):
     elif estado == "no_existe" and destino.exists():
         manifiesto.retirar(destino, detalle)
         resumen.retirados.append(f"histórico del perfil de contratante: {detalle}; se conservan sus filas")
+    elif estado == "invalido" and detalle.startswith(MOTIVO_SIN_DATOS):
+        resumen.no_publicado("sin datos en el portal (no se crea tabla)", "histórico del perfil de contratante")
     else:
         resumen.fallidos.append(f"histórico del perfil de contratante: {detalle} ({URL_HISTORICO})")
 

@@ -357,3 +357,16 @@ def test_cli(portal, tmp_path, monkeypatch):
 
 def test_salida_por_defecto_en_el_repo():
     assert M.SALIDA == REPO_ROOT / "ccaa_murcia"
+
+
+def test_comilla_literal_no_se_traga_registros(tmp_path):
+    """Una comilla al principio de un campo que no se cierra hasta varias
+    líneas después (registros enteros) es literal: se conservan todas las
+    filas y la comilla queda en el texto (comun.lectura_csv)."""
+    cabecera = ";".join(f"c{i}" for i in range(5))
+    ruta = tmp_path / "contratosOD2024.csv"
+    ruta.write_bytes((f'{cabecera}\n1;"Obra A;org;10;x\n2;Obra B;org;20;y\n3;Obra "C";org;30;z\n').encode("utf-8"))
+    df, avisos = M.leer_tabla(ruta)
+    assert df["c0"].tolist() == ["1", "2", "3"]
+    assert df["c1"].tolist() == ['"Obra A', "Obra B", 'Obra "C"']
+    assert any("comillas literales" in a for a in avisos)

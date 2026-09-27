@@ -228,11 +228,35 @@ def test_filas_con_campos_de_mas_no_se_pierden(tmp_path):
     assert any("1 filas con más campos" in a for a in avisos)
 
 
-def test_comillas_desparejadas_se_avisan(tmp_path):
+def test_comillas_desparejadas_no_se_tragan_registros(tmp_path):
+    """Una comilla que no se cierra nunca es literal: no se traga el resto del
+    fichero en un campo (antes quedaba una fila y un aviso de revisar)."""
     csv = tmp_path / "x.csv"
     csv.write_bytes(b'id;objeto\n1;"Obra sin cerrar\n2;dos\n3;tres\n')
     df, avisos = C.leer_tabla(csv)
-    assert len(df) < 3 and any("revisar" in a for a in avisos)
+    assert df.values.tolist() == [["1", '"Obra sin cerrar'], ["2", "dos"], ["3", "tres"]]
+    assert any("comillas literales" in a for a in avisos)
+
+
+def test_comilla_literal_que_se_tragaria_registros_reales(tmp_path):
+    """Caso real de contratos-menores.csv (2026): un título que empieza por
+    comilla se tragaba las líneas siguientes, que además acaban en ';'."""
+    cabecera = ";".join(f"c{i}" for i in range(14))
+    lineas = [cabecera,
+              'B2021/015285;"ACONDICIONAMIENTO DE CAMINO (ZAMORA);Consejería;Contrato Menor;Obras;45.572,23;3 ;'
+              '45.572,23;20/10/2021;OBRAS SL;B1;2 ;0 ;https://a;',
+              'B2021/015287;SUSTITUCIÓN CENTRAL;Delegación;Contrato Menor;Obras;1.804,00;0 ;1.804,00;22/10/2021;'
+              'VIGILANTES SL;B2;1 ;0 ;https://b;',
+              'B2021/015356;LA SEMILLA DE LA LOCURA""-ANA RONCERO";Delegación;Contrato Menor;Servicios;1149.5;0;'
+              '1149.5;2021-10-04;ANA;111;1;0;https://c']
+    csv = tmp_path / "menores.csv"
+    csv.write_bytes(("\n".join(lineas) + "\n").encode("utf-8"))
+    df, avisos = C.leer_tabla(csv)
+    assert df["c0"].tolist() == ["B2021/015285", "B2021/015287", "B2021/015356"]
+    assert df["c1"].tolist() == ['"ACONDICIONAMIENTO DE CAMINO (ZAMORA)', "SUSTITUCIÓN CENTRAL",
+                                 'LA SEMILLA DE LA LOCURA""-ANA RONCERO"']
+    assert df["c13"].tolist() == ["https://a", "https://b", "https://c"]
+    assert any("se tragaban 2 registros" in a for a in avisos)
 
 
 def test_cp1252_y_separador_coma(tmp_path):
@@ -422,3 +446,13 @@ def test_solo_descarga_no_genera_parquet(portal, tmp_path):
 
 def test_salida_por_defecto_en_el_repo():
     assert C.SALIDA == REPO_ROOT / "ccaa_castilla_leon"
+
+
+def test_historico_sin_datos_no_crea_una_tabla_falsa(portal, tmp_path):
+    """El portal sirve un aviso en vez del CSV cuando no hay datos (verificado
+    en vivo en 2026): no es una tabla de 1 fila ni un fallo."""
+    portal.historico = ("Fichero actualizado a fecha: 2026-09-27 18:05:09\n\n"
+                        "No existen datos asociados a este dataset\n").encode("utf-8")
+    assert _ejecutar(tmp_path) == 0
+    assert not (tmp_path / C.PARQUET_HISTORICO).exists()
+    assert not (tmp_path / "raw" / "historico" / "1284165771488.csv").exists()
