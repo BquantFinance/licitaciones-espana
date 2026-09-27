@@ -55,6 +55,11 @@ Rama: `claude/determined-albattani-5ze2p8` · PR: [#23](https://github.com/Bquan
 ## 3. Plan por prioridad
 
 ### 3.1 Cerrar el WIP (primero)
+0. **Estado al cerrar la sesión anterior.**
+   - Suite completa: 511 passed con pandas 3 y con 2.2.
+   - `nacional/` ya tiene una revisión adversarial con 4 arreglos, cada uno con su test (`TestRevisionAdversarial`).
+   - Hay que confirmarlo con el propietario: `n_versiones` pasa a contar versiones distintas (pares id / fecha_updated), y `entrada_repetida` marca las copias.
+   - Las filas CPM (`consultas`) no se han verificado con datos reales.
 1. **`nacional/`.**
    - Suite en verde y revisión adversarial del diff desde `0bfd7d1`.
    - Hallazgos de la auditoría que hay que cubrir:

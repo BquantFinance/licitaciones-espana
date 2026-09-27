@@ -321,6 +321,8 @@ def _descargar(session, url, filepath, max_reintentos=3, forzar=False):
                 for chunk in response.iter_content(chunk_size=65536):
                     if chunk:
                         f.write(chunk)
+            if filepath.suffix.lower() == '.zip' and not zipfile.is_zipfile(tmp_path):
+                raise ValueError('la respuesta no es un ZIP válido; se conserva la copia actual')
             estado = _historico().guardar_version(filepath, desde=tmp_path)
             if estado == 'sin_cambios':
                 # mtime = última vez que se comprobó que se sirve este contenido
@@ -1050,8 +1052,9 @@ def procesar_zip(zip_path, conjunto_id, borrados=None, informes=None, archivo_or
                     lic['conjunto'] = conjunto_id
                     lic['archivo_origen'] = archivo_origen
                     # Mismo esquema que los parquet publicados (CPM = consulta preliminar)
-                    lic['tipo_registro'] = lic.pop('tipo_registro', None) or (
-                        'CPM' if conjunto_id == 'consultas' else 'LICITACION')
+                    # (todo lo del conjunto 'consultas' sigue siendo CPM, como hasta ahora)
+                    es_cpm = lic.pop('tipo_registro', None) == 'CPM' or conjunto_id == 'consultas'
+                    lic['tipo_registro'] = 'CPM' if es_cpm else 'LICITACION'
                     lic['zip_historico'] = zip_historico
                 licitaciones.extend(lics)
 
@@ -1237,7 +1240,7 @@ def marcas_version(ids, fechas_updated=None):
       reciente (nunca una entrada_repetida); filtrarla permite contar
       licitaciones distintas.
     Las filas sin id cuentan como una versión, la última, y nunca repetida. Sin
-    fechas cada fila es una versión distinta.
+    fechas (o con atom:updated nulo) cada fila es una versión distinta.
     """
     ids = pd.Series(ids).reset_index(drop=True)
     fechas = None
@@ -1248,7 +1251,7 @@ def marcas_version(ids, fechas_updated=None):
     repetida = np.zeros(len(ids), dtype=bool)
     if fechas is not None:
         repetida = (pd.DataFrame({'id': ids, 'fecha': fechas}).duplicated().to_numpy()
-                    & ids.notna().to_numpy())
+                    & ids.notna().to_numpy() & fechas.notna().to_numpy())
     distintas = ids[~repetida].value_counts()
     n_versiones = ids.map(distintas).fillna(1).astype('int64').to_numpy()
     return ultima, n_versiones, repetida
@@ -1378,7 +1381,7 @@ def leer_placsp(path, solo_ultima_version=False):
         desde, hasta = np.searchsorted(conservar, [leidas, leidas + n])
         partes.append(tabla.take(conservar[desde:hasta] - leidas))
         leidas += n
-    df = pa.concat_tables(partes).to_pandas()
+    df = (pa.concat_tables(partes) if partes else pf.schema_arrow.empty_table()).to_pandas()
     del partes
     df['n_versiones'] = n_versiones[conservar]
     df['es_ultima_version'] = True
@@ -1412,7 +1415,7 @@ def tabla_borrados(borrados):
     df = pd.DataFrame(borrados)
     df['fecha_borrado'] = parsear_fecha_updated(df['fecha_borrado'])
     df['entrada_repetida'] = (df.duplicated(['id', 'fecha_borrado']).to_numpy()
-                              & df['id'].notna().to_numpy())
+                              & df['id'].notna().to_numpy() & df['fecha_borrado'].notna().to_numpy())
     return df
 
 def guardar_tabla(df, nombre):

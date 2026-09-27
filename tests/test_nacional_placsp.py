@@ -19,7 +19,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -876,7 +876,7 @@ class TestVersionesDeZip:
         v2 = {"a.atom": _atom([_entry_xml("urn:5001", T1, "PUB"),
                                _entry_xml("urn:5001", T2, "ADJ", importe_adj="10.00")])}
         historico.guardar_version(actual, _zip_contenido(v1))
-        _mtime(actual, datetime(2025, 6, 1, 12))
+        _mtime(actual, datetime(2025, 6, 1, 10, tzinfo=timezone.utc))  # el sello de _historico/ va en UTC
         assert historico.guardar_version(actual, _zip_contenido(v2)) == "actualizado"
         # Una copia truncada en _historico/ no rompe el procesado
         (actual.parent / historico.HISTORICO / "EMP_SectorPublico_2025__20200101T000000Z.zip").write_bytes(b"PK")
@@ -886,7 +886,7 @@ class TestVersionesDeZip:
         df = lic.exportar_datos(lics, "prueba")
         assert df["id"].tolist() == ["urn:5001", "urn:5001", "urn:5001", "urn:5002"]
         # Primero la copia actual: sus filas son las canónicas
-        assert df["zip_historico"].tolist()[:2] == [None, None]
+        assert df["zip_historico"].isna().tolist()[:2] == [True, True]  # nulo (None en pandas 2, NaN en pandas 3)
         assert df["zip_historico"].tolist()[2:] == ["EMP_SectorPublico_2025__20250601T100000Z.zip"] * 2
         assert df["archivo_origen"].unique().tolist() == ["EMP_SectorPublico_2025.zip"]
         assert df["entrada_repetida"].tolist() == [False, False, True, False]
@@ -932,3 +932,53 @@ class TestVersionesDeZip:
         assert f"consultas: ningún ZIP de {faltan}" in salida
         out = pd.read_parquet(tmp_path / "out" / f"licitaciones_completo_2012_{ano}.parquet")
         assert out["tipo_registro"].tolist() == ["CPM"] and out["conjunto"].tolist() == ["consultas"]
+
+
+class TestRevisionAdversarial:
+    def test_mismo_id_con_fecha_nula_no_es_entrada_repetida(self):
+        ultima, n_versiones, repetida = lic.marcas_version(
+            ["a", "a", "a", "b", "b"], [None, None, T1, T1, T1])
+        assert repetida.tolist() == [False, False, False, False, True]
+        assert n_versiones.tolist() == [3, 3, 3, 1, 1]
+        assert ultima.tolist() == [False, False, True, True, False]
+
+    def test_tipo_registro_del_conjunto_consultas_sigue_siendo_cpm(self, tmp_path):
+        z = tmp_path / "CPM_SectorPublico_2025.zip"
+        _escribir_zip(z, {"a.atom": _atom([_entry_xml("urn:7001", T1, "PUB"),
+                                           _texto_fixture("entry_cpm.xml")])})
+        lics = lic.procesar_zip(z, "consultas")
+        assert [l["tipo_registro"] for l in lics] == ["CPM", "CPM"]
+        z2 = tmp_path / "licitacionesPerfilesContratanteCompleto3_2025.zip"
+        _escribir_zip(z2, {"a.atom": _atom([_entry_xml("urn:7002", T1, "PUB"),
+                                            _texto_fixture("entry_cpm.xml")])})
+        assert [l["tipo_registro"] for l in lic.procesar_zip(z2, "licitaciones")] == ["LICITACION", "CPM"]
+
+    def test_leer_placsp_parquet_vacio(self, tmp_path):
+        ruta = tmp_path / "vacio.parquet"
+        pq.write_table(pa.table({"id": pa.array([], pa.string()),
+                                 "fecha_updated": pa.array([], pa.string())}), ruta)
+        assert len(lic.leer_placsp(ruta, solo_ultima_version=True)) == 0
+        assert len(lic.leer_placsp(ruta)) == 0
+
+    def test_respuesta_que_no_es_zip_no_sustituye_la_copia_actual(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic.time, "sleep", lambda s: None)
+        destino = tmp_path / "licitacionesPerfilesContratanteCompleto3_2025.zip"
+        bueno = _zip_contenido({"a.atom": _atom([_entry_xml("urn:8001", T1, "PUB")])})
+        destino.write_bytes(bueno)
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield b"<html>mantenimiento</html>"
+
+        class Sesion:
+            def get(self, *a, **k):
+                return Resp()
+
+        ruta, estado = lic._descargar(Sesion(), "http://x", destino, max_reintentos=2, forzar=True)
+        assert (ruta, estado) == (None, "error")
+        assert destino.read_bytes() == bueno
+        assert not (tmp_path / historico.HISTORICO).exists()
+        assert not destino.with_name(destino.name + ".part").exists()
