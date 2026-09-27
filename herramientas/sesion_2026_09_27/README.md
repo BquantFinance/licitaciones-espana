@@ -27,7 +27,10 @@ Pasos:
    - `cruce_ted.py`: `ted/run_ted_crossvalidation.py` con otras rutas, con `anios_ted` (cobertura del snapshot TED).
    - `calidad/calidad_licitaciones.py`: con todas las versiones y, si no cabe en memoria, `--solo-ultima-version`.
 4. `regeneracion_placsp/comparar_publicado.py <nacional regenerado> <v2026.02> <salida.json>`: contraste por fichero de origen (memoria acotada), con las cifras de la PR #24 como referencia.
-5. `regeneracion_placsp/publicar_release.py crear|subir|ver`: release en **borrador** (nunca publica), con el token de la sesión (`GITHUB_TOKEN`) y comprobación del límite de 2 GiB por fichero. Plantilla de notas: `notas_release.md`.
+5. `regeneracion_placsp/publicar_release.py crear|subir|ver`: release en **borrador** (nunca publica), con comprobación del límite de 2 GiB por fichero. Plantilla de notas: `notas_release.md`.
+   - Necesita `GITHUB_TOKEN` con permiso de escritura en el repo: un token personal en la máquina del propietario.
+   - Desde una sesión en la nube de Claude Code no funciona: el proxy da 403 al crear releases.
+   - La tabla principal pesa 4,3 GB: para el release hay que subir la reducida (`reducir.py`) o partirla, porque el límite es de 2 GiB por fichero.
 
 `medir.py` envuelve un comando e imprime el tiempo y el pico de memoria (no hay `/usr/bin/time`).
 
