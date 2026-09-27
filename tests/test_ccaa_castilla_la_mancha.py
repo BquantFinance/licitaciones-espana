@@ -98,6 +98,38 @@ def _rar4(nombre, contenido):
             + bloque(0x74, 0x8000, cuerpo) + contenido + bloque(0x7B, 0x4000, b""))
 
 
+MHTML = ("From: <Saved by Blink>\r\nSnapshot-Content-Location: https://contratacion.castillalamancha.es/ano-2016/a-2\r\n"
+         "MIME-Version: 1.0\r\nContent-Type: multipart/related;\r\n\ttype=\"text/html\";\r\n\tboundary=\"----x\"\r\n\r\n"
+         "------x\r\nContent-Type: text/html\r\n\r\n<html><body><a href=\"a.xls\">a</a></body></html>\r\n"
+         "------x--\r\n").encode("utf-8")
+
+SPREADSHEETML = """<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Worksheet ss:Name="Contratos Suministros-Servicios">
+  <Table>
+   <Row><Cell><Data ss:Type="String">Gerencia</Data></Cell><Cell><Data ss:Type="String">Artículo</Data></Cell>
+    <Cell><Data ss:Type="String">Importe</Data></Cell><Cell><Data ss:Type="String">Fecha</Data></Cell></Row>
+   <Row><Cell><Data ss:Type="String">61037000 GUETS</Data></Cell><Cell><Data ss:Type="String">LIMPIEZA</Data></Cell>
+    <Cell><Data ss:Type="Number">28.880800000000001</Data></Cell>
+    <Cell><Data ss:Type="DateTime">2016-07-06T00:00:00.000</Data></Cell></Row>
+   <Row ss:Index="4"><Cell ss:Index="2"><ss:Data ss:Type="String" xmlns="http://www.w3.org/TR/REC-html40">GASAS <B>estériles</B></ss:Data></Cell>
+    <Cell><Data ss:Type="Number">7</Data></Cell></Row>
+  </Table>
+ </Worksheet>
+ <Worksheet ss:Name="Contratos Farmacia">
+  <Table>
+   <Row><Cell ss:MergeAcross="1"><Data ss:Type="String">Gerencia</Data></Cell>
+    <Cell><Data ss:Type="String">Fecha</Data></Cell><Cell ss:Index="5"><Data ss:Type="String">Artículo</Data></Cell></Row>
+   <Row><Cell><Data ss:Type="String">61035000 GAE Toledo</Data></Cell><Cell><Data ss:Type="String">sobra</Data></Cell>
+    <Cell><Data ss:Type="DateTime">2016-07-06T10:30:00.000</Data></Cell><Cell ss:Index="5"><Data ss:Type="String">U-005</Data></Cell></Row>
+  </Table>
+ </Worksheet>
+</Workbook>
+""".encode("utf-8")
+
 CABECERA_JUNTA = ["Nº expediente PICOS", "Organismo", "Descripción", "Importe adjudicación IVA incluido",
                   "CIF Adjudicatario(s)", "Adjudicatario(s)", "Fecha de adjudicación"]
 
@@ -692,7 +724,10 @@ def test_zip_con_anidados_restos_y_ficheros_que_no_son_tablas(tmp_path):
         "EDUCACIÓN/contratos menores 1T 2016.csv": "Objeto;Importe\nSeñalización – 5 €;1.000,00\n".encode("cp1252"),
         "__MACOSX/EDUCACIÓN/._contratos menores 1T 2016.csv": b"\x00\x05\x16\x07basura",
         "nota.pdf": b"%PDF-1.4 relacion firmada",
+        "LEEME.txt": "Relación remitida por las consejerías; importes sin IVA\n".encode("utf-8"),
         "anexo.zip": _zip({"Fomento.xlsx": _xlsx({"Hoja1": [["Objeto", "Importe"], ["Bacheo", 7.0]]})}),
+        # Página del portal guardada desde el navegador: no es una tabla aunque se llame .html
+        "Año 2016 (cuarto trimestre) _ Portal.html": MHTML,
     }, utf8=False))
     df, avisos = M.leer_tabla(ruta)
     # Nombres en cp850 sin la marca UTF-8 (como los ZIP hechos en Windows): 'Ó' no es de cp437
@@ -700,7 +735,85 @@ def test_zip_con_anidados_restos_y_ficheros_que_no_son_tablas(tmp_path):
     assert df["Objeto"].tolist() == ["Señalización – 5 €", "Bacheo"]
     assert df["Importe"].tolist() == ["1.000,00", "7"]
     assert any("nota.pdf: no es una tabla (PDF)" in a for a in avisos)
+    assert any("LEEME.txt: no es una tabla (CSV)" in a for a in avisos)       # texto, pero no una tabla
+    assert any("Portal.html: no es una tabla (MHTML)" in a for a in avisos)
     assert any("__MACOSX" in a and "se ignora" in a for a in avisos)
+
+
+def test_hoja_xml_de_excel_2003(tmp_path):
+    # Como el RAR del SESCAM de 2016 "en formato xml": SpreadsheetML con dos hojas
+    ruta = tmp_path / "menores.zip"
+    ruta.write_bytes(_zip({"Menores Sescam 2 trimestre 2016.xml": SPREADSHEETML}))
+    df, avisos = M.leer_tabla(ruta)
+    assert df["_hoja"].tolist() == ["Contratos Suministros-Servicios"] * 2 + ["Contratos Farmacia"]
+    assert _v(df["Gerencia"]) == ["61037000 GUETS", None, "61035000 GAE Toledo"]
+    assert _v(df["Artículo"]) == ["LIMPIEZA", "GASAS estériles", "U-005"]    # texto con formato: su texto
+    assert _v(df["Importe"]) == ["28.8808", "7", None]
+    assert _v(df["Fecha"]) == ["2016-07-06", None, "2016-07-06 10:30:00"]
+    assert _v(df["Unnamed: 1"]) == [None, None, "sobra"]          # la celda combinada ocupa dos columnas
+    assert "2 hojas con datos" in " ".join(avisos)
+
+
+def test_si_un_extractor_falla_a_mitad_se_usa_el_siguiente_sin_repetir(tmp_path, monkeypatch):
+    ruta = tmp_path / "x.zip"
+    ruta.write_bytes(_zip({"a.csv": b"A\n1\n", "b.csv": b"A\n2\n"}))
+
+    def a_medias(ruta, carpeta):
+        yield next(M._extraer_zip(ruta, carpeta))
+        raise OSError("File CRC error")
+
+    monkeypatch.setattr(M, "_extractores", lambda formato: [("roto", a_medias), ("bueno", M._extraer_zip)])
+    df, _ = M.leer_tabla(ruta)
+    assert df[["A", "_miembro"]].values.tolist() == [["1", "a.csv"], ["2", "b.csv"]]
+
+
+@pytest.mark.parametrize("disponibles, lista", [(["libarchive"], "pendientes"),
+                                                (["rarfile", "libarchive"], "fallidos")])
+def test_rar_que_no_se_puede_descomprimir(portal, tmp_path, monkeypatch, disponibles, lista):
+    # libarchive falla con algún RAR válido (el del SESCAM 2016-2T): se guarda igual
+    # y queda pendiente de leerlo con unrar; si también falla unrar, es un error
+    def falla(ruta, carpeta):
+        raise OSError("File CRC error")
+        yield
+
+    real = M._extractores
+    monkeypatch.setattr(M, "_extractores", lambda formato: [(n, falla) for n in disponibles]
+                        if formato == "rar" else real(formato))
+    _publicar_rar(portal)
+    assert _ejecutar(tmp_path, "--fuente", "jccm") == 1
+    rar = tmp_path / "raw" / "sescam" / str(ANIO) / f"CM_SEGUNDO_TRIMESTRE_{ANIO}_SESCAM.rar"
+    assert rar.read_bytes() == portal.urls[f"{FICHEROS}2026-09/{rar.name}"]
+    bloques = _log(tmp_path).split("PENDIENTES")[-1].split("ERRORES")
+    bloque = bloques[0] if lista == "pendientes" else bloques[-1]
+    assert f"sescam/{ANIO}/{rar.name}" in bloque and "File CRC error" in bloque
+
+
+def test_rar_danado_se_guarda_igual(portal, tmp_path):
+    # Un RAR que el descompresor de aquí no sabe leer (CRC que no casa) no se
+    # rechaza en la descarga: el original se guarda y el fallo sale al leerlo
+    rar = bytearray(_rar4("datos.csv", b"A\n1\n"))
+    rar[7 + 13 + 7 + 9:7 + 13 + 7 + 13] = b"\x00\x00\x00\x00"          # FILE_CRC
+    publicar(portal, "113", ANIO, "2026-09", "CM_TERCER_TRIMESTRE_SESCAM.rar", f"SESCAM 3º Trimestre {ANIO}",
+             bytes(rar))
+    assert _ejecutar(tmp_path, "--fuente", "jccm") == 1
+    guardado = tmp_path / "raw" / "sescam" / str(ANIO) / "CM_TERCER_TRIMESTRE_SESCAM.rar"
+    assert guardado.read_bytes() == bytes(rar)
+    assert _manifiesto(tmp_path)[f"sescam/{ANIO}/{guardado.name}"]["publicado"] is True
+    assert f"sescam/{ANIO}/{guardado.name}" in _log(tmp_path).split("PENDIENTES")[-1]
+
+
+def test_hoja_xls_llena_puede_estar_truncada(tmp_path, monkeypatch):
+    xlwt = pytest.importorskip("xlwt")
+    monkeypatch.setattr(M, "FILAS_MAXIMAS_XLS", 3)
+    libro = xlwt.Workbook()
+    hoja = libro.add_sheet("menores")
+    for i, fila in enumerate([["Expediente"], ["A"], ["B"]]):
+        hoja.write(i, 0, fila[0])
+    ruta = tmp_path / "MENORES_2015 Sescam sin farmacia.xls"
+    libro.save(str(ruta))
+    df, avisos = M.leer_tabla(ruta)
+    assert df["Expediente"].tolist() == ["A", "B"]
+    assert any("[menores]: 3 filas, el máximo de un .xls" in a for a in avisos)
 
 
 def test_zip_sin_tablas_es_un_error(tmp_path):

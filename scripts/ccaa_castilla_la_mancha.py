@@ -166,7 +166,7 @@ DATASETS = {
     "caja_pagadora": {"descripcion": "Contratos menores de la Junta pagados por caja pagadora",
                       "unidad": "contrato menor (una factura de caja pagadora)"},
     "sector_publico": {"descripcion": "Contratos menores del sector público regional (2015-2018)",
-                       "unidad": "contrato menor (los RAR del SESCAM: línea de factura)"},
+                       "unidad": "contrato menor; en los ficheros del SESCAM que trae, línea de factura"},
     "sescam": {"descripcion": "Contratos menores del SESCAM (líneas de factura)",
                "unidad": "línea de factura por artículo y gerencia (no es un contrato)"},
     "informe_menores": {"descripcion": "Informe de Contratación Administrativa: fichero de menores",
@@ -308,10 +308,15 @@ def formato_contenido(cabeza):
     if cabeza.startswith((b"\xff\xfe", b"\xfe\xff")):
         return "csv"                                      # texto UTF-16
     texto = cabeza.lstrip(b"\xef\xbb\xbf").lstrip()
+    inicio = texto[:4096].lower()
     if texto[:1] in (b"{", b"["):
         return "json"
     if texto[:1] == b"<":
-        return "html" if b"html" in texto[:1024].lower() or b"<table" in texto[:1024].lower() else "xml"
+        if b"urn:schemas-microsoft-com:office:spreadsheet" in inicio or b'progid="excel.sheet"' in inicio:
+            return "xmlss"                                # hoja XML de Excel 2003 (SpreadsheetML)
+        return "html" if b"html" in inicio[:1024] or b"<table" in inicio[:1024] else "xml"
+    if b"multipart/related" in inicio:
+        return "mhtml"                                    # página web guardada (MHTML)
     return "csv"
 
 
@@ -360,22 +365,18 @@ def _abrir_libarchive(libarchive, ruta):
 
 
 def _integridad(ruta, formato):
-    """Motivo por el que un ZIP/XLSX/RAR descargado está incompleto o dañado, o None."""
+    """Motivo por el que un ZIP (o XLSX) descargado está incompleto o dañado, o
+    None. Los RAR no se comprueban así: un RAR válido que el descompresor de aquí
+    no sepa abrir (libarchive falla con alguno) tiene que guardarse igual; los
+    cortados los delata el Content-Length."""
+    if formato not in ("zip", "xlsx", "ods"):
+        return None
     try:
-        if formato in ("zip", "xlsx", "ods"):
-            with zipfile.ZipFile(ruta) as archivo:
-                malo = archivo.testzip()
-            return f"miembro dañado: {malo}" if malo else None
-        if formato in ("rar", "7z"):
-            libarchive = _modulo("libarchive")
-            if libarchive is not None:
-                with _abrir_libarchive(libarchive, ruta) as archivo:
-                    for entrada in archivo:
-                        for _ in entrada.get_blocks():
-                            pass
+        with zipfile.ZipFile(ruta) as archivo:
+            malo = archivo.testzip()
+        return f"miembro dañado: {malo}" if malo else None
     except Exception as e:
         return f"{type(e).__name__}: {str(e)[:150]}"
-    return None
 
 
 def validar_contenido(ruta, tipo):
@@ -817,8 +818,64 @@ def _leer_xls(ruta, nombre=None):
             df = _hoja_a_df(filas, nombre, hoja.name, avisos)
             if df is not None:
                 partes.append(df)
+            if hoja.nrows >= FILAS_MAXIMAS_XLS:
+                avisos.append(f"{nombre} [{hoja.name}]: {hoja.nrows:,} filas, el máximo de un .xls: "
+                              "la hoja puede estar truncada en origen")
     finally:
         libro.release_resources()
+    return partes, avisos
+
+
+NS_EXCEL_XML = "{urn:schemas-microsoft-com:office:spreadsheet}"
+
+
+def _dato_xml(dato):
+    """Valor de un <Data> de SpreadsheetML como texto, como las demás hojas:
+    números y fechas por _celda_texto, el resto tal cual."""
+    if dato is None:
+        return None
+    texto = "".join(dato.itertext())
+    tipo = dato.get(NS_EXCEL_XML + "Type")
+    try:
+        if tipo == "Number":
+            return _celda_texto(float(texto))
+        if tipo == "DateTime":
+            return _celda_texto(datetime.fromisoformat(texto))
+        if tipo == "Boolean":
+            return str(texto.strip() not in ("0", "", "false", "False"))
+    except ValueError:
+        pass
+    return texto if texto != "" else None
+
+
+def _leer_xml_excel(ruta, nombre=None):
+    """Hoja de cálculo XML de Excel 2003 (SpreadsheetML), en streaming: cada
+    <Row> es una fila y cada <Cell> su <Data>, respetando las celdas que se
+    saltan (ss:Index) y las combinadas (ss:MergeAcross). Las filas que se saltan
+    no importan: las vacías no son datos."""
+    import xml.etree.ElementTree as ET
+
+    nombre = nombre or Path(ruta).name
+    avisos, partes, filas, hoja = [], [], [], None
+    for evento, elemento in ET.iterparse(str(ruta), events=("start", "end")):
+        if elemento.tag == NS_EXCEL_XML + "Worksheet" and evento == "start":
+            hoja, filas = elemento.get(NS_EXCEL_XML + "Name"), []
+        elif elemento.tag == NS_EXCEL_XML + "Row" and evento == "end":
+            fila = []
+            for celda in elemento.findall(NS_EXCEL_XML + "Cell"):
+                columna = celda.get(NS_EXCEL_XML + "Index")
+                if columna:
+                    fila.extend([None] * (int(columna) - 1 - len(fila)))
+                fila.append(_dato_xml(celda.find(NS_EXCEL_XML + "Data")))
+                fila.extend([None] * int(celda.get(NS_EXCEL_XML + "MergeAcross") or 0))
+            filas.append(fila)
+            elemento.clear()
+        elif elemento.tag == NS_EXCEL_XML + "Worksheet" and evento == "end":
+            df = _hoja_a_df(filas, nombre, hoja, avisos)
+            if df is not None:
+                partes.append(df)
+            filas = []
+            elemento.clear()
     return partes, avisos
 
 
@@ -914,8 +971,13 @@ def leer_html(ruta, nombre=None):
 # sus tablas (también los archivos anidados, p.ej. un RAR dentro de un ZIP)
 # ----------------------------------------------------------------------------
 
-EXTENSIONES_MIEMBRO = (".xlsx", ".xlsm", ".xls", ".csv", ".htm", ".html")
+# Qué contenidos se leen como tabla según la extensión del miembro (un .xls puede
+# ser en realidad un XLSX, una tabla HTML, un CSV o un XML de Excel 2003)
+FORMATOS_MIEMBRO = {".xlsx": ("xlsx", "xls"), ".xlsm": ("xlsx",), ".xls": ("xls", "xlsx", "html", "csv", "xmlss"),
+                    ".csv": ("csv",), ".htm": ("html",), ".html": ("html",), ".xml": ("xmlss",),
+                    "": ("xlsx", "xls", "html", "xmlss")}
 PROFUNDIDAD_MAXIMA = 5
+FILAS_MAXIMAS_XLS = 65536
 
 
 def _nombre_zip(info):
@@ -960,32 +1022,64 @@ def _extraer_libarchive(libarchive, ruta, carpeta):
 
 
 def _extraer_rarfile(rarfile, ruta, carpeta):
+    with rarfile.RarFile(str(ruta)) as archivo:
+        for i, info in enumerate(archivo.infolist()):
+            if info.is_dir():
+                continue
+            destino = _destino_miembro(carpeta, i, info.filename)
+            with archivo.open(info) as origen, open(destino, "wb") as f:
+                shutil.copyfileobj(origen, f, 1 << 20)
+            yield info.filename, destino
+
+
+def _con_programa(rarfile):
+    """¿Tiene rarfile un programa con el que descomprimir (unrar, unar, 7z, bsdtar)?"""
     try:
-        with rarfile.RarFile(str(ruta)) as archivo:
-            for i, info in enumerate(archivo.infolist()):
-                if info.is_dir():
-                    continue
-                destino = _destino_miembro(carpeta, i, info.filename)
-                with archivo.open(info) as origen, open(destino, "wb") as f:
-                    shutil.copyfileobj(origen, f, 1 << 20)
-                yield info.filename, destino
-    except rarfile.RarCannotExec as e:
-        raise LectorNoDisponible(f"no se puede descomprimir el RAR: {MENSAJE_RAR}") from e
+        rarfile.tool_setup()
+        return True
+    except Exception:
+        return False
 
 
-def _extractor(formato):
-    """Función (ruta, carpeta) -> [(miembro, ruta extraída)] para un formato de
-    archivo; LectorNoDisponible si falta con qué abrirlo."""
+def _extractores(formato):
+    """[(nombre, función(ruta, carpeta) -> [(miembro, ruta extraída)])] con los
+    que se puede abrir un formato de archivo, por orden de preferencia: el ZIP
+    con zipfile; el RAR con rarfile si tiene un programa (unrar es la referencia)
+    y con libarchive (que falla con algún RAR válido); el 7z con libarchive.
+    LectorNoDisponible si no hay ninguno."""
     if formato == "zip":
-        return _extraer_zip
+        return [("zipfile", _extraer_zip)]
+    extractores = []
+    rarfile = _modulo("rarfile") if formato == "rar" else None
+    if rarfile is not None and _con_programa(rarfile):
+        extractores.append(("rarfile", lambda ruta, carpeta: _extraer_rarfile(rarfile, ruta, carpeta)))
     libarchive = _modulo("libarchive")
     if libarchive is not None:
-        return lambda ruta, carpeta: _extraer_libarchive(libarchive, ruta, carpeta)
-    rarfile = _modulo("rarfile") if formato == "rar" else None
-    if rarfile is not None:
-        return lambda ruta, carpeta: _extraer_rarfile(rarfile, ruta, carpeta)
-    raise LectorNoDisponible(f"no se puede abrir un {formato.upper()}: "
-                             + (MENSAJE_RAR if formato == "rar" else "hace falta libarchive-c"))
+        extractores.append(("libarchive", lambda ruta, carpeta: _extraer_libarchive(libarchive, ruta, carpeta)))
+    if not extractores:
+        raise LectorNoDisponible(f"no se puede abrir un {formato.upper()}: "
+                                 + (MENSAJE_RAR if formato == "rar" else "hace falta libarchive-c"))
+    return extractores
+
+
+def descomprimir(ruta, carpeta):
+    """[(miembro, ruta extraída)] de todos los ficheros de un ZIP/RAR/7z, con el
+    primer extractor que lo abre entero: si uno falla a mitad se prueba el
+    siguiente desde el principio (nunca quedan miembros a medias ni repetidos)."""
+    formato = formato_fichero(ruta)
+    extractores, errores = _extractores(formato), []
+    for nombre, extractor in extractores:
+        destino = Path(tempfile.mkdtemp(dir=carpeta))
+        try:
+            return list(extractor(ruta, destino))
+        except Exception as e:
+            errores.append(f"{nombre}: {type(e).__name__}: {str(e)[:150]}")
+            shutil.rmtree(destino, ignore_errors=True)
+    detalle = f"{Path(ruta).name}: no se pudo descomprimir ({'; '.join(errores)})"
+    if formato == "rar" and "rarfile" not in dict(extractores):
+        # libarchive falla con algunos RAR válidos: con unrar se puede leer
+        raise LectorNoDisponible(f"{detalle}; {MENSAJE_RAR}")
+    raise ValueError(detalle)
 
 
 def _ignorable(miembro):
@@ -998,12 +1092,11 @@ def _ignorable(miembro):
 def extraer(ruta, carpeta, prefijo="", profundidad=0):
     """(miembro, ruta en disco, formato) de todos los ficheros de un ZIP/RAR/7z,
     entrando en los archivos que contiene ('a.zip' -> 'b.rar/c.xlsx')."""
-    carpeta = Path(tempfile.mkdtemp(dir=carpeta))
-    for miembro, fichero in _extractor(formato_fichero(ruta))(ruta, carpeta):
+    for miembro, fichero in descomprimir(ruta, carpeta):
         nombre = prefijo + miembro
         formato = formato_fichero(fichero)
         if formato in FORMATOS_ARCHIVO and profundidad < PROFUNDIDAD_MAXIMA:
-            yield from extraer(fichero, carpeta, nombre + "/", profundidad + 1)
+            yield from extraer(fichero, fichero.parent, nombre + "/", profundidad + 1)
             fichero.unlink()
         else:
             yield nombre, fichero, formato
@@ -1021,8 +1114,7 @@ def leer_archivo(ruta):
             nombre = f"{ruta.name}/{miembro}"
             if _ignorable(miembro):
                 avisos.append(f"{nombre}: se ignora (no son datos)")
-            elif formato not in ("xlsx", "xls", "csv", "html") or (
-                    Path(miembro).suffix and Path(miembro).suffix.lower() not in EXTENSIONES_MIEMBRO):
+            elif formato not in FORMATOS_MIEMBRO.get(Path(miembro).suffix.lower(), ()):
                 avisos.append(f"{nombre}: no es una tabla ({formato.upper()}); "
                               "se conserva en el original sin leer")
             else:
@@ -1044,8 +1136,8 @@ def _leer_simple(ruta, formato, nombre=None):
     nombre = nombre or Path(ruta).name
     if formato == "csv":
         return leer_csv(ruta, nombre)
-    if formato in ("xlsx", "xls"):
-        partes, avisos = (_leer_xlsx if formato == "xlsx" else _leer_xls)(ruta, nombre)
+    if formato in ("xlsx", "xls", "xmlss"):
+        partes, avisos = {"xlsx": _leer_xlsx, "xls": _leer_xls, "xmlss": _leer_xml_excel}[formato](ruta, nombre)
         if len(partes) > 1:
             avisos.append(f"{nombre}: {len(partes)} hojas con datos; se unen (columna _hoja)")
         if not partes:

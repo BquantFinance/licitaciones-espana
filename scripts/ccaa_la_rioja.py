@@ -13,8 +13,10 @@ Ejecutar:  python scripts/ccaa_la_rioja.py [--salida DIR] [--solo-descarga]
            [--solo-parquet] [--comprobar-todo] [--sin-sondeo]
 
 Salida (por defecto <repo>/ccaa_la_rioja/):
-    raw/contratos_menores/cd<N>/<fichero publicado>  p.ej. raw/contratos_menores/cd979/contratos_CAR_2024.csv
-    raw/contratos_menores/cd<N>/_historico/          versiones anteriores de cada fichero (nunca se borran)
+    raw/contratos_menores/cd<N>/contratos_CAR_<año>.csv
+                                       CSV del código N tal cual (p.ej. cd979/contratos_CAR_2024.csv)
+    raw/contratos_menores/cd<N>/_historico/
+                                       versiones anteriores de cada fichero (nunca se borran)
     raw/sondeo_codigos.json            códigos del servidor de descargas que ha encontrado el sondeo
     raw/_manifiesto.json               URL, código, año, fecha de descarga y última comprobación de cada fichero
     raw/descarga_log.txt               resumen de cada ejecución (se añade al final)
@@ -1008,6 +1010,11 @@ def guardar_sondeo(ruta, existentes, sondeados):
     os.replace(tmp, ruta)
 
 
+def serie_sondeada(existentes):
+    """{cd: año} de los códigos sondeados que sirven contratos_CAR_<año>.csv."""
+    return {cd: int(m.group(1)) for cd, nombre in existentes.items() if (m := PATRON_FICHERO.fullmatch(nombre))}
+
+
 def sondear_codigos(raw, resumen):
     """Busca en el servidor de descargas los códigos creados después de los de
     CODIGOS_CONOCIDOS. Devuelve {cd: año} de los ficheros de contratos menores
@@ -1073,13 +1080,9 @@ def sondear_codigos(raw, resumen):
     finally:
         guardar_sondeo(ruta, existentes, len(sondeados))
 
-    serie, otros = {}, []
-    for cd, nombre in sorted(existentes.items()):
-        m = PATRON_FICHERO.fullmatch(nombre)
-        if m:
-            serie[cd] = int(m.group(1))
-        elif PATRON_CONTRATACION.search(nombre) and previos.get(cd) != nombre:
-            otros.append(f"cd={cd}: {nombre} ({url_codigo(cd)})")
+    serie = serie_sondeada(existentes)
+    otros = [f"cd={cd}: {nombre} ({url_codigo(cd)})" for cd, nombre in sorted(existentes.items())
+             if cd not in serie and PATRON_CONTRATACION.search(nombre) and previos.get(cd) != nombre]
     if otros:
         resumen.avisos.append("el sondeo ha encontrado otros ficheros de contratación (no se descargan; "
                               "revisar):\n      " + "\n      ".join(otros))
@@ -1126,10 +1129,10 @@ def no_disponible(cd, anio, locales, detalle, manifiesto, resumen):
 
 def descargar_codigo(cd, anio, raw, manifiesto, resumen, comprobar_todo=False):
     """Descarga el CSV del año `anio` que publica el código `cd` en
-    raw/contratos_menores/cd<N>/<nombre publicado>. Los años cerrados que ya
-    se tienen solo se vuelven a pedir con --comprobar-todo. Antes se comprueba
-    con HEAD que el código sirve contratos_CAR_<anio>.csv: si sirve otra cosa
-    (o no responde) es un error y no se descarga ni se retira nada."""
+    raw/contratos_menores/cd<N>/contratos_CAR_<anio>.csv. Los años cerrados
+    que ya se tienen solo se vuelven a pedir con --comprobar-todo. Antes se
+    comprueba con HEAD que el código sirve contratos_CAR_<anio>.csv: si sirve
+    otra cosa (o no responde) es un error y no se descarga ni se retira nada."""
     dir_cd = Path(raw) / SERIE / f"cd{cd}"
     locales = ficheros_codigo(dir_cd)
     etiqueta = f"{anio} (cd={cd})"
@@ -1154,7 +1157,9 @@ def descargar_codigo(cd, anio, raw, manifiesto, resumen, comprobar_todo=False):
                                 f"no se descarga ni se retira nada ({url})")
         print(f"  ❌ {etiqueta}: {detalle}")
         return
-    destino = dir_cd / nombre          # casa con PATRON_FICHERO: un nombre sin rutas
+    # Siempre con el mismo nombre (el publicado, salvo mayúsculas, que van al
+    # manifiesto): un código es un año y un fichero
+    destino = dir_cd / f"contratos_CAR_{anio}.csv"
     estado, detalle = descargar(url, destino, tipo="csv")
     time.sleep(PAUSA)
     if estado == "no_existe":
@@ -1164,25 +1169,23 @@ def descargar_codigo(cd, anio, raw, manifiesto, resumen, comprobar_todo=False):
         resumen.fallidos.append(f"{SERIE} {etiqueta}: {detalle} ({url})")
         print(f"  ❌ {etiqueta}: {detalle}")
         return
-    manifiesto.registrar(destino, url, estado, dataset=SERIE, anio=anio, cd=cd, ficha=URL_FICHA.format(cd=cd))
+    manifiesto.registrar(destino, url, estado, dataset=SERIE, anio=anio, cd=cd, fichero_publicado=nombre,
+                         ficha=URL_FICHA.format(cd=cd))
     resumen.descarga(f"{SERIE} {etiqueta}", estado)
     print(f"  ✅ {etiqueta}: {estado}")
     if estado != "sin_cambios":
         comprobar_columnas(destino, resumen)
-    # El mismo código con otro nombre: el anterior ya no se publica así
-    for ruta in locales:
-        if ruta.name != destino.name and manifiesto.get(manifiesto.rel(ruta)).get("publicado", True):
-            manifiesto.retirar(ruta, f"el código {cd} sirve ahora {nombre}")
-            resumen.retirados.append(f"{manifiesto.rel(ruta)}: el código {cd} sirve ahora {nombre}; "
-                                     "se conservan sus filas")
 
 
 def descargar_todo(raw, manifiesto, resumen, comprobar_todo=False, sondeo=True):
     codigos = {cd: anio for anio, cd in CODIGOS_CONOCIDOS.items()}
     if sondeo:
         print("\n🔎 Sondeo de códigos nuevos en el servidor de descargas...")
-        for cd, anio in sondear_codigos(raw, resumen).items():
-            codigos.setdefault(cd, anio)
+        encontrados = sondear_codigos(raw, resumen)
+    else:                                 # lo que encontraron los sondeos anteriores
+        encontrados = serie_sondeada(leer_sondeo(Path(raw) / "sondeo_codigos.json"))
+    for cd, anio in encontrados.items():
+        codigos.setdefault(cd, anio)
     # Lo ya descargado, aunque ya no esté en la lista ni en el sondeo: si el
     # portal ya no lo sirve se marca como retirado
     for anio, cd, _ in archivos_serie(raw):
@@ -1224,7 +1227,8 @@ def main(argv=None):
     parser.add_argument("--comprobar-todo", action="store_true",
                         help="volver a pedir también los años antiguos ya descargados")
     parser.add_argument("--sin-sondeo", action="store_true",
-                        help="no buscar códigos nuevos: solo los conocidos y los ya descargados")
+                        help="no buscar códigos nuevos: solo los conocidos, los que encontraron los "
+                             "sondeos anteriores y los ya descargados")
     args = parser.parse_args(argv)
 
     salida = Path(args.salida)

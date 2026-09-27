@@ -883,11 +883,9 @@ def _como_texto(serie):
     es 'str' y una leída de un Excel, 'object', y los metadatos de pandas del
     Parquet cambiarían sin que cambie ningún dato (una versión más en
     _historico/ en cada ejecución)."""
-    if isinstance(serie.dtype, pd.StringDtype):
-        return serie
     valores = serie.astype(object)
     if pd.api.types.infer_dtype(valores, skipna=True) in ("string", "empty"):
-        return valores
+        return valores.where(valores.notna(), None)
     # sin Series.map: en pandas 3 devuelve 'str'
     return pd.Series([v if isinstance(v, str) else (None if pd.isna(v) else str(v)) for v in valores],
                      index=serie.index, dtype=object)
@@ -1251,7 +1249,7 @@ class Documento:
     def metadatos(self):
         """Lo que se guarda en el manifiesto de cada fichero descargado."""
         return {"clave": self.clave, "nombre_publicado": self.nombre, "texto_enlace": self.texto,
-                "pagina": self.pagina, "paginas": list(self.paginas), "tipo": self.tipo, "anio": self.anio,
+                "paginas": list(self.paginas), "tipo": self.tipo, "anio": self.anio,
                 "trimestre": self.trimestre, "trimestres": list(self.trimestres),
                 "version_portal": self.version_portal()}
 
