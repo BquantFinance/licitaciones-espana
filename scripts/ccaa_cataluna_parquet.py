@@ -28,7 +28,9 @@ import re
 import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from comun.historico import COLUMNAS_META, acumular, versiones  # noqa: E402
+from comun.historico import (  # noqa: E402
+    COLUMNAS_META, acumular, imprimir_informe_semilla, sembrar, versiones,
+)
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -172,6 +174,45 @@ ARCHIVOS = {
     '01_transparencia_catalunya/07_territorio/municipis_espanya.csv': 
         ('territorio/municipis_espanya.parquet', 'Municipios España'),
 }
+
+
+# Categorías (--categorias): la carpeta del CSV sin su número
+# ('01_transparencia_catalunya/01_contratacion/...' → 'contratacion'). Las consolidaciones
+# de Open Data Barcelona son de contratación.
+CATEGORIAS = None   # None: todas
+
+
+def categoria_csv(csv_rel):
+    return re.sub(r'^\d+_', '', csv_rel.split('/')[1])
+
+
+CATEGORIAS_DISPONIBLES = sorted({categoria_csv(k) for k in ARCHIVOS})
+
+# Semilla (--semilla <carpeta de Catalunya del release v2026.02>): por Parquet, la clave estable con
+# la que se añaden las filas del publicado que no están en la descarga, con _origen='release
+# v2026.02' y _en_ultima_descarga=False (comun.historico.sembrar). Medido el 28-sep-2026 contra la
+# primera descarga del VPS:
+#   - RPC: 751.187 filas, sobre todo menores y liquidaciones de 2021 que la ventana móvil de 5 años ya
+#     no sirve. Con Exercici en la clave solo se repiten 4.754 del publicado.
+#   - PSCP: 187.577 filas de publicaciones que ya no están. La URL es la de la publicación, que tiene
+#     una fila por lote o adjudicatario; las claves con numero_lot no sirven, porque el publicado
+#     lo guarda con otro formato ('' frente a '0').
+#   - Fase de ejecución: 9.047 (por la URL del JSON). Contratación programada: 5.095 (trimestres
+#     pasados que el portal retira).
+#   - Adjudicaciones de la Generalitat, contratos COVID y resoluciones del Tribunal coinciden con el
+#     publicado (0 filas que falten); los menores de la Generalitat (qjue-2pk9) no estaban en él.
+SEMILLAS = {
+    'contratacion/contratos_registro.parquet': [
+        'Identificador organisme contractant', 'Codi de l’expedient', 'Número de lot', 'Situació contractual',
+        'Número de modificació', 'Número de pròrroga', 'Exercici'],
+    'contratacion/publicaciones_pscp.parquet': ['enllac_publicacio'],
+    'contratacion/fase_ejecucion.parquet': ['URL JSON'],
+    'contratacion/contratacion_programada.parquet': [
+        'Any', 'Trimestre', 'Departament/Ens', 'Descripció del contracte', 'Agrupació', 'Tipus de contracte'],
+}
+# Columnas nuestras: sus nulos no pasan a '' (en las filas sembradas no hay fechas de descarga, y
+# _origen es nulo en las descargadas)
+COLUMNAS_CONTROL = set(COLUMNAS_META) | {'_origen'}
 
 
 # =============================================================================
@@ -351,8 +392,45 @@ def anio_de_nombre(nombre):
     return int(m.group(0)) if m else None
 
 
-def convert_to_parquet(input_path, output_path, descripcion):
-    """Convierte un CSV a Parquet"""
+def clave_texto(df, columnas):
+    """Clave comparable entre la descarga y el publicado, que guardan los mismos datos con tipos
+    distintos: texto sin espacios a los lados y enteros sin '.0'. El vacío es un valor ('Número de
+    modificació' vacío en el RPC es «sin modificación», no una clave incompleta). Si todas las columnas
+    están vacías, nula: no se sabe qué fila es y sembrar la compara por contenido."""
+    partes = []
+    for c in columnas:
+        s = df[c].astype(object)
+        s = s.where(s.notna(), '').astype(str).str.strip().str.replace(r'^(-?\d+)\.0+$', r'\1', regex=True)
+        partes.append(s.reset_index(drop=True))
+    clave = partes[0].str.cat(partes[1:], sep='\x1f') if len(partes) > 1 else partes[0]
+    vacia = pd.concat([p.eq('') for p in partes], axis=1).all(axis=1).to_numpy()
+    valores = clave.to_numpy(dtype=object)
+    valores[vacia] = None   # None en pandas 2 y 3 (con where, pandas 3 pone NaN)
+    return pd.Series(valores, index=df.index, dtype=object)
+
+
+def sembrar_release(df, ruta, columnas):
+    """Añade a `df` las filas del Parquet publicado `ruta` cuya clave (`columnas`, ver SEMILLAS) no
+    está en la descarga. Sin el fichero, `df` tal cual (con un aviso)."""
+    ruta = Path(ruta)
+    if not ruta.exists():
+        log(f"   ⚠️ Sin semilla: no existe {ruta}")
+        return df
+    publicado = pd.read_parquet(ruta)
+    faltan = [c for c in columnas if c not in df.columns or c not in publicado.columns]
+    if faltan:
+        log(f"   ⚠️ Semilla {ruta.name} sin sembrar: faltan columnas de la clave ({', '.join(faltan)})")
+        return df
+    out, informe = sembrar(df.assign(_clave_semilla=clave_texto(df, columnas)),
+                           publicado.assign(_clave_semilla=clave_texto(publicado, columnas)), '_clave_semilla')
+    informe['ruta'] = str(ruta)
+    imprimir_informe_semilla(informe)
+    return out.drop(columns='_clave_semilla')
+
+
+def convert_to_parquet(input_path, output_path, descripcion, semilla=None):
+    """Convierte un CSV a Parquet, con todas sus versiones y, si se da `semilla` (ruta del Parquet
+    publicado y columnas de la clave), las filas que el publicado tiene y la descarga ya no"""
     log(f"\n📄 {descripcion}")
     log(f"   Input: {input_path.name}")
     
@@ -363,11 +441,13 @@ def convert_to_parquet(input_path, output_path, descripcion):
     if n_versiones > 1:
         retirados = int((~df['_en_ultima_descarga'].astype(bool)).sum())
         log(f"   📜 {n_versiones} versiones del CSV; {retirados:,} registros ya no servidos (conservados)")
+    if semilla is not None:
+        df = sembrar_release(df, *semilla)
     
     # Optimizar tipos de datos
     for col in df.columns:
         # Convertir object a string para evitar errores de tipos mixtos
-        if es_texto(df[col]):
+        if es_texto(df[col]) and col not in COLUMNAS_CONTROL:
             df[col] = texto_sin_nulos(df[col])
     
     # Crear directorio de salida
@@ -513,18 +593,39 @@ def consolidate_barcelona_autorizacion(input_dir, output_dir):
 # MAIN
 # =============================================================================
 
+def _lista_categorias(texto, disponibles):
+    """'contratacion,convenios' → {'contratacion', 'convenios'}; error si alguna no existe."""
+    pedidas = {c.strip() for c in texto.split(',') if c.strip()}
+    malas = sorted(pedidas - set(disponibles))
+    if malas or not pedidas:
+        raise argparse.ArgumentTypeError(
+            f"categorías desconocidas: {', '.join(malas) or '(ninguna)'}; hay: {', '.join(sorted(disponibles))}")
+    return pedidas
+
+
 def argumentos(argv):
     parser = argparse.ArgumentParser(description="Convierte a Parquet los CSV descargados de Catalunya")
     parser.add_argument("--entrada", default=None,
                         help=f"carpeta de los CSV (por defecto {INPUT_DIR}, relativa al directorio actual)")
     parser.add_argument("--salida", default=None,
                         help=f"carpeta de los Parquet (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    parser.add_argument("--categorias", default=None,
+                        type=lambda s: _lista_categorias(s, CATEGORIAS_DISPONIBLES),
+                        help=f"solo estas categorías, separadas por comas ({', '.join(CATEGORIAS_DISPONIBLES)}); "
+                             "Barcelona va con 'contratacion'. Por defecto, todas")
+    parser.add_argument("--semilla", default=None,
+                        help="carpeta de Catalunya del release v2026.02 (p.ej. .../extraido/catalunya): añade las filas "
+                             "del publicado que ya no están en la descarga (ver SEMILLAS)")
     return parser.parse_args(list(argv))
 
 
 def main(argv=()):
-    global INPUT_DIR, OUTPUT_DIR
+    global INPUT_DIR, OUTPUT_DIR, CATEGORIAS
     args = argumentos(argv)
+    CATEGORIAS = args.categorias
+    if args.semilla is not None and not Path(args.semilla).is_dir():
+        log(f"❌ No existe la carpeta de la semilla: {args.semilla}")
+        return 1
     if args.entrada is not None:
         INPUT_DIR = str(args.entrada)
     if args.salida is not None:
@@ -540,7 +641,7 @@ def main(argv=()):
     
     if not input_dir.exists():
         log(f"❌ No encontrado: {input_dir}")
-        return
+        return 1
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -559,6 +660,8 @@ def main(argv=()):
     log("="*70)
     
     for csv_rel, (parquet_rel, descripcion) in ARCHIVOS.items():
+        if CATEGORIAS is not None and categoria_csv(csv_rel) not in CATEGORIAS:
+            continue
         csv_path = input_dir / csv_rel
         
         if not csv_path.exists():
@@ -568,7 +671,10 @@ def main(argv=()):
         parquet_path = output_dir / parquet_rel
         
         try:
-            n_records, size_mb = convert_to_parquet(csv_path, parquet_path, descripcion)
+            semilla = None
+            if args.semilla is not None and parquet_rel in SEMILLAS:
+                semilla = (Path(args.semilla) / parquet_rel, SEMILLAS[parquet_rel])
+            n_records, size_mb = convert_to_parquet(csv_path, parquet_path, descripcion, semilla=semilla)
             stats['convertidos'] += 1
             stats['registros_total'] += n_records
             stats['tamaño_total_mb'] += size_mb
@@ -582,33 +688,36 @@ def main(argv=()):
     log("\n" + "="*70)
     log("📦 CONSOLIDANDO BARCELONA (múltiples archivos → 1 parquet)")
     log("="*70)
+    bcn = CATEGORIAS is None or 'contratacion' in CATEGORIAS
+    if not bcn:
+        log("   (fuera de las categorías pedidas)")
     
-    n, s = consolidate_barcelona_menores(input_dir, output_dir)
+    n, s = consolidate_barcelona_menores(input_dir, output_dir) if bcn else (0, 0)
     stats['registros_total'] += n
     stats['tamaño_total_mb'] += s
     if n > 0: stats['convertidos'] += 1
     
-    n, s = consolidate_barcelona_contratistas(input_dir, output_dir)
+    n, s = consolidate_barcelona_contratistas(input_dir, output_dir) if bcn else (0, 0)
     stats['registros_total'] += n
     stats['tamaño_total_mb'] += s
     if n > 0: stats['convertidos'] += 1
     
-    n, s = consolidate_barcelona_perfil(input_dir, output_dir)
+    n, s = consolidate_barcelona_perfil(input_dir, output_dir) if bcn else (0, 0)
     stats['registros_total'] += n
     stats['tamaño_total_mb'] += s
     if n > 0: stats['convertidos'] += 1
     
-    n, s = consolidate_barcelona_modificaciones(input_dir, output_dir)
+    n, s = consolidate_barcelona_modificaciones(input_dir, output_dir) if bcn else (0, 0)
     stats['registros_total'] += n
     stats['tamaño_total_mb'] += s
     if n > 0: stats['convertidos'] += 1
     
-    n, s = consolidate_barcelona_resumen(input_dir, output_dir)
+    n, s = consolidate_barcelona_resumen(input_dir, output_dir) if bcn else (0, 0)
     stats['registros_total'] += n
     stats['tamaño_total_mb'] += s
     if n > 0: stats['convertidos'] += 1
     
-    n, s = consolidate_barcelona_autorizacion(input_dir, output_dir)
+    n, s = consolidate_barcelona_autorizacion(input_dir, output_dir) if bcn else (0, 0)
     stats['registros_total'] += n
     stats['tamaño_total_mb'] += s
     if n > 0: stats['convertidos'] += 1
@@ -722,7 +831,8 @@ df_2024 = df[df['año'] == 2024]
 """)
     
     log(f"\n📄 README: {output_dir}/README.md")
+    return 1 if stats['errores'] else 0
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))

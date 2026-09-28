@@ -349,6 +349,37 @@ def test_main_end_to_end_y_codigo_de_salida(ckan, monkeypatch, tmp_path, capsys)
     assert ckan.descargas().count("http://gva/c14.csv") == 1
 
 
+def test_main_solo_las_categorias_pedidas(ckan, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(V, "OUTPUT_DIR", V.OUTPUT_DIR)
+    monkeypatch.setattr(V, "DATASETS", {"contratacion": ["eco-gvo-contratos-2014"], "lobbies": ["sec-regia-grupos"]})
+    ckan.paquetes["eco-gvo-contratos-2014"] = [_recurso("Contratos 2014", "http://gva/c14.csv")]
+    ckan.paquetes["sec-regia-grupos"] = [_recurso("Grupos de interés", "http://gva/g.csv")]
+    ckan.cuerpos.update({"http://gva/c14.csv": b"a;b\n1;2\n", "http://gva/g.csv": b"a;b\n1;2\n"})
+
+    assert V.main(["--categorias", "contratacion"]) == 0
+    base = tmp_path / "valencia_datos"
+    assert sorted(p.name for p in base.iterdir() if p.is_dir()) == ["contratacion"]
+    assert "http://gva/c14.csv" in ckan.descargas() and "http://gva/g.csv" not in ckan.descargas()
+    with pytest.raises(SystemExit) as salida:
+        V.argumentos(["--categorias", "turismo"])   # no está en el catálogo (aquí, solo dos)
+    assert salida.value.code == 2
+
+
+def test_parquet_solo_las_categorias_pedidas(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(P, "INPUT_DIR", P.INPUT_DIR)
+    monkeypatch.setattr(P, "OUTPUT_DIR", P.OUTPUT_DIR)
+    entrada, salida = tmp_path / "datos", tmp_path / "pq"
+    for categoria in ("contratacion", "turismo"):
+        (entrada / categoria).mkdir(parents=True)
+        (entrada / categoria / f"{categoria}.csv").write_text("a;b\n1;2\n", encoding="utf-8")
+
+    assert P.main(["--entrada", str(entrada), "--salida", str(salida), "--categorias", "contratacion,paro"]) == 0
+    assert sorted(p.relative_to(salida).as_posix() for p in salida.rglob("*.parquet")) == \
+        ["contratacion/contratacion.parquet"]
+    assert "Categorías sin carpeta en la entrada: paro" in capsys.readouterr().out
+
+
 def test_cli_catalogo_completo(ckan, monkeypatch, tmp_path):
     """python scripts/ccaa_valencia.py con todo el catálogo contra el CKAN falso."""
     for lista in V.DATASETS.values():

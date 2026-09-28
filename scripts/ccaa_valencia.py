@@ -481,10 +481,22 @@ def process_dataset(dataset_id, category_dir, usados=None, fallidos=None):
     return downloaded, total_size
 
 
+def _lista_categorias(texto, disponibles):
+    """'contratacion,convenios' → {'contratacion', 'convenios'}; error si alguna no existe."""
+    pedidas = {c.strip() for c in texto.split(',') if c.strip()}
+    malas = sorted(pedidas - set(disponibles))
+    if malas or not pedidas:
+        raise argparse.ArgumentTypeError(
+            f"categorías desconocidas: {', '.join(malas) or '(ninguna)'}; hay: {', '.join(sorted(disponibles))}")
+    return pedidas
+
+
 def argumentos(argv):
     parser = argparse.ArgumentParser(description="Descarga los datos abiertos de contratación de la Comunitat Valenciana")
     parser.add_argument("--salida", type=Path, default=None,
                         help=f"carpeta de descarga (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    parser.add_argument("--categorias", default=None, type=lambda s: _lista_categorias(s, DATASETS),
+                        help=f"solo estas categorías, separadas por comas ({', '.join(DATASETS)}); por defecto, todas")
     return parser.parse_args(list(argv))
 
 
@@ -493,6 +505,8 @@ def main(argv=()):
     args = argumentos(argv)
     if args.salida is not None:
         OUTPUT_DIR = Path(args.salida)
+    # --categorias: solo esas categorías del catálogo (por defecto, todas)
+    datasets = {c: ids for c, ids in DATASETS.items() if args.categorias is None or c in args.categorias}
     start_time = datetime.now()
     
     print("=" * 70)
@@ -500,8 +514,8 @@ def main(argv=()):
     print("=" * 70)
     print(f"Portal: {BASE_URL}")
     print(f"Destino: {OUTPUT_DIR.absolute()}")
-    print(f"Categorías: {len(DATASETS)}")
-    print(f"Datasets totales: {sum(len(v) for v in DATASETS.values())}")
+    print(f"Categorías: {len(datasets)} ({', '.join(datasets)})")
+    print(f"Datasets totales: {sum(len(v) for v in datasets.values())}")
     print(f"Inicio: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -513,7 +527,7 @@ def main(argv=()):
     fallidos = []
 
     print("\n🔎 Buscando años nuevos de las series anuales...")
-    catalogo = ampliar_series_anuales(DATASETS, fallidos=fallidos)
+    catalogo = ampliar_series_anuales(datasets, fallidos=fallidos)
     descubiertos = [d for cat, lista in catalogo.items() for d in lista if d not in DATASETS.get(cat, [])]
 
     for category, datasets in catalogo.items():

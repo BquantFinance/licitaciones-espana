@@ -15,6 +15,7 @@ Incluye: Contratación, Subvenciones, Convenios, Presupuestos, Sector Público,
 
 import argparse
 import os
+import re
 import time
 import json
 import requests
@@ -127,6 +128,23 @@ BCN_DATASETS = {
     # 'corredors-bici-bcn' ...): package_show daba 404 y no se descargaba nada.
     'contractes-menors-a-generica': 'contratos_menores_autorizacion',
 }
+
+# Categorías (--categorias): la carpeta de cada dataset de Socrata sin su número
+# ('01_contratacion/...' → 'contratacion'). Open Data Barcelona es todo contratación.
+CATEGORIAS = None   # None: todas
+
+
+def categoria_socrata(subpath):
+    return re.sub(r'^\d+_', '', subpath.split('/')[0])
+
+
+CATEGORIAS_DISPONIBLES = sorted({categoria_socrata(s) for s, _ in SOCRATA_DATASETS.values()})
+
+
+def socrata_seleccionados():
+    """Datasets de Socrata de las categorías pedidas (--categorias; por defecto, todos)."""
+    return {k: v for k, v in SOCRATA_DATASETS.items()
+            if CATEGORIAS is None or categoria_socrata(v[0]) in CATEGORIAS}
 
 # =============================================================================
 # LOGGING Y ESTADÍSTICAS
@@ -246,20 +264,27 @@ def download_with_progress(url, path, desc="", timeout=600, modificado=None):
         return False
 
 
+# Filas por trozo al contar registros: el CSV entero no cabe en memoria (el de concesiones RAISC
+# pesa 19 GB y la descarga moría al contarlo)
+FILAS_POR_TROZO_CONTEO = 500_000
+
+
 def count_csv_records(path):
-    """Cuenta registros en CSV"""
-    try:
-        for encoding in ['utf-8', 'latin-1', 'cp1252']:
-            for sep in [',', ';', '\t']:
-                try:
-                    df = pd.read_csv(path, encoding=encoding, sep=sep, on_bad_lines='skip', low_memory=False, nrows=None)
-                    if len(df.columns) > 1:
-                        return len(df)
-                except Exception:
-                    continue
-        return 0
-    except Exception:
-        return 0
+    """Cuenta registros en CSV, por trozos y como texto (solo se usa para informar)"""
+    for encoding in ['utf-8', 'latin-1', 'cp1252']:
+        for sep in [',', ';', '\t']:
+            try:
+                total = 0
+                for trozo in pd.read_csv(path, encoding=encoding, sep=sep, on_bad_lines='skip', dtype=str,
+                                         chunksize=FILAS_POR_TROZO_CONTEO):
+                    if len(trozo.columns) <= 1:
+                        break
+                    total += len(trozo)
+                else:
+                    return total
+            except Exception:
+                continue
+    return 0
 
 
 # =============================================================================
@@ -270,14 +295,15 @@ def download_socrata_datasets(output_dir):
     """Descarga todos los datasets de Socrata"""
     log("\n" + "="*70)
     log("📥 PORTAL TRANSPARENCIA CATALUNYA (Socrata)")
-    log(f"   {len(SOCRATA_DATASETS)} datasets a descargar")
+    seleccion = socrata_seleccionados()
+    log(f"   {len(seleccion)} datasets a descargar")
     log("="*70)
     
     socrata_dir = output_dir / "01_transparencia_catalunya"
     socrata_dir.mkdir(exist_ok=True)
     
-    for i, (dataset_id, (subpath, descripcion)) in enumerate(SOCRATA_DATASETS.items(), 1):
-        log(f"\n[{i}/{len(SOCRATA_DATASETS)}] 📊 {descripcion}")
+    for i, (dataset_id, (subpath, descripcion)) in enumerate(seleccion.items(), 1):
+        log(f"\n[{i}/{len(seleccion)}] 📊 {descripcion}")
         
         # Crear subdirectorio
         full_path = socrata_dir / subpath
@@ -307,7 +333,7 @@ def download_socrata_metadata(output_dir):
     meta_dir = output_dir / "01_transparencia_catalunya" / "_metadata"
     meta_dir.mkdir(parents=True, exist_ok=True)
     
-    for dataset_id, (subpath, _) in SOCRATA_DATASETS.items():
+    for dataset_id, (subpath, _) in socrata_seleccionados().items():
         filename = subpath.split('/')[-1]
         url = f"{SOCRATA_BASE}/api/views/{dataset_id}.json"
         path = meta_dir / f"{filename}_metadata.json"
@@ -437,18 +463,33 @@ def download_gencat_adicional(output_dir):
 # MAIN
 # =============================================================================
 
+def _lista_categorias(texto, disponibles):
+    """'contratacion,convenios' → {'contratacion', 'convenios'}; error si alguna no existe."""
+    pedidas = {c.strip() for c in texto.split(',') if c.strip()}
+    malas = sorted(pedidas - set(disponibles))
+    if malas or not pedidas:
+        raise argparse.ArgumentTypeError(
+            f"categorías desconocidas: {', '.join(malas) or '(ninguna)'}; hay: {', '.join(sorted(disponibles))}")
+    return pedidas
+
+
 def argumentos(argv):
     parser = argparse.ArgumentParser(description="Descarga los datos públicos de contratación de Catalunya")
     parser.add_argument("--salida", default=None,
                         help=f"carpeta de descarga (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    parser.add_argument("--categorias", default=None,
+                        type=lambda s: _lista_categorias(s, CATEGORIAS_DISPONIBLES),
+                        help=f"solo estas categorías, separadas por comas ({', '.join(CATEGORIAS_DISPONIBLES)}); "
+                             "Open Data Barcelona va con 'contratacion'. Por defecto, todas")
     return parser.parse_args(list(argv))
 
 
 def main(argv=()):
-    global OUTPUT_DIR
+    global OUTPUT_DIR, CATEGORIAS
     args = argumentos(argv)
     if args.salida is not None:
         OUTPUT_DIR = str(args.salida)
+    CATEGORIAS = args.categorias
     start = time.time()
     
     print("\n" + "="*70)
@@ -476,9 +517,12 @@ Categorías incluidas:
     log(f"📁 {output_dir.absolute()}")
     
     # === DESCARGAS ===
+    if CATEGORIAS is not None:
+        log(f"🗂️ Solo las categorías: {', '.join(sorted(CATEGORIAS))}")
     download_socrata_datasets(output_dir)
     download_socrata_metadata(output_dir)
-    download_barcelona_datasets(output_dir)
+    if CATEGORIAS is None or 'contratacion' in CATEGORIAS:
+        download_barcelona_datasets(output_dir)
     download_gencat_adicional(output_dir)
     
     # === RESUMEN ===
