@@ -131,7 +131,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | **En curso** (sesgo del superviviente) | — | — |
 | `galicia/scraper_galicia.py` | **En curso** (sesgo del superviviente) | — | — |
 | `scripts/ccaa_cataluna_contratosmenores.py` | **En curso** (sesgo del superviviente) | — | — |
-| `borme/scripts/*.py` | Cerrado | ver el commit «BORME: sin sesgo del superviviente» | Sí (boe.es) |
+| `borme/scripts/*.py` | Cerrado | `38e72aa` | Sí (boe.es) |
 
 Avisos de la sesión del VPS (2026-09-28):
 - **Galicia:** segfault en pandas 2.2.3 dentro de `to_numeric` (`csv_to_parquet`). Aquí no se reproduce (pandas 2.2.3, numpy 2.4.6, pyarrow 25.0.1). Ese código es anterior a esta sesión. Faltan las versiones del VPS y el valor que lo dispara.
