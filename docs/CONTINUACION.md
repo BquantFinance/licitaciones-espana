@@ -223,9 +223,18 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 
 **Estado a 2026-09-28** (comprobado con `grep` de `guardar_version`, `acumular` y `_en_ultima_descarga`):
 - **Cubiertos:** PLACSP (`--semilla` y `_borrados`), Catalunya RPC y Generalitat, Valencia REGCON, Ayuntamiento de Madrid, Aragón, Castilla y León, Murcia, la tabla de la API de Euskadi, y los scrapers nuevos (Extremadura, La Rioja, menores valencianos; Castilla-La Mancha y municipios, en curso).
-- **Sin cubrir**, por orden de impacto en los menores:
-  1. Comunidad de Madrid (~385 mil/año).
-  2. Galicia (~220 mil/año).
+- **Todas las fuentes están cubiertas desde el 2026-09-28.** Pendientes de las dos últimas:
+  - **Comunidad de Madrid:**
+    - **El histórico crudo crece mucho.** Los menores cambian a diario y cada ejecución guarda casi 1 GB en `_historico/`. Opciones: comprimir, refrescar con menos frecuencia o consolidar de forma incremental, como en Extremadura.
+    - **Entidades que desaparecen del desplegable:** hoy sus menores quedan con `False`. La alternativa es dejarlos fuera del ámbito. Decisión del propietario.
+    - **Primera ejecución:** usar como primera versión de `csv_originales/` los CSV del ZIP del release, que conservan las filas de continuación.
+    - El modo `prueba` usa la entidad "38", que ya no es el Gregorio Marañón.
+  - **Galicia:**
+    - **Organismos que el portal quita enteros:** sus filas de la semilla no se añaden nunca, porque quedan fuera del ámbito. Recomendado: añadir las de los organismos que ya no aparecen en el descubrimiento, porque son la única copia. Decisión del propietario.
+    - El importe de la semilla va a `importe_semilla`, sin corregir el ×10/×100.
+    - `csv_to_parquet` ya no pasa a `to_numeric` textos que no son números normales. Algunos hashes parecen notación científica, y es la causa probable del segfault del VPS en pandas 2.2 (sin confirmar).
+    - `csv_to_parquet` convierte en nulo el texto literal `NA`/`null` (código anterior; el publicado no tiene ninguno).
+  - **`_ultima_descarga`** es la fecha de la última versión que trae la fila, no la de la última comprobación. Así una re-ejecución idéntica no reescribe la salida. Es igual en TED, Comunidad de Madrid y Galicia.
 - Los menores de la PSCP quedaron cubiertos el 2026-09-28. Pendientes que dejó su revisión:
   - **Cobertura:** `totalElements` nunca pasa de 10.000, así que los órganos grandes (ICS, UPF…) desbordan la ventana. Quedan fuera del ámbito (ni se retiran ni se siembran) hasta que haya **segmentación por fecha**. `recuperar_hueco` nunca llega a ejecutarse con la API real.
   - **Semilla:** con la clave por publicación no entran las versiones de febrero de 2026 de publicaciones que han cambiado desde entonces. La alternativa es tomar el publicado como primera descarga, comparando por contenido. Decisión del propietario.
@@ -250,10 +259,10 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | ~~`ted/ted_module.py`~~ | **Hecho** (2026-09-28): cachés y consolidado con `guardar_version`, `acumular` por año con la clave del aviso normalizada (`número-año`), el año en curso guardado aparte, `--semilla` y `ultima_version_por_aviso` en el cruce. Verificado en vivo. Pendiente: ver la lista de TED más abajo |
 | ~~`borme/scripts/borme_scraper.py`, `borme_batch_parser.py`~~ | **Hecho** (2026-09-28): PDF con `guardar_version` (`--comprobar`), parse incremental con `acumular` que conserva lo parseado aunque falten PDF, `--reprocesar` y `--semilla` por (`pdf_filename`, `num_entrada`). Verificado en vivo contra boe.es |
 | ~~`scripts/ccaa_valencia.py`, `ccaa_valencia_parquet.py`~~ | **Hecho** (`31db07f`). Sin semilla: no hay clave estable y el release es incompatible |
-| `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | `VIGENCIA_HORAS` sobrescribe los CSV. Las versiones de un mismo CSV no son "consultas solapadas". Respetar las filas de continuación |
+| ~~`comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py`~~ | **Hecho** (2026-09-28): CSV con `guardar_version` y `_comprobaciones.json`, consolidación con `acumular` por bloque (registro + continuaciones), `--semilla` por `Referencia` + `Entidad Adjudicadora` y archivado de las consultas de entidades renumeradas. Verificado con los 773 CSV reales, sin pérdida de filas ni celdas |
 | ~~`comunidad_madrid/ccaa_madrid_ayuntamiento.py`~~ | **Hecho** (§3.1.4, `73d6e80`): `guardar_version` y `acumular` |
 | ~~`scripts/ccaa_asturias.py`~~ | **Hecho** (2026-09-28): CSV anuales en `raw/` con `guardar_version`, Parquet desde todas las versiones con `acumular` (comparando el texto publicado) y `--semilla` por (`year`, `Nº INSCRIPCION`). El portal no responde desde la nube: falta verificarlo en vivo (VPS) |
-| `galicia/scraper_galicia.py` | Caché SQLite y merge final |
+| ~~`galicia/scraper_galicia.py`~~ | **Hecho** (2026-09-28): base y final con `guardar_version`, caché SQLite que nunca se borra (`detail_cache_historico`), `acumular` con ámbito por organismo y ventana leídos completos, y `--semilla` por (`_tipo`, `id`). Verificado en vivo (organismos 190, 305, 47 y 441) y a escala con 1,69 M filas |
 | ~~`scripts/ccaa_andalucia.py`~~ | **Hecho** (2026-09-28): `raw/` con `guardar_version`, `acumular` con ámbito (no se retira nada de consultas con el tope o incompletas), `--semilla` por `id_expediente`, reanudación y `procesar` sin red. Probado sin red con las 808.441 filas del publicado. El portal corta desde la nube: falta la prueba en vivo y la partición por mes del SAS |
 | ~~`scripts/ccaa_cataluna_contratosmenores.py`~~ | **Hecho** (2026-09-28): fases, crudo y salida con `guardar_version`; `acumular` con ámbito por grupo (normales o agregadas) leído entero; `--semilla` por (`id`, `expedientId`), quitando solo las 2,16 M copias idénticas del publicado. Verificado en vivo (fases 500 y 1100). Pendiente: ver la lista de la PSCP más abajo |
 | `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Hecho**: capa cruda (`78d4f39`, `guardar_version`) y Parquet con todas las versiones (`1e28560`, `acumular`) |

@@ -708,8 +708,17 @@ Contratación pública completa de la [Comunidad de Madrid](https://contratos-pu
 ```
 comunidad_madrid/
 ├── contratacion_comunidad_madrid_completo.parquet   # Dataset unificado (90 MB, snappy)
-└── csv_originales/                                  # 765 CSVs individuales
+└── csv_originales/                                  # 765 CSVs individuales; versiones anteriores en _historico/
 ```
+
+**Sin sesgo del superviviente.**
+- Cada CSV descargado pasa por `guardar_version`. `csv_originales/_comprobaciones.json` anota la última comprobación de cada consulta, así que una ejecución cortada no vuelve a pedir lo que no ha cambiado.
+- **Renumeración:** el número de entidad del desplegable cambia entre ejecuciones (Sanidad era la `ent028` en febrero y es la `ent060` en septiembre). Al acabar una descarga completa, los CSV de consultas que ya no existen pasan a `_historico/`.
+- **Consolidación:**
+  - Se hace con todas las versiones de cada CSV mediante `acumular`, comparando por bloque: el registro más sus filas de continuación.
+  - Lo retirado queda con `_en_ultima_descarga=False`.
+  - Los campos de más van a `_columna_extra_N` en lugar de descartarse.
+- **Semilla:** `--semilla <parquet publicado>` añade, por `Referencia` + `Entidad Adjudicadora`, lo que el portal ya no sirve, dentro del ámbito de la descarga. Para la primera ejecución conviene usar como primera versión de `csv_originales/` los CSV del ZIP del release: conservan las filas de continuación que perdió el Parquet publicado.
 
 ### Campos principales (18 columnas)
 
@@ -825,9 +834,10 @@ galicia/
 ├── contratos_galicia_base.csv            # Dataset base de tabla (12 columnas)
 ├── contratos_galicia_base.parquet        # Base en parquet
 ├── contratos_galicia_detail.sqlite3      # Caché incremental del detalle HTML
-├── contratos_galicia.csv                 # Dataset final mergeado (62 columnas)
+├── contratos_galicia.csv                 # Dataset final mergeado (62 columnas + 3 de control)
 ├── contratos_galicia.parquet             # Dataset final en parquet
-├── contratos_galicia_base_progress.json  # Checkpoint de organismos completados
+├── _historico/                           # versiones anteriores de base y final
+├── contratos_galicia_base_progress.json  # Checkpoint y ámbito leído de cada organismo
 └── scraper_galicia.py                    # Pipeline base + detail + merge
 ```
 
@@ -866,6 +876,15 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
 **Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01. El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
 
 **Detalle HTML real**: El portal no expone un endpoint JSON útil para la ficha; los campos adicionales salen de `POST /licitacion`. El scraper hace un segundo paso de enriquecimiento HTML para `LIC` y `CM`.
+
+**Sin sesgo del superviviente.**
+- Una descarga base nueva no borra la anterior: pasa a `_historico/`.
+- La caché SQLite de fichas nunca se borra. Una ficha ya descargada no se sustituye por un error ni por una vacía, y si el portal la cambia la anterior queda en `detail_cache_historico`.
+- La tabla final se acumula con `acumular`: lo retirado queda con `_en_ultima_descarga=False`, pero solo en lo que se ha vuelto a leer completo.
+  - LIC: si llegan exactamente `recordsTotal` ids.
+  - Ventanas de CM: si traen exactamente `recordsFiltered` ids.
+- `--semilla` añade por (`_tipo`, `id`) lo que ya no se sirve. El importe publicado (inflado ×10/×100) va a `importe_semilla` sin corregir.
+- `detail` sin `--resume` ya no rehace todo: reintenta las fichas pendientes. Para rehacerlo todo, `--force-detail`.
 
 **Pipeline incremental y reanudable**:
 
