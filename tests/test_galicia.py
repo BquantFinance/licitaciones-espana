@@ -1847,6 +1847,28 @@ class GaliciaHistoricoTests(unittest.TestCase):
         no_id = check([ok[0], {"id": None, "publicado": "02-01-2026"}], 2)
         self.assertEqual((no_id["sin_id"], no_id["completa"]), (1, False))
 
+    def test_cm_window_with_a_row_without_id_is_incomplete(self):
+        rows = fake_cm_records(2)
+        rows.append(dict(rows[0], id=None))  # en la ventana de 500000
+        portal = FakePortal(cm={48: rows})
+        informe = {}
+        with patch.object(requests.Session, "request", autospec=True, side_effect=portal), patch.object(
+            scraper_galicia, "_LOG_PATH", None
+        ), patch.object(scraper_galicia, "DELAY", 0), patch("sys.stdout", new_callable=io.StringIO):
+            session = scraper_galicia.Session()
+            got = scraper_galicia.paginate_cm_full(session, 48, informe=informe)
+
+        self.assertEqual(sorted(record["id"] for record in got), [500000, 500001])
+        incomplete = informe["CM"]["incompletas"]
+        self.assertEqual(len(incomplete), 1)
+        self.assertEqual((incomplete[0]["filtrados"], incomplete[0]["filas"], incomplete[0]["unicos"]), (2, 2, 1))
+        self.assertEqual(incomplete[0]["sin_id"], 1)
+        covered = [
+            window for window in informe["CM"]["ventanas"]
+            if window[0] <= "2018-01-01" <= window[1]
+        ]
+        self.assertEqual(covered, [])
+
     def test_save_outputs_keeps_the_previous_version(self):
         record = {"id": 1, "_tipo": "LIC", "_organismo_id": 48, "objeto": "Contrato", "importe": 100.0}
         with tempfile.TemporaryDirectory() as tmpdir, patch("sys.stdout", new_callable=io.StringIO):
