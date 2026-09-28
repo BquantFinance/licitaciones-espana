@@ -294,7 +294,8 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   - **`_ultima_descarga`** es la fecha de la última versión que trae la fila, no la de la última comprobación. Así una re-ejecución idéntica no reescribe la salida. Es igual en TED, Comunidad de Madrid y Galicia.
 - **Catalunya (Socrata): semilla del release** (`95815b3`, 2026-09-28). `ccaa_cataluna_parquet.py` no la admitía.
   - Lo que la ventana móvil sacó antes de la primera descarga del VPS solo estaba en el release.
-  - Medido: RPC +751.187 filas (2021, sobre todo), PSCP +187.577, fase de ejecución +9.047 y contratación programada +5.095.
+  - Medido: RPC +751.187 filas (2021, sobre todo), PSCP +85.397, fase de ejecución +9.047 y contratación programada +5.095.
+  - La clave de la PSCP es el uuid del procedimiento en la URL. Con la URL entera eran +187.577: cambia con cada fase y entre `/ca/` y `/es/`, y se colaban 102.180 fases antiguas de procedimientos que siguen publicados.
   - Pendiente: **Barcelona** (`consolidar_bcn`) no acumula versiones ni siembra. El crudo sí guarda versiones.
     - Medirlo cuando el VPS descargue Barcelona por primera vez: la primera descarga murió por memoria en RAISC antes de llegar.
 - **Solo contratación en el VPS** (`--categorias contratacion`, `95815b3`), por decisión del propietario.

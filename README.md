@@ -559,7 +559,7 @@ Dataset nuevo con **3.024.000 filas** de contratos menores del sector público c
 **Semilla del release (`--semilla`).** Lo que salió de la ventana antes de la primera descarga solo está en el release v2026.02. `ccaa_cataluna_parquet.py --semilla <carpeta catalunya del release>` añade las filas del publicado cuya clave ya no está en la descarga, con `_origen='release v2026.02'` y `_en_ultima_descarga=False` (claves en `SEMILLAS`).
 - Medido el 28-sep-2026 frente a la primera descarga del VPS:
   - RPC: 751.187 filas, sobre todo menores y liquidaciones de 2021.
-  - PSCP: 187.577, de publicaciones que ya no están.
+  - PSCP: 85.397, de procedimientos que ya no se publican. La clave es el uuid del procedimiento en la URL: la URL entera cambia con cada fase y entre `/ca/` y `/es/`.
   - Fase de ejecución: 9.047.
   - Contratación programada: 5.095.
 - Adjudicaciones de la Generalitat, COVID y el Tribunal coinciden con el publicado.
