@@ -861,6 +861,13 @@ class AcumularPorTrozosTests(unittest.TestCase):
         self.assertEqual(vigencia[280], [True])
         self.assertEqual(una["id_expediente"].tolist()[-400:], list(range(1000, 1400)))
 
+    def test_un_trozo_sin_filas_nuevas_no_impide_retirar(self):
+        anterior = ccaa_andalucia.acumular(None, pd.DataFrame({"id_expediente": list(range(1, 21))}), "d1")
+        filas = pd.DataFrame({"id_expediente": [1, 2, 3]})
+        with patch.object(ccaa_andalucia, "FILAS_POR_TROZO", 2):
+            acumulada = ccaa_andalucia._acumular_version(anterior, filas, "d2", {"alcance": {}, "incompletos": []})
+        self.assertEqual(acumulada["_en_ultima_descarga"].tolist(), [True] * 3 + [False] * 17)
+
 
 VENTANA = 100  # MAX_FROM=0: una sola pagina de 100 por consulta y ordenacion
 

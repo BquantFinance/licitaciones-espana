@@ -2712,28 +2712,37 @@ def apply_seed(acumulado, path, ambito, origen_semilla=None):
     y _en_ultima_descarga=False (seleccionar_semilla, como sembrar). Nunca
     modifica ni duplica una fila de la tabla. Devuelve (tabla, informe, fichas
     de la semilla por posición en la tabla, si trae columnas de la ficha)."""
+    import pyarrow.parquet as pq
+
     path = Path(path)
-    seed = pd.read_parquet(path)
-    ours = "_en_ultima_descarga" in seed.columns
+    # Tabla Arrow (compacta): solo se pasan a texto las columnas de la clave y del
+    # ámbito; el contenido y las filas completas, solo de las filas que hacen falta.
+    table = pq.read_table(path)
+    ours = "_en_ultima_descarga" in table.column_names
     if ours and not origen_semilla:
         raise ScraperError(f"{path} es una salida de este script (tiene _en_ultima_descarga): "
                            "indica su origen con --origen-semilla")
-    missing = [column for column in SEED_KEY + ["_organismo_id", "publicado"] if column not in seed.columns]
+    missing = [column for column in SEED_KEY + ["_organismo_id", "publicado"] if column not in table.column_names]
     if missing:
         raise ScraperError(f"La semilla {path} no tiene las columnas {missing}")
     origen = origen_semilla or ORIGEN_SEMILLA
-    seed = seed.reset_index(drop=True)
-    columns = [c for c in dict.fromkeys(SEED_KEY + ["_organismo_id", "publicado"] + list(SEED_CONTENT_COLUMNS))
-               if c in seed.columns]
-    view = pd.DataFrame({column: _csv_text(seed[column]) for column in columns})
+
+    def seed_text(columns, rows=None):
+        part = table.select(columns)
+        if rows is not None:
+            part = part.take(np.asarray(rows, dtype="int64"))
+        typed = part.to_pandas()
+        return pd.DataFrame({column: _csv_text(typed[column]) for column in columns})
+
+    view = seed_text(SEED_KEY + ["_organismo_id", "publicado"])
     seed_keys = _key_frame(view)
     inside = rows_in_scope(view, ambito)
-    contenido = [c for c in SEED_CONTENT_COLUMNS if c in view.columns and c in acumulado.columns]
+    contenido = [c for c in SEED_CONTENT_COLUMNS if c in table.column_names and c in acumulado.columns]
     motivo = seleccionar_semilla(
         _key_frame(acumulado),
         seed_keys,
         lambda filas: acumulado.iloc[filas][contenido].reset_index(drop=True),
-        lambda filas: view.iloc[filas][contenido].reset_index(drop=True),
+        lambda filas: seed_text(contenido, filas),
         inside,
     )
     informe = informe_semilla(motivo, origen, seed_keys)
@@ -2748,7 +2757,8 @@ def apply_seed(acumulado, path, ambito, origen_semilla=None):
     imprimir_informe_semilla(informe)
 
     rows = np.flatnonzero(motivo == ANADIDA)
-    added = seed_as_text(seed.iloc[rows], published=not ours)
+    added = seed_as_text(table.take(rows).to_pandas(), published=not ours)
+    table = view = None  # antes de unir las filas a la tabla (memoria)
     own = added["_origen"] if "_origen" in added.columns else pd.Series("", index=added.index, dtype=object)
     added["_origen"] = own.where(own != "", origen)
     added["_en_ultima_descarga"] = False
@@ -2795,54 +2805,67 @@ def _choose_detail(cached, previous):
     return {}
 
 
-def _csv_value(value):
-    if isinstance(value, str):
-        return value
-    return "" if _is_blank(value) else value
-
-
 def write_final_csv(acumulado, tmp_path, conn, fieldnames, previous_csv, n_previous, seed_details, chunksize):
     """Escribe la tabla final por trozos: columnas del listado y de control de
     `acumulado` y las de la ficha (_choose_detail) de la caché o, a la vez que se
     leen por trozos del CSV final anterior (sus n_previous filas son las
     primeras de `acumulado`, en el mismo orden), de la tabla anterior."""
+    detail_set = set(DETAIL_EXPORT_FIELDS)
+    # fieldnames = columnas del CSV base, las de la ficha y después el resto
+    n_head = fieldnames.index(DETAIL_EXPORT_FIELDS[0])
+    listing_fields = [column for column in fieldnames if column not in detail_set]
+    key_fields = ["_tipo", "id", "_organismo_id"]
     previous_chunks = None
     if n_previous:
         previous_chunks = read_text_csv(
             previous_csv,
-            usecols=lambda column: column in DETAIL_EXPORT_FIELDS or column in ("_tipo", "id", "_organismo_id"),
+            usecols=lambda column: column in detail_set or column in key_fields,
             chunksize=chunksize,
         )
     total_rows = 0
-    listing_fields = [column for column in fieldnames if column not in set(DETAIL_EXPORT_FIELDS)]
     with tmp_path.open("w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=";")
-        writer.writeheader()
+        writer = csv.writer(fh, delimiter=";")
+        writer.writerow(fieldnames)
         for start in range(0, len(acumulado), chunksize):
-            records = acumulado.iloc[start : start + chunksize].to_dict("records")
-            keys = [_detail_key(record) for record in records]
+            chunk = acumulado.iloc[start : start + chunksize].reindex(columns=listing_fields)
+            values = chunk.to_numpy(dtype=object)
+            values[pd.isna(values)] = ""
+            keys = [
+                _detail_key(dict(zip(key_fields, row)))
+                for row in chunk[key_fields].to_numpy(dtype=object)
+            ]
             detail_map = load_detail_map(
                 conn,
                 [{"_tipo": key[0], "id": key[1], "_organismo_id": key[2]} for key in keys if key],
             )
-            previous_rows = []
+            previous_status = previous_keys = previous_values = previous_columns = None
+            n_previous_rows = 0
             if previous_chunks is not None and start < n_previous:
-                previous_rows = next(previous_chunks).to_dict("records")
+                previous_chunk = next(previous_chunks)
+                n_previous_rows = len(previous_chunk)
+                previous_keys = previous_chunk.reindex(columns=key_fields).to_numpy(dtype=object)
+                previous_columns = [column for column in DETAIL_EXPORT_FIELDS if column in previous_chunk.columns]
+                previous_values = previous_chunk[previous_columns].to_numpy(dtype=object)
+                previous_status = (
+                    previous_chunk["detail_status"].to_numpy(dtype=object)
+                    if "detail_status" in previous_chunk.columns else np.full(n_previous_rows, "", dtype=object)
+                )
             rows = []
-            for i, (record, key) in enumerate(zip(records, keys)):
-                if i < len(previous_rows):
-                    previous = previous_rows[i]
-                    if _detail_key(previous) != key:
+            for i, key in enumerate(keys):
+                previous = None
+                if i < n_previous_rows:
+                    if _detail_key(dict(zip(key_fields, previous_keys[i]))) != key:
                         raise ScraperError(f"Tabla final anterior desalineada en la fila {start + i + 1}; no se toca")
+                    if previous_status[i] not in ("", "missing"):
+                        previous = dict(zip(previous_columns, previous_values[i]))
                 else:
                     previous = seed_details.get(start + i)
                 detail = _choose_detail(detail_map.get(key) if key else None, previous)
-                row = {column: _csv_value(record.get(column)) for column in listing_fields}
-                for column in DETAIL_EXPORT_FIELDS:
-                    row[column] = detail.get(column)
-                if not row.get("detail_status"):
-                    row["detail_status"] = "missing"
-                rows.append(row)
+                detail_row = [detail.get(column) for column in DETAIL_EXPORT_FIELDS]
+                if not detail_row[0]:
+                    detail_row[0] = "missing"  # detail_status
+                listing_row = values[i].tolist()
+                rows.append(listing_row[:n_head] + detail_row + listing_row[n_head:])
             writer.writerows(rows)
             total_rows += len(rows)
             log(f"MERGE: {total_rows:,} filas")

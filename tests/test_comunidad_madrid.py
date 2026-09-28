@@ -3172,16 +3172,17 @@ def test_cam_the_seed_adds_only_the_missing_keys_of_what_was_downloaded(cam_dirs
 
 def test_cam_the_seed_report_counts_each_case(cam_dirs, portal):
     casos, ruta = _escenario_semilla(cam_dirs, portal)
-    df = cam.unificar_csvs()
-    consultas = set(cam.ficheros_crudos()) | {n for n, e in cam.leer_comprobaciones().items()
-                                              if e.get("comprobado")}
-    salida, informe = cam.sembrar_publicado(df, ruta, "release v2026.02", consultas)
+    sin = cam.unificar_csvs()
+    con = cam.unificar_csvs([ruta])
+    informe, = con["semillas"]
     assert (informe["leidas"], informe["anadidas"], informe["descartadas_clave"],
             informe["descartadas_contenido"], informe["fuera_ambito"]) == (10, 5, 1, 2, 2)
     assert informe["fuera_ambito_detalle"] == {
         "menores de entidades sin menores en la tabla": 1,
         "anuncios de CSV (mes y tipo) no descargados": 1}
-    assert len(salida) == len(df) + 5
+    assert informe["celdas_nan_vaciadas"] > 0
+    assert (con["filas"], con["retiradas"]) == (sin["filas"] + 5, sin["retiradas"] + 5)
+    assert sin["semillas"] == [] and set(con["salidas"].values()) == {"actualizado"}
 
 
 def test_cam_cli_semilla(tmp_path):

@@ -46,16 +46,23 @@ Sesgo del superviviente (docs/CONTINUACION.md, regla 3; comun/historico.py)
   recuentos que no cubren el total. Se decide con los valores de la fila (_Coincidencias).
   Asi una descarga parcial (--perfil, --anio, scrape-std o scrape-men solos) no retira
   nada fuera de su alcance. Una descarga vacia no se guarda y una que falla (el portal da
-  error tras los reintentos) tampoco: no retiran nada.
+  error tras los reintentos) tampoco: no retiran nada y la ejecucion termina con codigo 1.
 - Reanudable: cada bloque de primer nivel (un procedimiento en std, un tipo de contrato en
   menores) se guarda al terminar en raw/_en_curso/<alcance>/. Si la ejecucion se corta,
-  la siguiente con el mismo alcance sigue desde el primer bloque que falta.
+  la siguiente con el mismo alcance sigue desde el primer bloque que falta (para empezar
+  de cero, borrar esa carpeta).
 - Sin cambios en el portal no se escribe nada: la descarga queda sin_cambios y las salidas
   no se regeneran.
-- Limite conocido: el portal no permite pedir un expediente concreto en el mismo instante
-  que los demas. Si un expediente cambia de valor en una dimension de particion (p. ej.
-  de ADJ a RES) mientras se descarga y pasa a una rama ya recorrida, esa descarga no lo
-  trae y su version anterior queda como retirada hasta la siguiente.
+- Limite conocido: una descarga no es una foto instantanea. Si un expediente cambia de
+  valor en una dimension de particion (p. ej. de ADJ a RES) mientras se descarga y pasa a
+  una rama ya recorrida, esa descarga no lo trae y su version anterior queda como
+  retirada hasta la siguiente.
+- Pendiente: partir por mes de publicacion los segmentos del SAS que siguen por encima
+  del tope (docs/COBERTURA.md, 4.2). No se ha podido verificar en vivo: el portal corta la
+  conexion desde la nube de Claude Code.
+- Memoria, medida con las 808.441 filas del publicado reconstruidas como descargas: unos
+  2,5 GB al generar la salida desde una descarga, 3,2 GB al incorporar la siguiente y
+  1,8 GB al sembrar.
 
 Semilla (--semilla; docs/CONTINUACION.md, regla 4)
 --------------------------------------------------
@@ -1554,7 +1561,6 @@ def _preparar_semilla(semilla):
     (con _en_ultima_descarga) se usa tal cual."""
     if "_en_ultima_descarga" in semilla.columns:
         return semilla
-    semilla = semilla.copy()
     for column in semilla.columns:
         values = semilla[column]
         if pd.api.types.is_string_dtype(values.dtype):
@@ -1568,22 +1574,31 @@ def _preparar_semilla(semilla):
 
 
 def _sembrar(salida, semillas, origen=None):
-    """Incorpora cada semilla por CLAVE_SEMILLA (comun.historico.sembrar): solo las filas
+    """Incorpora cada semilla por CLAVE_SEMILLA con comun.historico.sembrar: solo las filas
     cuya clave no esta en la salida y que una descarga de raw/ que cubria su alcance ya no
-    trae (el ambito de cualquiera de sus versiones). Devuelve (salida, filas anadidas)."""
+    trae (el ambito de cualquiera de sus versiones). Devuelve (salida, filas anadidas).
+
+    A sembrar() se le pasan solo la clave de la salida y de la semilla (con la posicion de
+    cada fila): con las tablas enteras copiaba las dos (unos 5 GB con ~800K filas). Luego
+    se leen del parquet solo las filas que anade. La clave nunca es nula en el publicado;
+    una fila de la semilla sin clave se anadiria (no hay contenido con que compararla)."""
     cabeceras = [_cabecera_crudo(version) for actual in _ficheros_crudos() for version in versiones(actual)]
+    origen = origen or ORIGEN_SEMILLA
     anadidas = 0
     for path in semillas:
-        semilla = _preparar_semilla(pd.read_parquet(path))
+        disponibles = pq.read_schema(path).names
+        columnas = [c for c in dict.fromkeys(CLAVE_SEMILLA + list(CAMPOS_COLUMNA.values())
+                                             + ["_origen", "_en_ultima_descarga"]) if c in disponibles]
+        semilla = _preparar_semilla(pd.read_parquet(path, columns=columnas))
         evaluador = _Coincidencias(semilla)
         en_ambito = np.zeros(len(semilla), dtype=bool)
         for cabecera in cabeceras:
             en_ambito |= evaluador.ambito(cabecera)
-        tenia_origen = "_origen" in salida.columns
-        salida, informe = sembrar(salida, semilla, CLAVE_SEMILLA, origen=origen or ORIGEN_SEMILLA,
-                                  en_ambito=en_ambito)
-        if not tenia_origen and salida["_origen"].isna().all():
-            salida = salida.drop(columns="_origen")
+        claves = semilla[[c for c in CLAVE_SEMILLA + ["_origen"] if c in semilla.columns]].copy()
+        claves[COLUMNA_POSICION] = np.arange(len(claves))
+        del semilla, evaluador
+        resultado, informe = sembrar(salida[CLAVE_SEMILLA], claves, CLAVE_SEMILLA, origen=origen, contenido=[],
+                                     en_ambito=en_ambito)
         informe["ruta"] = str(path)
         imprimir_informe_semilla(informe)
         log.info(
@@ -1594,7 +1609,19 @@ def _sembrar(salida, semillas, origen=None):
             f"{informe['descartadas_clave']:,}",
             f"{informe['fuera_ambito']:,}",
         )
-        anadidas += informe["anadidas"]
+        marcas = resultado.iloc[len(salida):]
+        if not len(marcas):
+            continue
+        posiciones = marcas[COLUMNA_POSICION].to_numpy(dtype="int64")
+        nuevas = _preparar_semilla(pq.read_table(path).take(pa.array(posiciones)).to_pandas())
+        nuevas["_origen"] = marcas["_origen"].to_numpy()
+        nuevas["_en_ultima_descarga"] = False
+        if "_origen" not in salida.columns:
+            salida["_origen"] = pd.Series([None] * len(salida), dtype=object)
+        orden = list(salida.columns) + [c for c in nuevas.columns if c not in salida.columns]
+        salida = pd.concat([salida, nuevas], ignore_index=True, sort=False)[orden]
+        salida["_en_ultima_descarga"] = salida["_en_ultima_descarga"].astype(bool)
+        anadidas += len(nuevas)
     return salida, anadidas
 
 
