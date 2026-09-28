@@ -1,8 +1,40 @@
 # Continuación del trabajo (instrucciones para la próxima sesión de Claude Code)
 
-Ramas:
-- `main`: todo el trabajo de la PR #23 y de las sesiones del 2026-09-27/28, fusionado con la [PR #25](https://github.com/BquantFinance/licitaciones-espana/pull/25) (`8eb1540`).
-- `claude/continue-previous-process-wsi03z`: trabajo nuevo, que sale siempre de `main` y vuelve a `main` por PR cuando está cerrado.
+## Relevo del 2026-09-28: una sola sesión, la del VPS, lleva el VPS y GitHub
+
+Desde el 2026-09-28 hay **una sola sesión de trabajo**: la de Claude Code en el VPS (Remote Control, `/opt/apps/licitaciones-vps` y `/opt/apps/licitaciones-espana`). Lleva a la vez el VPS y este repo. La sesión en la nube (claude.ai/code, rama `claude/continue-previous-process-wsi03z`) se cerró tras las PR #25 y #26 y no deja trabajo a medias. Así no hay dos sesiones tocando lo mismo.
+
+**Estado al cerrar la nube.**
+- `main` tiene todo: la PR #25 (`8eb1540`, menores y sesgo del superviviente) y la PR #26 (`df75b4a`, importes corregidos del issue #22), más este relevo.
+- **Datos:**
+  - Lo que se descargó en la nube solo vivía en su contenedor y se pierde: la PLACSP regenerada del 2026-09-27, la API completa de Euskadi, los menores de la Comunidad de Madrid y la calidad regenerada.
+  - El VPS lo regenera con `despliegue/vps/` (PR #27).
+  - Para contrastar sus cifras: `docs/REGENERACION_ISSUE_6.md` y §1.
+- **Abierto en GitHub:**
+  - **PR #27** (la de la sesión del VPS): operación de los scrapers. Es suya.
+  - **PR #24** (@686f6c61): regeneración independiente de PLACSP y calidad. Sirve como contraste de la nuestra; decisión del propietario.
+  - **PR #21** (@elCanosail, autor del issue #22): QA entre datasets y loader DuckDB. Decisión del propietario.
+  - **PR #12 a #15** (@686f6c61, marzo-abril de 2026): refactors anteriores a las PR #25 y #26, probablemente en conflicto con `main`. Decisión del propietario.
+  - **Issue #22:** respondido el 2026-09-28. Se puede cerrar cuando salga el release con las columnas corregidas.
+  - **Issue #6** (Elicita): espera el release en borrador.
+
+**Siguiente, por orden.**
+1. **PLACSP → cruce TED → calidad** (`--solo-ultima-version`; ya incluye INT-FIA-12 y los importes corregidos).
+   - Contrastar con `docs/REGENERACION_ISSUE_6.md`.
+   - Release en borrador **v2026.09**, sin tocar v2026.02. Notas en `herramientas/sesion_2026_09_27/regeneracion_placsp/notas_release.md`, con el commit usado.
+2. **Web y modelo** (issue #22):
+   - Enseñar el importe publicado y el corregido con su motivo.
+   - Rankings, cuotas y modelo con `<campo>_corregido`, filtrando `es_ultima_version`.
+3. **Reglas de escala por lote.**
+   - `_resultados` suma 2,26 millones de M€ en la última versión, frente a 525.800 M€ en la tabla principal, y solo recibe el registro.
+   - Hay que unir el presupuesto de cada lote (`_lotes`) y aplicar las mismas reglas antes de usar los lotes en rankings por empresa.
+4. **Resto de la cola de primeras descargas** (`despliegue/vps/cola_primera.txt`).
+   - Andalucía y las fuentes bloqueadas desde la nube (§3.6.8) se verifican por primera vez desde el VPS.
+5. **`--salida` en Comunidad de Madrid y TED** (lo pide la PR #27).
+6. **Decisiones del propietario pendientes:**
+   - §3.2: cargos repetidos del BORME, retención de `_historico/`, organismos que Galicia retira, segmentación y semilla de la PSCP, huecos y avisos cancelados de TED.
+   - §3.1.4: identificadores truncados del Ayuntamiento de Madrid.
+   - §1: los 4,8 M de menores que anuncia el portal de la Comunidad de Madrid frente a los 2,8 M descargados.
 
 ### Sincronización con el VPS (buscalicitaciones.com)
 
@@ -10,7 +42,7 @@ La web (buscador) y el modelo antifraude se alimentan desde el VPS con el códig
 - **El código vive solo en GitHub `main`.**
   - Antes de cada ejecución en el VPS: `git pull` en la copia del repo que usa, y anotar `git rev-parse --short HEAD` en el registro de la ejecución y en las notas del release.
 - **Un cambio de código hecho en el VPS se sube a GitHub** (rama y PR a `main`) el mismo día; nada se queda solo en el VPS.
-  - Si desde el VPS no se puede subir, se deja el parche (`git diff > cambio.patch`) para aplicarlo desde aquí.
+  - Si desde el VPS no se puede subir, se deja el parche (`git diff > cambio.patch`) y se avisa al propietario.
 - **Los datos no están en el repo**: los genera el VPS.
   - Un cambio en `calidad/` no obliga a volver a descargar nada. Basta con repetir la calidad sobre la PLACSP ya generada, o aplicar `calidad.correcciones.corregir_importes` al cargar.
 - **Importes (issue #22):**
@@ -20,7 +52,7 @@ La web (buscador) y el modelo antifraude se alimentan desde el VPS con el códig
 
 ## 0. Prompt para pegar al empezar
 
-> Continúa el trabajo de la PR #23 de BquantFinance/licitaciones-espana desde la rama `claude/continue-previous-process-wsi03z`. Lee primero `docs/CONTINUACION.md`, `docs/COBERTURA.md` y `comun/historico.py`, y sigue el plan de la sección 3 en orden. Reglas innegociables en la sección 2. Cada bloque se cierra con doble verificación (sección 4) y se commitea y sube al terminarlo, sin esperar al final. Usa revisores adversariales en paralelo (dos lentes por bloque). Si tienes acceso de red a los portales oficiales, prioriza la verificación en vivo (sección 3.3).
+> Eres la única sesión de trabajo de BquantFinance/licitaciones-espana y del VPS de buscalicitaciones.com. Lee primero el «Relevo del 2026-09-28» y la «Sincronización con el VPS» de `docs/CONTINUACION.md`, y después `despliegue/vps/README.md`, `docs/COBERTURA.md` y `comun/historico.py`. Sigue la lista «Siguiente, por orden» del relevo. Reglas innegociables en la sección 2. Cada bloque se cierra con doble verificación (sección 4), en una rama y una PR a `main`, sin esperar al final. Usa revisores adversariales en paralelo (dos lentes por bloque). Nada de código se queda solo en el VPS.
 
 ## 1. Estado
 
