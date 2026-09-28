@@ -170,7 +170,18 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
      - Propuesta: una columna `<col>_xlsx` en esas filas.
 
 ### 3.2 Sesgo del superviviente en los scrapers existentes
-Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la semilla del release, a cada uno:
+Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la semilla del release, a cada uno.
+
+**Estado a 2026-09-28** (comprobado con `grep` de `guardar_version`, `acumular` y `_en_ultima_descarga`):
+- **Cubiertos:** PLACSP (`--semilla` y `_borrados`), Catalunya RPC y Generalitat, Valencia REGCON, Ayuntamiento de Madrid, Aragón, Castilla y León, Murcia, la tabla de la API de Euskadi, y los scrapers nuevos (Extremadura, La Rioja, menores valencianos; Castilla-La Mancha y municipios, en curso).
+- **Sin cubrir**, por orden de impacto en los menores:
+  1. Comunidad de Madrid (~385 mil/año).
+  2. Galicia (~220 mil/año).
+  3. Andalucía (~127 mil/año).
+  4. Menores de la PSCP de Catalunya.
+  5. Asturias.
+  6. TED.
+  7. BORME.
 
 | Scraper | Qué hay que cambiar |
 |---|---|
@@ -178,13 +189,13 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | `borme/scripts/borme_scraper.py`, `borme_batch_parser.py` | Los PDF son inmutables. El parse completo no debe perder lo ya parseado si faltan PDF en disco |
 | ~~`scripts/ccaa_valencia.py`, `ccaa_valencia_parquet.py`~~ | **Hecho** (`31db07f`). Sin semilla: no hay clave estable y el release es incompatible |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | `VIGENCIA_HORAS` sobrescribe los CSV. Las versiones de un mismo CSV no son "consultas solapadas". Respetar las filas de continuación |
-| `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | `_sigue_cambiando` sobrescribe |
+| ~~`comunidad_madrid/ccaa_madrid_ayuntamiento.py`~~ | **Hecho** (§3.1.4, `73d6e80`): `guardar_version` y `acumular` |
 | `scripts/ccaa_asturias.py` | CSV anuales |
 | `galicia/scraper_galicia.py` | Caché SQLite y merge final |
 | `scripts/ccaa_andalucia.py` | El re-scrape completo sobrescribe la salida |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Acumular por registro. Al sembrar, quitar solo las 2,16M copias idénticas del publicado |
 | `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Hecho**: capa cruda (`78d4f39`, `guardar_version`) y Parquet con todas las versiones (`1e28560`, `acumular`) |
-| `Euskadi/ccaa_euskadi.py` | Refresco de los ficheros que "siguen cambiando" |
+| `Euskadi/ccaa_euskadi.py` | La tabla de la API ya acumula (`consolidacion_euskadi.py`, `_en_ultima_descarga`). Falta revisar el refresco de los ficheros crudos que "siguen cambiando" |
 
 Un workflow razonable, ya probado en la sesión anterior aunque se paró por cuota:
 - Una unidad por scraper, cada una solo con sus ficheros.
