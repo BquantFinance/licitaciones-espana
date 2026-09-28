@@ -131,7 +131,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | **En curso** (sesgo del superviviente) | — | — |
 | `galicia/scraper_galicia.py` | **En curso** (sesgo del superviviente) | — | — |
 | `scripts/ccaa_cataluna_contratosmenores.py` | **En curso** (sesgo del superviviente) | — | — |
-| `borme/scripts/*.py` | **En curso** (sesgo del superviviente) | — | — |
+| `borme/scripts/*.py` | Cerrado | ver el commit «BORME: sin sesgo del superviviente» | Sí (boe.es) |
 
 Avisos de la sesión del VPS (2026-09-28):
 - **Galicia:** segfault en pandas 2.2.3 dentro de `to_numeric` (`csv_to_parquet`). Aquí no se reproduce (pandas 2.2.3, numpy 2.4.6, pyarrow 25.0.1). Ese código es anterior a esta sesión. Faltan las versiones del VPS y el valor que lo dispara.
@@ -227,7 +227,11 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   1. Comunidad de Madrid (~385 mil/año).
   2. Galicia (~220 mil/año).
   3. Menores de la PSCP de Catalunya.
-  4. BORME.
+- El BORME quedó cubierto el 2026-09-28. Pendientes que dejó su revisión:
+  - **Contra la regla 1 de §2:** el parser descarta desde siempre los cargos repetidos dentro de un mismo acto (misma persona y cargo; 119 filas en 47 PDF, sobre todo en actos concursales). Hay que conservarlos y marcarlos (`_repetido`), y adaptar los consumidores.
+  - **Retención de `_historico/`:** cada ejecución que cambia las tablas crudas guarda una copia entera (del orden de GB). Hay que decidir cuántas se conservan.
+  - La semilla se aplica entera y no solo en el ámbito de lo parseado, porque el BORME no retira actos. En una máquina sin PDF, la tabla cruda queda con filas `_origen`.
+  - `calidad/calidad_licitaciones.py` lee `empresa_norm` de todas las filas, versiones antiguas incluidas. No afecta a la pertenencia, pero conviene filtrar `_en_ultima_descarga`.
 - TED quedó cubierto el 2026-09-28. Pendientes que dejó su revisión:
   - **Hueco de 2020-2023:** el CSV no trae los `can-modif` ni los `can-desg` (1.620 solo en 2020). Viene de `5827174`. Con `--semilla` se recuperan del publicado, pero no se vuelven a descargar. Decidir si se piden a la API.
   - El primer refresco real, con `--semilla` y el `ted_es_can.parquet` publicado.
@@ -240,7 +244,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | Scraper | Qué hay que cambiar |
 |---|---|
 | ~~`ted/ted_module.py`~~ | **Hecho** (2026-09-28): cachés y consolidado con `guardar_version`, `acumular` por año con la clave del aviso normalizada (`número-año`), el año en curso guardado aparte, `--semilla` y `ultima_version_por_aviso` en el cruce. Verificado en vivo. Pendiente: ver la lista de TED más abajo |
-| `borme/scripts/borme_scraper.py`, `borme_batch_parser.py` | Los PDF son inmutables. El parse completo no debe perder lo ya parseado si faltan PDF en disco |
+| ~~`borme/scripts/borme_scraper.py`, `borme_batch_parser.py`~~ | **Hecho** (2026-09-28): PDF con `guardar_version` (`--comprobar`), parse incremental con `acumular` que conserva lo parseado aunque falten PDF, `--reprocesar` y `--semilla` por (`pdf_filename`, `num_entrada`). Verificado en vivo contra boe.es |
 | ~~`scripts/ccaa_valencia.py`, `ccaa_valencia_parquet.py`~~ | **Hecho** (`31db07f`). Sin semilla: no hay clave estable y el release es incompatible |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | `VIGENCIA_HORAS` sobrescribe los CSV. Las versiones de un mismo CSV no son "consultas solapadas". Respetar las filas de continuación |
 | ~~`comunidad_madrid/ccaa_madrid_ayuntamiento.py`~~ | **Hecho** (§3.1.4, `73d6e80`): `guardar_version` y `acumular` |

@@ -240,7 +240,19 @@ python borme/scripts/borme_anonymize.py --input ./borme_pdfs --output borme/data
 python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp nacional/licitaciones_espana.parquet --output ./anomalias
 ```
 
-`borme_batch_parser.py --resume` añade los PDF nuevos a la salida existente (antes la sobrescribía con solo los nuevos). Para aplicar las correcciones del parser (datos registrales, anuncios 1-999 de cada año, capital resultante) a PDF ya procesados hay que ejecutarlo completo, sin `--resume`.
+**Sin sesgo del superviviente.**
+- `borme_batch_parser.py` es incremental: solo parsea los PDF nuevos o cambiados y acumula sobre la salida anterior con `acumular`.
+  - Lo ya parseado no se pierde aunque falten PDF en disco.
+  - Las tablas llevan `_primera_descarga`, `_ultima_descarga` y `_en_ultima_descarga`, y la versión anterior de cada tabla queda en `_historico/`.
+- `--reprocesar` vuelve a parsear con el código actual todo lo que hay en disco, para aplicar correcciones del parser: datos registrales, anuncios 1-999 de cada año, capital resultante.
+- `--semilla <parquet publicado>` (empresas y cargos) añade los actos (`pdf_filename`, `num_entrada`) que no están en el parse local.
+- `borme_scraper.py` nunca sobrescribe un PDF. Los que están en el manifiesto pero faltan en disco se vuelven a bajar, y `--comprobar` vuelve a pedir los ya descargados: si alguno cambia, el anterior pasa a `<día>/_historico/`.
+- Errores conocidos del publicado, frente al parser actual (2.043 actos del 2024-01-04):
+  - nombres con ". Sociedad unipersonal";
+  - domicilios sin municipio;
+  - capitales;
+  - fechas de constitución con punto final;
+  - datos registrales que faltan.
 
 ---
 
