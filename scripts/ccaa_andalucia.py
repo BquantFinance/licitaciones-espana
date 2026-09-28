@@ -1373,6 +1373,7 @@ class _Coincidencias:
         self._campos = {}
 
     def _valores(self, campo):
+        """(codigo por fila, valores distintos como texto) de la columna del campo, o None."""
         if campo not in self._campos:
             columna = CAMPOS_COLUMNA.get(campo)
             if columna is None or columna not in self.tabla.columns:
@@ -1381,13 +1382,7 @@ class _Coincidencias:
                 textos = pd.Series([_texto_campo(valor) for valor in self.tabla[columna].astype(object)],
                                    dtype=object)
                 codigos, unicos = pd.factorize(textos)
-                datos = []
-                for texto in unicos:
-                    partes = texto.split(";") if campo in CAMPOS_MULTIVALOR else [texto]
-                    partes = [parte for parte in partes if parte != ""]
-                    bajo = " ".join(partes).lower()
-                    datos.append((frozenset(partes), frozenset(bajo.split()), frozenset(_PALABRA.findall(bajo))))
-                self._campos[campo] = (codigos, datos)
+                self._campos[campo] = (codigos, pd.Series(unicos, dtype=object))
         return self._campos[campo]
 
     def _coinciden(self, campo, valores, grado):
@@ -1395,18 +1390,28 @@ class _Coincidencias:
         info = self._valores(campo)
         if info is None:
             return np.full(self.filas, grado == "posible")
-        codigos, datos = info
+        codigos, unicos = info
         textos = [_texto_campo(valor) for valor in valores]
-        if grado == "seguro" and campo in CAMPOS_TEXTO:
-            buscados = {palabra for texto in textos for palabra in texto.lower().split()}
-            por_valor = [bool(palabras & buscados) for _, palabras, _ in datos]
-        elif grado == "seguro":
+        if grado == "seguro" and campo not in CAMPOS_TEXTO:
             buscados = set(textos)
-            por_valor = [bool(exactos & buscados) for exactos, _, _ in datos]
+            if campo in CAMPOS_MULTIVALOR:
+                por_valor = unicos.map(lambda texto: any(parte in buscados for parte in texto.split(";")))
+            else:
+                por_valor = unicos.isin(buscados)
         else:
-            buscados = {palabra for texto in textos for palabra in _PALABRA.findall(texto.lower())}
-            por_valor = [bool(palabras & buscados) for _, _, palabras in datos]
-        return np.array(por_valor + [False], dtype=bool)[codigos]
+            if grado == "seguro":
+                # Texto analizado: la palabra entre espacios (o al principio o al final)
+                palabras = {palabra for texto in textos for palabra in texto.split()}
+                patron = r"(?:^|(?<=\s))(?:{})(?=\s|$)"
+            else:
+                # Cualquier analizador: la misma palabra de letras y cifras
+                palabras = {palabra for texto in textos for palabra in _PALABRA.findall(texto)}
+                patron = r"(?<![^\W_])(?:{})(?![^\W_])"
+            if not palabras:
+                return np.zeros(self.filas, dtype=bool)
+            regex = re.compile(patron.format("|".join(map(re.escape, sorted(palabras)))), re.IGNORECASE)
+            por_valor = unicos.map(lambda texto: regex.search(texto) is not None)
+        return np.append(np.asarray(por_valor, dtype=bool), False)[codigos]
 
     @staticmethod
     def _por_campo(lista):

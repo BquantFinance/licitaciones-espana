@@ -92,9 +92,10 @@ HISTÓRICO: NUNCA SE MACHACA NADA (comun/historico.py)
         importe, entidades que incluyen las de sus dependientes, un CSV
         sustituido y su sucesor. De cada bloque se deja una copia por cada
         una de las que tiene el CSV que más tiene (duplicados de origen),
-        contando primero las presentes en la última descarga. Cada copia se
-        queda con _en_ultima_descarga=True si algún CSV la trae en su última
-        versión, la _primera_descarga mínima y la _ultima_descarga máxima.
+        contando primero las presentes en la última descarga. De cada copia
+        se queda la de un CSV que la trae en su última versión, si lo hay
+        (_en_ultima_descarga=True), con la _primera_descarga mínima y la
+        _ultima_descarga máxima de todos.
       - Salidas: contratacion_comunidad_madrid_completo.csv (';', utf-8-sig)
         y .parquet (texto; _en_ultima_descarga booleana), las dos con
         guardar_version: la anterior va a _historico/, y si no cambian no se
@@ -756,38 +757,41 @@ class DescargadorComunidadMadrid:
 
         self.vigentes = set()
         for i, (val, nombre) in enumerate(self.entidades):
-            fp = CSV_DIR / nombre_csv_entidad(int(val), nombre)
-            label = f"{nombre[:50]}"
-            log.info(f"\n  [{i+1}/{total}] {label}")
-
-            if self._entidad_partida(val, nombre):
-                # No saltar la entidad entera: si la ejecución anterior se cortó
-                # o falló algún rango, hay que completar los que falten
-                # (los rangos ya descargados se saltan uno a uno)
-                log.info("    Ya subdividido por importe, completando rangos pendientes")
-                self._descargar_menores_por_importe(val, nombre)
-                continue
-
-            estado, n_filas = self._descargar_con_reintentos(
-                fp, label,
-                tipo_pub="Contratos Menores",
-                entidad=val,
-                partir_si_truncado=True,
-            )
-
-            # ¿Truncado? → subdividir por rango de importe. La respuesta
-            # truncada no se ha guardado; una copia anterior del CSV entero
-            # (de cuando la entidad no llegaba al límite) se conserva y se
-            # archiva al final (_archivar_sustituidos)
-            if estado == "truncado":
-                log.info("    → Subdividiendo por rango de importe...")
-                self._descargar_menores_por_importe(val, nombre)
-            else:
-                self.vigentes.add(fp.name)
-
-            time.sleep(PAUSA_BASE)
+            log.info(f"\n  [{i+1}/{total}] {nombre[:50]}")
+            if self._descargar_entidad(val, nombre):
+                time.sleep(PAUSA_BASE)
 
         self._archivar_sustituidos()
+
+    def _descargar_entidad(self, val, nombre):
+        """Menores de una entidad: su CSV entero o, si llega a UMBRAL_TRUNCADO,
+        por rangos de importe. Devuelve False si ya se descargaba por rangos."""
+        if self._entidad_partida(val, nombre):
+            # No saltar la entidad entera: si la ejecución anterior se cortó
+            # o falló algún rango, hay que completar los que falten
+            # (los rangos ya descargados se saltan uno a uno)
+            log.info("    Ya subdividido por importe, completando rangos pendientes")
+            self._descargar_menores_por_importe(val, nombre)
+            return False
+
+        fp = CSV_DIR / nombre_csv_entidad(int(val), nombre)
+        estado, _ = self._descargar_con_reintentos(
+            fp, nombre[:50],
+            tipo_pub="Contratos Menores",
+            entidad=val,
+            partir_si_truncado=True,
+        )
+
+        # ¿Truncado? → subdividir por rango de importe. La respuesta truncada
+        # no se ha guardado; una copia anterior del CSV entero (de cuando la
+        # entidad no llegaba al límite) se conserva, y al final de una
+        # descarga completa se archiva (_archivar_sustituidos)
+        if estado == "truncado":
+            log.info("    → Subdividiendo por rango de importe...")
+            self._descargar_menores_por_importe(val, nombre)
+        else:
+            self.vigentes.add(fp.name)
+        return True
 
     def _entidad_partida(self, val, nombre):
         """¿La entidad ya se descarga por rangos de importe? (hay CSV de sus
@@ -966,20 +970,9 @@ class DescargadorComunidadMadrid:
                     nombre = n
                     break
 
-            fp = CSV_DIR / nombre_csv_entidad(int(val), nombre)
-            label = f"{nombre[:50]}"
-            log.info(f"\n  [MENORES] {label}")
-
-            estado, _ = self._descargar_con_reintentos(
-                fp, label,
-                tipo_pub="Contratos Menores",
-                entidad=val,
-                partir_si_truncado=True,
-            )
-
-            if estado == "truncado":
-                log.info("    → Subdividiendo recursivamente por importe...")
-                self._descargar_menores_por_importe(val, nombre)
+            log.info(f"\n  [MENORES] {nombre[:50]}")
+            # Sin _archivar_sustituidos: solo una entidad, no todo el desplegable
+            self._descargar_entidad(val, nombre)
 
         self._resumen()
 
@@ -1193,9 +1186,10 @@ def quitar_repetidos_entre_ficheros(df):
         entero.
     La n-ésima copia de un bloque en cada CSV (contando primero las presentes
     en su última descarga) es la misma. De ella se queda la primera presente
-    por orden de los CSV (o la primera, si ninguna lo está), con
-    _en_ultima_descarga=True si alguna lo está, la _primera_descarga mínima y
-    la _ultima_descarga máxima. Devuelve (tabla, nº de filas quitadas)."""
+    por orden de los CSV (o la primera, si ninguna lo está: así queda con
+    _en_ultima_descarga=True si alguna lo está), con la _primera_descarga
+    mínima y la _ultima_descarga máxima. Devuelve (tabla, nº de filas
+    quitadas)."""
     if len(df) == 0:
         return df, 0
     df = df.reset_index(drop=True)
@@ -1229,10 +1223,8 @@ def quitar_repetidos_entre_ficheros(df):
     sobra = bloques['sobra'].to_numpy()[bid]
     if all(c in df.columns for c in COLUMNAS_META):
         grupos = [bloques['firma'].to_numpy(), bloques['n'].to_numpy()]
-        en_g = bloques.groupby(['firma', 'n'], sort=False)['en'].transform('max').to_numpy()
         primera = _agregar(df['_primera_descarga'].to_numpy(dtype=object)[primeras], grupos, 'min')
         ultima = _agregar(df['_ultima_descarga'].to_numpy(dtype=object)[primeras], grupos, 'max')
-        df['_en_ultima_descarga'] = en_g[bid]
         df['_primera_descarga'] = primera[bid]
         df['_ultima_descarga'] = ultima[bid]
     return df.loc[~sobra].reset_index(drop=True), int(sobra.sum())

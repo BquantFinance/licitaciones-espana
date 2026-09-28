@@ -1,4 +1,5 @@
 import copy
+import gzip
 import importlib.util
 import io
 import json
@@ -583,6 +584,7 @@ class AndaluciaScraperTests(unittest.TestCase):
 
     def test_scrape_recursive_warns_when_null_branch_is_skipped(self):
         values = [f"V{index}" for index in range(900)]
+        incompletos = []
         with patch.object(ccaa_andalucia, "DIMS", [("campo", values)]), patch.object(
             ccaa_andalucia,
             "cnt",
@@ -596,10 +598,24 @@ class AndaluciaScraperTests(unittest.TestCase):
                     [],
                     set(),
                     known_total=ccaa_andalucia.MAX_FROM + ccaa_andalucia.PAGE_SIZE + 1,
+                    incompletos=incompletos,
                 )
 
         self.assertEqual(got, 0)
         self.assertIn("lbl/null_campo", "\n".join(logs.output))
+        # Lo que pueda estar en esa rama no se da por retirado
+        self.assertEqual([(i["etiqueta"], i["motivo"], len(i["must_not"])) for i in incompletos],
+                         [("lbl/null_campo", "rama sin valor omitida", 900)])
+
+    def test_scrape_recursive_records_a_page_run_that_stops_before_the_total(self):
+        incompletos = []
+        with patch.object(ccaa_andalucia, "paginate", return_value=([{"id_expediente": 1}], 3)):
+            ccaa_andalucia.scrape_recursive([mm("a", 1)], [], "hoja", [], set(), known_total=2,
+                                            incompletos=incompletos)
+        self.assertEqual(
+            [(i["etiqueta"], i["must"], i["total"], i["descargados"], i["motivo"]) for i in incompletos],
+            [("hoja", [mm("a", 1)], 3, 1, "paginacion incompleta")],
+        )
 
 
 @unittest.skipUnless(ccaa_andalucia.HAS_PANDAS, "pandas no disponible")
@@ -799,6 +815,11 @@ class CoincidenciasTests(unittest.TestCase):
         self.assertEqual(self.ev.seguro(alcance).tolist(), [True, True, False, False, False])
         cabecera = {"alcance": alcance, "incompletos": [{"must": [mm("provinciasEjecucion", "29")], "must_not": []}]}
         self.assertEqual(self.ev.ambito(cabecera).tolist(), [False, True, False, False, False])
+        # El alcance cuenta si es SEGURO ('sum' no lo es) y la consulta incompleta si es POSIBLE
+        por_tipo = {"alcance": {"must": [mm("tipoContrato.codigo", "SUM")]}, "incompletos": []}
+        self.assertEqual(self.ev.ambito(por_tipo).tolist(), [True, False, False, False, True])
+        cabecera = {"alcance": alcance, "incompletos": [{"must": [mm("tipoContrato.codigo", "SUM")]}]}
+        self.assertEqual(self.ev.ambito(cabecera).tolist(), [False] * 5)
         # Sin la columna de un campo del alcance no se puede asegurar nada
         sin_estado = ccaa_andalucia._Coincidencias(self.tabla.drop(columns="estado_codigo"))
         self.assertEqual(sin_estado.seguro(alcance).tolist(), [False] * 5)
@@ -913,8 +934,9 @@ class HistoricoAndaluciaTests(unittest.TestCase):
     def fecha(self, ejecucion):
         return (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=ejecucion)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def ejecutar(self, *args, docs=None, portal=None):
-        self.ejecuciones += 1
+    def ejecutar(self, *args, docs=None, portal=None, mismo_dia=False):
+        if not mismo_dia:
+            self.ejecuciones += 1
         self.portal = portal or Portal(copy.deepcopy(self.docs if docs is None else docs))
         momento = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() + self.ejecuciones * 86400
         escribir_crudo = ccaa_andalucia._escribir_crudo
@@ -1069,6 +1091,46 @@ class HistoricoAndaluciaTests(unittest.TestCase):
         menores = pd.read_csv(self.salida / "licitaciones_menores.csv", encoding="utf-8-sig")
         self.assertFalse(menores.loc[menores["id_expediente"] == retirado_men, "_en_ultima_descarga"].item())
 
+    def test_misma_descarga_comprimida_de_otra_forma_no_es_una_version_nueva(self):
+        # Otra version de zlib puede comprimir distinto el mismo contenido
+        self.ejecutar("scrape-men")
+        crudo = self.salida / "raw" / "menores.jsonl.gz"
+        fecha = crudo.stat().st_mtime
+        crudo.write_bytes(gzip.compress(gzip.decompress(crudo.read_bytes()), compresslevel=1))
+        os.utime(crudo, (fecha, fecha))
+        self.ejecutar("procesar", mismo_dia=True)  # la salida incorpora esa copia (otro sha256)
+        antes = self.ficheros()
+
+        self.assertEqual(self.ejecutar("scrape-men"), 0)
+
+        self.assertEqual(self.ficheros(), antes)
+
+    def test_dos_descargas_con_la_misma_fecha_se_incorporan_las_dos(self):
+        self.ejecutar("scrape-men")
+        quitado = self.grupos["men_pb"][0]
+
+        self.ejecutar("scrape-men", docs=self.sin(quitado), mismo_dia=True)
+
+        self.assertEqual(len(list((self.salida / "raw" / ccaa_andalucia.HISTORICO).iterdir())), 1)
+        self.assertEqual(self.vigencia()[quitado], [False])
+
+    def test_misma_cifra_entera_o_decimal_no_es_un_cambio(self):
+        # En la descarga entera importeLicitacion mezcla decimales y enteros (float64); en la
+        # parcial de PB solo hay enteros: antes quedaba int64 y 5000 no casaba con 5000.0
+        docs = copy.deepcopy(self.docs)
+        for doc in docs:
+            if doc["idExpediente"] in self.grupos["men_pb"]:
+                doc["importeLicitacion"] = 5000
+                doc["valorEstimado"] = 4000
+        self.ejecutar("scrape-men", docs=docs)
+        filas = len(self.tabla())
+
+        self.assertEqual(self.ejecutar("scrape-men", "--perfil", "PB", docs=docs), 0)
+
+        tabla = self.tabla()
+        self.assertEqual(len(tabla), filas)
+        self.assertTrue(tabla["_en_ultima_descarga"].all())
+
     def test_registro_que_vuelve_se_reactiva_sin_duplicarse(self):
         self.ejecutar("scrape")
         vuelve = self.grupos["men_serv_2023"][0]
@@ -1096,6 +1158,22 @@ class HistoricoAndaluciaTests(unittest.TestCase):
         paginas_de_otros = [body for body in self.portal.bodies
                             if body.get("size") and body.get("sort") and not _con(body, "perfilContratante.codigo", "PB")]
         self.assertEqual(paginas_de_otros, [])
+
+    def test_descarga_parcial_no_parte_por_la_dimension_que_fija(self):
+        self.ejecutar("scrape")
+        con_tope = self.grupos["men_pc"]
+        de_pb = self.grupos["men_pb"][0]
+
+        self.assertEqual(self.ejecutar("scrape-men", "--perfil", "PC", docs=self.sin(con_tope[0], de_pb)), 0)
+
+        dobles = [body for body in self.portal.bodies
+                  if json.dumps(body["query"]).count("perfilContratante.codigo") > 1]
+        self.assertEqual(dobles, [])
+        cabecera = ccaa_andalucia._cabecera_crudo(self.salida / "raw" / "menores__perfil-PC.jsonl.gz")
+        self.assertEqual([i["etiqueta"] for i in cabecera["incompletos"]], ["men/SUM/RES/O/29/M/2024"])
+        vigencia = self.vigencia()
+        self.assertEqual(vigencia[con_tope[0]], [True])  # consulta con tope
+        self.assertEqual(vigencia[de_pb], [True])  # fuera del alcance
 
     def test_descarga_parcial_por_ano(self):
         self.ejecutar("scrape")
@@ -1188,6 +1266,25 @@ class HistoricoAndaluciaTests(unittest.TestCase):
         self.assertEqual(vigencia[quitado], [True])
         self.assertTrue(all(vigencia[expediente] == [True] for expediente in self.grupos["men_pb"]))
 
+    def test_recuentos_que_no_cubren_un_trozo_solo_protegen_ese_trozo(self):
+        self.ejecutar("scrape")
+        de_pb, de_serv = self.grupos["men_pb"][0], self.grupos["men_serv_2023"][0]
+        docs = self.sin(de_pb, de_serv)
+        # El recuento de men/SUM/RES/O/PB da 0 con HTTP 200: men/SUM/RES/O queda incompleto
+        falla = Portal(
+            copy.deepcopy(docs),
+            recuento=lambda body: 0 if (_con(body, "perfilContratante.codigo", "PB")
+                                        and _con(body, "codigoProcedimiento", 9)) else None,
+        )
+
+        self.assertEqual(self.ejecutar("scrape-men", portal=falla), 0)
+
+        self.assertTrue(any("men/SUM/RES/O: los recuentos" in aviso for aviso in self.avisos()))
+        vigencia = self.vigencia()
+        self.assertEqual(vigencia[de_pb], [True])  # pudo quedar sin descargar
+        self.assertEqual(vigencia[de_serv], [False])  # otro trozo, completo
+        self.assertTrue(all(vigencia[expediente] == [True] for expediente in self.grupos["men_pb"]))
+
     def test_descarga_vacia_no_retira_nada(self):
         self.ejecutar("scrape")
         antes = self.ficheros()
@@ -1274,6 +1371,19 @@ class HistoricoAndaluciaTests(unittest.TestCase):
         antes = self.ficheros()
         self.assertEqual(self.ejecutar("procesar", "--semilla", str(ruta)), 0)
         self.assertEqual(self.ficheros(), antes)
+
+    def test_semilla_con_las_dos_descargas_anade_de_las_dos(self):
+        retirado_men = make_doc(9001, proc="9", tipo="SERV", estado="RES", perfil="PA", anio="2023")
+        retirado_std = make_doc(9003, proc="2", tipo="SERV", perfil="PA")
+        ruta = self.tmp / "publicado.parquet"
+        publicado_antiguo([retirado_men, retirado_std]).to_parquet(ruta, index=False)
+
+        self.assertEqual(self.ejecutar("scrape", "--semilla", str(ruta)), 0)
+
+        tabla = self.tabla()
+        self.assertEqual(sorted(tabla.loc[tabla["_origen"].notna(), "id_expediente"]), [9001, 9003])
+        menores = pd.read_csv(self.salida / "licitaciones_menores.csv", encoding="utf-8-sig")
+        self.assertIn(9001, set(menores["id_expediente"]))
 
     def test_semilla_que_no_se_puede_usar(self):
         self.ejecutar("scrape-men")

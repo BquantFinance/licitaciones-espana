@@ -2853,3 +2853,401 @@ def test_cam_cli_prueba_downloads_hospital_38(tmp_path):
     assert len(df) == len([r for r in portal.registros
                            if r["Entidad Adjudicadora"] == ENTIDADES_CAM["38"][1]
                            and r["Tipo de Publicación"] == "Contratos menores"])
+
+
+# =============================================================================
+# COMUNIDAD DE MADRID — survivorship bias: raw versions, accumulation, seed
+# =============================================================================
+DIA1 = datetime(2026, 2, 9, 17, 0, tzinfo=timezone.utc).timestamp()
+DIA2 = DIA1 + 86400
+SELLO1 = "__20260209T170000Z.csv"
+
+
+def _iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sellar(csv_dir, dia):
+    """The CSV copies written by the run that just ended were downloaded on
+    `dia` (a version's date is its mtime): simulates runs on different days."""
+    for p in Path(csv_dir).glob("*.csv"):
+        if p.stat().st_mtime > time.time() - 600:
+            os.utime(p, (dia, dia))
+
+
+def _dia(cam_dirs, dia, menores=True, otros=None):
+    """A run on day `dia` that asks for everything again (VIGENCIA_HORAS=0)."""
+    with patch.object(cam, "VIGENCIA_HORAS", 0):
+        d = cam.DescargadorComunidadMadrid()
+        if menores:
+            d.descargar_menores()
+        if otros:
+            d.descargar_otros(*otros)
+    _sellar(cam_dirs / "csv_originales", dia)
+    return d
+
+
+def _tabla(carpeta):
+    """Consolidated CSV as text; the parquet must hold exactly the same."""
+    df = pd.read_csv(Path(carpeta) / "contratacion_comunidad_madrid_completo.csv", sep=";",
+                     encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    par = pd.read_parquet(Path(carpeta) / "contratacion_comunidad_madrid_completo.parquet")
+    assert list(par.columns) == list(df.columns)
+    assert par["_en_ultima_descarga"].dtype == bool
+    assert par.astype(object).where(par.notna(), "").astype(str).values.tolist() == df.values.tolist()
+    return df
+
+
+def _filas(df):
+    return [tuple(f) for f in df[COLUMNAS_CAM].itertuples(index=False)]
+
+
+def _fila(r):
+    return tuple(r[c] for c in COLUMNAS_CAM)
+
+
+def _estado_carpeta(carpeta):
+    """Every file (but the checks manifest) with its bytes and mtime."""
+    return {str(p.relative_to(carpeta)): (p.read_bytes(), p.stat().st_mtime)
+            for p in sorted(Path(carpeta).rglob("*")) if p.is_file() and p.name != cam.COMPROBACIONES}
+
+
+def test_cam_a_withdrawn_menor_stays_with_en_ultima_descarga_false(cam_dirs, portal):
+    csv_dir = cam_dirs / "csv_originales"
+    _dia(cam_dirs, DIA1)
+    todos = _menores(portal.registros)
+    retirado = next(r for r in portal.registros if r["Referencia"] == "5-02")
+    portal.registros.remove(retirado)
+    _dia(cam_dirs, DIA2)
+    cam.unificar_csvs()
+
+    df = _tabla(cam_dirs)
+    assert sorted(_filas(df)) == _esperado(todos)          # nothing lost, nothing duplicated
+    fila = df[df["Referencia"] == "5-02"].iloc[0]
+    assert fila[META_CAM].tolist() == [_iso(DIA1), _iso(DIA1), "False"]
+    sigue = df[df["Referencia"] == "5-01"].iloc[0]
+    assert sigue[META_CAM].tolist() == [_iso(DIA1), _iso(DIA2), "True"]
+    assert set(df.loc[df["Referencia"] != "5-02", "_en_ultima_descarga"]) == {"True"}
+    # raw layer: the previous copy of the entity CSV, with its date, in _historico/
+    sanidad = cam.nombre_csv_entidad(5, ENTIDADES_CAM["5"][0])
+    assert [p.name for p in (csv_dir / "_historico").iterdir()] == [sanidad.replace(".csv", SELLO1)]
+    assert "5-02" in (csv_dir / "_historico" / sanidad.replace(".csv", SELLO1)).read_text(encoding="utf-8-sig")
+    assert "5-02" not in (csv_dir / sanidad).read_text(encoding="utf-8-sig")
+
+
+def test_cam_a_changed_menor_keeps_both_versions(cam_dirs, portal):
+    _dia(cam_dirs, DIA1)
+    registro = next(r for r in portal.registros if r["Referencia"] == "5-03")
+    anterior = dict(registro)
+    registro.update({"Estado": "Anulado", "Importe de adjudicación": "999,99"})
+    _dia(cam_dirs, DIA2)
+    cam.unificar_csvs()
+
+    filas = _tabla(cam_dirs).query("Referencia == '5-03'")
+    assert _filas(filas) == [_fila(anterior), _fila(registro)]
+    assert filas[META_CAM].values.tolist() == [[_iso(DIA1), _iso(DIA1), "False"],
+                                               [_iso(DIA2), _iso(DIA2), "True"]]
+
+
+def _convocatoria(ref, adjudicatario, continuaciones=()):
+    registro = _registro(cam.TIPOS_NO_MENORES[0], "5", ref, 1000, "2024-03-15", adjudicatario=adjudicatario)
+    registro["_continuaciones"] = list(continuaciones)
+    return registro
+
+
+def test_cam_withdrawn_and_changed_records_keep_their_continuation_rows(cam_dirs):
+    prorroga = _continuacion(prorroga="1.000,00")       # identical row in both contracts
+    lote = _continuacion("LOTE DOS SL", "B2", "500,00")
+    a = _convocatoria("A-1", "UNO SL", [prorroga])
+    b = _convocatoria("B-1", "DOS SL", [prorroga])
+    c = _convocatoria("C-1", "TRES SL")
+    portal = FakePortalCAM([a, b, c], tope=50000)
+    with patch.object(cam.requests, "Session", portal.session):
+        _dia(cam_dirs, DIA1, menores=False, otros=(2024, 2024))
+        # A is withdrawn and B gets another lot
+        portal.registros = [dict(b, _continuaciones=[prorroga, lote]), c]
+        _dia(cam_dirs, DIA2, menores=False, otros=(2024, 2024))
+    cam.unificar_csvs()
+
+    df = _tabla(cam_dirs)
+    # the old blocks stay whole (record + its continuation) and the new one
+    # follows, with its rows together and in order
+    assert _filas(df) == [_fila(a), _fila(prorroga), _fila(b), _fila(prorroga), _fila(c),
+                          _fila(b), _fila(prorroga), _fila(lote)]
+    assert df["_en_ultima_descarga"].tolist() == ["False"] * 4 + ["True"] * 4
+    assert df["_primera_descarga"].tolist() == [_iso(DIA1)] * 5 + [_iso(DIA2)] * 3
+    assert df["_ultima_descarga"].tolist() == [_iso(DIA1)] * 4 + [_iso(DIA2)] * 4
+
+
+def test_cam_an_empty_or_failed_download_withdraws_nothing(cam_dirs, portal):
+    csv_dir = cam_dirs / "csv_originales"
+    _dia(cam_dirs, DIA1)
+    cam.unificar_csvs()
+    antes, copias = _tabla(cam_dirs), {p.name: p.read_bytes() for p in csv_dir.glob("*.csv")}
+    portal.vaciar = lambda p: p.get("entidad_adjudicadora") == "5"      # header only
+    portal.fallar = lambda p: p.get("entidad_adjudicadora") == "120"    # HTTP 500
+    d = _dia(cam_dirs, DIA2)
+    cam.unificar_csvs()
+
+    assert d.stats["error"] == 1 and d.stats["skip_vacio"] >= 1
+    assert {p.name: p.read_bytes() for p in csv_dir.glob("*.csv")} == copias
+    assert not (csv_dir / "_historico").exists() and not (cam_dirs / "_historico").exists()
+    assert _tabla(cam_dirs).equals(antes)
+
+
+def test_cam_a_version_without_rows_withdraws_nothing(cam_dirs):
+    csv_dir = cam_dirs / "csv_originales"
+    m1 = _registro("Contratos menores", "120", "M-1", 50)
+    (csv_dir / "_historico").mkdir()
+    (csv_dir / "_historico" / f"menores_ent120_canal{SELLO1}").write_bytes(FakePortalCAM._csv([m1]))
+    (csv_dir / "menores_ent120_canal.csv").write_bytes(FakePortalCAM._csv([]))
+    cam.unificar_csvs()
+
+    df = _tabla(cam_dirs)
+    assert _filas(df) == [_fila(m1)]
+    assert df[META_CAM].values.tolist() == [[_iso(DIA1), _iso(DIA1), "True"]]
+
+
+def test_cam_a_rerun_without_changes_writes_nothing_new(cam_dirs, portal):
+    _dia(cam_dirs, DIA1, otros=(2024, 2024))
+    cam.unificar_csvs()
+    antes = _estado_carpeta(cam_dirs)
+    d = _dia(cam_dirs, DIA2, otros=(2024, 2024))
+    cam.unificar_csvs()
+
+    assert d.stats["nuevo"] == d.stats["actualizado"] == 0 and d.stats["sin_cambios"] > 0
+    assert _estado_carpeta(cam_dirs) == antes             # no new version, raw or output
+
+
+def test_cam_an_interrupted_run_resumes_without_asking_again(cam_dirs, portal):
+    csv_dir = cam_dirs / "csv_originales"
+    _dia(cam_dirs, DIA1)
+    (csv_dir / cam.COMPROBACIONES).unlink()     # copies from the day before, known only by their date
+    portal.servidos, portal.servidas, portal.cortar_en = 0, [], 8
+    with pytest.raises(_Corte):
+        cam.DescargadorComunidadMadrid().descargar_menores()
+    servidas = portal.servidas[:]
+    assert len(servidas) == 8 and not list((csv_dir / "_historico").glob("*"))   # nothing changed
+
+    portal.cortar_en, portal.servidas = None, []
+    cam.DescargadorComunidadMadrid().descargar_menores()
+    consulta = lambda b: (b["entidad_adjudicadora"], b["presupuesto_base_licitacion_total"],  # noqa: E731
+                          b["presupuesto_base_licitacion_total_1"])
+    # what was checked before the cut (unchanged or empty: nothing to see on
+    # disk) is not asked again; the rest is
+    assert not {consulta(b) for b in servidas} & {consulta(b) for b in portal.servidas}
+    assert portal.servidas
+    cam.unificar_csvs()
+    assert _leer_unificado(cam_dirs / "contratacion_comunidad_madrid_completo.csv") == \
+        _esperado(_menores(portal.registros))
+
+
+def test_cam_a_renumbered_entity_moves_its_old_csv_to_the_history(cam_dirs, portal):
+    csv_dir = cam_dirs / "csv_originales"
+    _dia(cam_dirs, DIA1)
+    retirado = next(r for r in portal.registros if r["Referencia"] == "5-02")
+    portal.registros.remove(retirado)
+    # the dropdown renumbers its options (Sanidad was the 28th in February
+    # 2026 and the 60th in September)
+    portal.entidades = {"38": ENTIDADES_CAM["38"], "60": ENTIDADES_CAM["5"], "120": ENTIDADES_CAM["120"]}
+    _dia(cam_dirs, DIA2)
+
+    viejo = cam.nombre_csv_entidad(5, ENTIDADES_CAM["5"][0])
+    nuevo = cam.nombre_csv_entidad(60, ENTIDADES_CAM["5"][0])
+    assert not (csv_dir / viejo).exists() and (csv_dir / nuevo).exists()
+    assert [p.name for p in (csv_dir / "_historico").iterdir()] == [viejo.replace(".csv", SELLO1)]
+    cam.unificar_csvs()
+    df = _tabla(cam_dirs)
+    assert sorted(_filas(df)) == _esperado(_menores(portal.registros + [retirado]))   # each once
+    sanidad = df[df["Entidad Adjudicadora"] == "Consejería de Sanidad"].set_index("Referencia")
+    columnas = ["_archivo_fuente"] + META_CAM
+    assert sanidad.loc["5-02", columnas].tolist() == [viejo, _iso(DIA1), _iso(DIA1), "False"]
+    assert sanidad.loc["5-01", columnas].tolist() == [nuevo, _iso(DIA1), _iso(DIA2), "True"]
+
+
+def test_cam_a_dropdown_with_few_entities_archives_nothing(cam_dirs, portal):
+    csv_dir = cam_dirs / "csv_originales"
+    _dia(cam_dirs, DIA1)
+    antes = _csvs(csv_dir)
+    portal.entidades = {"5": ENTIDADES_CAM["5"]}          # 1 of the 3 entities with CSV
+    _dia(cam_dirs, DIA2)
+    assert _csvs(csv_dir) == antes
+    assert not (csv_dir / "_historico").exists()
+
+
+def test_cam_an_entity_that_reaches_the_cap_is_split_without_losing_its_csv(cam_dirs, portal):
+    csv_dir = cam_dirs / "csv_originales"
+    _dia(cam_dirs, DIA1)
+    entera = csv_dir / cam.nombre_csv_entidad(5, ENTIDADES_CAM["5"][0])
+    antes = entera.read_bytes()
+    # 7 menores ≥ the (scaled-down) cap of 6: the whole-entity answer is truncated
+    portal.registros += [_registro("Contratos menores", "5", f"5-{i}", p)
+                         for i, p in [(4, 1200), (5, 2500), (6, 7000), (7, 12000)]]
+    _dia(cam_dirs, DIA2)
+
+    assert not entera.exists()      # the truncated answer never replaced it...
+    assert [p.read_bytes() for p in (csv_dir / "_historico").glob(entera.stem + "__*.csv")] == [antes]
+    assert any(p.name.startswith(entera.stem[:14]) and "_imp" in p.name for p in csv_dir.glob("*.csv"))
+    cam.unificar_csvs()
+    df = _tabla(cam_dirs)
+    assert sorted(_filas(df)) == _esperado(_menores(portal.registros))
+    assert set(df["_en_ultima_descarga"]) == {"True"}
+    sanidad = df[df["Entidad Adjudicadora"] == "Consejería de Sanidad"].set_index("Referencia")
+    assert sanidad.loc["5-01", "_primera_descarga"] == _iso(DIA1)   # ...and its dates are kept
+    assert sanidad.loc["5-4", "_primera_descarga"] == _iso(DIA2)
+
+
+# --- --semilla ----------------------------------------------------------------
+def _publicado(filas):
+    """Published table (release v2026.02 layout): every column is text and
+    the empty cells are the string 'nan'."""
+    return pd.DataFrame([{**{c: fila.get(c, "") or "nan" for c in COLUMNAS_CAM},
+                          "_archivo_fuente": fila["_archivo_fuente"]} for fila in filas])
+
+
+def _escenario_semilla(cam_dirs, portal):
+    """A download (menores + 2024) and a published table with one row of each
+    case: {caso: row of the seed}."""
+    conv = cam.TIPOS_NO_MENORES[0]
+    lotes = next(r for r in portal.registros if r["Referencia"] == "L-1")
+    prorroga = _continuacion(prorroga="1.000,00")
+    lotes["_continuaciones"] = [prorroga]
+    _dia(cam_dirs, DIA1, otros=(2024, 2024))
+    marzo, julio = cam.nombre_csv_mes(2024, 3, conv), cam.nombre_csv_mes(2024, 7, conv)
+    reparacion = next(r for r in portal.registros if r["Título del contrato"] == "Reparación bomba")
+    casos = {
+        # key in the download (with other content): not added
+        "clave_presente": dict(next(r for r in portal.registros if r["Referencia"] == "5-01"),
+                               Estado="Anulado", _archivo_fuente="menores_ent028_consejer_a_de_sanidad.csv"),
+        "menor_retirado": dict(_registro("Contratos menores", "5", "5-99", 12.5),
+                               _archivo_fuente="menores_ent028_consejer_a_de_sanidad.csv"),
+        "entidad_sin_menores": dict(_registro("Contratos menores", "5", "H-1", 30),
+                                    **{"Entidad Adjudicadora": "Consejería Histórica",
+                                       "_archivo_fuente": "menores_ent099_consejer_a_hist_rica.csv"}),
+        "anuncio_retirado": dict(_registro(conv, "5", "L-9", 5000), _archivo_fuente=marzo),
+        "anuncio_mes_vacio": dict(_registro(conv, "38", "J-1", 7000), _archivo_fuente=julio),
+        "anuncio_no_descargado": dict(_registro(conv, "5", "Z-1", 800),
+                                      _archivo_fuente=cam.nombre_csv_mes(2019, 5, conv)),
+        # no Referencia: compared by content
+        "sin_referencia_presente": dict(reparacion, _archivo_fuente="menores_ent120_canal.csv"),
+        "sin_referencia_retirado": dict(reparacion, **{"Título del contrato": "Otra reparación",
+                                                       "_archivo_fuente": "menores_ent120_canal.csv"}),
+        # continuation rows (no key at all): compared with the continuation rows
+        "continuacion_presente": dict(prorroga, _archivo_fuente=marzo),
+        "continuacion_retirada": dict(_continuacion("OTRA SL", "B9", "7,00"), _archivo_fuente=marzo),
+    }
+    ruta = cam_dirs / "publicado.parquet"
+    _publicado(list(casos.values())).to_parquet(ruta, index=False)
+    return casos, ruta
+
+
+ANADIDOS = ["menor_retirado", "anuncio_retirado", "anuncio_mes_vacio", "sin_referencia_retirado",
+            "continuacion_retirada"]
+
+
+def test_cam_the_seed_adds_only_the_missing_keys_of_what_was_downloaded(cam_dirs, portal):
+    casos, ruta = _escenario_semilla(cam_dirs, portal)
+    cam.unificar_csvs()
+    sin = _tabla(cam_dirs)
+    cam.unificar_csvs([ruta])
+    con = _tabla(cam_dirs)
+
+    assert list(con.columns) == list(sin.columns) + ["_origen"]
+    # the downloaded rows are untouched: same values, marks and order
+    assert con.iloc[:len(sin)][list(sin.columns)].equals(sin)
+    assert set(con["_origen"].iloc[:len(sin)]) == {""}
+    anadidas = con.iloc[len(sin):]
+    assert _filas(anadidas) == [_fila(casos[k]) for k in ANADIDOS]       # 'nan' is empty again
+    assert anadidas["_archivo_fuente"].tolist() == [casos[k]["_archivo_fuente"] for k in ANADIDOS]
+    assert set(anadidas["_origen"]) == {"release v2026.02"}
+    assert set(anadidas["_en_ultima_descarga"]) == {"False"}
+    assert set(anadidas["_primera_descarga"]) == set(anadidas["_ultima_descarga"]) == {""}
+
+    # the same seed twice adds nothing more (and the output does not change)
+    salida = cam_dirs / "contratacion_comunidad_madrid_completo.parquet"
+    antes = salida.read_bytes()
+    cam.unificar_csvs([ruta, ruta])
+    assert salida.read_bytes() == antes
+
+
+def test_cam_the_seed_report_counts_each_case(cam_dirs, portal):
+    casos, ruta = _escenario_semilla(cam_dirs, portal)
+    df = cam.unificar_csvs()
+    consultas = set(cam.ficheros_crudos()) | {n for n, e in cam.leer_comprobaciones().items()
+                                              if e.get("comprobado")}
+    salida, informe = cam.sembrar_publicado(df, ruta, "release v2026.02", consultas)
+    assert (informe["leidas"], informe["anadidas"], informe["descartadas_clave"],
+            informe["descartadas_contenido"], informe["fuera_ambito"]) == (10, 5, 1, 2, 2)
+    assert informe["fuera_ambito_detalle"] == {
+        "menores de entidades sin menores en la tabla": 1,
+        "anuncios de CSV (mes y tipo) no descargados": 1}
+    assert len(salida) == len(df) + 5
+
+
+def test_cam_cli_semilla(tmp_path):
+    portal = FakePortalCAM(_registros_cam(), tope=50000)
+    with _cli(tmp_path, portal, ["todo", "2024", "2024"]) as carpeta:
+        pass
+    retirado = dict(_registro("Contratos menores", "5", "5-99", 12.5), _archivo_fuente="x.csv")
+    ruta = tmp_path / "publicado.parquet"
+    _publicado([retirado]).to_parquet(ruta, index=False)
+    with _cli(tmp_path, portal, ["unificar", "--semilla", str(ruta)]):
+        pass
+    df = _tabla(carpeta)
+    assert _filas(df.iloc[-1:]) == [_fila(retirado)]
+    assert df.iloc[-1][["_origen", "_en_ultima_descarga"]].tolist() == ["release v2026.02", "False"]
+
+
+def test_cam_cli_semilla_only_with_unificar_and_it_must_exist(tmp_path):
+    portal = FakePortalCAM(_registros_cam(), tope=50000)
+    with pytest.raises(SystemExit) as salida:
+        with _cli(tmp_path, portal, ["menores", "--semilla", "publicado.parquet"]):
+            pass
+    assert salida.value.code == 2 and portal.busquedas == []
+    with _cli(tmp_path, portal, ["todo", "2024", "2024"]) as carpeta:
+        pass
+    with pytest.raises(SystemExit) as salida:
+        with _cli(tmp_path, portal, ["unificar", "--semilla", str(tmp_path / "no_existe.parquet")]):
+            pass
+    assert salida.value.code == 1
+    assert not (carpeta / "contratacion_comunidad_madrid_completo.csv").exists()
+
+
+@pytest.mark.parametrize("todas", [True, False], ids=["every_row", "one_row"])
+def test_cam_rows_with_more_fields_than_the_header_lose_nothing(cam_dirs, todas):
+    # a separator too many at the end of every row (or of one) must neither
+    # shift the columns (pandas would take the first one as the index) nor
+    # drop the field
+    m1 = _registro("Contratos menores", "120", "M-1", 50)
+    m2 = _registro("Contratos menores", "120", "M-2", 60)
+    lineas = FakePortalCAM._csv([m1, m2]).decode("utf-8").split("\n")
+    lineas[2] += ";EXTRA"
+    if todas:
+        lineas[1] += ";EXTRA"
+    (cam_dirs / "csv_originales" / "menores_ent120_canal.csv").write_bytes("\n".join(lineas).encode("utf-8"))
+    cam.unificar_csvs()
+
+    df = pd.read_csv(cam_dirs / "contratacion_comunidad_madrid_completo.csv", sep=";",
+                     encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    assert _filas(df) == [_fila(m1), _fila(m2)]
+    assert df["_columna_extra_1"].tolist() == (["EXTRA", "EXTRA"] if todas else ["", "EXTRA"])
+    assert list(df.columns) == COLUMNAS_CAM + ["_columna_extra_1", "_archivo_fuente"] + META_CAM
+
+
+def test_cam_a_block_in_several_csvs_is_kept_as_the_present_copy_with_all_its_dates(cam_dirs):
+    csv_dir = cam_dirs / "csv_originales"
+    x = _registro("Contratos menores", "120", "X-1", 50)
+    y = _registro("Contratos menores", "120", "Y-1", 60)
+    (csv_dir / "_historico").mkdir()
+    # 'a' (first by name): X on day 1, withdrawn on day 2; 'b': X from day 2 on
+    (csv_dir / "_historico" / f"menores_ent120_a{SELLO1}").write_bytes(FakePortalCAM._csv([x, y]))
+    (csv_dir / "menores_ent120_a.csv").write_bytes(FakePortalCAM._csv([y]))
+    (csv_dir / "menores_ent120_b.csv").write_bytes(FakePortalCAM._csv([x]))
+    for nombre in ("menores_ent120_a.csv", "menores_ent120_b.csv"):
+        os.utime(csv_dir / nombre, (DIA2, DIA2))
+    cam.unificar_csvs()
+
+    df = _tabla(cam_dirs).set_index("Referencia")
+    assert sorted(df.index) == ["X-1", "Y-1"]
+    assert df.loc["X-1", ["_archivo_fuente"] + META_CAM].tolist() == \
+        ["menores_ent120_b.csv", _iso(DIA1), _iso(DIA2), "True"]
