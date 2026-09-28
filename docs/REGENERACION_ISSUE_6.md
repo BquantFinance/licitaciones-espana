@@ -150,8 +150,10 @@ La tabla anterior es anterior a los dos. Medidos después sobre la misma PLACSP 
   | `inverosimil` | adjudicación | 23 |
   | `registro` | adjudicación y valor estimado | 1 y 1 (URDINBERRI) |
 
-  - La adjudicación publicada suma 525.800 M€ y la corregida 520.130 M€.
-  - CONSTRUCCIONES URDINBERRI, S.L. pasa de 2.381,6 M€ a 26,4 M€.
+  - La adjudicación de la tabla principal (primer lote) suma 525.799,5 M€ publicada y 520.125,1 M€ corregida. Las 23 `inverosimil` suman 2.485,9 M€ publicados.
+  - CONSTRUCCIONES URDINBERRI, S.L. pasa de 2.381,6 M€ a 26,4 M€ en la tabla principal, y de 2.386,4 M€ a 31,2 M€ con todos sus lotes (`_resultados`, 19 resultados, con el registro aplicado).
+  - Su score pasa de 80 a 76,2: falla INT-VAL-07 (sin fecha de adjudicación), INT-CONS-08, INT-FIA-09, INT-CONS-20 e INT-FIA-12.
+  - **Pendiente:** las reglas de escala por lote. `_resultados` suma 2.258.873,9 M€ en la última versión (5,83 M de resultados), y solo recibe el registro.
 - **INT-CONS-20 de URDINBERRI.** Da fallo porque el cruce toma el valor estimado publicado (25.188.819,27 €, por encima del umbral SARA de obras), pero la plataforma de origen y la PLACSP declaran el contrato no sujeto a regulación armonizada. El valor estimado está en el registro de errores como probable errata.
 
 ## 6. Limitaciones y cómo reproducirlo

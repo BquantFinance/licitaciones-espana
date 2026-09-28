@@ -317,12 +317,12 @@ Para `importe_adjudicacion`, `importe_sin_iva` y `valor_estimado_contrato`:
 | `inverosimil` | Adjudicación de 100 veces el presupuesto o más sin corrección fiable: la corregida queda vacía | 23 |
 | `no_comparable` | Presupuesto de menos de 1.000 € frente a una adjudicación de 100 veces o más. Suele ser un precio unitario o simbólico (1 €): se vacía el presupuesto corregido y la adjudicación se mantiene | 441 |
 
-En la última versión de cada licitación, la adjudicación publicada suma 525.800 M€ y la corregida 520.130 M€.
+En la última versión de cada licitación, la adjudicación de la tabla principal (sin IVA; en las de varios lotes, la del primero) suma unos 525.800 M€ publicada y unos 520.130 M€ corregida. Las 23 `inverosimil` (2.485,9 M€ publicados) quedan vacías y no suman. Para sumas y rankings hay que filtrar `es_ultima_version`, porque la salida trae todas las versiones.
 
 El caso del issue #22 es CONSTRUCCIONES URDINBERRI, S.L. (entrada `PlataformasAgregadasSinMenores/15091104`):
 - publica una adjudicación de 2.357.531.666 € para una obra de 2.518.819,27 €;
 - la plataforma de origen (Euskadi) da 2.593.284,83 € con IVA del 10 %, es decir, 2.357.531,67 € sin IVA;
-- su total adjudicado pasa de 2.381,6 M€ publicados a 26,4 M€ corregidos.
+- su total adjudicado en la tabla principal pasa de 2.381,6 M€ publicados a 26,4 M€ corregidos; contando todos sus lotes (`_resultados`, con el registro aplicado), de 2.386,4 M€ a 31,2 M€.
 
 **Para añadir un error verificado** al registro, hay que rellenar una fila con estos campos:
 - `fuente`: `placsp`, o el dataset donde se ve;
@@ -338,7 +338,7 @@ from calidad import correcciones
 df = df.join(correcciones.corregir_importes(df, correcciones.cargar_registro()))
 ```
 
-En las tablas de detalle (`_resultados`, un importe por lote) no hay presupuesto por fila, así que ahí solo se aplica lo del registro.
+En las tablas de detalle (`_resultados`, un importe por lote) no hay presupuesto por fila, así que ahí solo se aplica lo del registro. Las reglas de escala por lote (con el presupuesto de `_lotes`) están pendientes: en la última versión, `_resultados` suma 2,26 millones de M€ frente a los 525.800 M€ de la tabla principal.
 
 ### Archivos
 
