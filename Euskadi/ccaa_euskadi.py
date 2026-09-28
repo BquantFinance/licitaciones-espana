@@ -42,6 +42,7 @@
 import html
 import re
 import shutil
+import argparse
 import sys
 import requests
 import time
@@ -1403,7 +1404,25 @@ def dl_C2_vitoria():
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
-def main():
+def usar_carpeta(base):
+    """Cambia la carpeta de descarga (--salida): BASE_DIR y la de cada módulo en DIRS."""
+    global BASE_DIR
+    BASE_DIR = Path(base)
+    for clave, ruta in list(DIRS.items()):
+        DIRS[clave] = BASE_DIR / ruta.name
+
+
+def argumentos(argv):
+    parser = argparse.ArgumentParser(description="Descarga la contratación pública de Euskadi")
+    parser.add_argument("--salida", type=Path, default=None,
+                        help=f"carpeta de descarga (por defecto {BASE_DIR})")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()):
+    args = argumentos(argv)
+    if args.salida is not None:
+        usar_carpeta(args.salida)
     t0 = time.time()
     log.info("╔═══════════════════════════════════════════════════════════╗")
     log.info("║  CONTRATACIÓN PÚBLICA DE EUSKADI — DESCARGA CENTRAL v4  ║")
@@ -1479,4 +1498,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

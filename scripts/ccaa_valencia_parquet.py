@@ -27,6 +27,7 @@ casaría: todo el publicado aparecería como "retirado" y duplicado.
 
 import codecs
 import re
+import argparse
 import sys
 import warnings
 import pandas as pd
@@ -288,7 +289,22 @@ def convert_to_parquet(csv_path: Path, parquet_path: Path) -> bool:
                 pass
 
 
-def main():
+def argumentos(argv):
+    parser = argparse.ArgumentParser(description="Convierte a Parquet los CSV descargados de la Comunitat Valenciana")
+    parser.add_argument("--entrada", type=Path, default=None,
+                        help=f"carpeta de los CSV (por defecto {INPUT_DIR}, relativa al directorio actual)")
+    parser.add_argument("--salida", type=Path, default=None,
+                        help=f"carpeta de los Parquet (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()):
+    global INPUT_DIR, OUTPUT_DIR
+    args = argumentos(argv)
+    if args.entrada is not None:
+        INPUT_DIR = Path(args.entrada)
+    if args.salida is not None:
+        OUTPUT_DIR = Path(args.salida)
     print("=" * 60)
     print("CONVERSIÓN CSV → PARQUET - COMUNITAT VALENCIANA")
     print("=" * 60)
@@ -298,7 +314,7 @@ def main():
         print("   Ejecuta primero: python ccaa_valencia.py")
         return 1
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     total_csv = 0
     total_parquet = 0
@@ -396,4 +412,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

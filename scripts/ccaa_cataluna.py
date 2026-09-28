@@ -13,6 +13,7 @@ Incluye: Contratación, Subvenciones, Convenios, Presupuestos, Sector Público,
 ================================================================================
 """
 
+import argparse
 import os
 import time
 import json
@@ -436,7 +437,18 @@ def download_gencat_adicional(output_dir):
 # MAIN
 # =============================================================================
 
-def main():
+def argumentos(argv):
+    parser = argparse.ArgumentParser(description="Descarga los datos públicos de contratación de Catalunya")
+    parser.add_argument("--salida", default=None,
+                        help=f"carpeta de descarga (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()):
+    global OUTPUT_DIR
+    args = argumentos(argv)
+    if args.salida is not None:
+        OUTPUT_DIR = str(args.salida)
     start = time.time()
     
     print("\n" + "="*70)
@@ -460,7 +472,7 @@ Categorías incluidas:
     print("="*70)
     
     output_dir = Path(OUTPUT_DIR)
-    output_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     log(f"📁 {output_dir.absolute()}")
     
     # === DESCARGAS ===
@@ -622,4 +634,4 @@ Categorías incluidas:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

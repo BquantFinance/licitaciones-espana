@@ -898,3 +898,31 @@ def test_download_refrescar_guarda_la_version_anterior_en_historico(red, tmp_pat
     hist = list((dest.parent / "_historico").iterdir())
     assert len(hist) == 1 and hist[0].name.startswith("vitoria_menores__")
     assert hist[0].suffix == ".csv" and hist[0].read_bytes() == v1
+
+
+def test_salida_cambia_todas_las_carpetas_de_la_descarga(monkeypatch, tmp_path):
+    monkeypatch.setattr(ccaa, "DIRS", dict(ccaa.DIRS))
+    monkeypatch.setattr(ccaa, "BASE_DIR", ccaa.BASE_DIR)
+    nombres = {k: v.name for k, v in ccaa.DIRS.items()}
+
+    assert ccaa.argumentos(["--salida", str(tmp_path / "eus")]).salida == tmp_path / "eus"
+    ccaa.usar_carpeta(tmp_path / "eus")
+
+    assert ccaa.BASE_DIR == tmp_path / "eus"
+    assert ccaa.DIRS == {k: tmp_path / "eus" / n for k, n in nombres.items()}
+
+
+def test_entrada_y_salida_de_la_consolidacion(monkeypatch, tmp_path):
+    monkeypatch.setattr(cons, "PATHS", dict(cons.PATHS))
+    monkeypatch.setattr(cons, "INPUT_DIR", cons.INPUT_DIR)
+    monkeypatch.setattr(cons, "OUTPUT_DIR", cons.OUTPUT_DIR)
+    nombres = {k: v.name for k, v in cons.PATHS.items()}
+
+    args = cons.argumentos(["--entrada", str(tmp_path / "in"), "--salida", str(tmp_path / "out")])
+    cons.usar_carpetas(args.entrada, args.salida)
+
+    assert (cons.INPUT_DIR, cons.OUTPUT_DIR) == (tmp_path / "in", tmp_path / "out")
+    assert cons.PATHS == {k: tmp_path / "in" / n for k, n in nombres.items()}
+    # sin opciones no cambia nada
+    cons.usar_carpetas(None, None)
+    assert (cons.INPUT_DIR, cons.OUTPUT_DIR) == (tmp_path / "in", tmp_path / "out")

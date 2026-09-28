@@ -8,6 +8,7 @@ import contextlib
 import importlib.util
 import os
 import runpy
+import sys
 import time
 from pathlib import Path
 
@@ -355,6 +356,7 @@ def test_cli_catalogo_completo(ckan, monkeypatch, tmp_path):
             ckan.paquetes[ds] = [_recurso(f"Recurso {ds}", f"http://gva/{ds}.csv")]
             ckan.cuerpos[f"http://gva/{ds}.csv"] = f"id;ds\n1;{ds}\n".encode()
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT_DESCARGA)])
 
     with pytest.raises(SystemExit) as salida:
         runpy.run_path(str(SCRIPT_DESCARGA), run_name="__main__")
@@ -366,8 +368,34 @@ def test_cli_catalogo_completo(ckan, monkeypatch, tmp_path):
         assert sorted(p.name for p in (base / categoria).iterdir()) == sorted(f"Recurso {ds}.csv" for ds in lista)
 
 
+def test_cli_salida_y_entrada_fuera_del_directorio_actual(ckan, monkeypatch, tmp_path):
+    """--salida (descarga) y --entrada/--salida (parquet): nada se escribe en el directorio actual."""
+    for lista in V.DATASETS.values():
+        for ds in lista:
+            ckan.paquetes[ds] = [_recurso(f"Recurso {ds}", f"http://gva/{ds}.csv")]
+            ckan.cuerpos[f"http://gva/{ds}.csv"] = f"id;ds\n1;{ds}\n".encode()
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    monkeypatch.chdir(actual)
+    datos, parquet = tmp_path / "datos" / "gva", tmp_path / "parquet" / "gva"
+
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT_DESCARGA), "--salida", str(datos)])
+    with pytest.raises(SystemExit) as salida:
+        runpy.run_path(str(SCRIPT_DESCARGA), run_name="__main__")
+    assert salida.value.code == 0
+    assert sorted(p.name for p in datos.iterdir() if p.is_dir()) == sorted(V.DATASETS)
+
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT_PARQUET), "--entrada", str(datos), "--salida", str(parquet)])
+    with pytest.raises(SystemExit) as salida:
+        runpy.run_path(str(SCRIPT_PARQUET), run_name="__main__")
+    assert salida.value.code == 0
+    assert list(parquet.rglob("*.parquet"))
+    assert list(actual.iterdir()) == []
+
+
 def test_cli_portal_caido_sale_con_error(ckan, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)  # sin paquetes: todas las consultas dan 404
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT_DESCARGA)])
     with pytest.raises(SystemExit) as salida:
         runpy.run_path(str(SCRIPT_DESCARGA), run_name="__main__")
     assert salida.value.code == 1
@@ -582,6 +610,7 @@ def test_main_end_to_end_nombres_reanudacion_y_errores(monkeypatch, tmp_path, ca
     (datos / "turismo" / "vacio.csv").write_bytes(b"")
     (datos / "descarga_log.txt").write_text("log", encoding="utf-8")
 
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT_PARQUET)])
     with pytest.raises(SystemExit) as salida:
         runpy.run_path(str(SCRIPT_PARQUET), run_name="__main__")
     assert salida.value.code == 1  # vacio.csv no se puede convertir

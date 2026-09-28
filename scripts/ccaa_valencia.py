@@ -26,6 +26,7 @@ Categorías incluidas (14):
 """
 
 import requests
+import argparse
 import os
 import re
 import sys
@@ -480,7 +481,18 @@ def process_dataset(dataset_id, category_dir, usados=None, fallidos=None):
     return downloaded, total_size
 
 
-def main():
+def argumentos(argv):
+    parser = argparse.ArgumentParser(description="Descarga los datos abiertos de contratación de la Comunitat Valenciana")
+    parser.add_argument("--salida", type=Path, default=None,
+                        help=f"carpeta de descarga (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()):
+    global OUTPUT_DIR
+    args = argumentos(argv)
+    if args.salida is not None:
+        OUTPUT_DIR = Path(args.salida)
     start_time = datetime.now()
     
     print("=" * 70)
@@ -611,4 +623,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

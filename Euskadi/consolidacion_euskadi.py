@@ -47,6 +47,7 @@
 import json
 import logging
 import re
+import argparse
 import sys
 import warnings
 from pathlib import Path
@@ -1373,7 +1374,29 @@ def generar_readme(all_stats: dict):
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
-def main():
+def usar_carpetas(entrada=None, salida=None):
+    """Cambia las carpetas (--entrada, --salida): INPUT_DIR con sus PATHS y OUTPUT_DIR."""
+    global INPUT_DIR, OUTPUT_DIR
+    if entrada is not None:
+        INPUT_DIR = Path(entrada)
+        for clave, ruta in list(PATHS.items()):
+            PATHS[clave] = INPUT_DIR / ruta.name
+    if salida is not None:
+        OUTPUT_DIR = Path(salida)
+
+
+def argumentos(argv):
+    parser = argparse.ArgumentParser(description="Consolida en Parquet lo descargado de Euskadi")
+    parser.add_argument("--entrada", type=Path, default=None,
+                        help=f"carpeta de la descarga (por defecto {INPUT_DIR})")
+    parser.add_argument("--salida", type=Path, default=None,
+                        help=f"carpeta de los Parquet (por defecto {OUTPUT_DIR})")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()):
+    args = argumentos(argv)
+    usar_carpetas(args.entrada, args.salida)
     import time as _time
     t0 = _time.time()
 
@@ -1477,6 +1500,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
 
 

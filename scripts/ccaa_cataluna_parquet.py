@@ -16,6 +16,7 @@ versión la salida es la de siempre más esas 3 columnas.
 ================================================================================
 """
 
+import argparse
 import sys
 import pandas as pd
 from pathlib import Path
@@ -512,7 +513,22 @@ def consolidate_barcelona_autorizacion(input_dir, output_dir):
 # MAIN
 # =============================================================================
 
-def main():
+def argumentos(argv):
+    parser = argparse.ArgumentParser(description="Convierte a Parquet los CSV descargados de Catalunya")
+    parser.add_argument("--entrada", default=None,
+                        help=f"carpeta de los CSV (por defecto {INPUT_DIR}, relativa al directorio actual)")
+    parser.add_argument("--salida", default=None,
+                        help=f"carpeta de los Parquet (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()):
+    global INPUT_DIR, OUTPUT_DIR
+    args = argumentos(argv)
+    if args.entrada is not None:
+        INPUT_DIR = str(args.entrada)
+    if args.salida is not None:
+        OUTPUT_DIR = str(args.salida)
     start = datetime.now()
     
     print("\n" + "="*70)
@@ -526,7 +542,7 @@ def main():
         log(f"❌ No encontrado: {input_dir}")
         return
     
-    output_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     stats = {
         'convertidos': 0,
@@ -709,4 +725,4 @@ df_2024 = df[df['año'] == 2024]
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
