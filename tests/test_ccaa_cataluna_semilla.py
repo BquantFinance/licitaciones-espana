@@ -127,3 +127,19 @@ def test_main_con_semilla_inexistente_o_errores_sale_con_1(repo_cat, monkeypatch
     monkeypatch.setattr(cp, "construir_registros", lambda *a, **k: (_ for _ in ()).throw(ValueError("roto")))
     assert cp.main(["--entrada", str(tmp_path / "crudo"), "--salida", str(tmp_path / "pq"),
                     "--categorias", "contratacion"]) == 1
+
+
+def test_pscp_se_siembra_por_el_uuid_del_procedimiento(tmp_path):
+    """La URL de la PSCP cambia con cada fase (su último número) y entre /ca/ y /es/: casar por la
+    URL entera añadía fases antiguas de procedimientos que siguen publicados (102.180 en el VPS)."""
+    base = "https://contractaciopublica.cat/{}/detall-publicacio/{}/{}"
+    a, b = "992d779c-6a90-5a7f-047e-a86a9ed3d999", "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+    df = _descarga({"enllac_publicacio": [base.format("ca", a, "300138374")], "fase_publicacio": ["Formalització"]})
+    ruta = tmp_path / "publicaciones_pscp.parquet"
+    pd.DataFrame({"enllac_publicacio": [base.format("es", a.upper(), "39498108"),      # otra fase e idioma
+                                        base.format("ca", b, "5"), base.format("ca", b, "6")],
+                  "fase_publicacio": ["Anunci", "Adjudicació", "Formalització"]}).to_parquet(ruta)
+    out = cp.sembrar_release(df, ruta, cp.SEMILLAS["contratacion/publicaciones_pscp.parquet"])
+    assert out["enllac_publicacio"].tolist()[1:] == [base.format("ca", b, "5"), base.format("ca", b, "6")]
+    assert out["_origen"].tolist() == [None, "release v2026.02", "release v2026.02"]
+    assert cp.uuid_publicacio(pd.DataFrame({"enllac_publicacio": [None, "https://otra/url"]})).tolist() == [None, None]

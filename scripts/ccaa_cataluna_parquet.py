@@ -194,9 +194,10 @@ CATEGORIAS_DISPONIBLES = sorted({categoria_csv(k) for k in ARCHIVOS})
 # primera descarga del VPS:
 #   - RPC: 751.187 filas, sobre todo menores y liquidaciones de 2021 que la ventana móvil de 5 años ya
 #     no sirve. Con Exercici en la clave solo se repiten 4.754 del publicado.
-#   - PSCP: 187.577 filas de publicaciones que ya no están. La URL es la de la publicación, que tiene
-#     una fila por lote o adjudicatario; las claves con numero_lot no sirven, porque el publicado
-#     lo guarda con otro formato ('' frente a '0').
+#   - PSCP: 85.397 filas de procedimientos que ya no se publican, por el uuid del procedimiento en la
+#     URL (uuid_publicacio). Con la URL entera eran 187.577: cambia con cada fase y entre /ca/ y
+#     /es/, y se añadían 102.180 fases antiguas de procedimientos que siguen publicados. Las claves
+#     con numero_lot no sirven: el publicado lo guarda con otro formato ('' frente a '0').
 #   - Fase de ejecución: 9.047 (por la URL del JSON). Contratación programada: 5.095 (trimestres
 #     pasados que el portal retira).
 #   - Adjudicaciones de la Generalitat, contratos COVID y resoluciones del Tribunal coinciden con el
@@ -205,7 +206,7 @@ SEMILLAS = {
     'contratacion/contratos_registro.parquet': [
         'Identificador organisme contractant', 'Codi de l’expedient', 'Número de lot', 'Situació contractual',
         'Número de modificació', 'Número de pròrroga', 'Exercici'],
-    'contratacion/publicaciones_pscp.parquet': ['enllac_publicacio'],
+    'contratacion/publicaciones_pscp.parquet': (['enllac_publicacio'], 'uuid_publicacio'),
     'contratacion/fase_ejecucion.parquet': ['URL JSON'],
     'contratacion/contratacion_programada.parquet': [
         'Any', 'Trimestre', 'Departament/Ens', 'Descripció del contracte', 'Agrupació', 'Tipus de contracte'],
@@ -409,9 +410,23 @@ def clave_texto(df, columnas):
     return pd.Series(valores, index=df.index, dtype=object)
 
 
+def uuid_publicacio(df):
+    """Clave de la PSCP: el uuid del procedimiento en la URL de la publicación
+    (.../detall-publicacio/<uuid>/<id>). La URL entera cambia con cada fase (el <id>) y entre /ca/ y
+    /es/; el uuid no. Sin uuid, nula (sembrar compara por contenido)."""
+    url = df['enllac_publicacio'].astype(object).where(df['enllac_publicacio'].notna(), '').astype(str)
+    uuid = url.str.extract(r'detall-publicacio/([0-9a-fA-F-]{36})', expand=False).str.lower()
+    valores = uuid.to_numpy(dtype=object)
+    valores[uuid.isna().to_numpy()] = None
+    return pd.Series(valores, index=df.index, dtype=object)
+
+
 def sembrar_release(df, ruta, columnas):
-    """Añade a `df` las filas del Parquet publicado `ruta` cuya clave (`columnas`, ver SEMILLAS) no
-    está en la descarga. Sin el fichero, `df` tal cual (con un aviso)."""
+    """Añade a `df` las filas del Parquet publicado `ruta` cuya clave (ver SEMILLAS: columnas, que se
+    comparan con clave_texto, o (columnas, nombre de la función que da la clave)) no está en la
+    descarga. Sin el fichero, `df` tal cual (con un aviso)."""
+    columnas, funcion = (columnas, None) if isinstance(columnas, list) else columnas
+    clave = globals()[funcion] if funcion else (lambda d: clave_texto(d, columnas))
     ruta = Path(ruta)
     if not ruta.exists():
         log(f"   ⚠️ Sin semilla: no existe {ruta}")
@@ -421,8 +436,8 @@ def sembrar_release(df, ruta, columnas):
     if faltan:
         log(f"   ⚠️ Semilla {ruta.name} sin sembrar: faltan columnas de la clave ({', '.join(faltan)})")
         return df
-    out, informe = sembrar(df.assign(_clave_semilla=clave_texto(df, columnas)),
-                           publicado.assign(_clave_semilla=clave_texto(publicado, columnas)), '_clave_semilla')
+    out, informe = sembrar(df.assign(_clave_semilla=clave(df)),
+                           publicado.assign(_clave_semilla=clave(publicado)), '_clave_semilla')
     informe['ruta'] = str(ruta)
     imprimir_informe_semilla(informe)
     return out.drop(columns='_clave_semilla')
