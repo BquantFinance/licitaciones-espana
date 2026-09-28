@@ -96,7 +96,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Murcia | ~45 % | **~85-90 %** (SMS 2019-2025 hecho: +594 mil líneas) | 85-100 % (personas físicas enmascaradas) | UPCT, 14 ayuntamientos |
 | País Vasco | ~11 % con importe y NIF | **~98 %** (API `/contracts` descargada: 643.462 menores 2014-2026; falta publicarla) | 100 % | Bilbao y Donostia (PDF), Barakaldo (nada desde 2021) |
 | La Rioja | ~4 % | **~100 % del Gobierno** (CSV 2018-2026, scraper en curso) | Sí | Universidad, empresas públicas, Parlamento, ~120 municipios |
-| Extremadura | ~30 % | **~90 %** (Registro de Contratos, scraper en curso) | Sí | UEx, 173 ayuntamientos |
+| Extremadura | ~30 % | **~90 %** (Registro de Contratos 1T 2022-2T 2026: `scripts/ccaa_extremadura.py`, 207.702 filas, verificado en vivo) | 99,997 % | 2016-2021 (Intervención General, 404), UEx, 173 ayuntamientos |
 | Castilla-La Mancha | 50-65 % | ~85 % (UCLM, caja pagadora y ficheros de la JCCM, scraper en curso) | Sí salvo SESCAM | SESCAM (por factura, sin NIF), 469 ayuntamientos |
 | Aragón | ~30 % | = (2024-2025 del Gobierno recuperados) | Registro 99,96 %; Gobierno sin NIF | Ayuntamiento de Zaragoza y DPZ (bloqueados desde la nube), SALUD pequeños, UZ |
 | C. Valenciana | ~35 % | = | REGCON 93 % | Departamentos de salud, universidades (UV: 17 mil/año con NIF en XLSX), València, Elche, Diputación de Alicante |
@@ -369,7 +369,7 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 
 | Fuente | Órganos | Formato | Periodo | Volumen/año | ¿La tenemos? | ¿En 1143? | Conf. | URL |
 |---|---|---|---|---|---|---|---|---|
-| Registro de Contratos: listado trimestral de menores | Junta y SES (85-95 %) | XLSX/XLS con NIF, importe, CPV y órgano; tres esquemas | 1T 2022-2T 2026 | 30K (2025), 67K (2024) | No | ~4K (SES: 127) | A | `juntaex.es/w/registro-contratos-1t-2026` (resto, en el buscador) |
+| Registro de Contratos: listado trimestral de menores | Junta y SES (85-95 %) | XLSX/XLS con NIF, importe, CPV y órgano; tres esquemas | 1T 2022-2T 2026 | 30K (2025), 67K (2024) | **Sí**, `scripts/ccaa_extremadura.py` (2026-09-28) | ~4K (SES: 127) | A | `juntaex.es/w/registro-contratos-1t-2026` (resto, en el buscador) |
 | Intervención General antigua | Igual | XLS | 2016-2021 | ? | No | Parcial | M (hoy 404) | `juntaex.es/ig/relacion-de-contratos-menores` |
 | Ayuntamiento de Cáceres | Ayuntamiento y organismos | PDF anual | 2018-2024 | ? | No | 0 | A | `ayto-caceres.es/transparencia/…/contratos-menores-2/` |
 
@@ -409,7 +409,9 @@ Correcciones: los menores del SCS son agregados; el registro de Extremadura es X
 #### Prioridades
 
 1. **SMS 2019-2025** en `ccaa_murcia.py`. La plantilla `Contratos_menores_SMS_{anio}` solo casa con 2020: hay que sacar las URL de la página de sector público y saltar las tres filas de cabecera de 2025. Son ~550K líneas con NIF. **2-4 h.**
-2. **Registro de Extremadura**: descubrir las páginas con el buscador y unir los tres esquemas. ~200K menores con NIF y CPV. **1 día.**
+2. ~~**Registro de Extremadura**~~: hecho (`scripts/ccaa_extremadura.py`). En vivo: 79 documentos y 207.702 filas de menores, un 99,997 % con NIF, con 1.132 M€ con IVA.
+   - El listado de 4T 2023 vuelve a publicar 5.208 menores de trimestres anteriores. No se quita ninguno: la columna `_repetido_de` marca el listado anterior.
+   - El trimestre del listado es el de inscripción, no el de adjudicación.
 3. **UCLM 2017-2026**: un postback por año. **0,5-1 día.**
 4. **Ficheros de la JCCM**: 57 enlaces en XLS, XLSX, ZIP y RAR (caja pagadora, 2015-2018, UCLM 2019-2023). **1 día.**
 5. **CKAN de menores de la Junta de Andalucía**: cierra el hueco del SAS. Hay que ejecutarlo desde una máquina con acceso. **0,5 día.**
