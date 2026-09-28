@@ -68,7 +68,10 @@ Verificado en vivo el 2026-09-27:
   - CSV en ISO-8859-15, no en cp1252 ni latin-1: el JSON del mismo dato
     (UTF-8) trae '´' donde el CSV trae '?', que es lo que hace un codificador
     latin-9 con lo que no puede representar ('€' sería 0xA4, que cp1252
-    leería como '¤'). Separador ';', fin de línea CRLF, campos con ';' o
+    leería como '¤'). Así se pierden 3-5 valores por año ('´', '¤', '¨', '¼',
+    '½' en TERC_NOMBRE o CONCEPTO, 2021-2026); el resto del CSV coincide
+    fila a fila con el JSON, que en 2018-2020 viene roto (cada registro
+    partido en 8 objetos de un campo). Separador ';', fin de línea CRLF, campos con ';' o
     comillas entre comillas y con las comillas dobladas, sin saltos de línea
     dentro de los campos. IMPORTE_EJERCICIO con coma decimal y sin separador
     de miles (hay negativos); FECHA 'AAAA/MM/DD 00:00:00.000'; TERC_CIF

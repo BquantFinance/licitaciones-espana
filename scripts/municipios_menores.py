@@ -1601,8 +1601,8 @@ def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False):
     for r in recursos:
         destino = raw / r.rel
         entrada = manifiesto.get(r.rel)
-        if (destino.exists() and _cerrado(r, anio_actual) and not comprobar_todo
-                and _clave_url(entrada.get("url") or "") == _clave_url(r.url)):
+        # Un cambio de URL, aunque sea solo el ?t= de Liferay, es una versión nueva
+        if destino.exists() and _cerrado(r, anio_actual) and not comprobar_todo and entrada.get("url") == r.url:
             resumen.sin_cambios[clave] += 1
             continue
         estado, detalle = descargar(r.url, destino, tipo=r.formato)

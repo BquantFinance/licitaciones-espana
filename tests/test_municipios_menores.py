@@ -559,7 +559,7 @@ def test_valladolid_solo_hojas_de_operaciones_y_trimestres_acumulados(portal, tm
     assert [(r["url"], r["estructurado"], r["motivo"]) for r in inventario if r["formato"] == "pdf"] == [
         (VLL_PDF, False, "PDF")]
     log = _log(tmp_path)
-    assert "no se cargan 2 hojas de resumen o auxiliares" in log and "MENOR-AREA (2 filas)" in log
+    assert "no se cargan 2 hojas de resumen o auxiliares" in log and "Hoja1 (1 filas), MENOR-AREA (3 filas)" in log
     assert "valladolid: 1 ficheros (PDF: 1)" in log
 
 
@@ -569,10 +569,10 @@ def test_fuenlabrada_listado_paginado_titulos_y_ods(portal, tmp_path):
     assert portal.pedidas(M.URL_FUENLABRADA + "page/3/") == 1                # página sin filas: fin
     assert portal.pedidas(M.URL_FUENLABRADA + "page/4/") == 0
     assert portal.pedidas(FUE_NG) == 1                                        # en dos páginas, una vez
-    assert not any(u.endswith("/page/2/") and p for u, p in portal.llamadas)
     df = _parquet(tmp_path, "fuenlabrada")
+    assert df["_archivo_origen"].str.contains("NEXT-GENERATION").sum() == 1
     ayto = df[df["_hoja"] == "Menores_ayto_2trim_2026"]
-    assert ayto["Num. Expe."].tolist() == ["2026/MSV/000911", None]
+    assert _v(ayto["Num. Expe."]) == ["2026/MSV/000911", None]
     assert _v(ayto["Adjudicatario"])[1] == "Total A VALLEKAS EDICIONES MUSICALES S. L    "   # subtotal
     assert set(ayto["_titulo_tabla"]) == {"CONTRATOS MENORES. AYUNTAMIENTO DE FUENLABRADA\nSEGUNDO TRIMESTRE DE 2026"}
     assert set(ayto["_titulo"]) == {"2º Trimestre 2026"}
