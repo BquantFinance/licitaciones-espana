@@ -785,19 +785,72 @@ def test_descarga_fallida_no_pierde_nada(portal, tmp_path, fallo):
         assert "no tiene registros que cargar; no se marca nada como retirado" in _log(tmp_path)
 
 
-def test_fichero_que_deja_de_enlazarse_queda_retirado(portal, tmp_path):
-    assert _ejecutar(tmp_path, "--municipio", "fuenlabrada") == 0
+def test_fichero_que_deja_de_enlazarse_queda_retirado_y_si_vuelve_se_repone(portal, tmp_path):
+    rel = "valladolid/2024/1051832-CONTRATACION EJERCICIO 2024 AYUNTAMIENTO VALLADOLID.xlsx"
+    pagina_2024 = portal.urls[f"{V}{RUTA_VLL}/ano-2024"]
+    assert _ejecutar(tmp_path, "--municipio", "valladolid") == 0
     SLEEP_REAL(1.1)
-    portal.urls[M.URL_FUENLABRADA + "page/2/"] = pagina_fuenlabrada(FILAS_FUENLABRADA_2[:1])   # sin el de 2019
-    assert _ejecutar(tmp_path, "--municipio", "fuenlabrada") == 0
+    portal.urls[f"{V}{RUTA_VLL}/ano-2024"] = pagina_valladolid([])          # la página deja de enlazarlo
+    assert _ejecutar(tmp_path, "--municipio", "valladolid") == 0
 
-    df = _parquet(tmp_path, "fuenlabrada")
-    retirado = df["_archivo_origen"] == "fuenlabrada/2019/AYTO-1T-2019.ods"
+    df = _parquet(tmp_path, "valladolid")
+    retirado = df["_archivo_origen"] == rel
     assert retirado.sum() == 2 and not df.loc[retirado, "_en_ultima_descarga"].any()
     assert df.loc[~retirado, "_en_ultima_descarga"].all()
-    assert _manifiesto(tmp_path)["fuenlabrada/2019/AYTO-1T-2019.ods"]["publicado"] is False
-    assert (tmp_path / "raw" / "fuenlabrada" / "2019" / "AYTO-1T-2019.ods").exists()
-    assert "fuenlabrada/2019/AYTO-1T-2019.ods: el portal ya no lo enlaza" in _log(tmp_path)
+    assert _manifiesto(tmp_path)[rel]["publicado"] is False and (tmp_path / "raw" / rel).exists()
+    assert f"valladolid {rel}: el portal ya no lo enlaza" in _log(tmp_path)
+
+    SLEEP_REAL(1.1)
+    portal.urls[f"{V}{RUTA_VLL}/ano-2024"] = pagina_2024                     # vuelve (2024 es un año cerrado)
+    assert _ejecutar(tmp_path, "--municipio", "valladolid") == 0
+    assert portal.pedidas(VLL_2024) == 2 and _manifiesto(tmp_path)[rel]["publicado"] is True
+    df = _parquet(tmp_path, "valladolid")
+    assert len(df) == 6 and df["_en_ultima_descarga"].all()
+
+
+def test_fuenlabrada_lo_que_no_sale_en_la_lista_solo_se_retira_con_404(portal, tmp_path):
+    """La lista de Fuenlabrada pierde entradas (paginación con empates): no salir
+    en ella no retira un fichero; se comprueba su URL."""
+    rel = "fuenlabrada/2019/AYTO-1T-2019.ods"
+    assert _ejecutar(tmp_path, "--municipio", "fuenlabrada") == 0
+    SLEEP_REAL(1.1)
+    portal.urls[M.URL_FUENLABRADA + "page/2/"] = pagina_fuenlabrada(FILAS_FUENLABRADA_2[:1])   # la lista lo pierde
+    assert _ejecutar(tmp_path, "--municipio", "fuenlabrada") == 0
+    assert portal.pedidas(FUE_2019) == 2                                     # se vuelve a pedir su URL
+    assert _parquet(tmp_path, "fuenlabrada")["_en_ultima_descarga"].all()
+    assert _manifiesto(tmp_path)[rel]["publicado"] is True
+
+    SLEEP_REAL(1.1)
+    del portal.urls[FUE_2019]                                                # ahora sí lo han quitado
+    assert _ejecutar(tmp_path, "--municipio", "fuenlabrada") == 0
+    df = _parquet(tmp_path, "fuenlabrada")
+    retirado = df["_archivo_origen"] == rel
+    assert retirado.sum() == 2 and not df.loc[retirado, "_en_ultima_descarga"].any()
+    assert df.loc[~retirado, "_en_ultima_descarga"].all()
+    assert _manifiesto(tmp_path)[rel]["publicado"] is False
+    assert f"fuenlabrada {rel}: el portal ya no lo enlaza y su URL da HTTP 404" in _log(tmp_path)
+
+
+def test_misma_url_en_dos_conjuntos_se_baja_una_vez(portal, tmp_path):
+    xlsx = MAL + "cemicontratacion2020/CONTRATOS_MENORES_1TRIMESTRE_2020.xlsx"
+    portal.ckan[M.URL_CKAN_MALAGA] = [   # el conjunto del 2T enlaza el fichero del 1T (así está en el portal)
+        {"id": "1", "name": "contratos-menores-1-trimestre-2020-cemi",
+         "title": "Contratos menores 1 trimestre 2020 - CEMI", "resources": [_recurso_ckan("xlsx", "XLSX", xlsx)]},
+        {"id": "2", "name": "contratos-menores-2-trimestre-2020-cemi",
+         "title": "Contratos menores 2 trimestre 2020 - CEMI", "resources": [_recurso_ckan("xlsx", "XLSX", xlsx)]}]
+    portal.urls[xlsx] = _xlsx({"Hoja1": [["NIF ADJUDICATARIO", "IMPORTE"], ["A28855260", 302.02]]})
+    assert _ejecutar(tmp_path, "--municipio", "malaga") == 0
+    SLEEP_REAL(1.1)
+    assert _ejecutar(tmp_path, "--municipio", "malaga") == 0
+
+    assert portal.pedidas(xlsx) == 1                                         # una copia (2020: año cerrado)
+    assert list(_manifiesto(tmp_path)) == [
+        "malaga/contratos-menores-1-trimestre-2020-cemi/CONTRATOS_MENORES_1TRIMESTRE_2020.xlsx"]
+    df = _parquet(tmp_path, "malaga")
+    assert len(df) == 1 and df["_en_ultima_descarga"].all()
+    assert (df["_trimestre"].iloc[0], df["_titulo"].iloc[0]) == ("1", "Contratos menores 1 trimestre 2020 - CEMI")
+    assert ("se enlaza como 'Contratos menores 1 trimestre 2020 - CEMI' y como "
+            "'Contratos menores 2 trimestre 2020 - CEMI'") in _log(tmp_path)
 
 
 @pytest.mark.parametrize("pagina", [503, pagina_fuenlabrada([])])

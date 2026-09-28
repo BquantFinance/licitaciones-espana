@@ -6,14 +6,88 @@ TODO el histórico, TODOS los organismos, TODOS los campos posibles.
     pip install requests pandas pyarrow python-dateutil beautifulsoup4
     python galicia/scraper_galicia.py
     python galicia/scraper_galicia.py --organismo 48
+    python galicia/scraper_galicia.py merge --semilla /ruta/contratos_galicia_publicado.parquet
+
+Fases: base (listados JSON de LIC y CM por organismo) -> detail (ficha HTML de
+cada contrato, en caché SQLite) -> merge (tabla final contratos_galicia.csv y
+.parquet). Todo se puede repetir y reanudar (--resume).
+
+SESGO DEL SUPERVIVIENTE (comun/historico.py; docs/CONTINUACION.md §2)
+El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
+- Capa cruda: contratos_galicia_base.csv es la descarga en curso (se escribe
+  organismo a organismo, como siempre). Una descarga nueva (sin --resume) no
+  borra la anterior: su CSV y su Parquet pasan a _historico/ (archivar) y, al
+  terminar, si la nueva es idéntica vuelve la anterior (con su fecha) y no
+  queda nada nuevo en _historico/ (lo mismo que guardar_version). El Parquet
+  base, la tabla final y los ficheros de save_outputs se escriben siempre con
+  guardar_version. No se empieza una descarga nueva mientras la anterior no
+  esté en la tabla final (hay que ejecutar antes 'merge' o seguirla con
+  --resume): así ninguna descarga se queda fuera de la tabla.
+- Manifiesto de la descarga (contratos_galicia_base_progress.json, además de
+  los organismos completados para --resume): fecha_descarga (inicio de la
+  descarga, en UTC; se conserva al reanudar) y el ámbito que se ha vuelto a
+  leer COMPLETO, por organismo: LIC si su paginación trae exactamente
+  recordsTotal filas con id distinto, y cada ventana de CM que trae
+  exactamente recordsFiltered filas (el portal da ahí el total de la ventana;
+  recordsTotal es el del organismo) con id distinto y todas con 'publicado'
+  dentro de la ventana. Una ventana o un organismo vacíos (0 filas) no cuentan
+  como leídos: una respuesta vacía no retira nada.
+- Caché de detalle (SQLite): nunca se borra. Una ficha ya descargada ('done')
+  no se sustituye por un error ni por una ficha vacía (sin pares ni tablas);
+  si el portal la cambia, la anterior pasa a la tabla detail_cache_historico.
+  Sin --resume, 'detail' vuelve a intentar todas las fichas que no están
+  'done' (antes borraba la caché y las pedía todas); --force-detail las vuelve
+  a pedir todas.
+- Tabla final: acumular(anterior, nuevos, fecha, ambito) con la tabla final
+  anterior (su CSV, que guarda el texto tal cual) y el CSV base de la
+  descarga. Cada contrato que se ha visto alguna vez sigue en ella con
+  _primera_descarga, _ultima_descarga y _en_ultima_descarga: uno que el portal
+  retira queda con _en_ultima_descarga=False y uno que cambia aparece dos
+  veces (la versión anterior con False y la nueva). Solo se dan por retirados
+  los contratos del ámbito de la descarga (LIC de un organismo completo, CM con
+  'publicado' en una ventana completa): una ejecución parcial (--organismo,
+  --skip-cm/--skip-lic, un corte, --resume, ventanas incompletas) no retira nada
+  fuera de lo que ha leído, y una descarga vacía no escribe nada. Las filas se
+  comparan por las 12 columnas del listado con los valores como quedan en el
+  Parquet (números como número, fechas como fecha): el mismo contrato escrito
+  '4' o '4.0' (el tipo de la columna depende de qué más trae el organismo) no
+  es un cambio. Las columnas de la ficha no se comparan: salen de la caché (o,
+  si la caché no tiene la ficha, de la tabla final anterior). Con una sola
+  descarga la tabla es la de siempre más las 3 columnas de control al final.
+  Repetir 'merge' sin descarga nueva no cambia nada.
+- --semilla <parquet publicado> (repetible): el publicado se incorpora como la
+  instantánea más antigua. Solo se añaden las filas cuya clave estable
+  (_tipo, id) no está en la tabla (descarga nueva, contratos retirados y
+  semillas ya incorporadas), y solo del ámbito de la descarga (fuera de él no
+  se sabe si el portal las sigue listando), con _origen='release v2026.02' (o
+  --origen-semilla) y _en_ultima_descarga=False; nunca se modifica ni se
+  duplica una fila de la descarga. (_tipo, id) es único en el publicado
+  (1.685.789 filas); el id solo no lo es (25.593 ids son a la vez CM y LIC).
+  Errores conocidos del publicado (v2026.02, scraper antiguo) y qué se hace:
+  * importe inflado x10/x100: el scraper antiguo quitaba el punto decimal del
+    número JSON (674.78 -> 67478; 14900.0 -> 149000). No se puede deshacer con
+    certeza (67478 puede ser 674.78 o 6747.8), así que en las filas añadidas
+    'importe' queda vacío y el valor publicado va a 'importe_semilla'. (Solo
+    es seguro cuando acaba en 0: entonces es x10.)
+  * estado: el texto 'nan' (NaN del scraper antiguo) en los CM queda vacío,
+    como lo escribe el scraper actual; '6.0' se conserva.
+  * publicado y modificado se escriben como en el CSV base (AAAA-MM-DD, con
+    la hora si no es medianoche); el publicado no tiene detalle HTML (las
+    filas añadidas salen con detail_status 'missing') ni _primera_descarga /
+    _ultima_descarga (no se sabe cuándo se descargaron).
+  Una semilla que sea una salida de este script (con _en_ultima_descarga) se
+  toma tal cual y necesita --origen-semilla; no puede ser la propia tabla
+  final de --output.
 """
 
 import argparse
 import csv
+import filecmp
 import hashlib
 import importlib.util
 import json
 import numbers
+import os
 from pathlib import Path
 import random
 import re
@@ -24,13 +98,29 @@ import threading
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import unicodedata
 
+import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from dateutil.relativedelta import relativedelta
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import (  # noqa: E402
+    ANADIDA,
+    COLUMNAS_META,
+    FUERA_AMBITO,
+    IGNORAR_POR_DEFECTO,
+    ORIGEN_SEMILLA,
+    acumular,
+    archivar,
+    guardar_version,
+    imprimir_informe_semilla,
+    informe_semilla,
+    seleccionar_semilla,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -118,6 +208,18 @@ BASE_EXPORT_FIELDS = [
     "adjudicatario",
     "duracion",
 ]
+
+# Al comparar filas del listado entre descargas (listing_fingerprint), estas
+# columnas cuentan por su valor (como en el Parquet) y no por su texto: el CSV
+# base escribe 4 o 4.0 según qué otras filas traiga el organismo.
+LISTING_NUMERIC_COLUMNS = ("id", "importe", "estado", "_organismo_id")
+LISTING_DATE_COLUMNS = ("publicado", "modificado")
+# Semilla publicada por el scraper antiguo: su importe inflado (ver arriba).
+SEED_AMOUNT_COLUMN = "importe_semilla"
+SEED_KEY = ["_tipo", "id"]
+# Columnas de contenido con que seleccionar_semilla compara una fila de la
+# semilla con la clave incompleta (no hay ninguna en v2026.02).
+SEED_CONTENT_COLUMNS = ("_organismo_id", "objeto", "publicado", "nif", "adjudicatario")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -853,8 +955,14 @@ def discover(session, max_id, workers=5):
 # PAGINATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def paginate_lic(session, org_id):
-    """Todas las licitaciones de un organismo."""
+def paginate_lic(session, org_id, informe=None):
+    """Todas las licitaciones de un organismo.
+
+    informe (dict, opcional): se anota en informe["LIC"] si la paginación está
+    completa (exactamente recordsTotal filas, todas con id distinto, y alguna):
+    solo entonces sus licitaciones cuentan como vueltas a leer (ámbito) y las
+    que falten se pueden dar por retiradas.
+    """
     url = f"{BASE_URL}/api/v1/organismos/{org_id}/licitaciones/table"
     session.visit_org_page(org_id)
 
@@ -871,6 +979,8 @@ def paginate_lic(session, org_id):
         if total is None:
             total = data.get("recordsTotal", 0)
             if total == 0:
+                if informe is not None:
+                    informe["LIC"] = {"declarados": 0, "filas": 0, "unicos": 0, "completo": False}
                 return []
             log(f"Org {org_id} LIC: {total:,} registros")
 
@@ -902,8 +1012,16 @@ def paginate_lic(session, org_id):
         if len(all_recs) != total or unique != total:
             log_warn(
                 f"Org {org_id} LIC: DESAJUSTE esperados={total:,} descargados={len(all_recs):,} "
-                f"únicos={unique:,}"
+                f"únicos={unique:,} (sus licitaciones no se dan por retiradas en esta descarga)"
             )
+    if informe is not None:
+        unique = len({str(r.get("id")) for r in all_recs if r.get("id") not in (None, "")})
+        informe["LIC"] = {
+            "declarados": total or 0,
+            "filas": len(all_recs),
+            "unicos": unique,
+            "completo": bool(total) and len(all_recs) == unique == total,
+        }
 
     for r in all_recs:
         r["_organismo_id"] = org_id
@@ -911,13 +1029,21 @@ def paginate_lic(session, org_id):
     return all_recs
 
 
-def paginate_cm_window(session, org_id, date_start, date_end):
-    """Pagina CM para una ventana de fecha."""
+def paginate_cm_window(session, org_id, date_start, date_end, informe=None):
+    """Pagina CM para una ventana de fecha.
+
+    informe (dict, opcional): recibe 'filtrados' (recordsFiltered de la primera
+    página: los contratos de la ventana según el portal, verificado en vivo el
+    2026-09-28), 'filas' y 'unicos' (ids distintos) para comprobar que la
+    ventana ha llegado completa.
+    """
     url = f"{BASE_URL}/api/v1/organismos/{org_id}/contratosmenores/table"
     all_recs = []
     start = 0
     total = None
     draw = 1
+    if informe is not None:
+        informe.update(filtrados=None, filas=0, unicos=0)
 
     while True:
         p = params_cm(start, PAGE_SIZE, date_start, date_end, draw)
@@ -926,6 +1052,8 @@ def paginate_cm_window(session, org_id, date_start, date_end):
 
         if total is None:
             total = data.get("recordsTotal", 0)
+            if informe is not None:
+                informe["filtrados"] = data.get("recordsFiltered")
             if total == 0:
                 return [], 0
 
@@ -949,13 +1077,44 @@ def paginate_cm_window(session, org_id, date_start, date_end):
         sys.stdout.write(f"\r      [{date_start}→{date_end}] {len(all_recs):,}/{total:,} ✓          \n")
         sys.stdout.flush()
 
+    if informe is not None:
+        informe["filas"] = len(all_recs)
+        informe["unicos"] = len({r.get("id") for r in all_recs if r.get("id") not in (None, "")})
     return all_recs, total or 0
 
 
-def paginate_cm_full(session, org_id):
+def window_check(recs, date_start, date_end, informe):
+    """Completa el informe de una ventana de CM (paginate_cm_window): 'fuera'
+    (filas sin 'publicado' o con él fuera de la ventana), 'sin_id' y 'completa':
+    exactamente recordsFiltered filas, con id distinto y todas dentro de la
+    ventana. Solo una ventana completa y no vacía cuenta como vuelta a leer."""
+    fechas = parse_datetime_series(pd.Series([r.get("publicado") for r in recs], dtype=object)).dt.normalize()
+    dentro = fechas.between(pd.Timestamp(date_start), pd.Timestamp(date_end))
+    informe["fuera"] = int((~dentro).sum())
+    informe["sin_id"] = sum(1 for r in recs if r.get("id") in (None, ""))
+    try:
+        filtrados = int(informe.get("filtrados"))
+    except (TypeError, ValueError):
+        filtrados = None
+    informe["completa"] = bool(
+        filtrados is not None
+        and filtrados > 0
+        and informe["filas"] == informe["unicos"] == filtrados
+        and not informe["fuera"]
+        and not informe["sin_id"]
+    )
+    return informe
+
+
+def paginate_cm_full(session, org_id, informe=None):
     """
     CM: barre TODAS las ventanas de CM_WINDOW_MONTHS desde hoy hasta DATE_ORIGIN.
     SIN parar antes — recorre todo el rango completo.
+
+    informe (dict, opcional): informe["CM"] recibe las ventanas completas y no
+    vacías ('ventanas': [[desde, hasta], ...], ver window_check), que son el
+    ámbito de la descarga en CM, y las incompletas (se avisan en el log: sus
+    contratos no se dan por retirados).
     """
     session.visit_org_page(org_id)
 
@@ -969,6 +1128,8 @@ def paginate_cm_full(session, org_id):
     total_windows = 0
     windows_with_data = 0
     reported_total = 0
+    complete_windows = []
+    incomplete_windows = []
 
     # Calcular número de ventanas para progreso
     temp = now

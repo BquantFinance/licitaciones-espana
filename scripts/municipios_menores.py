@@ -57,8 +57,12 @@ Qué se descarga:
 - Lo que la lista deja de enlazar queda como retirado (sus filas se
   conservan), pero solo si la lista se ha podido leer entera y enlaza algún
   fichero: si el portal falla no se retira nada y el script acaba con código 1.
-  Un fichero enlazado que no se puede bajar (4xx, HTML en vez de la tabla) es
-  un error y su copia anterior se conserva.
+  Si vuelve a enlazarse se vuelve a pedir (aunque sea de un año cerrado) y sus
+  filas vuelven a _en_ultima_descarga=True. En Fuenlabrada, cuya lista pierde
+  entradas, no salir en ella no basta: se vuelve a pedir la URL y solo un
+  404/410 lo retira. Un fichero enlazado que no se puede bajar (4xx, HTML en
+  vez de la tabla) es un error y su copia anterior se conserva; uno enlazado
+  dos veces (dos conjuntos del CKAN con la misma URL) se baja una sola vez.
 
 Lectura (todo como texto, sin convertir nada): CSV con comun.lectura_csv
 (detecta codificación y separador; las filas de título de encima de la
@@ -104,9 +108,14 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     el original y se anotan en los avisos. Fundaciones de Cultura y Deportes
     (2024-2026): solo PDF, DOCX y un ZIP de PDF (no se extraen).
   - Fuenlabrada: https://transparencia.ayto-fuenlabrada.es/contratos/menores/
-    (y /page/N/): tabla con fecha, nombre y enlace; 98 ficheros 2015-2026
-    (XLS, XLSX y ODS; hasta 2019 uno por organismo: Ayuntamiento, CIFE, IMLSP,
-    OTAF, PMC, PMD, FUMECO) con CIF. Una hoja por organismo con una fila de
+    (y /page/N/, 25 por página; archivo de la taxonomía grupo_contratos sin
+    API REST y que ignora orderby/order): pagina por fecha y las entradas con
+    la misma fecha cambian de orden entre consultas, así que en una lectura
+    faltan unas y se repiten otras (el 2026-09-28, 96 únicas de 99 filas); lo
+    que falta se baja en otra ejecución. Tabla con fecha, nombre y enlace; 99
+    ficheros 2015-2026 (XLS, XLSX y ODS; hasta 2019 uno por organismo:
+    Ayuntamiento, CIFE, IMLSP, OTAF, PMC, PMD, FUMECO) con CIF. Una hoja por
+    organismo con una fila de
     título (_titulo_tabla) y filas de subtotal "Total <adjudicatario>"
     intercaladas (así se publican). La lista incluye también encargos a medios
     propios, basados en acuerdo marco y contratos Next Generation 2021-2025
@@ -126,12 +135,17 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
   - Málaga: CKAN https://datosabiertos.malaga.eu (package_search q=menores):
     77 conjuntos "Contratos menores N trimestre AAAA - Ayuntamiento de Málaga"
     (2016-2026) y "- CEMI" (2016-2024), cada uno con PDF y XLSX/XLS (y ODS
-    desde 2025): se baja la hoja de cálculo. Con CIF desde 2019 (2016-2018
-    solo el nombre del tercero). El XLSX del 4T de 2020 del Ayuntamiento da
-    404 (error en cada ejecución; ese trimestre solo está en PDF).
+    desde 2025): se baja la hoja de cálculo. Ayuntamiento: CIF solo en 3T
+    2017, 1T 2018, 2T-3T 2021 y desde 2024 (el resto, solo el nombre del
+    tercero); CEMI: NIF desde el 2T de 2018 (sus ficheros traen además una
+    hoja Hoja2 con la lista de tipos de contrato). El XLSX del 4T de 2020 del
+    Ayuntamiento da 404 (error en cada ejecución; ese trimestre solo está en
+    PDF) y el conjunto de CEMI del 2T de 2020 enlaza el XLSX del 1T (se baja
+    una vez). Unos 2/3 de los menores de 2025 del Ayuntamiento también están
+    en el feed 1143 de la PLACSP (mismo NIF e importe).
   - Córdoba: CKAN https://datosabiertos.cordoba.es (q=menores): conjuntos
-    "Contratos menores" (CSV 2021-2024, XLS 2021-2023 y XLSX 2023 de lo
-    publicado en PLACSP) y "Contratación administrativa - Contratos menores"
+    "Contratos menores" (CSV 2021-2024 y XLS 2021-2023, que se solapan, y
+    XLSX 2023 de lo publicado en PLACSP) y "Contratación administrativa - Contratos menores"
     (ODS de 1T y 3T de 2024 declarados XLS, XLS de 2023 y de 2T 2026, con
     NIF). En PDF: trimestres de 2021-2025 y 1T 2026, y las "tomas de
     conocimiento" de la Junta de Gobierno.
@@ -211,7 +225,10 @@ MUNICIPIOS = {
     "valladolid": {"nombre": "Valladolid", "codigo_ine": "47186",
                    "descripcion": "XLSX acumulados del sistema contable 2017-, sin NIF (salvo 2018)"},
     "fuenlabrada": {"nombre": "Fuenlabrada", "codigo_ine": "28058",
-                    "descripcion": "XLS/XLSX/ODS trimestral 2015-, con CIF"},
+                    "descripcion": "XLS/XLSX/ODS trimestral 2015-, con CIF",
+                    # La lista pagina por fecha y las entradas con la misma fecha cambian de
+                    # orden entre consultas: en cada lectura pueden faltar algunas
+                    "lista_incompleta": True},
     "leganes": {"nombre": "Leganés", "codigo_ine": "28074",
                 "descripcion": "XLSX mensual o trimestral 2015-, con NIF"},
     "malaga": {"nombre": "Málaga", "codigo_ine": "29067",
@@ -1587,6 +1604,23 @@ def _rel_con_hash(rel, clave_url):
     return (ruta.parent / f"{ruta.stem}__{hashlib.sha1(clave_url.encode()).hexdigest()[:8]}{ruta.suffix}").as_posix()
 
 
+def _sin_duplicados(clave, recursos, resumen):
+    """Un fichero enlazado varias veces (p.ej. desde dos conjuntos de datos del
+    CKAN: en Málaga el de CEMI 2T 2020 enlaza el XLSX del 1T) se descarga una
+    sola vez, con los datos del primer enlace: si no, sus filas saldrían dos
+    veces."""
+    vistos, unicos = {}, []
+    for r in recursos:
+        clave_url = _clave_url(r.url)
+        if clave_url in vistos:
+            resumen.avisos.append(f"{clave}: el mismo fichero se enlaza como '{vistos[clave_url].titulo}' y como "
+                                  f"'{r.titulo}'; se descarga una vez ({r.url})")
+            continue
+        vistos[clave_url] = r
+        unicos.append(r)
+    return unicos
+
+
 def _asignar_rutas(clave, recursos, manifiesto):
     """Ruta local estable de cada recurso: la que ya tiene en el manifiesto su
     URL o la propuesta; si dos URL distintas de esta lista caen en la misma,
@@ -1616,6 +1650,7 @@ def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False):
                                 "no se descarga ni se retira nada")
         print(f"  ❌ {e}")
         return
+    recursos = _sin_duplicados(clave, recursos, resumen)
     _asignar_rutas(clave, recursos, manifiesto)
     guardar_json(raw / clave / "_inventario.json",
                  [dict(asdict(r), estructurado=r.motivo is None) for r in recursos + otros])
@@ -1626,8 +1661,10 @@ def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False):
     for r in recursos:
         destino = raw / r.rel
         entrada = manifiesto.get(r.rel)
-        # Un cambio de URL, aunque sea solo el ?t= de Liferay, es una versión nueva
-        if destino.exists() and _cerrado(r, anio_actual) and not comprobar_todo and entrada.get("url") == r.url:
+        # Un cambio de URL, aunque sea solo el ?t= de Liferay, es una versión nueva, y
+        # uno que se había retirado y vuelve a enlazarse se vuelve a pedir
+        if (destino.exists() and _cerrado(r, anio_actual) and not comprobar_todo and entrada.get("url") == r.url
+                and entrada.get("publicado", True)):
             resumen.sin_cambios[clave] += 1
             continue
         estado, detalle = descargar(r.url, destino, tipo=r.formato)
@@ -1658,10 +1695,26 @@ def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False):
         return
     publicados = {r.rel for r in recursos}
     for rel, entrada in manifiesto.de_municipio(clave).items():
-        if rel not in publicados and not entrada.get("sondeo") and entrada.get("publicado", True):
-            manifiesto.retirar(raw / rel, "el portal ya no lo enlaza")
-            resumen.retirados.append(f"{clave} {rel}: el portal ya no lo enlaza; se conservan sus filas")
-            print(f"  🗑️ {rel}: retirado por el portal")
+        if rel in publicados or entrada.get("sondeo") or not entrada.get("publicado", True):
+            continue
+        motivo = "el portal ya no lo enlaza"
+        if config.get("lista_incompleta"):
+            # La lista pierde entradas (ver MUNICIPIOS): no salir en ella no basta; se
+            # vuelve a pedir su URL y solo un 404/410 lo retira
+            estado, detalle = descargar(entrada["url"], raw / rel, tipo=_extension(rel) or None)
+            time.sleep(PAUSA)
+            if estado in ESTADOS_OK:
+                manifiesto.registrar(raw / rel, entrada["url"], estado)
+                resumen.descarga(clave, f"{clave} {rel} (no sale en la lista, pero su URL sigue publicada)", estado)
+                continue
+            if estado != "no_existe":
+                resumen.fallidos.append(f"{clave} {rel}: no sale en la lista y su URL no responde bien "
+                                        f"({detalle or estado}); no se retira")
+                continue
+            motivo += f" y su URL da {detalle}"
+        manifiesto.retirar(raw / rel, motivo)
+        resumen.retirados.append(f"{clave} {rel}: {motivo}; se conservan sus filas")
+        print(f"  🗑️ {rel}: retirado por el portal")
 
 
 def generar_parquet(clave, salida, raw, manifiesto, resumen):
