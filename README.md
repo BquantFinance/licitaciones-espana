@@ -1127,6 +1127,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 - [x] Extremadura: `scripts/ccaa_extremadura.py`, el Registro de Contratos de la Junta (menores, mayores e incidencias, 1T 2022-2T 2026; 207.702 filas de menores con NIF), verificado en vivo el 2026-09-28
 - [x] La Rioja: `scripts/ccaa_la_rioja.py`, el CSV anual de menores del Gobierno (2018-2026, 350.967 filas, con NIF salvo personas físicas enmascaradas), verificado en vivo el 2026-09-28
 - [x] Menores valencianos fuera del REGCON: `scripts/ccaa_valencia_menores.py` (Universitat de València, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV; 1,43 M filas 2015-2026), verificado en vivo el 2026-09-28
+- [x] Menores de 8 ayuntamientos grandes con poco o nada en el 1143: `scripts/municipios_menores.py` (Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife; 289.401 filas 2015-2026), verificado en vivo el 2026-09-28
 - [x] Castilla-La Mancha: `scripts/ccaa_castilla_la_mancha.py`, los ficheros de transparencia de la Junta (menores, caja pagadora, SESCAM por línea de factura, sector público 2015-2018) y la UCLM 2017-2026, verificado en vivo el 2026-09-28. Los RAR necesitan `rarfile` con `unrar` o `libarchive-c` (Universitat de València, Ajuntament de València, Diputación de Alicante): scrapers en desarrollo
 - [ ] Canarias, Cantabria, Illes Balears, Ceuta y Melilla
 - Navarra: su ley foral de contratos (art. 102.3) solo obliga a publicar la menor cuantía agregada por empresa y trimestre; no hay fuente contrato a contrato

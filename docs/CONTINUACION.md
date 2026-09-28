@@ -90,7 +90,17 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - Solapes que se conservan tal cual: el anual de la Junta frente a sus trimestres (`_periodo`); 30.707 filas de la UCLM dentro de la Junta de 2023; ficheros repetidos en sector público.
     - En origen, el SESCAM de 2015 y del 2T de 2016 están cortados en 65.535 filas (el máximo de un .xls).
     - Para los RAR: `rarfile` con `unrar`, o `libarchive-c`; están en `requirements.txt`. Sin ellos, los RAR quedan pendientes y la ejecución sale con código 1.
-  - **Scraper de municipios** (`scripts/municipios_menores.py`), hecho por un agente y sin revisar.
+  - **Municipios: cerrado** (`scripts/municipios_menores.py`: 29 tests en los dos pandas, 33 mutaciones detectadas). En vivo: 299 ficheros y 289.401 filas de 8 ayuntamientos.
+    - Casi nada de esto está en el 1143. En 2025, Gijón tiene 8.157 menores en su portal frente a 24 en el 1143, y Fuenlabrada 1.352 frente a 0.
+    - Fallos del portal, que se repiten en cada ejecución: Leganés sirve la portada en lugar del XLSX de agosto de 2026, y el XLSX de Málaga del 4T 2020 da 404.
+    - Sin extraer, solo en PDF:
+      - Córdoba: 35 PDF, 2025 incluido.
+      - Santa Cruz de Tenerife: 2016-2022 y 2025.
+      - Leganés: 19 PDF.
+      - Valladolid: las fundaciones de 2024-2026.
+    - El listado de Fuenlabrada pierde entradas al paginar por fecha. Por eso solo se retira un fichero si su URL da 404.
+    - Valladolid publica ficheros acumulados: para contar, el último de cada año.
+    - En Córdoba, 2021-2023 cuenta doble (CSV y XLS se solapan).
     - Si hay commits `WIP (copia de seguridad, sin revisar)`, están a medio hacer: revisar, pasar los tests en los dos pandas, verificar en vivo y cerrar con su propio commit.
 
 ## 2. Reglas innegociables

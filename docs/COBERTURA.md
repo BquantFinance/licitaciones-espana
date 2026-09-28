@@ -354,7 +354,7 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 | CKAN "Contratación Menor en {año}" | Igual | CSV/JSON (2025: 224 MB) | 2018-2026 | Igual | No | No | M (data.europa.eu) | `…/datosabiertos/portal/dataset/00510697-…/download/menores_2025_v1_20260618.csv` |
 | Pestaña "Documentos" del perfil en PLACSP | UGR (desde 2020), Diputación de Granada | PDF/XLS | 2019- | ? | No | No | A (UGR) | `scgp.ugr.es/pages/contratos-menores/contratos-menores` |
 | Ayuntamiento de Sevilla | Ayuntamiento y organismos | PDF mensual | 2017- | ? | No | 320 | M | `sevilla.org/servicios/contratacion/contratos/{año}` |
-| CKAN de Málaga y de Córdoba | Ayuntamientos | XLSX/XLS/ODS/PDF trimestral con CIF | 2016-2026 | ~600 / ~400 | No | Sí | A | `datosabiertos.malaga.eu`, `datosabiertos.cordoba.es` |
+| CKAN de Málaga y de Córdoba | Ayuntamientos | XLSX/XLS/ODS/PDF trimestral con CIF | 2016-2026 | ~600 / ~400 | **Sí**, `municipios_menores.py` | Sí | A | `datosabiertos.malaga.eu`, `datosabiertos.cordoba.es` |
 
 **Región de Murcia**
 
@@ -389,7 +389,7 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 |---|---|---|---|---|---|---|---|---|
 | Buscador de contratos adjudicados y formalizados | Gobierno | CSV (POST) | 2020- | 12.465 (2025) | No | Sí: es copia de PLACSP | A | `gobiernodecanarias.org/transparencia/…/actividad-contractual/formalizados/` |
 | Contratos menores del SCS | SCS | ODS/PDF **agregado**, no contrato a contrato | 2021-2026 | **89.340** (2025) | No | ~1.700 | A | `www3.gobiernodecanarias.org/sanidad/scs/contenidoGenerico.jsp?idDocument=ecd71051-…` |
-| Ayuntamiento de Santa Cruz de Tenerife | Ayuntamiento | CSV 2023-2024; PDF 2025 | 2020-2025 | ~1,2K | No | Sí | A | `santacruzdetenerife.es/gobiernoabierto/transparencia/contratos` |
+| Ayuntamiento de Santa Cruz de Tenerife | Ayuntamiento | CSV 2023-2024; PDF 2025 | 2020-2025 | ~1,2K | **Sí**, `municipios_menores.py` | Sí | A | `santacruzdetenerife.es/gobiernoabierto/transparencia/contratos` |
 | Ayuntamiento de Las Palmas de Gran Canaria | Ayuntamiento | CSV y perfil propio | ? | ? | No | ~2K | M (TLS) | `datosabiertos.laspalmasgc.es` |
 
 **Melilla**: desde 2019 publica los menores en PDF en la pestaña "Documentos" del perfil de Hacienda en PLACSP, no en el 1143 (A, `melilla.es/…contenido=29689`). **Ceuta**: solo el 1143.
@@ -459,9 +459,9 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 | datos.madrid.es | Ayuntamiento y OOAA | CSV/XLSX | 2015- | ~7 mil | Sí | 3,1 mil | A | datos.madrid.es |
 | PLACSP 1143 | 113 entes locales, fundaciones hospitalarias, empresas municipales | ATOM | 2018- | 23 mil | Sí (nacional) | — | A | sindicacion_1143 |
 | Alcalá, CKAN | Ayuntamiento | XLSX trimestral: informe contable ADO pasado de PDF (408 hojas), con NIF | 2024 | ~4,5 mil operaciones | No | 0 | A | opendata.ayto-alcaladehenares.es/dataset/contratos-menores |
-| Fuenlabrada | Ayuntamiento y OOAA | XLS/XLSX trimestral con CIF | 2022- | ~1 mil | No | 0 | A | transparencia.ayto-fuenlabrada.es/contratos/menores/ |
+| Fuenlabrada | Ayuntamiento y OOAA | XLS/XLSX trimestral con CIF | 2022- | ~1 mil | **Sí**, `municipios_menores.py` | 0 | A | transparencia.ayto-fuenlabrada.es/contratos/menores/ |
 | Móstoles | Ayuntamiento y OOAA | PDF mensual con texto y NIF | 2018- | ~0,4 mil | No | 72 | A | mostoles.es (…/contratos-menores-mensuales-2025) |
-| Leganés | Ayuntamiento | XLSX mensual con NIF | 2016- | ~0,2 mil | No | 49 | A | leganes.org/web/transparencia/contratos-menores |
+| Leganés | Ayuntamiento | XLSX mensual con NIF | 2016- | ~0,2 mil | **Sí**, `municipios_menores.py` | 49 | A | leganes.org/web/transparencia/contratos-menores |
 | UPM | Universidad | XLSX anual (19 col.) y XML trimestral, sin NIF del adjudicatario | 2015- | ~0,9 mil | No | 0 | A | transparencia.upm.es/economico/contratos |
 | UCM, UAM, UC3M, URJC, UAH | Universidades | Listas trimestrales | 2018- | 2-6 mil cada una | No | 0 | M/B | ucm.es/portaldetransparencia |
 | Parla, Collado Villalba, Colmenar, Boadilla | Ayuntamientos | Sin localizar | — | — | No | 0-4 | B | — |
@@ -473,7 +473,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 | ODS `contratos-menores` | Consejerías, delegaciones, ITACyL, GSS, ECyL, ICE | API v2.1, 14 campos con NIF | 2019- | 17-20 mil | Sí (`ccaa_castilla_leon.py`) | Sí: el 97,8 % enlaza a PLACSP | A | analisis.datosabiertos.jcyl.es |
 | ODS `contratos-menores-sacyl` | Gerencias de SACYL | Ídem | 2018- | 2,4 mil | Sí | Sí (99 %) | A | ídem |
 | PLACSP 1143 | Junta y SACYL; diputaciones de Salamanca (5,2 mil), Valladolid (2,7 mil) y Zamora (2,2 mil); ayuntamientos de Zamora y Burgos | ATOM | 2018- | 46,5 mil | Sí (nacional) | — | A | sindicacion_1143 |
-| Valladolid | Ayuntamiento y fundaciones municipales | XLSX trimestral acumulado de SICALWIN (24 col., sin NIF) | 2017- | ~2,5 mil (7.637 operaciones AD) | No | 36 | A | valladolid.gob.es/es/perfil-contratante/contratos-menores-volumen-contratacion-tipo-procedimiento |
+| Valladolid | Ayuntamiento y fundaciones municipales | XLSX trimestral acumulado de SICALWIN (24 col., sin NIF) | 2017- | ~2,5 mil (7.637 operaciones AD) | **Sí**, `municipios_menores.py` | 36 | A | valladolid.gob.es/es/perfil-contratante/contratos-menores-volumen-contratacion-tipo-procedimiento |
 | León | Ayuntamiento | HTML: listado y una ficha por contrato | — | — | No | 0 | A | sede.aytoleon.es/eAdmin/PerfilContratante.do?action=verContratos&tipo=menores |
 | Salamanca | Ayuntamiento | Documento anual | 2017-2024 T1 | — | No | 4 | A | aytosalamanca.es/en/contratos-menores |
 | Diputación de León | Diputación | XLS y PDF trimestrales | — | — | No | 122 | A | transparencia.dipuleon.es (08.02) |
@@ -486,7 +486,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 | contratosdegalicia.gal, API de menores | 100 entes de la Xunta (SERGAS: 204 mil) | JSON DataTables con NIF | 2018- | 252 mil en 2025 (1.775.090 en total) | Sí (`scraper_galicia.py`); el publicado tiene 1,64 M | No | A | …/api/v1/organismos/{id}/contratosmenores/table |
 | Misma plataforma: 263 concellos, deputacións, USC, UDC y UVigo | — | Solo licitaciones | — | 0 menores | — | — | A | ídem |
 | PLACSP 1143 | 141 entes locales (Sanxenxo, Redondela, Lugo, Deputación de Ourense) | ATOM | 2018- | 14 mil | Sí (nacional) | — | A | sindicacion_1143 |
-| Vigo | Concello | CSV/JSON/XLS anual, 9 col., sin NIF | 2019- | 1,4-2,1 mil | No | 4 | A | datos.vigo.org/data/sector-publico/contratos-menores-{AA}.csv |
+| Vigo | Concello | CSV/JSON/XLS anual, 9 col., sin NIF | 2019- | 1,4-2,1 mil | **Sí**, `municipios_menores.py` | 4 | A | datos.vigo.org/data/sector-publico/contratos-menores-{AA}.csv |
 | A Coruña | Concello | XLS/ODS trimestral | 2014-2025 | ~2,4 mil | No | 0 | A (listado; ficheros con 403 por ASN) | coruna.gal/transparencia (…/contratos-menores) |
 | Deputación de Pontevedra | Deputación | DOCX/PDF trimestral, sin NIF | 2023- | ~0,4 mil | No | 119 | A | depo.gal/es/contratos-menores |
 | Deputación da Coruña | Deputación | "Contratos e vales" | — | — | No | 19 | M | dacoruna.gal/contratacion/contratos-e-vales |
@@ -500,7 +500,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 | Menores 2016-2020 | Ídem | XML | 2016-2020 | — | No | — | M | …/dataset-contratos-menores2016-2020.xml |
 | Relaciones trimestrales | Consejerías y áreas del SESPA | XLSX/PDF | ~2020- | — | No | — | M | miprincipado.asturias.es/perfil-contratante/relaciones-trimestrales-contratos-menores |
 | PLACSP 1143 | 91 entes locales | ATOM | 2018- | 4,7 mil | Sí (nacional) | — | A | sindicacion_1143 |
-| Gijón | Ayuntamiento, Divertia, FMC, empresas municipales | CSV/JSON/XML de 19 col. con CIF | 2018- | 7-8,7 mil (63.978 en total) | No | 8 | A | opendata.gijon.es/descargar.php?id=725&tipo=JSON |
+| Gijón | Ayuntamiento, Divertia, FMC, empresas municipales | CSV/JSON/XML de 19 col. con CIF | 2018- | 7-8,7 mil (63.978 en total) | **Sí**, `municipios_menores.py` | 8 | A | opendata.gijon.es/descargar.php?id=725&tipo=JSON |
 | Oviedo | Ayuntamiento y FMC | Buscador de la sede y BI Pentaho | — | — | No | 0 | M | sede.oviedo.es (…/contratos-menores-ayuntamiento-de-oviedo) |
 | Avilés | Ayuntamiento | Publicaciones de la sede | — | — | No | 0 | M | sedeelectronica.aviles.es/Publicaciones.aspx?t=CM |
 | Uniovi | Universidad | Relación trimestral | — | — | No | 0 | M | transparencia.uniovi.es/contratos |
