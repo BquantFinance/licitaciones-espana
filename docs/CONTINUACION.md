@@ -195,10 +195,10 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 - **Sin cubrir**, por orden de impacto en los menores:
   1. Comunidad de Madrid (~385 mil/año).
   2. Galicia (~220 mil/año).
-  3. Andalucía (~127 mil/año).
-  4. Menores de la PSCP de Catalunya.
-  5. TED.
-  6. BORME.
+  3. Menores de la PSCP de Catalunya.
+  4. TED.
+  5. BORME.
+- Andalucía quedó cubierta el 2026-09-28, sin verificar en vivo.
 - Asturias quedó cubierta el 2026-09-28, sin verificar en vivo porque su portal no responde desde la nube.
 
 | Scraper | Qué hay que cambiar |
@@ -210,7 +210,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | ~~`comunidad_madrid/ccaa_madrid_ayuntamiento.py`~~ | **Hecho** (§3.1.4, `73d6e80`): `guardar_version` y `acumular` |
 | ~~`scripts/ccaa_asturias.py`~~ | **Hecho** (2026-09-28): CSV anuales en `raw/` con `guardar_version`, Parquet desde todas las versiones con `acumular` (comparando el texto publicado) y `--semilla` por (`year`, `Nº INSCRIPCION`). El portal no responde desde la nube: falta verificarlo en vivo (VPS) |
 | `galicia/scraper_galicia.py` | Caché SQLite y merge final |
-| `scripts/ccaa_andalucia.py` | El re-scrape completo sobrescribe la salida |
+| ~~`scripts/ccaa_andalucia.py`~~ | **Hecho** (2026-09-28): `raw/` con `guardar_version`, `acumular` con ámbito (no se retira nada de consultas con el tope o incompletas), `--semilla` por `id_expediente`, reanudación y `procesar` sin red. Probado sin red con las 808.441 filas del publicado. El portal corta desde la nube: falta la prueba en vivo y la partición por mes del SAS |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Acumular por registro. Al sembrar, quitar solo las 2,16M copias idénticas del publicado |
 | `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Hecho**: capa cruda (`78d4f39`, `guardar_version`) y Parquet con todas las versiones (`1e28560`, `acumular`) |
 | `Euskadi/ccaa_euskadi.py` | La tabla de la API ya acumula (`consolidacion_euskadi.py`, `_en_ultima_descarga`). Falta revisar el refresco de los ficheros crudos que "siguen cambiando" |

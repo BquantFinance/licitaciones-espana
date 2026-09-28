@@ -36,3 +36,8 @@ ccaa_Andalucia/perfiles_cache.json
 galicia/contratos_galicia_base.parquet
 galicia/contratos_galicia_base_progress.json
 galicia/contratos_galicia_detail.sqlite3
+
+# Originales y versiones que guardan los scrapers (comun/historico.py): son datos,
+# no se suben a git (van a los releases); así no gastan cuota de LFS por error
+raw/
+_historico/

@@ -605,11 +605,21 @@ Conteos observados en torno al 2026-03-23 consultando la API pública del portal
 
 ```
 ccaa_Andalucia/
-└── licitaciones_andalucia.parquet          # ~857K registros (47 MB, snappy)
+├── licitaciones_andalucia.parquet          # ~857K registros (47 MB, snappy)
+├── _historico/                             # versiones anteriores del Parquet
+└── raw/                                    # cada descarga tal cual (jsonl.gz); anteriores en raw/_historico/
 
 scripts/
 └── ccaa_andalucia.py                       # Scraper ES proxy 8D + multi-sort + salida CSV/Parquet
 ```
+
+**Sin sesgo del superviviente.**
+- Cada descarga se guarda tal cual en `raw/` (`guardar_version`).
+- El Parquet se construye con `acumular` sobre la salida anterior. Lo que el portal retira o cambia se conserva con `_en_ultima_descarga=False`. Solo se retira lo que seguro cae en una consulta completa: con el tope de 10.000 o una paginación cortada no se retira nada.
+- `--semilla <parquet publicado>` añade los `id_expediente` que ya no se sirven (el identificador del portal; en v2026.02 es único en las 808.441 filas).
+- `procesar` regenera las salidas sin red. `--perfil` y `--anio` descargan una parte, y solo esa parte puede marcar retiradas.
+- Si la salida por defecto es aún un puntero Git LFS sin descargar, el script se niega a sobrescribirla. En ese caso usa `--salida` o baja antes el fichero.
+- Los importes van siempre como `float64`.
 
 ### Campos principales (34 columnas)
 
