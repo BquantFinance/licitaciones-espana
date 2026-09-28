@@ -18,6 +18,7 @@ import os
 import re
 import runpy
 import shutil
+import subprocess
 import sys
 import urllib.error
 import zipfile
@@ -276,8 +277,10 @@ def _make_repo(tmp_path, scripts=()):
     shutil.copy(REPO_DIR / "nacional" / "licitaciones.py", tmp_path / "nacional" / "licitaciones.py")
     for s in scripts:
         shutil.copy(TED_DIR / s, tmp_path / "ted" / s)
-    # Los scripts de análisis importan ted_module (avisos_para_cruce)
+    # Los scripts de análisis importan ted_module (avisos_para_cruce), que importa comun/
     shutil.copy(TED_DIR / "ted_module.py", tmp_path / "ted" / "ted_module.py")
+    shutil.copytree(REPO_DIR / "comun", tmp_path / "comun", dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__"))
     return tmp_path
 
 
@@ -1521,6 +1524,9 @@ class TestTedRegla2:
         filas = df.set_index("ID_NOTICE_CAN")
         assert filas.loc["2021/S 010-000004", "WIN_NAME"] == "NA"   # texto publicado, no nulo
         assert pd.isna(filas.loc["2021/S 010-000005", "CPV"])
+        # La fila que sale del registro corto lleva su motivo (regla 1: marcar, no limpiar)
+        assert filas.loc["2021/S 010-000005", "_registro_irregular"] == "campos_de_menos"
+        assert filas["_registro_irregular"].isna().sum() == 2
         irr = _irregulares(tmp_path)
         # Línea en que empieza cada uno: la cabecera es la 1 y la línea en blanco cuenta
         assert irr["linea"].tolist() == ["3", "4", "7"]
@@ -1534,16 +1540,41 @@ class TestTedRegla2:
         assert "REGISTROS IRREGULARES" in caplog.text
         assert not list(tmp_path.glob(".*"))   # ni el temporal de la descarga ni el de los irregulares
 
-    def test_umbral_de_registros_irregulares(self, monkeypatch, tmp_path):
+    def test_cualquier_registro_irregular_del_csv_usado_marca_el_anio(self, monkeypatch, tmp_path):
         anios = []
         _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_MAL, irregulares=anios)
-        assert anios == [2021]   # 3 de sus 7 líneas
-        # Uno entre 201 líneas (0,5 %) no pasa del 1 %, pero se guarda igual
+        assert anios == [2021]
+        # Uno solo entre 201 líneas, de otro país, también: el CSV de TED no trae ninguno
         malo = "2021/S 010-000009,2021,FR,Mairie,FR1,S,1,1,1,X,FR2,1,2021-01-10,0,EXTRA\n"
         anios = []
         df = _csv_2021(monkeypatch, tmp_path, _CAB_2021 + _FILA_2021 * 199 + malo, irregulares=anios)
-        assert anios == [] and len(df) == 199
+        assert anios == [2021] and len(df) == 199
         assert _irregulares(tmp_path)["linea"].tolist() == ["201"]
+        anios = []
+        _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_HUB, irregulares=anios)
+        assert anios == []
+
+    def test_url_descartada_con_irregulares_y_otra_buena(self, monkeypatch, tmp_path):
+        # La URL «TED 2020» sirve un CSV cuyo único aviso de España tiene un campo de más (sin filas
+        # de España buenas) y el hub, uno bueno: el año sale bien y esos irregulares, a _historico/
+        url_2020 = f"{tm.TEDConfig.CSV_BASE_URL}/TED%202020/TED%20-%20Contract%20award%20notices%202021.csv"
+        malo = _CAB_2021 + "2021/S 010-000002,2021,ES,Ayto de Cádiz, Hacienda,ESP1,S,1,1,1,X,Y,1,2021-01-11,0\n"
+        hub = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+        monkeypatch.setattr(tm, "_descargar", _csv_hub_fake({url_2020: malo, hub: TED_CSV_2021_HUB}))
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        anios = []
+        df = tm._download_csv_year(2021, force=True, irregulares=anios)
+        assert anios == [] and df["ID_NOTICE_CAN"].tolist() == ["2021/S 010-000001"]
+        assert not (tmp_path / "ted_can_2021_registros_irregulares.csv").exists()
+        assert any(n.startswith("ted_can_2021_registros_irregulares") for n in _historico(tmp_path))
+        # Sin ninguna URL buena (ni caché), el año sí se marca
+        otra = tmp_path / "otra"
+        otra.mkdir()
+        monkeypatch.setattr(tm, "_descargar", _csv_hub_fake({url_2020: malo}))
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", otra)
+        anios = []
+        assert tm._download_csv_year(2021, force=True, irregulares=anios) is None
+        assert anios == [2021] and _irregulares(otra)["motivo"].tolist() == ["campos_de_mas"]
 
     def test_comilla_sin_cerrar_se_guarda_y_la_descarga_sale_con_1(self, monkeypatch, tmp_path, no_sleep):
         # Una comilla que no se cierra: el módulo csv se traga en ese campo todo lo que sigue, también
@@ -1559,7 +1590,8 @@ class TestTedRegla2:
         with pytest.raises(SystemExit) as salida:
             tm.main()
         assert salida.value.code == 1
-        assert (tmp_path / "ted_es_can.parquet").exists()   # lo descargado sí se guarda
+        consolidado = pd.read_parquet(tmp_path / "ted_es_can.parquet")   # lo descargado sí se guarda
+        assert consolidado["_registro_irregular"].tolist().count("campos_de_menos+salto_de_linea") == 1
         irr = _irregulares(tmp_path)
         assert irr["linea"].tolist() == ["3"] and irr["motivo"].tolist() == ["campos_de_menos+salto_de_linea"]
         assert "Diputación de Jaén" in json.loads(irr["campos_json"][0])[3]   # nada se pierde
@@ -1635,6 +1667,77 @@ class TestTedRegla2:
         df = _csv_2021(monkeypatch, tmp_path, texto)
         assert list(df.columns[5:8]) == ["CPV", "CPV.2", "CPV.1"]
         assert (tmp_path / "ted_can_2021_ES.parquet").exists()   # antes, to_parquet fallaba con dos 'CPV.1'
+
+    def test_comilla_sin_cerrar_en_el_ultimo_campo_del_fichero(self, monkeypatch, tmp_path):
+        texto = _CAB_2021 + _FILA_2021 + '2021/S 010-000008,2021,ES,Ayto,ESP8,S,1,1,1,X,Y,1,2021-01-10,"0\n'
+        df = _csv_2021(monkeypatch, tmp_path, texto)
+        fila = df.set_index("ID_NOTICE_CAN").loc["2021/S 010-000008"]
+        assert fila["CANCELLED"] == "0\n" and fila["_registro_irregular"] == "salto_de_linea"
+        assert _irregulares(tmp_path)["linea"].tolist() == ["3"]
+
+    def test_lineas_de_solo_espacios_se_saltan_como_en_pandas(self, monkeypatch, tmp_path):
+        df = _csv_2021(monkeypatch, tmp_path, "  \t\n" + _CAB_2021 + " \n" + _FILA_2021 + "\t\t\n")
+        assert df["ID_NOTICE_CAN"].tolist() == ["2021/S 010-000001"]
+        assert "_registro_irregular" not in df.columns
+        assert not (tmp_path / "ted_can_2021_registros_irregulares.csv").exists()
+
+    @pytest.mark.parametrize("en_zip", [False, True])
+    def test_bom_crlf_y_bytes_invalidos_como_con_pandas(self, monkeypatch, tmp_path, en_zip):
+        # Sin el BOM en el nombre de la primera columna, los \r\n de dentro de un campo tal cual y
+        # un byte inválido sustituido, sin tirar el año; en el CSV suelto y dentro del ZIP
+        datos = ("\ufeff" + _CAB_2021.replace("\n", "\r\n")
+                 + '2021/S 010-000001,2021,ES,"Ayto\r\nde Sevilla",ESP1,S,1,1,1,X,Y,1,2021-01-10,0\r\n'
+                 + "2021/S 010-000002,2021,ES,Ayto de C").encode("utf-8") \
+            + b"\xff" + "diz,ESP2,S,1,1,1,X,Y,1,2021-01-10,0\r\n".encode("utf-8")
+        url = (tm.TEDConfig.CSV_HUB_URL.format(year=2021) if en_zip else
+               f"{tm.TEDConfig.CSV_BASE_URL}/TED%202020/TED%20-%20Contract%20award%20notices%202021.csv")
+
+        def fake(u, destino):
+            if u != url:
+                raise requests.exceptions.HTTPError(f"HTTP 404 {u}")
+            if en_zip:
+                with zipfile.ZipFile(destino, "w") as z:
+                    z.writestr("export_CAN_2021.csv", datos)
+            else:
+                Path(destino).write_bytes(datos)
+
+        monkeypatch.setattr(tm, "_descargar", fake)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._download_csv_year(2021, force=True)
+        assert df.columns[0] == "ID_NOTICE_CAN"
+        assert df["CAE_NAME"].tolist() == ["Ayto\r\nde Sevilla", "Ayto de C\ufffddiz"]
+        assert df["_registro_irregular"].tolist() == ["salto_de_linea", None]
+
+    def test_irregulares_distintos_dejan_la_version_anterior_en_historico(self, monkeypatch, tmp_path):
+        ruta = tmp_path / "ted_can_2021_registros_irregulares.csv"
+        _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_MAL)
+        primera = ruta.read_bytes()
+        otro = _CAB_2021 + _FILA_2021 + "2021/S 010-000009,2021,FR,Mairie,FR1,S,1,1,1,X,FR2,1,2021-01-10,0,EXTRA\n"
+        _csv_2021(monkeypatch, tmp_path, otro)
+        assert _irregulares(tmp_path)["linea"].tolist() == ["3"]
+        viejas = [n for n in _historico(tmp_path) if n.startswith("ted_can_2021_registros_irregulares")]
+        assert len(viejas) == 1 and (tmp_path / "_historico" / viejas[0]).read_bytes() == primera
+
+    def test_una_lectura_que_falla_a_medias_no_deja_temporales(self, monkeypatch, tmp_path):
+        def rota(texto, irregular):
+            irregular(2, "campos_de_mas", ["x", "y"], 1)
+            raise RuntimeError("lectura cortada")
+
+        monkeypatch.setattr(tm, "_leer_csv_espana", rota)
+        assert _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_HUB) is None
+        assert not list(tmp_path.glob(".*"))
+
+    def test_temporales_viejos_de_una_ejecucion_matada(self, monkeypatch, tmp_path, ted_http):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        viejo = tmp_path / ".descarga_ted_can_2019.99999.tmp"
+        viejo_irr = tmp_path / ".ted_can_2019_registros_irregulares.csv.99999.tmp"
+        reciente = tmp_path / ".descarga_ted_can_2018.99998.tmp"   # de una ejecución en marcha
+        for ruta in (viejo, viejo_irr, reciente):
+            ruta.write_text("x")
+        for ruta in (viejo, viejo_irr):
+            _fijar_fecha(ruta, "2000-01-01")
+        tm.download_ted_spain(years=[2019])
+        assert not viejo.exists() and not viejo_irr.exists() and reciente.exists()
 
     def test_cancelados_se_conservan_y_el_cruce_los_excluye(self, monkeypatch, tmp_path, capsys):
         url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
@@ -1712,6 +1815,41 @@ def test_el_cruce_deja_fuera_el_aviso_cancelado_en_una_descarga_posterior(tmp_pa
     ted.assign(cancelled=[0.0, 1.0, np.nan]).to_parquet(tmp_path / "ted_es_can.parquet", index=False)
     assert tm.avisos_para_cruce(pd.read_parquet(tmp_path / "ted_es_can.parquet"))["ted_notice_id"].tolist() == ["B"]
     assert rtc.load_ted(tmp_path / "ted_es_can.parquet")["ted_notice_id"].tolist() == ["B"]
+
+
+def test_cancelled_con_tipos_que_admiten_nulos(tmp_path):
+    """Con string o Int64, un nulo compara como <NA>: no debe dejar fuera los avisos de la API ni
+    los sembrados (sin cancelled)."""
+    ted = _ted_cancelado_despues()
+    for tipo, valores in (("string", ["0", "1", None]), ("Int64", [0, 1, None])):
+        con_nulos = ted.assign(cancelled=pd.array(valores, dtype=tipo))
+        assert tm.avisos_para_cruce(con_nulos)["ted_notice_id"].tolist() == ["B"], tipo
+        con_nulos.to_parquet(tmp_path / "ted_es_can.parquet", index=False)
+        assert rtc.load_ted(tmp_path / "ted_es_can.parquet")["ted_notice_id"].tolist() == ["B"], tipo
+
+
+def _entradas_diagnostico(ted):
+    miss = pd.DataFrame({
+        "organo_contratante": ["Ayuntamiento de Alfa"], "nif_organo": ["P0000001A"],
+        "nif_adjudicatario": ["B1"], "expediente": ["A-1"],
+        "importe_adjudicacion": [300_000.0], "ano": [2024.0],
+    })
+    miss.to_parquet(ted / "crossval_missing.parquet", index=False)
+    miss.to_parquet(ted / "crossval_sara.parquet", index=False)
+    miss.iloc[:0].to_parquet(ted / "crossval_matched.parquet", index=False)
+    _ted_cancelado_despues().to_parquet(ted / "ted_es_can.parquet", index=False)
+
+
+def test_script_de_analisis_en_un_proceso_limpio(tmp_path):
+    """Sin nada importado antes: el script importa el ted_module de su carpeta (y este, comun/)."""
+    repo = _make_repo(tmp_path, ["diagnostico_missing_ted.py"])
+    _entradas_diagnostico(repo / "ted")
+    otro = tmp_path / "otro_cwd"
+    otro.mkdir()
+    r = subprocess.run([sys.executable, str(repo / "ted" / "diagnostico_missing_ted.py")], cwd=otro,
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr[-3000:]
+    assert "TED total: 1\n" in r.stdout
 
 
 def test_scripts_de_analisis_cuentan_cada_aviso_una_vez_y_sin_cancelados(tmp_path, monkeypatch, capsys):

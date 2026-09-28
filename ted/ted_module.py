@@ -279,6 +279,7 @@ def download_ted_spain(
         return None
     
     TEDConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _borrar_temporales_viejos()
     
     if output_path is None:
         output_path = TEDConfig.DATA_DIR / "ted_es_can.parquet"
@@ -306,7 +307,7 @@ def download_ted_spain(
     descargas = []         # Lo obtenido en esta ejecución (solo se usa si queda incompleta)
     fuentes = {}           # Año → caché de la que sale en esta ejecución ('csv' o 'api')
     incomplete_years = []  # Años con descarga API cortada por errores/límite
-    irregulares = []       # Años cuyo CSV trae registros irregulares por encima del umbral
+    irregulares = []       # Años cuyo CSV trae registros irregulares (main() sale con 1)
     
     # ── CSV bulk para años disponibles, API para el resto ──
     csv_years = [y for y in years if y in TEDConfig.CSV_YEARS_AVAILABLE]
@@ -738,9 +739,21 @@ def _aplicar_semillas(df, output_path, semillas, anios):
 # Límite de tamaño de campo del módulo csv: 131.072 caracteres por defecto (pandas no tenía).
 # El mayor que admite la plataforma (en Windows, un long de C de 32 bits)
 _LIMITE_CAMPO_CSV = min(sys.maxsize, 2**31 - 1)
-# Fracción de las líneas del CSV de un año en registros irregulares (ver _leer_csv_espana) a
-# partir de la que la descarga sale con 1: 2019 y 2021 no tienen ninguno (medido en sept. 2026)
-_UMBRAL_IRREGULARES = 0.01
+
+
+def _borrar_temporales_viejos(horas=12):
+    """Borra los temporales de descarga que deja una ejecución que se mata (el límite de tiempo de la
+    cola, un SIGKILL): hasta ~750 MB por año. Solo los de más de `horas`: los de una ejecución en
+    marcha se escriben o se leen en minutos."""
+    limite = time.time() - horas * 3600
+    for patron in (".descarga_ted_can_*.tmp", ".ted_can_*_registros_irregulares.csv.*.tmp"):
+        for ruta in TEDConfig.DATA_DIR.glob(patron):
+            try:
+                if ruta.stat().st_mtime < limite:
+                    ruta.unlink()
+                    log.warning(f"Temporal de una ejecución anterior borrado: {ruta.name}")
+            except OSError:
+                pass
 
 
 def _descargar(url, destino):
@@ -824,9 +837,16 @@ class _Irregulares:
             self._f.close()
 
 
+def _en_blanco(reg):
+    """Línea en blanco para pandas: sin campos o un solo campo de espacios y tabuladores (medido con
+    2.2.3 y 3.0.6: se salta, también antes de la cabecera; '  ,  ' sí es un registro)."""
+    return not reg or (len(reg) == 1 and not reg[0].strip(' \t'))
+
+
 def _leer_csv_espana(texto, irregular):
-    """Lee el CSV de adjudicaciones registro a registro: (filas de España, cabecera, líneas leídas,
-    líneas de los registros irregulares).
+    """Lee el CSV de adjudicaciones registro a registro: (filas de España, cabecera, marcas, líneas
+    leídas, líneas de los registros irregulares). `marcas` va en paralelo a las filas: el motivo si
+    la fila sale de un registro irregular (columna _registro_irregular) y None si no.
 
     Antes se leía con pandas por trozos y on_bad_lines='skip': los registros con más campos que la
     cabecera se perdían sin guardarse (y con algunos patrones, como líneas malas y campos
@@ -837,38 +857,44 @@ def _leer_csv_espana(texto, irregular):
       - 'campos_de_mas': no entra en la tabla.
       - 'campos_de_menos': entra completado con vacíos si es de España, como hacía pandas.
       - 'salto_de_linea': algún campo lleva saltos de línea. El CSV de TED no los trae (ninguno en
-        2019 ni en 2021), y una comilla sin cerrar se traga en un campo los registros que siguen.
-    Las líneas en blanco se saltan, también antes de la cabecera, como en pandas. Sin la columna del
-    país devuelve (None, cabecera, líneas leídas, 0)."""
+        2019 ni en 2021); una comilla sin cerrar se traga en su campo, que es el último del
+        registro, los registros que siguen hasta la siguiente comilla o el final del fichero.
+    Los que entran en la tabla llevan su motivo en `marcas`. Las líneas en blanco o de solo espacios
+    se saltan, también antes de la cabecera, como en pandas. Sin la columna del país devuelve
+    (None, cabecera, [], líneas leídas, 0)."""
     anterior = csv.field_size_limit(_LIMITE_CAMPO_CSV)
     try:
         lector = csv.reader(texto)
-        cabecera = next((r for r in lector if r), [])
+        cabecera = next((r for r in lector if not _en_blanco(r)), [])
         if 'ISO_COUNTRY_CODE' not in cabecera:
-            return None, cabecera, lector.line_num, 0
+            return None, cabecera, [], lector.line_num, 0
         i_pais = cabecera.index('ISO_COUNTRY_CODE')
         n = len(cabecera)
-        filas, lineas_irregulares = [], 0
+        filas, marcas, lineas_irregulares = [], [], 0
         inicio = lector.line_num + 1
         for reg in lector:
-            if reg:
+            if not _en_blanco(reg):
                 motivos = []
                 if len(reg) > n:
                     motivos.append('campos_de_mas')
                 elif len(reg) < n:
                     motivos.append('campos_de_menos')
-                if lector.line_num > inicio:
+                # Un campo con saltos de línea ocupa varias líneas del fichero, salvo el de una
+                # comilla sin cerrar al final del fichero (siempre el último campo del registro)
+                if lector.line_num > inicio or '\n' in reg[-1] or '\r' in reg[-1]:
                     motivos.append('salto_de_linea')
-                if motivos:
-                    irregular(inicio, '+'.join(motivos), reg, n)
+                motivo = '+'.join(motivos) or None
+                if motivo:
+                    irregular(inicio, motivo, reg, n)
                     lineas_irregulares += lector.line_num - inicio + 1
                 if len(reg) <= n:
                     if len(reg) < n:
                         reg = reg + [''] * (n - len(reg))
                     if reg[i_pais] == TEDConfig.COUNTRY_CODE:
                         filas.append(reg)
+                        marcas.append(motivo)
             inicio = lector.line_num + 1
-        return filas, cabecera, lector.line_num, lineas_irregulares
+        return filas, cabecera, marcas, lector.line_num, lineas_irregulares
     finally:
         csv.field_size_limit(anterior)
 
@@ -877,8 +903,10 @@ def _download_csv_year(year, force=False, irregulares=None):
     """Descarga CSV de CAN para un año y filtra por España.
 
     Los registros irregulares del CSV (ver _leer_csv_espana) se guardan en
-    ted_can_<año>_registros_irregulares.csv, con versiones en _historico/ como las cachés. Si ocupan
-    más del _UMBRAL_IRREGULARES de las líneas del fichero, el año se añade a `irregulares`."""
+    ted_can_<año>_registros_irregulares.csv, con versiones en _historico/ como las cachés, y las
+    filas que salen de ellos llevan el motivo en _registro_irregular. Si el CSV que se usa trae
+    alguno (o, sin ninguno bueno, alguno de los leídos), el año se añade a `irregulares`: el CSV de
+    un año cerrado solo se lee una vez (después se usa la caché), así que es un aviso único."""
     cache_path = _ruta_cache(year, api=False)
     
     if cache_path.exists() and not force:
@@ -896,9 +924,11 @@ def _download_csv_year(year, force=False, irregulares=None):
     ruta_irr = TEDConfig.DATA_DIR / f"ted_can_{year}_registros_irregulares.csv"
 
     df = None
+    irregular_leido = False   # algún CSV leído (aunque no se use) traía registros irregulares
     for url in urls:
         nombre = url.split('/')[-1]
-        # Temporales con el PID: dos ejecuciones a la vez no se pisan
+        # Temporales con el PID: dos ejecuciones a la vez no se pisan (los que deja una ejecución
+        # que se mata los borra _borrar_temporales_viejos)
         tmp = TEDConfig.DATA_DIR / f".descarga_ted_can_{year}.{os.getpid()}.tmp"
         tmp_irr = TEDConfig.DATA_DIR / f".{ruta_irr.name}.{os.getpid()}.tmp"
         try:
@@ -906,18 +936,14 @@ def _download_csv_year(year, force=False, irregulares=None):
             TEDConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
             _descargar(url, tmp)
             with _abrir_csv_texto(tmp, url.endswith('.zip')) as texto, _Irregulares(tmp_irr, url) as irr:
-                filas, cabecera, lineas, lineas_irr = _leer_csv_espana(texto, irr)
+                filas, cabecera, marcas, lineas, lineas_irr = _leer_csv_espana(texto, irr)
             if irr.n:
+                irregular_leido = True
                 estado = guardar_version(ruta_irr, desde=tmp_irr)
                 detalle = ', '.join(f"{v:,} {k}" for k, v in sorted(irr.motivos.items()))
                 log.warning(f"  {year}: REGISTROS IRREGULARES en {nombre}: {irr.n:,} ({detalle}; "
-                            f"{irr.n_es:,} con '{TEDConfig.COUNTRY_CODE}' en algún campo), "
-                            f"guardados en {ruta_irr.name} ({estado})")
-                if lineas_irr > _UMBRAL_IRREGULARES * lineas:
-                    log.error(f"  {year}: los registros irregulares ocupan {lineas_irr:,} de las {lineas:,} "
-                              f"líneas de {nombre} (más del {_UMBRAL_IRREGULARES:.0%}): revisa el formato del CSV")
-                    if irregulares is not None and year not in irregulares:
-                        irregulares.append(year)
+                            f"{lineas_irr:,} de sus {lineas:,} líneas; {irr.n_es:,} con "
+                            f"'{TEDConfig.COUNTRY_CODE}' en algún campo), guardados en {ruta_irr.name} ({estado})")
             if filas is None:
                 log.warning(f"  {year}: columna ISO_COUNTRY_CODE no encontrada")
             elif filas:
@@ -925,8 +951,14 @@ def _download_csv_year(year, force=False, irregulares=None):
                 df = df.mask(df == '')   # solo el vacío pasa a nulo: 'NA', 'NULL'... se conservan como texto
                 if not TEDConfig.CSV_KEEP_ALL_COLUMNS:
                     df = df[[c for c in TEDConfig.CSV_COLUMNS_KEEP if c in df.columns]]
+                if any(marcas):
+                    # Filas que salen de un registro irregular: se marcan, no se limpian (regla 1)
+                    df['_registro_irregular'] = pd.Series(marcas, index=df.index, dtype=object)
                 log.info(f"  {year}: {len(df):,} registros España de CSV bulk")
-                if not irr.n and ruta_irr.exists():
+                if irr.n:
+                    if irregulares is not None:
+                        irregulares.append(year)
+                elif ruta_irr.exists():
                     archivar(ruta_irr)   # es de una descarga anterior: esta no trae registros irregulares
                 break
             # Respuesta sin filas de España (p.ej. una página HTML servida con
@@ -939,6 +971,8 @@ def _download_csv_year(year, force=False, irregulares=None):
         finally:
             tmp.unlink(missing_ok=True)
             tmp_irr.unlink(missing_ok=True)
+    if df is None and irregular_leido and irregulares is not None:
+        irregulares.append(year)   # ningún CSV bueno, y alguno de los leídos traía registros irregulares
 
     if df is None:
         log.warning(f"  {year}: no se pudo descargar CSV")
@@ -1912,7 +1946,9 @@ def avisos_para_cruce(df_ted):
     df_ted = ultima_version_por_aviso(df_ted)
     if df_ted is None or 'cancelled' not in df_ted.columns:
         return df_ted
-    return df_ted[pd.to_numeric(df_ted['cancelled'], errors='coerce').ne(1)]
+    # Con tipos que admiten nulos (string, Int64) la comparación da <NA>: un nulo no es un cancelado
+    cancelado = pd.to_numeric(df_ted['cancelled'], errors='coerce').eq(1).fillna(False).astype(bool)
+    return df_ted[~cancelado.to_numpy()]
 
 
 def cross_validate_ted(df_pipeline, df_ted, src, R=None):
@@ -2325,9 +2361,9 @@ def main():
                 sys.exit(1)
             if df_ted.attrs.get('csv_irregular'):
                 anios = ', '.join(map(str, df_ted.attrs['csv_irregular']))
-                log.error(f"El CSV de {anios} trae registros irregulares en más del {_UMBRAL_IRREGULARES:.0%} "
-                          f"de sus líneas (guardados en ted_can_<año>_registros_irregulares.csv; lo "
-                          f"descargado sí se ha guardado): la ejecución sale con código 1")
+                log.error(f"El CSV de {anios} trae registros irregulares (guardados en "
+                          f"ted_can_<año>_registros_irregulares.csv; lo descargado sí se ha guardado): "
+                          f"la ejecución sale con código 1")
                 sys.exit(1)
     
     if args.command in ('validate', 'full'):

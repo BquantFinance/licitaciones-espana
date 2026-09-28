@@ -105,7 +105,9 @@ ted/
   - `campos_de_menos`: menos campos. Si son de España, entran completados con vacíos, como con pandas.
   - `salto_de_linea`: un campo en varias líneas; una comilla sin cerrar se traga los registros que siguen.
   
-  Antes se perdían sin guardarse. En los CSV de 2019 y 2021 no hay ninguno. Si ocupan más del 1 % de las líneas de un año, `download` guarda lo descargado y sale con código 1.
+  Antes se perdían sin guardarse. En los CSV de 2019 y 2021 no hay ninguno.
+  - Las filas que entran en la tabla desde un registro irregular llevan el motivo en `_registro_irregular`.
+  - Si el CSV de un año trae alguno, `download` guarda lo descargado y sale con código 1. Es un aviso único: el CSV de un año cerrado solo se lee una vez y después se usa la caché.
 
 ### Campos principales (57 columnas)
 

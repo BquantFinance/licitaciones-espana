@@ -560,7 +560,8 @@ def load_ted(path):
         print(f"  Filas de versiones anteriores de un aviso (fuera del cruce): {n_total - len(df):,}")
     # Los avisos cancelados se conservan en el consolidado (ted_module); en el cruce no cuentan
     if 'cancelled' in df.columns:
-        cancelados = pd.to_numeric(df['cancelled'], errors='coerce').eq(1)
+        # Con tipos que admiten nulos (string, Int64) la comparación da <NA>: un nulo no es un cancelado
+        cancelados = pd.to_numeric(df['cancelled'], errors='coerce').eq(1).fillna(False).astype(bool)
         if cancelados.any():
             print(f"  Avisos cancelados (fuera del cruce): {int(cancelados.sum()):,}")
             df = df[~cancelados].reset_index(drop=True)
