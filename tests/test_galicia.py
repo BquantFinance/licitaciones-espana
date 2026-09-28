@@ -1790,6 +1790,41 @@ class GaliciaHistoricoTests(unittest.TestCase):
         self.assertTrue(final.drop(columns="_ultima_descarga").equals(first_final.drop(columns="_ultima_descarga")))
         self.assertEqual(set(final["_ultima_descarga"]), {FECHA_2})
 
+    def test_resume_of_a_download_started_by_the_previous_scraper_version(self):
+        portal = self._three_orgs()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            # Descarga a medias de la versión anterior: CSV base con el organismo 2 y un
+            # progreso sin fecha ni ámbito
+            with patch("sys.stdout", new_callable=io.StringIO):
+                scraper_galicia.append_base_records(
+                    [dict(r, _organismo_id=2, _tipo="LIC") for r in portal.lic[2]], out
+                )
+            base_csv = out / scraper_galicia.BASE_CSV_NAME
+            (out / scraper_galicia.BASE_PROGRESS_NAME).write_text(
+                json.dumps({"saved_at": "2026-09-28T06:27:23", "completed_orgs": [2],
+                            "base_csv_bytes": base_csv.stat().st_size}),
+                encoding="utf-8",
+            )
+            legacy_date = scraper_galicia.file_date_iso(base_csv)
+            code, _ = run_at(cli_args(out, "--resume", "--max-org-id", "48"), portal, FECHA_2)
+            self.assertEqual(code, 0)
+            manifest = json.loads((out / scraper_galicia.BASE_PROGRESS_NAME).read_text(encoding="utf-8"))
+            final = read_final(out)
+            lic_requests = {
+                int(m.group(1)) for r in portal.requests
+                if (m := re.search(r"/organismos/(\d+)/licitaciones/table", r["url"])) and r["params"]["length"] != "1"
+            }
+
+        # El 2 no se vuelve a pedir; la descarga lleva la fecha del CSV base empezado
+        self.assertNotIn(2, lic_requests)
+        self.assertEqual(manifest["fecha_descarga"], legacy_date)
+        self.assertEqual(sorted(manifest["ambito"]), ["3", "48"])
+        self.assertTrue(manifest["acumulada"])
+        self.assertEqual(len(final), 12)
+        self.assertEqual(set(final["_ultima_descarga"]), {legacy_date})
+        self.assertEqual(set(final["_en_ultima_descarga"]), {"True"})
+
     def test_final_table_of_the_previous_scraper_version_is_kept(self):
         lic = fake_lic_records(3)
         portal = FakePortal(lic={48: list(lic)})

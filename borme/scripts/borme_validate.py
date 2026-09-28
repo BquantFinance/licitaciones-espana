@@ -6,7 +6,7 @@ Ejecutar ANTES de relanzar el batch.
 Uso: python borme_validate.py --input D:\Licitaciones\borme_pdfs --sample 300
 """
 
-import re, glob, random, pdfplumber, argparse
+import re, random, pdfplumber, argparse
 from collections import Counter
 from pathlib import Path
 
@@ -198,7 +198,8 @@ def main():
     parser.add_argument("--sample", type=int, default=300)
     args = parser.parse_args()
 
-    pdfs = sorted(Path(args.input).rglob("BORME-A-*.pdf"))
+    # Sin las versiones anteriores que borme_scraper.py guarda en <día>/_historico/
+    pdfs = sorted(p for p in Path(args.input).rglob("BORME-A-*.pdf") if p.parent.name != "_historico")
     print(f"Total BORME-A PDFs: {len(pdfs):,}")
 
     sample = random.sample(pdfs, min(args.sample, len(pdfs)))
@@ -230,14 +231,14 @@ def main():
             print(f"  {i+1}/{len(sample)}...")
 
     print(f"\n{'='*60}")
-    print(f"RESULTADOS VALIDACIÓN v2")
+    print("RESULTADOS VALIDACIÓN v2")
     print(f"{'='*60}")
     print(f"PDFs procesados: {len(sample) - errors}")
     print(f"Errores: {errors}")
     print(f"Entradas totales: {total_entries:,}")
     print(f"Cargos capturados: {total_cargos:,}")
 
-    print(f"\n--- BODY START WORDS (top 30) ---")
+    print("\n--- BODY START WORDS (top 30) ---")
     for word, n in all_body_words.most_common(30):
         print(f"  {n:6,}x  {word}")
 
@@ -245,7 +246,7 @@ def main():
     for cargo, n in all_cargo_types.most_common(50):
         print(f"  {n:6,}x  {cargo}")
 
-    print(f"\n--- DISTRIBUCIÓN TIPO ACTO ---")
+    print("\n--- DISTRIBUCIÓN TIPO ACTO ---")
     for tipo, n in all_tipo_actos.most_common():
         print(f"  {n:6,}x  {tipo}")
 
@@ -254,19 +255,19 @@ def main():
         for name in long_names[:10]:
             print(f"  {name[:150]}...")
     else:
-        print(f"\n--- ✅ NOMBRES EMPRESA: todos <150 chars ---")
+        print("\n--- ✅ NOMBRES EMPRESA: todos <150 chars ---")
 
     if all_unknown:
         print(f"\n--- ⚠️  CARGOS NO CAPTURADOS ({len(all_unknown)}) ---")
         for pattern, n in all_unknown.most_common(30):
             print(f"  {n:4}x  {pattern}")
     else:
-        print(f"\n--- ✅ CARGOS: no se detectan patrones perdidos ---")
+        print("\n--- ✅ CARGOS: no se detectan patrones perdidos ---")
 
     if not long_names and not all_unknown:
-        print(f"\n✅ VALIDACIÓN OK — listo para relanzar batch")
+        print("\n✅ VALIDACIÓN OK — listo para relanzar batch")
     else:
-        print(f"\n⚠️  Revisar antes de relanzar")
+        print("\n⚠️  Revisar antes de relanzar")
 
 
 if __name__ == "__main__":

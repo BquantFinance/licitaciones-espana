@@ -35,6 +35,11 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Columnas de control de borme_batch_parser.py (comun/historico.py): se publican con
+# los datos, así se distinguen las versiones anteriores de un acto
+# (_en_ultima_descarga=False) y las filas de la semilla (_origen)
+COLUMNAS_CONTROL = ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga", "_origen"]
+
 
 def hash_persona(name: str, salt: str = "borme_2024") -> str:
     """Hash irreversible de nombre de persona.
@@ -61,7 +66,7 @@ def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
         "fecha_constitucion", "hoja_registral", "tomo", "inscripcion",
         "fecha_inscripcion", "pdf_filename",
     ]
-    cols = [c for c in keep_cols if c in df_emp.columns]
+    cols = [c for c in keep_cols + COLUMNAS_CONTROL if c in df_emp.columns]
     df = df_emp[cols].copy()
 
     # El domicilio social se publica tal cual en el BORME ("CALLE NUM (MUNICIPIO)")
@@ -76,7 +81,13 @@ def anonymize_cargos(df_car: pd.DataFrame) -> pd.DataFrame:
     log.info("Anonimizando cargos...")
 
     df = df_car.copy()
-    df["persona_hash"] = df["persona"].apply(hash_persona)
+    nombres = df["persona"] if "persona" in df.columns else pd.Series(None, index=df.index, dtype=object)
+    hashes = nombres.apply(hash_persona)
+    # Filas de la semilla (release publicado, borme_batch_parser.py --semilla): no
+    # traen el nombre sino el hash publicado, que se conserva tal cual
+    if "persona_hash" in df.columns:
+        hashes = hashes.where(nombres.notna(), df["persona_hash"])
+    df["persona_hash"] = hashes
 
     # Eliminar nombre real
     df = df.drop(columns=["persona"], errors="ignore")
@@ -86,7 +97,7 @@ def anonymize_cargos(df_car: pd.DataFrame) -> pd.DataFrame:
         "fecha_borme", "num_entrada", "empresa", "empresa_norm",
         "provincia", "hoja_registral", "tipo_acto", "cargo",
         "persona_hash", "pdf_filename",
-    ]
+    ] + COLUMNAS_CONTROL
     cols = [c for c in col_order if c in df.columns]
     df = df[cols]
 
@@ -121,8 +132,6 @@ def build_admin_graph(df_car_anon: pd.DataFrame, max_empresas_per_admin: int = 2
     if len(excluded) > 0:
         log.info(f"  {len(excluded):,} admins excluidos (>{max_empresas_per_admin} empresas — profesionales)")
 
-    # Generar pares en chunks para no explotar RAM
-    CHUNK = 100_000
     pair_counts = {}
     pair_hashes = {}
     processed = 0
@@ -197,13 +206,13 @@ def main():
 
     # Resumen
     log.info(f"\n{'='*60}")
-    log.info(f"ANONIMIZACIÓN COMPLETADA")
+    log.info("ANONIMIZACIÓN COMPLETADA")
     log.info(f"{'='*60}")
     log.info(f"  Empresas:  {len(df_emp_pub):,} filas ({df_emp_pub['empresa_norm'].nunique():,} únicas)")
     log.info(f"  Cargos:    {len(df_car_pub):,} filas (personas hasheadas)")
-    log.info(f"")
-    log.info(f"  ✅ Datos listos para subir al repo público")
-    log.info(f"  ⚠️  NO subir borme_empresas.parquet ni borme_cargos.parquet originales")
+    log.info("")
+    log.info("  ✅ Datos listos para subir al repo público")
+    log.info("  ⚠️  NO subir borme_empresas.parquet ni borme_cargos.parquet originales")
     log.info(f"{'='*60}")
 
 

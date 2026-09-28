@@ -513,6 +513,33 @@ def load_placsp(path):
 #  2. CARGA TED
 # ======================================================================
 
+def ultima_version_por_aviso(df):
+    """Última versión de cada aviso (mismo criterio que
+    ted_module.ultima_version_por_aviso; este script no importa ted_module).
+
+    ted_es_can.parquet conserva el histórico: las filas con
+    _en_ultima_descarga=False son versiones anteriores de avisos que TED ha
+    cambiado, avisos retirados o avisos sembrados del release. En el cruce
+    cada aviso cuenta una vez (si no, un aviso cambiado validaría dos
+    contratos): sus filas vigentes o, si TED ya no lo sirve, las de la última
+    descarga en que apareció (se publicó, así que no es 'missing').
+    Sin esas columnas devuelve la tabla tal cual."""
+    if '_en_ultima_descarga' not in df.columns or 'ted_notice_id' not in df.columns:
+        return df
+    vigente = df['_en_ultima_descarga'].astype('boolean').fillna(True).astype(bool)
+    ids = df['ted_notice_id'].astype(object)
+    sin_id = pd.Series([f"\x00{i}" for i in range(len(df))], index=df.index)
+    aviso = ids.where(ids.notna(), sin_id).astype(str)
+    if '_ultima_descarga' in df.columns:
+        ultima = df['_ultima_descarga'].astype(object)
+        ultima = ultima.where(ultima.notna(), '').astype(str)
+    else:
+        ultima = pd.Series('', index=df.index)
+    con_vigente = aviso.isin(set(aviso[vigente]))
+    ultima_del_aviso = ultima.groupby(aviso).transform('max')
+    return df[vigente | (~con_vigente & (ultima == ultima_del_aviso))]
+
+
 def load_ted(path):
     """Carga TED: limpia NIFs, normaliza importes."""
     print(f"\n{'='*70}")
@@ -520,6 +547,10 @@ def load_ted(path):
     print(f"{'='*70}")
     df = pd.read_parquet(path)
     print(f"  Total registros: {len(df):,}")
+    n_total = len(df)
+    df = ultima_version_por_aviso(df).reset_index(drop=True)
+    if len(df) < n_total:
+        print(f"  Filas de versiones anteriores de un aviso (fuera del cruce): {n_total - len(df):,}")
 
     for col in ['year', 'number_offers']:
         if col in df.columns:

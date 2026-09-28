@@ -101,6 +101,10 @@ HISTÓRICO: NUNCA SE MACHACA NADA (comun/historico.py)
         guardar_version: la anterior va a _historico/, y si no cambian no se
         tocan. Columnas: las del portal, _archivo_fuente, _primera_descarga,
         _ultima_descarga, _en_ultima_descarga y, con --semilla, _origen.
+      - Memoria: la tabla se procesa por partes (una por CSV) y nunca está
+        dos veces en memoria. Con pandas 3, la descarga de septiembre de
+        2026 (2,85 millones de filas) pide unos 2,8 GB, y 3,4 GB con
+        --semilla. El código anterior pedía 3,7 GB sin semilla.
     Semilla (unificar --semilla <parquet publicado>, repetible):
       - Clave estable: Referencia + Entidad Adjudicadora. Referencia es el
         identificador del anuncio en el portal ('D957_2', '1152625',
@@ -119,7 +123,10 @@ HISTÓRICO: NUNCA SE MACHACA NADA (comun/historico.py)
       - Solo se añaden las filas de la semilla cuya clave no está en la
         tabla (contando las semillas anteriores), al final, marcadas con
         _origen='release v2026.02' y _en_ultima_descarga=False. Nunca se toca
-        ni se duplica una fila descargada. Las filas sin Referencia
+        ni se duplica una fila descargada. La tabla se reconstruye desde los
+        crudos en cada unificación, así que --semilla hay que darla siempre.
+        Con la descarga de septiembre de 2026 añade 110 menores que el portal
+        ya no sirve (de 2.563.527 filas del publicado). Las filas sin Referencia
         (continuaciones y 6 anuncios del publicado) tienen la clave
         incompleta y se comparan por contenido (comun.historico); las que no
         tienen ninguna columna de la clave, solo con las filas de la tabla

@@ -11,6 +11,7 @@ import datetime as dt
 import importlib.util
 import json
 import runpy
+import shutil
 import sys
 import threading
 import time
@@ -155,10 +156,10 @@ PDF_MADRID = "BORME-A-2024-3-28.pdf"
 PDF_ENERO = "BORME-A-2024-1-01.pdf"
 
 
-def _pdf_file(root, fecha, name):
+def _pdf_file(root, fecha, name, contenido=b"%PDF-1.4 fake"):
     p = Path(root) / f"{fecha:%Y}" / f"{fecha:%m}" / f"{fecha:%d}" / name
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"%PDF-1.4 fake")
+    p.write_bytes(contenido)
     return p
 
 
@@ -378,6 +379,433 @@ class TestRunBatch:
         fake_pdf[PDF_MADRID] = [PAG1, PAG2]  # ya legible: --resume lo reintenta
         bparser.run_batch(base, base, workers=2, resume=True)
         assert set(self._emp(base)["pdf_filename"]) == {PDF_MADRID, PDF_ENERO}
+
+
+# ─────────────────────────────────────────────
+#  Sesgo del superviviente: parse incremental, acumular() y --semilla
+# ─────────────────────────────────────────────
+META = list(bparser.COLUMNAS_META)
+PDF_NUEVO = "BORME-A-2024-4-28.pdf"
+PDF_OTRO = "BORME-A-2023-100-28.pdf"
+# Otra lectura del mismo boletín (PDF corregido o parser cambiado): otro nombre en
+# el anuncio 1001 y el 1006 ya no sale
+PAG1_V2 = PAG1.replace("1001 - ALFA SOLUCIONES SL.", "1001 - ALFA SOLUCIONES NUEVAS SL.")
+PAG2_V2 = PAG2.split("1006 - ")[0]
+PAG_OTRO = """BOLETÍN OFICIAL DEL REGISTRO MERCANTIL
+Núm. 100 Lunes 29 de mayo de 2023 Pág. 5
+MADRID
+5000 - CAJA DE AHORROS NUEVA SA.
+Nombramientos. Apoderado: FULANO MENGANO JUAN. Datos registrales. T 1 , F 1, S 8, H M 1, I/A 1 (1.05.23)."""
+
+
+@pytest.fixture
+def fechas(monkeypatch):
+    """Cada ejecución del parser con su fecha (en la realidad, días distintos)."""
+    usadas = []
+
+    def ahora():
+        usadas.append(f"2026-10-{len(usadas) + 1:02d}T00:00:00+00:00")
+        return usadas[-1]
+
+    monkeypatch.setattr(bparser, "_ahora", ahora)
+    return usadas
+
+
+def _tablas(out):
+    return (pd.read_parquet(out / "borme_empresas.parquet"),
+            pd.read_parquet(out / "borme_cargos.parquet"))
+
+
+def _foto(out, patron="*"):
+    """Contenido y fecha de modificación de los ficheros (para ver si se reescriben)."""
+    return {p.relative_to(out).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in sorted(out.rglob(patron)) if p.is_file()}
+
+
+def _salida_antigua(base):
+    """Lo que escribía run_batch antes de acumular (con un worker): el parse de
+    cada PDF en orden, los mismos tipos y el mismo dedup."""
+    emp, car = [], []
+    for p in sorted(Path(base).rglob("BORME-A-*.pdf")):
+        e, c = bparser.parse_single_pdf(str(p))
+        emp += e
+        car += c
+    emp, car = pd.DataFrame(emp), pd.DataFrame(car)
+    emp["fecha_borme"] = pd.to_datetime(emp["fecha_borme"], errors="coerce")
+    emp["capital_euros"] = pd.to_numeric(emp["capital_euros"], errors="coerce")
+    emp = emp.drop_duplicates(subset=["fecha_borme", "num_entrada", "empresa_norm"], keep="first")
+    car["fecha_borme"] = pd.to_datetime(car["fecha_borme"], errors="coerce")
+    car = car.drop_duplicates(subset=["fecha_borme", "num_entrada", "cargo", "persona", "tipo_acto"],
+                              keep="first")
+    return emp.reset_index(drop=True), car.reset_index(drop=True)
+
+
+def _releer(df, ruta):
+    df.to_parquet(ruta, index=False)
+    return pd.read_parquet(ruta)
+
+
+def test_una_ejecucion_da_la_salida_de_antes_mas_las_columnas_de_control(fake_pdf, fechas, tmp_path):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_ENERO: [PAG_ENERO]})
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    _pdf_file(base, dt.date(2024, 1, 2), PDF_ENERO)
+    # El mismo PDF en otra carpeta: sus anuncios se descartan como repetidos, como siempre
+    _pdf_file(base / "copia", dt.date(2024, 1, 4), PDF_MADRID)
+    bparser.run_batch(base, out, workers=2)
+
+    emp, car = _tablas(out)
+    emp_antes, car_antes = _salida_antigua(base)
+    assert len(emp_antes) == 9 and len(car_antes) == 7
+    pd.testing.assert_frame_equal(emp.drop(columns=META), _releer(emp_antes, tmp_path / "e.parquet"))
+    pd.testing.assert_frame_equal(car.drop(columns=META), _releer(car_antes, tmp_path / "c.parquet"))
+    for df in (emp, car):
+        assert list(df.columns[-3:]) == META
+        assert set(df["_primera_descarga"]) == set(df["_ultima_descarga"]) == {fechas[0]}
+        assert df["_en_ultima_descarga"].all()
+
+
+def test_reparse_sin_algunos_pdf_conserva_sus_filas(fake_pdf, fechas, tmp_path):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_ENERO: [PAG_ENERO], PDF_NUEVO: [PAG1]})
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    _pdf_file(base, dt.date(2024, 1, 2), PDF_ENERO)
+    bparser.run_batch(base, out, workers=2)
+    emp1, _ = _tablas(out)
+
+    # Carpeta borrada (u otra máquina sin el archivo completo) y un PDF nuevo:
+    # antes la salida se reconstruía solo con los PDF en disco y enero desaparecía
+    shutil.rmtree(base / "2024" / "01" / "02")
+    _pdf_file(base, dt.date(2024, 1, 5), PDF_NUEVO)
+    bparser.run_batch(base, out, workers=2)
+    emp, car = _tablas(out)
+    assert emp.groupby("pdf_filename").size().to_dict() == {PDF_ENERO: 3, PDF_MADRID: 6, PDF_NUEVO: 3}
+    assert emp["_en_ultima_descarga"].all() and car["_en_ultima_descarga"].all()
+    pd.testing.assert_frame_equal(emp.iloc[:len(emp1)], emp1)  # lo anterior, tal cual
+    assert set(emp.loc[emp["pdf_filename"] == PDF_NUEVO, "_primera_descarga"]) == {fechas[1]}
+
+    # Parse completo con el código actual: enero sigue sin estar en disco y se conserva
+    bparser.run_batch(base, out, workers=2, reprocesar=True)
+    emp, car = _tablas(out)
+    assert emp.groupby("pdf_filename").size().to_dict() == {PDF_ENERO: 3, PDF_MADRID: 6, PDF_NUEVO: 3}
+    assert emp["_en_ultima_descarga"].all()
+    enero = emp["pdf_filename"] == PDF_ENERO
+    assert set(emp.loc[enero, "_ultima_descarga"]) == {fechas[0]}
+    assert set(emp.loc[~enero, "_ultima_descarga"]) == {fechas[2]}
+    assert set(car["pdf_filename"]) == {PDF_ENERO, PDF_MADRID, PDF_NUEVO}
+
+
+@pytest.mark.parametrize("como", ["cambia el PDF", "cambia el parser"])
+def test_parse_distinto_conserva_las_filas_anteriores_como_no_vigentes(fake_pdf, fechas, tmp_path, como):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf[PDF_MADRID] = [PAG1, PAG2]
+    pdf = _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    bparser.run_batch(base, out, workers=2)
+
+    fake_pdf[PDF_MADRID] = [PAG1_V2, PAG2_V2]
+    if como == "cambia el PDF":
+        pdf.write_bytes(b"%PDF-1.4 fake corregido")  # la ejecución incremental lo detecta
+        bparser.run_batch(base, out, workers=2)
+    else:
+        bparser.run_batch(base, out, workers=2)  # incremental: el PDF no ha cambiado
+        assert _tablas(out)[0]["_en_ultima_descarga"].all()
+        bparser.run_batch(base, out, workers=2, reprocesar=True)
+
+    emp, car = _tablas(out)
+    vigentes, antiguas = emp[emp["_en_ultima_descarga"]], emp[~emp["_en_ultima_descarga"]]
+    assert sorted(vigentes["num_entrada"]) == ["1001", "1002", "1003", "1004", "1005"]
+    assert vigentes.set_index("num_entrada").loc["1001", "empresa"] == "ALFA SOLUCIONES NUEVAS SL"
+    # La lectura anterior se conserva: el 1001 con el nombre de antes y el 1006
+    assert sorted(zip(antiguas["num_entrada"], antiguas["empresa"])) == [
+        ("1001", "ALFA SOLUCIONES SL"), ("1006", "ETA COMERCIAL SL")]
+    assert set(antiguas["_ultima_descarga"]) == {fechas[0]}
+    # Lo que no cambia es la misma fila, confirmada por el parse nuevo
+    iguales = vigentes[vigentes["num_entrada"] != "1001"]
+    assert set(iguales["_primera_descarga"]) == {fechas[0]}
+    assert set(iguales["_ultima_descarga"]) == {fechas[-1]}
+    # Cargos: el del 1001 (cambia la empresa) queda en sus dos versiones
+    c1001 = car[car["num_entrada"] == "1001"].sort_values("_en_ultima_descarga")
+    assert c1001[["empresa", "_en_ultima_descarga"]].values.tolist() == [
+        ["ALFA SOLUCIONES SL", False], ["ALFA SOLUCIONES NUEVAS SL", True]]
+    assert car.loc[car["num_entrada"] != "1001", "_en_ultima_descarga"].all()
+
+
+def test_pdf_que_ya_no_da_cargos_retira_los_anteriores(fake_pdf, fechas, tmp_path):
+    # Ámbito = PDF parseado con alguna fila, no "PDF con cargos": un PDF que ahora
+    # da empresas pero ningún cargo deja sus cargos anteriores como no vigentes
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf[PDF_ENERO] = [PAG_ENERO]
+    _pdf_file(base, dt.date(2024, 1, 2), PDF_ENERO)
+    bparser.run_batch(base, out, workers=1)
+    fake_pdf[PDF_ENERO] = [PAG_ENERO.replace("Nombramientos. Apoderado: FULANO MENGANO JUAN. ", "")]
+    bparser.run_batch(base, out, workers=1, reprocesar=True)
+    emp, car = _tablas(out)
+    assert len(car) == 1 and not car["_en_ultima_descarga"].any()
+    assert emp.groupby("_en_ultima_descarga").size().to_dict() == {False: 1, True: 3}
+
+
+def test_parse_fallido_o_vacio_no_retira_nada(fake_pdf, fechas, tmp_path, monkeypatch):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf[PDF_MADRID] = [PAG1, PAG2]
+    pdf = _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    bparser.run_batch(base, out, workers=2)
+    tablas = _foto(out, "*.parquet")
+    parseados = []
+    real = bparser.parse_single_pdf
+    monkeypatch.setattr(bparser, "parse_single_pdf", lambda p: parseados.append(Path(p).name) or real(p))
+
+    # Cambia en disco y no se puede leer: error, nada retirado ni reescrito, y la
+    # siguiente ejecución lo reintenta
+    pdf.write_bytes(b"%PDF-1.4 truncado")
+    del fake_pdf[PDF_MADRID]
+    for intento in (1, 2):
+        bparser.run_batch(base, out, workers=2)
+        assert parseados == [PDF_MADRID] * intento
+        prog = json.loads((out / "borme_parse_progress.json").read_text())
+        assert [Path(p).name for p in prog["errors"]] == [PDF_MADRID]
+        assert _foto(out, "*.parquet") == tablas
+
+    # Se lee pero sin ningún anuncio: tampoco retira nada, y ya no se reintenta
+    fake_pdf[PDF_MADRID] = [PAG1.split("1001 - ")[0]]
+    bparser.run_batch(base, out, workers=2)
+    assert _foto(out, "*.parquet") == tablas
+    prog = json.loads((out / "borme_parse_progress.json").read_text())
+    assert prog["errors"] == [] and prog["done"] == ["2024/01/04/" + PDF_MADRID]
+    progreso = _foto(out)
+    bparser.run_batch(base, out, workers=2)
+    assert _foto(out) == progreso
+
+
+def test_reejecucion_sin_cambios_no_crea_version_nueva(fake_pdf, fechas, tmp_path):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_ENERO: [PAG_ENERO]})
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    _pdf_file(base, dt.date(2024, 1, 2), PDF_ENERO)
+    bparser.run_batch(base, out, workers=2)
+    antes = _foto(out)
+    bparser.run_batch(base, out, workers=2)
+    bparser.run_batch(base, out, workers=2, resume=True)
+    assert _foto(out) == antes
+    assert not (out / "_historico").exists() and len(fechas) == 1
+
+
+def test_salida_guardada_con_guardar_registros(fake_pdf, fechas, tmp_path):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_NUEVO: [PAG1]})
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    bparser.run_batch(base, out, workers=2)
+    antes = (out / "borme_empresas.parquet").read_bytes()
+    _pdf_file(base, dt.date(2024, 1, 5), PDF_NUEVO)
+    bparser.run_batch(base, out, workers=2)
+    copias = sorted((out / "_historico").glob("borme_empresas__*.parquet"))
+    assert len(copias) == 1 and copias[0].read_bytes() == antes
+    assert len(list((out / "_historico").glob("borme_cargos__*.parquet"))) == 1
+
+
+def test_versiones_de_historico_se_acumulan_en_orden(fake_pdf, fechas, tmp_path):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    pdf = _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID, b"%PDF-1.4 v1")
+    # Como borme_scraper.py --comprobar cuando boe.es sirve otro contenido
+    assert scraper.guardar_version(pdf, b"%PDF-1.4 v2") == "actualizado"
+    copia, = (pdf.parent / "_historico").iterdir()
+    fake_pdf.update({copia.name: [PAG1, PAG2], PDF_MADRID: [PAG1_V2, PAG2_V2]})
+    bparser.run_batch(base, out, workers=2)
+
+    emp, _ = _tablas(out)
+    assert set(emp["pdf_filename"]) == {PDF_MADRID}  # la copia cuenta como el mismo PDF
+    assert set(emp["fecha_borme"].dt.strftime("%Y-%m-%d")) == {"2024-01-04"}
+    antiguas = emp[~emp["_en_ultima_descarga"]]
+    assert sorted(zip(antiguas["num_entrada"], antiguas["empresa"])) == [
+        ("1001", "ALFA SOLUCIONES SL"), ("1006", "ETA COMERCIAL SL")]
+    assert emp["_en_ultima_descarga"].sum() == 5
+
+
+def test_version_antigua_ilegible_retiene_las_posteriores(fake_pdf, fechas, tmp_path):
+    # Acumular la actual antes que una antigua dejaría vigente la antigua: se espera
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    pdf = _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID, b"%PDF-1.4 v1")
+    scraper.guardar_version(pdf, b"%PDF-1.4 v2")
+    copia, = (pdf.parent / "_historico").iterdir()
+    fake_pdf[PDF_MADRID] = [PAG1_V2, PAG2_V2]  # la copia aún no se puede leer
+    bparser.run_batch(base, out, workers=2)
+    assert not (out / "borme_empresas.parquet").exists()
+    prog = json.loads((out / "borme_parse_progress.json").read_text())
+    assert [Path(p).name for p in prog["errors"]] == [copia.name] and prog["done"] == []
+
+    fake_pdf[copia.name] = [PAG1, PAG2]
+    bparser.run_batch(base, out, workers=2)
+    emp, _ = _tablas(out)
+    assert sorted(emp.loc[~emp["_en_ultima_descarga"], "num_entrada"]) == ["1001", "1006"]
+    assert emp["_en_ultima_descarga"].sum() == 5
+
+
+def test_pdf_cambiado_tras_parsearlo_solo_se_parsea_la_version_nueva(fake_pdf, fechas, tmp_path, monkeypatch):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf[PDF_MADRID] = [PAG1, PAG2]
+    pdf = _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID, b"%PDF-1.4 v1")
+    bparser.run_batch(base, out, workers=2)
+    assert scraper.guardar_version(pdf, b"%PDF-1.4 v2") == "actualizado"
+    fake_pdf[PDF_MADRID] = [PAG1_V2, PAG2_V2]
+    parseados = []
+    real = bparser.parse_single_pdf
+    monkeypatch.setattr(bparser, "parse_single_pdf", lambda p: parseados.append(Path(p).name) or real(p))
+
+    bparser.run_batch(base, out, workers=2)
+    assert parseados == [PDF_MADRID]  # la copia de _historico/ ya se parseó cuando era la actual
+    emp, _ = _tablas(out)
+    assert sorted(emp.loc[~emp["_en_ultima_descarga"], "num_entrada"]) == ["1001", "1006"]
+    parseados.clear()
+    bparser.run_batch(base, out, workers=2)
+    assert parseados == []
+
+
+def test_resume_no_vuelve_a_parsear_lo_de_la_ejecucion_interrumpida(fake_pdf, fechas, tmp_path, monkeypatch):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_NUEVO: [PAG1]})
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    monkeypatch.setattr(bparser, "BATCH_SIZE", 1)
+    real = bparser._preparar
+    monkeypatch.setattr(bparser, "_preparar", lambda *a: (_ for _ in ()).throw(KeyboardInterrupt))
+    with pytest.raises(KeyboardInterrupt):
+        bparser.run_batch(base, out, workers=1)
+    monkeypatch.setattr(bparser, "_preparar", real)
+
+    _pdf_file(base, dt.date(2024, 1, 5), PDF_NUEVO)
+    parseados = []
+    real_parse = bparser.parse_single_pdf
+    monkeypatch.setattr(bparser, "parse_single_pdf", lambda p: parseados.append(Path(p).name) or real_parse(p))
+    bparser.run_batch(base, out, workers=1, resume=True)
+    assert parseados == [PDF_NUEVO]
+    emp, _ = _tablas(out)
+    assert emp.groupby("pdf_filename").size().to_dict() == {PDF_MADRID: 6, PDF_NUEVO: 3}
+    assert emp["_en_ultima_descarga"].all() and not (out / "borme_parse_parts").exists()
+
+
+def test_salida_del_parser_anterior_se_acumula(fake_pdf, fechas, tmp_path):
+    # Salida y progreso de la versión anterior del parser (sin columnas de control
+    # ni registro de versiones), con un PDF que ya no está en disco
+    base = tmp_path / "borme_pdfs"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_ENERO: [PAG_ENERO]})
+    _pdf_file(tmp_path / "otra_maquina", dt.date(2024, 1, 2), PDF_ENERO)
+    enero_emp, enero_car = _salida_antigua(tmp_path / "otra_maquina")
+    pdf = _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    emp_viejo, car_viejo = _salida_antigua(base)
+    # El parser antiguo dejaba "Sociedad unipersonal" en el nombre del 1003
+    emp_viejo.loc[emp_viejo["num_entrada"] == "1003", "empresa"] = "GAMMA LOGISTICA SL. Sociedad unipersonal"
+    pd.concat([emp_viejo, enero_emp]).to_parquet(base / "borme_empresas.parquet", index=False)
+    pd.concat([car_viejo, enero_car]).to_parquet(base / "borme_cargos.parquet", index=False)
+    (base / "borme_parse_progress.json").write_text(json.dumps({"done": [str(pdf)], "errors": []}))
+
+    bparser.run_batch(base, base, workers=2)
+    emp, car = _tablas(base)
+    assert emp.groupby("pdf_filename").size().to_dict() == {PDF_ENERO: 3, PDF_MADRID: 7}
+    assert emp.loc[~emp["_en_ultima_descarga"], ["num_entrada", "empresa"]].values.tolist() == [
+        ["1003", "GAMMA LOGISTICA SL. Sociedad unipersonal"]]
+    enero = emp[emp["pdf_filename"] == PDF_ENERO]
+    assert enero["_en_ultima_descarga"].all() and enero["_primera_descarga"].isna().all()
+    assert car["_en_ultima_descarga"].all() and len(car) == 7
+    assert len(list((base / "_historico").glob("borme_empresas__*.parquet"))) == 1
+
+
+def _publicado(df):
+    """Como en el release: sin columnas de control ni objeto_social."""
+    return df.drop(columns=[c for c in META + ["objeto_social", "_origen"] if c in df.columns])
+
+
+def test_semilla_solo_anade_los_actos_que_faltan(fake_pdf, fechas, tmp_path):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf[PDF_MADRID] = [PAG1, PAG2]
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    bparser.run_batch(base, tmp_path / "ref", workers=1)
+    # Publicado: los mismos actos leídos por el parser antiguo (otro nombre en el
+    # 1002: no cuenta, la clave es el acto), uno que el parser actual no da (1007)
+    # y un PDF que no está en disco con un anuncio partido en dos filas
+    pub = _publicado(_tablas(tmp_path / "ref")[0])
+    pub.loc[pub["num_entrada"] == "1002", "empresa"] = "BETA INVERSIONES SA. Sociedad unipersonal"
+    extra = pub.iloc[[0, 0, 0]].copy()
+    extra["num_entrada"] = ["1007", "5000", "5000"]
+    extra["pdf_filename"] = [PDF_MADRID, PDF_OTRO, PDF_OTRO]
+    extra["empresa"] = ["IOTA SL", "CAJA DE AHORROS DE SALAMANCA Y SORIA,", "AGREDA"]
+    semilla = tmp_path / "borme_empresas_pub.parquet"
+    pd.concat([pub, extra], ignore_index=True).to_parquet(semilla, index=False)
+
+    bparser.run_batch(base, out, workers=2, semillas=[semilla])
+    emp, _ = _tablas(out)
+    sembradas, parse = emp[emp["_origen"].notna()], emp[emp["_origen"].isna()]
+    assert sorted(zip(sembradas["pdf_filename"], sembradas["num_entrada"], sembradas["empresa"])) == [
+        (PDF_OTRO, "5000", "AGREDA"), (PDF_OTRO, "5000", "CAJA DE AHORROS DE SALAMANCA Y SORIA,"),
+        (PDF_MADRID, "1007", "IOTA SL")]
+    assert set(sembradas["_origen"]) == {"release v2026.02"} and not sembradas["_en_ultima_descarga"].any()
+    assert sembradas["objeto_social"].isna().all()
+    # Las filas del parse, intactas
+    assert len(parse) == 6 and parse["_en_ultima_descarga"].all()
+    assert parse.set_index("num_entrada").loc["1002", "empresa"] == "BETA INVERSIONES SA"
+
+    # Sembrar otra vez no añade nada ni crea otra versión de la salida
+    tablas = _foto(out, "*.parquet")
+    bparser.run_batch(base, out, workers=2, semillas=[semilla])
+    assert _foto(out, "*.parquet") == tablas and not (out / "_historico").exists()
+
+    # Llega el PDF que solo conocía la semilla: su parse entra como vigente, lo
+    # sembrado se conserva y el detector usa solo lo vigente de cada PDF
+    fake_pdf[PDF_OTRO] = [PAG_OTRO]
+    _pdf_file(base, dt.date(2023, 5, 29), PDF_OTRO)
+    bparser.run_batch(base, out, workers=2, semillas=[semilla])
+    emp, car = _tablas(out)
+    otro = emp[emp["pdf_filename"] == PDF_OTRO]
+    assert sorted(zip(otro["empresa"], otro["_en_ultima_descarga"])) == [
+        ("AGREDA", False), ("CAJA DE AHORROS DE SALAMANCA Y SORIA,", False), ("CAJA DE AHORROS NUEVA SA", True)]
+    vig_emp, vig_car = match.filas_vigentes(emp, car)
+    assert len(vig_emp) == 7 and vig_emp["_en_ultima_descarga"].all()
+
+
+def test_semilla_de_cargos_y_anonimizar_conservan_el_hash_publicado(fake_pdf, tmp_path, monkeypatch):
+    base, data = tmp_path / "borme_pdfs", tmp_path / "data"
+    fake_pdf[PDF_MADRID] = [PAG1, PAG2]
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    semilla = tmp_path / "borme_cargos_pub.parquet"
+    pd.DataFrame({
+        "fecha_borme": pd.to_datetime(["2024-01-04", "2024-01-04", "2023-05-29"]),
+        "num_entrada": ["1001", "1003", "5000"],
+        "empresa": ["ALFA SOLUCIONES SL", "GAMMA LOGISTICA SL", "CAJA DE AHORROS NUEVA SA"],
+        "empresa_norm": ["ALFA SOLUCIONES", "GAMMA LOGISTICA", "CAJA DE AHORROS NUEVA"],
+        "provincia": ["MADRID"] * 3,
+        "hoja_registral": ["M 793456", "M 5555", "M 1"],
+        "tipo_acto": ["nombramiento"] * 3,
+        "cargo": ["Adm. Unico", "Socio único", "Apoderado"],
+        "persona_hash": ["hash_1001", "hash_1003", "hash_5000"],
+        "pdf_filename": [PDF_MADRID, PDF_MADRID, PDF_OTRO],
+    }).to_parquet(semilla, index=False)
+
+    _run_cli(monkeypatch, "borme_batch_parser.py", "--input", base, "--workers", 1, "--semilla", semilla)
+    car = pd.read_parquet(base / "borme_cargos.parquet")
+    sembradas = car[car["_origen"].notna()]
+    # El 1001 ya tiene cargos en el parse: no entra; el 1003 no tiene ninguno y el 5000 no está en disco
+    assert sorted(sembradas["num_entrada"]) == ["1003", "5000"]
+    assert sembradas["persona"].isna().all() and not sembradas["_en_ultima_descarga"].any()
+    assert "_origen" not in pd.read_parquet(base / "borme_empresas.parquet").columns
+
+    _run_cli(monkeypatch, "borme_anonymize.py", "--input", base, "--output", data)
+    pub = pd.read_parquet(data / "borme_cargos_pub.parquet")
+    assert "persona" not in pub.columns and len(pub) == len(car)
+    assert list(pub.columns[-4:]) == ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga", "_origen"]
+    assert set(pub.loc[pub["_origen"].notna(), "persona_hash"]) == {"hash_1003", "hash_5000"}
+    assert set(pub.loc[pub["_origen"].isna(), "persona_hash"]) == {anon.hash_persona(n) for n in (
+        "FULANO MENGANO JUAN", "ZUTANO PERENGANO ANA", "PRUEBA EJEMPLO LUIS", "AUDITORES EJEMPLO SL")}
+    emp_pub = pd.read_parquet(data / "borme_empresas_pub.parquet")
+    assert list(emp_pub.columns[-3:]) == META and "objeto_social" not in emp_pub.columns
+
+
+def test_semilla_sin_ningun_pdf_en_disco(fake_pdf, tmp_path):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    base.mkdir()
+    semilla = tmp_path / "borme_empresas_pub.parquet"
+    _publicado(_empresas_privadas()).to_parquet(semilla, index=False)
+    bparser.run_batch(base, out, workers=1, semillas=[semilla])
+    emp = pd.read_parquet(out / "borme_empresas.parquet")
+    assert len(emp) == 3 and set(emp["_origen"]) == {"release v2026.02"}
+    assert not emp["_en_ultima_descarga"].any()
+    assert not (out / "borme_cargos.parquet").exists()
 
 
 # ═════════════════════════════════════════════
@@ -621,6 +1049,44 @@ def test_run_matching_sin_adjudicaciones_no_rompe(tmp_path):
     df.to_parquet(tmp_path / "p.parquet", index=False)
     match.run_matching(borme, tmp_path / "p.parquet", tmp_path / "out")  # antes: ZeroDivisionError
     assert pd.read_parquet(tmp_path / "out" / "flag1_recien_creada.parquet").empty
+
+
+def test_filas_vigentes_una_version_de_cada_acto():
+    emp = pd.DataFrame({
+        "pdf_filename": ["P1", "P1", "P1", "P2", "P2"],
+        "num_entrada": ["1", "1", "2", "9", "9"],
+        "_en_ultima_descarga": [True, False, False, False, False],
+        "_origen": [None, None, "release v2026.02", "release v2026.02", "release v2026.02"],
+    })
+    car = pd.DataFrame({"pdf_filename": ["P1", "P1", "P2"], "_en_ultima_descarga": [False, True, False],
+                        "cargo": ["A", "B", "C"]})
+    e, c = match.filas_vigentes(emp, car)
+    # P1: solo su último parse; P2 solo lo conoce la semilla: lo de la semilla
+    assert e[["pdf_filename", "num_entrada"]].values.tolist() == [["P1", "1"], ["P2", "9"], ["P2", "9"]]
+    assert c["cargo"].tolist() == ["B", "C"]
+    # Tablas de la versión anterior del parser (sin columnas de control): todo
+    e, c = match.filas_vigentes(emp.drop(columns="_en_ultima_descarga"), car)
+    assert len(e) == 5 and len(c) == 3
+
+
+def test_placsp_match_usa_la_version_vigente_de_cada_acto(tmp_path):
+    borme = tmp_path / "b"
+    borme.mkdir()
+    _borme_match(borme)
+    emp = pd.read_parquet(borme / "borme_empresas.parquet")
+    emp["pdf_filename"] = [f"BORME-A-2023-{i}-28.pdf" for i in range(len(emp))]
+    emp["_en_ultima_descarga"] = True
+    # El parse actual lee otro capital para PEQUEÑA SA; la lectura anterior (3.000 €)
+    # se conserva como no vigente y no debe contar para el flag 2
+    pequena = emp["empresa"] == "PEQUEÑA SA"
+    anterior = emp[pequena].assign(_en_ultima_descarga=False)
+    emp.loc[pequena, "capital_euros"] = 300000.0
+    pd.concat([emp, anterior], ignore_index=True).to_parquet(borme / "borme_empresas.parquet", index=False)
+    _placsp(tmp_path / "p.parquet")
+    match.run_matching(borme, tmp_path / "p.parquet", tmp_path / "out")
+    assert pd.read_parquet(tmp_path / "out" / "flag2_capital_ridiculo.parquet").empty
+    f1 = pd.read_parquet(tmp_path / "out" / "flag1_recien_creada.parquet")
+    assert f1["adj_norm"].tolist() == ["NUEVA"]  # lo demás, como siempre
 
 
 def test_flag3_solo_empresas_indicadas():
@@ -1031,3 +1497,73 @@ def test_extract_pdf_links_sumario_xml_y_json():
         ("/borme/dias/2024/01/04/pdfs/BORME-C-2024-5.pdf", "C")]
     assert [link["pdf_filename"] for link in scraper.extract_pdf_links_sumario(json_txt)] == [
         "BORME-B-2024-3-08.pdf"]
+
+
+# ═════════════════════════════════════════════
+#  borme_scraper.py — sin machacar PDFs (guardar_version)
+# ═════════════════════════════════════════════
+def test_scraper_comprobar_pdf_cambiado_pasa_a_historico(monkeypatch, tmp_path):
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, [PDF_MADRID])
+    out = tmp_path / "borme_pdfs"
+    args = ["--start", JUE, "--end", JUE, "--output", out, "--delay", 0, "--sin-sumario-api"]
+    _run_cli(monkeypatch, "borme_scraper.py", *args)
+    pdf = out / "2024/01/04" / PDF_MADRID
+    original, mtime = pdf.read_bytes(), pdf.stat().st_mtime_ns
+
+    # Ya en disco: sin --comprobar no se vuelve a pedir
+    _run_cli(monkeypatch, "borme_scraper.py", *args)
+    assert boe.calls.count(_pdf_url(JUE, PDF_MADRID)) == 1
+    # Con --comprobar y el mismo contenido: no se toca
+    _run_cli(monkeypatch, "borme_scraper.py", *args, "--comprobar")
+    assert boe.calls.count(_pdf_url(JUE, PDF_MADRID)) == 2
+    assert pdf.stat().st_mtime_ns == mtime and not (pdf.parent / "_historico").exists()
+    assert len(_manifest(out)) == 1
+
+    # boe.es sirve otro contenido: el anterior pasa a _historico/ (antes no se
+    # detectaba; y si se hubiera vuelto a descargar, se habría machacado)
+    boe.routes[_pdf_url(JUE, PDF_MADRID)] = _resp(200, content=b"%PDF-1.4 corregido")
+    _run_cli(monkeypatch, "borme_scraper.py", *args, "--comprobar")
+    assert pdf.read_bytes() == b"%PDF-1.4 corregido"
+    copia, = (pdf.parent / "_historico").iterdir()
+    assert copia.read_bytes() == original and copia.name.startswith("BORME-A-2024-3-28__")
+    assert bparser._nombre_pdf(copia) == PDF_MADRID  # el parser la trata como versión del mismo PDF
+    assert _manifest(out) == [("2024-01-04", PDF_MADRID, "A")] * 2  # una fila por versión
+    assert _state(out)["errors"] == []
+
+
+def test_scraper_pdf_que_falta_en_disco_se_vuelve_a_descargar(monkeypatch, tmp_path):
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, [PDF_MADRID, "BORME-A-2024-3-08.pdf"])
+    out = tmp_path / "borme_pdfs"
+    args = ["--start", JUE, "--end", JUE, "--output", out, "--delay", 0, "--sin-sumario-api"]
+    _run_cli(monkeypatch, "borme_scraper.py", *args)
+    # Carpeta del día borrada, y un fichero vacío de una descarga cortada del código antiguo:
+    # constan en el manifest, pero no están en disco (antes no se volvían a pedir nunca)
+    shutil.rmtree(out / "2024")
+    vacio = out / "2024/01/04" / "BORME-A-2024-3-08.pdf"
+    vacio.parent.mkdir(parents=True)
+    vacio.write_bytes(b"")
+    _run_cli(monkeypatch, "borme_scraper.py", *args)
+    assert (out / "2024/01/04" / PDF_MADRID).read_bytes() == b"%PDF-1.4 " + PDF_MADRID.encode()
+    assert vacio.read_bytes() == b"%PDF-1.4 BORME-A-2024-3-08.pdf"
+    assert not (vacio.parent / "_historico").exists()  # un fichero vacío no es una versión
+    assert boe.calls.count(_pdf_url(JUE, PDF_MADRID)) == 2
+
+
+@pytest.mark.parametrize("fallo", [requests.ConnectionError("reset"), _resp(200, "<html>Error</html>")])
+def test_scraper_comprobar_con_descarga_fallida_no_toca_el_pdf(monkeypatch, tmp_path, fallo):
+    boe = FakeBOE(monkeypatch)
+    boe.publish(JUE, [PDF_MADRID])
+    out = tmp_path / "borme_pdfs"
+    args = ["--start", JUE, "--end", JUE, "--output", out, "--delay", 0, "--sin-sumario-api"]
+    _run_cli(monkeypatch, "borme_scraper.py", *args)
+    pdf = out / "2024/01/04" / PDF_MADRID
+    antes = (pdf.read_bytes(), pdf.stat().st_mtime_ns)
+
+    boe.routes[_pdf_url(JUE, PDF_MADRID)] = fallo
+    _run_cli(monkeypatch, "borme_scraper.py", *args, "--comprobar")
+    assert (pdf.read_bytes(), pdf.stat().st_mtime_ns) == antes
+    assert not (pdf.parent / "_historico").exists()
+    assert [e["date"] for e in _state(out)["errors"]] == ["2024-01-04"]  # el día queda pendiente
+    assert len(_manifest(out)) == 1

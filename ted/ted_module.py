@@ -283,6 +283,11 @@ def download_ted_spain(
     if years is None:
         years = _default_years()
 
+    faltan = [str(s) for s in semillas if not Path(s).is_file()]
+    if faltan:
+        log.error(f"No existe la semilla: {', '.join(faltan)}")
+        return None
+
     if output_path.exists() and not force_redownload and not semillas:
         log.info(f"Cargando cache: {output_path}")
         cached = _read_cache(output_path)

@@ -22,7 +22,6 @@ import argparse
 import logging
 import unicodedata
 from pathlib import Path
-from datetime import timedelta
 
 import pandas as pd
 import numpy as np
@@ -122,8 +121,30 @@ def normalize_empresa(name):
 # CARGA DE DATOS
 # =====================================================================
 
+def filas_vigentes(df_emp, df_car):
+    """Una versión de cada acto: la del último parse de su PDF.
+
+    borme_batch_parser.py acumula versiones (comun/historico.py): las filas de un
+    parse anterior que el parse actual ya no da (_en_ultima_descarga=False) y las
+    de la semilla (_origen, también con _en_ultima_descarga=False). De cada PDF
+    con filas vigentes en empresas se usan solo esas (en las dos tablas); de los
+    PDF que solo conoce la semilla (no se han parseado aquí), las de la semilla.
+    Tablas sin esas columnas (versiones anteriores del parser): todas las filas."""
+    if "_en_ultima_descarga" not in df_emp.columns or "pdf_filename" not in df_emp.columns:
+        return df_emp, df_car
+    vigente = df_emp["_en_ultima_descarga"].astype(bool)
+    parseados = set(df_emp.loc[vigente, "pdf_filename"])
+    emp = df_emp[vigente | ~df_emp["pdf_filename"].isin(parseados)]
+    car = df_car
+    if "_en_ultima_descarga" in df_car.columns and "pdf_filename" in df_car.columns:
+        car = df_car[df_car["_en_ultima_descarga"].astype(bool) | ~df_car["pdf_filename"].isin(parseados)]
+    log.info(f"  Versión vigente de cada acto: {len(emp):,} de {len(df_emp):,} filas de empresas "
+             f"y {len(car):,} de {len(df_car):,} de cargos")
+    return emp.reset_index(drop=True), car.reset_index(drop=True)
+
+
 def load_borme(borme_dir: Path):
-    """Carga BORME empresas y cargos, re-normaliza nombres."""
+    """Carga BORME empresas y cargos (la versión vigente de cada acto), re-normaliza nombres."""
     log.info("Cargando BORME empresas...")
     df_emp = pd.read_parquet(borme_dir / "borme_empresas.parquet")
     df_emp["fecha_borme"] = pd.to_datetime(df_emp["fecha_borme"], errors="coerce")
@@ -136,6 +157,10 @@ def load_borme(borme_dir: Path):
     log.info("Cargando BORME cargos...")
     df_car = pd.read_parquet(borme_dir / "borme_cargos.parquet")
     df_car["fecha_borme"] = pd.to_datetime(df_car["fecha_borme"], errors="coerce")
+    df_emp, df_car = filas_vigentes(df_emp, df_car)
+    if "persona" not in df_car.columns:
+        # Solo filas de la semilla: traen persona_hash, no el nombre (el flag 3 no las cuenta)
+        df_car["persona"] = pd.Series(None, index=df_car.index, dtype=object)
     df_car["empresa_norm"] = df_car["empresa"].apply(normalize_empresa)
     log.info(f"  {len(df_car):,} filas, {df_car['persona'].nunique():,} personas únicas")
 
@@ -379,7 +404,7 @@ def run_matching(borme_dir: Path, placsp_path: Path, output_dir: Path):
 
     # ── Resumen ──
     log.info(f"\n{'='*60}")
-    log.info(f"RESUMEN ANOMALÍAS")
+    log.info("RESUMEN ANOMALÍAS")
     log.info(f"{'='*60}")
     log.info(f"  Flag 1 — Recién creada (<6 meses):     {len(f1):>8,} adjudicaciones")
     log.info(f"  Flag 2 — Capital ridículo:              {len(f2):>8,} adjudicaciones")

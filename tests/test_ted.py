@@ -8,9 +8,11 @@ de los scripts en un árbol temporal con la misma estructura que el repo
 (<tmp>/ted, <tmp>/nacional), lanzados desde un cwd distinto a la raíz.
 """
 
+import hashlib
 import importlib.util
 import io
 import logging
+import os
 import re
 import runpy
 import shutil
@@ -1170,6 +1172,277 @@ class TestTedCompletitud:
         assert (fila["TITLE"], fila["CONTRACT_NUMBER"], fila["B_CONTRACTOR_SME"]) == (
             "Servicio de limpieza", "CT-7", "Y")
         assert "TED_NOTICE_URL" in pd.read_parquet(tmp_path / "ted_can_2021_ES.parquet").columns
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ted_module.py — histórico (sesgo del superviviente, comun/historico.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+META = ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]
+
+
+def _aviso(num, valor="100000", fecha="20240315"):
+    """(fecha de publicación, aviso de la API de 2024) con un ganador."""
+    return (fecha, _notice(f"{num}-2024", winners=[f"B{num:08d}"], win_names=[f"EMP {num}"],
+                           values=[valor], dates=["2024-03-01+01:00"]))
+
+
+def _fijar_fecha(ruta, fecha):
+    """Fecha de modificación de un fichero: la de su versión en el histórico."""
+    t = pd.Timestamp(fecha, tz="UTC").timestamp()
+    os.utime(ruta, (t, t))
+
+
+def _historico(carpeta):
+    h = Path(carpeta) / "_historico"
+    return sorted(p.name for p in h.iterdir()) if h.is_dir() else []
+
+
+def _estado(df):
+    """{ted_notice_id: [_en_ultima_descarga de cada una de sus filas]}."""
+    return {k: sorted(bool(v) for v in g) for k, g in df.groupby("ted_notice_id")["_en_ultima_descarga"]}
+
+
+def _sha(ruta):
+    return hashlib.sha256(Path(ruta).read_bytes()).hexdigest()
+
+
+def _foto(carpeta):
+    """Contenido y fecha de cada parquet de la carpeta (y de _historico/)."""
+    return {str(p.relative_to(carpeta)): (_sha(p), p.stat().st_mtime_ns)
+            for p in sorted(Path(carpeta).rglob("*.parquet"))}
+
+
+@pytest.fixture
+def ted_2024(monkeypatch, tmp_path, no_sleep):
+    """API simulada con avisos de 2024 (lista modificable entre ejecuciones),
+    sin CSV, datos en tmp_path y 2026 como año en curso."""
+    api = FakeTedApi([_aviso(1), _aviso(2), _aviso(3)])
+    monkeypatch.setattr(requests, "post", api)
+    monkeypatch.setattr(pd, "read_csv", _fake_read_csv({}))
+    monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(tm, "_current_year", lambda: 2026)
+    return api
+
+
+# CSV bulk con los identificadores reales: ID_NOTICE_CAN = año + número del aviso
+TED_CSV_2021_IDS = (
+    "ID_NOTICE_CAN,YEAR,ISO_COUNTRY_CODE,CAE_NAME,WIN_NAME,WIN_NATIONALID,AWARD_VALUE_EURO_FIN_1,CANCELLED\n"
+    "20211001,2021,ES,Ayuntamiento de Sevilla,EMPRESA SL,ESB11111111,380000,0\n"
+    "20211002,2021,ES,Diputación de Huelva,OTRA SL,ESB22222222,500000,0\n"
+)
+
+
+class TestHistoricoTed:
+    """Al refrescar un año no se machacan su caché ni el consolidado: lo que TED
+    retira o cambia sigue con _en_ultima_descarga=False."""
+
+    def test_aviso_retirado_se_conserva(self, ted_2024, tmp_path):
+        tm.download_ted_spain(years=[2024], force_redownload=True)
+        cache = tmp_path / "ted_can_2024_ES_api.parquet"
+        _fijar_fecha(cache, "2025-01-10")
+        ted_2024.notices = [_aviso(1), _aviso(2)]            # TED retira el aviso 3
+        df = tm.download_ted_spain(years=[2024], force_redownload=True)
+        assert _estado(df) == {"1-2024": [True], "2-2024": [True], "3-2024": [False]}
+        assert list(df.columns[-3:]) == META
+        retirado = df.set_index("ted_notice_id").loc["3-2024"]
+        assert retirado["_primera_descarga"] == retirado["_ultima_descarga"] == "2025-01-10T00:00:00+00:00"
+        # La caché anterior (con el aviso 3) queda en _historico/ y la actual no lo tiene
+        assert "ted_can_2024_ES_api__20250110T000000Z.parquet" in _historico(tmp_path)
+        assert "3-2024" not in set(pd.read_parquet(cache)["ted_notice_id"])
+        # El consolidado anterior también; el nuevo es lo que se devuelve
+        assert any(n.startswith("ted_es_can__") for n in _historico(tmp_path))
+        assert _estado(pd.read_parquet(tmp_path / "ted_es_can.parquet")) == _estado(df)
+
+    def test_aviso_cambiado_conserva_la_version_anterior(self, ted_2024, tmp_path):
+        tm.download_ted_spain(years=[2024], force_redownload=True)
+        _fijar_fecha(tmp_path / "ted_can_2024_ES_api.parquet", "2025-01-10")
+        ted_2024.notices = [_aviso(1), _aviso(2), _aviso(3, valor="250000")]   # TED corrige un importe
+        df = tm.download_ted_spain(years=[2024], force_redownload=True)
+        assert _estado(df) == {"1-2024": [True], "2-2024": [True], "3-2024": [False, True]}
+        tres = df[df["ted_notice_id"] == "3-2024"].set_index("_en_ultima_descarga")["importe_ted"]
+        assert (tres[False], tres[True]) == (100000, 250000)
+        # En los cruces cada aviso cuenta una vez: su versión vigente
+        for ultima_version in (tm.ultima_version_por_aviso, rtc.ultima_version_por_aviso):
+            ultima = ultima_version(df)
+            assert ultima["ted_notice_id"].is_unique
+            assert ultima.set_index("ted_notice_id").loc["3-2024", "importe_ted"] == 250000
+
+    def test_ejecucion_parcial_no_retira_los_otros_anios(self, monkeypatch, tmp_path, ted_http):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        _fijar_fecha(tmp_path / "ted_can_2019_ES.parquet", "2020-01-10")
+        _fijar_fecha(tmp_path / "ted_can_2024_ES_api.parquet", "2025-01-10")
+        ted_http.notices = ted_http.notices[:3]              # TED retira 100004-2024 (dos lotes)
+        df = tm.download_ted_spain(years=[2024], force_redownload=True)
+        # 2019 no se ha vuelto a descargar: sigue entero, vigente y con la fecha de su versión
+        de_2019 = df[df["year"] == 2019]
+        assert len(de_2019) == 2 and de_2019["_en_ultima_descarga"].all()
+        assert set(de_2019["_ultima_descarga"]) == {"2020-01-10T00:00:00+00:00"}
+        assert not any(n.startswith("ted_can_2019") for n in _historico(tmp_path))
+        de_2024 = df[df["year"] == 2024]
+        assert _estado(de_2024)["100004-2024"] == [False, False]
+        assert de_2024["_en_ultima_descarga"].sum() == 3
+
+    def test_descarga_fallida_o_vacia_no_retira_nada(self, monkeypatch, tmp_path, ted_http):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        foto = _foto(tmp_path)
+        # 1. La API falla (HTTP 500): descarga incompleta, no se guarda nada
+        monkeypatch.setattr(requests, "post", FakeTedApi(_api_notices_2024(), fail_pages={1}))
+        tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        assert _foto(tmp_path) == foto
+        # 2. La API responde sin avisos: 2024 sigue como estaba
+        monkeypatch.setattr(requests, "post", FakeTedApi([]))
+        df = tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        assert len(df) == 7 and df["_en_ultima_descarga"].all()
+        assert _foto(tmp_path) == foto
+        # 3. El CSV falla (404) con caché guardada: se sigue usando, sin ir a la API
+        monkeypatch.setattr(pd, "read_csv", _fake_read_csv({}))
+        monkeypatch.setattr(requests, "post", _api_prohibida)
+        df = tm.download_ted_spain(years=[2019], force_redownload=True)
+        assert len(df) == 7 and df["_en_ultima_descarga"].all()
+        assert _foto(tmp_path) == foto
+
+    def test_anio_en_curso_no_se_cachea_pero_queda_en_el_historico(self, ted_2024, monkeypatch, tmp_path):
+        monkeypatch.setattr(tm, "_current_year", lambda: 2024)
+        cache = tmp_path / "ted_can_2024_ES_api.parquet"
+        en_curso = tmp_path / "ted_can_2024_ES_api_en_curso.parquet"
+        tm.download_ted_spain(years=[2024], force_redownload=True)
+        assert not cache.exists() and en_curso.exists()
+        _fijar_fecha(en_curso, "2024-05-01")
+        ted_2024.notices = [_aviso(2), _aviso(3), _aviso(4)]   # retira el 1 y publica el 4
+        df = tm.download_ted_spain(years=[2024], force_redownload=True)
+        assert not cache.exists()
+        assert _estado(df) == {"1-2024": [False], "2-2024": [True], "3-2024": [True], "4-2024": [True]}
+        _fijar_fecha(en_curso, "2024-06-01")
+        _fijar_fecha(tmp_path / "ted_es_can.parquet", "2024-06-01")   # guardado con 2024 abierto
+        # Cierra el año: se guarda la caché y lo visto durante el año sigue en el consolidado
+        monkeypatch.setattr(tm, "_current_year", lambda: 2025)
+        ted_2024.notices.append(_aviso(5))
+        df = tm.download_ted_spain(years=[2024])
+        assert cache.exists()
+        assert _estado(df) == {"1-2024": [False], "2-2024": [True], "3-2024": [True],
+                               "4-2024": [True], "5-2024": [True]}
+        uno = df.set_index("ted_notice_id").loc["1-2024"]
+        assert uno["_primera_descarga"] == uno["_ultima_descarga"] == "2024-05-01T00:00:00+00:00"
+        assert df.set_index("ted_notice_id").loc["2-2024", "_primera_descarga"] == "2024-05-01T00:00:00+00:00"
+
+    def test_semilla_solo_anade_los_avisos_que_faltan(self, ted_2024, monkeypatch, tmp_path):
+        url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+        monkeypatch.setattr(pd, "read_csv", _csv_hub_fake({url: TED_CSV_2021_IDS}))
+        ted_2024.notices = [_aviso(1), _aviso(2)]
+        # Como el ted_es_can.parquet publicado, donde 2020-2023 venían de la API
+        # (número-año) y ahora del CSV (año + número): 1001-2021 es 20211001
+        publicado = pd.DataFrame({
+            "ted_notice_id": ["1001-2021", "1003-2021", "1-2024", "9-2024", "9-2024", "5-2018"],
+            "year": [2021, 2021, 2024, 2024, 2024, 2018],
+            "source": ["api_v3"] * 6,
+            "lot_index": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            "importe_ted": [380000.0, 1.0, 100000.0, 2.0, 3.0, 4.0],
+        })
+        semilla = tmp_path / "release" / "ted_es_can.parquet"
+        semilla.parent.mkdir()
+        publicado.to_parquet(semilla, index=False)
+        df = tm.download_ted_spain(years=[2021, 2024], force_redownload=True, semillas=[semilla])
+        sembradas = df[df["_origen"].notna()]
+        # Solo los avisos que faltan (con todas sus filas); 2018 no se ha descargado
+        assert sorted(sembradas["ted_notice_id"]) == ["1003-2021", "9-2024", "9-2024"]
+        assert (sembradas["_origen"] == "release v2026.02").all()
+        assert not sembradas["_en_ultima_descarga"].any()
+        descargadas = df[df["_origen"].isna()]
+        assert sorted(descargadas["ted_notice_id"]) == ["1-2024", "2-2024", "20211001", "20211002"]
+        assert descargadas["_en_ultima_descarga"].all()
+        # Otra vez con la misma semilla: no añade nada ni cambia el consolidado
+        out = tmp_path / "ted_es_can.parquet"
+        antes = _sha(out)
+        otra = tm.download_ted_spain(years=[2021, 2024], force_redownload=True, semillas=[semilla])
+        assert len(otra) == len(df) and _sha(out) == antes
+        # Sin --semilla las filas sembradas se conservan (vienen del consolidado anterior)
+        sin = tm.download_ted_spain(years=[2021, 2024], force_redownload=True)
+        assert sorted(sin.loc[sin["_origen"].notna(), "ted_notice_id"]) == ["1003-2021", "9-2024", "9-2024"]
+
+    def test_clave_aviso_iguala_csv_y_api(self):
+        ids = ["2020112", "112-2020", "000112-2020", "2019S 001", None]
+        assert tm.clave_aviso(ids).tolist() == ["112-2020", "112-2020", "112-2020", "2019S 001", None]
+
+    def test_reejecucion_sin_cambios_no_crea_version(self, monkeypatch, tmp_path, ted_http):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        foto = _foto(tmp_path)
+        ted_http.notices = ted_http.notices[::-1]      # los mismos avisos, en otro orden
+        df = tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        assert _foto(tmp_path) == foto and _historico(tmp_path) == []
+        assert df["_en_ultima_descarga"].all()
+
+    def test_una_descarga_da_lo_de_antes_mas_las_columnas_meta(self, monkeypatch, tmp_path, ted_http):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
+        # Lo que daba el código anterior: las descargas concatenadas y normalizadas
+        csv = tm._download_csv_year(2019, force=True)
+        api = tm._download_api_year(2024, force=True)
+        antes = tm._normalize_ted_data(pd.concat([tm._renombrar_csv(csv), api], ignore_index=True))
+        assert list(df.columns) == list(antes.columns) + META
+        pd.testing.assert_frame_equal(df.drop(columns=META), antes)
+        assert df["_en_ultima_descarga"].all()
+        assert (df["_primera_descarga"] == df["_ultima_descarga"]).all()
+
+    def test_cache_api_del_parser_anterior_no_se_compara_fila_a_fila(self, ted_2024, tmp_path, caplog):
+        # Caché publicada en v2026.02 (sin notice_subtype): sus filas no casan con
+        # las del parser actual (cae_town "['Sevilla']"...) y duplicarían los avisos
+        vieja = pd.DataFrame({"ted_notice_id": ["1-2024", "8-2024"], "year": ["2024"] * 2,
+                              "lot_index": [0, 0], "cae_town": ["['Sevilla']"] * 2,
+                              "notice_type": ["can-standard"] * 2, "source": ["api_v3"] * 2})
+        cache = tmp_path / "ted_can_2024_ES_api.parquet"
+        vieja.to_parquet(cache, index=False)
+        _fijar_fecha(cache, "2026-02-06")
+        with caplog.at_level(logging.WARNING, logger="ted_module"):
+            df = tm.download_ted_spain(years=[2024])
+        assert _estado(df) == {"1-2024": [True], "2-2024": [True], "3-2024": [True]}
+        assert "ted_can_2024_ES_api__20260206T000000Z.parquet" in _historico(tmp_path)
+        assert "--semilla" in caplog.text
+
+    def test_cross_validate_ted_no_valida_dos_contratos_con_un_aviso(self, ted_2024, tmp_path):
+        tm.download_ted_spain(years=[2024], force_redownload=True)
+        _fijar_fecha(tmp_path / "ted_can_2024_ES_api.parquet", "2025-01-10")
+        # TED corrige la ciudad del aviso 1 (mismo ganador e importe): dos versiones
+        ted_2024.notices[0][1]["buyer-city"] = ["Dos Hermanas"]
+        ted = tm.download_ted_spain(years=[2024], force_redownload=True)
+        assert _estado(ted)["1-2024"] == [False, True]
+        pipe = pd.DataFrame({"_nif": ["B00000001"] * 2, "_imp_adj": [100_000.0] * 2, "_año": [2024.0] * 2,
+                             "_fecha_adj": ["2024-03-01"] * 2, "_es_menor": [False] * 2,
+                             "_organ": ["Ayuntamiento de Sevilla"] * 2, "_adj": ["EMP 1"] * 2,
+                             "_expediente": [None, None], "_cpv": ["79000000"] * 2})
+        res, _ = tm.cross_validate_ted(pipe, ted, "NAC")
+        assert res["_ted_validated"].sum() == 1
+
+
+def test_cruce_toma_la_ultima_version_de_cada_aviso(tmp_path, capsys):
+    """run_ted_crossvalidation.load_ted: cada aviso una vez (vigente, o la última
+    versión de uno retirado; los sembrados del release cuentan)."""
+    ted = pd.DataFrame({
+        "ted_notice_id": ["A", "A", "B", "B", "C", "D"],
+        "importe_ted": [100.0, 120.0, 200.0, 210.0, 300.0, 400.0],
+        "win_nationalid": ["B11111111"] * 6,
+        "year": [2024] * 6,
+        "_ultima_descarga": ["2025-01-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00",
+                             "2025-01-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00",
+                             None, "2025-02-01T00:00:00+00:00"],
+        "_en_ultima_descarga": [False, True, False, False, False, True],
+        "_origen": [None, None, None, None, "release v2026.02", None],
+    })
+    esperado = [("A", 120.0), ("B", 210.0), ("C", 300.0), ("D", 400.0)]
+    ultima = tm.ultima_version_por_aviso(ted)
+    assert sorted(zip(ultima["ted_notice_id"], ultima["importe_ted"])) == esperado
+    ted.to_parquet(tmp_path / "ted_es_can.parquet", index=False)
+    df = rtc.load_ted(tmp_path / "ted_es_can.parquet")
+    assert sorted(zip(df["ted_notice_id"], df["importe_ted"])) == esperado
+    assert list(df.index) == [0, 1, 2, 3]
+    assert "fuera del cruce): 2" in capsys.readouterr().out
+    # Sin columnas de histórico (consolidados anteriores) no cambia nada
+    viejo = ted.drop(columns=META[1:] + ["_origen"])
+    assert tm.ultima_version_por_aviso(viejo) is viejo
+    assert rtc.ultima_version_por_aviso(viejo) is viejo
 
 
 def test_nullable_strings_from_rebuilt_parquet():

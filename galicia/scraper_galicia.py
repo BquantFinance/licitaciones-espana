@@ -1272,7 +1272,7 @@ def start_base_download(output_dir):
         if previous.get("fecha_descarga") and not previous.get("acumulada"):
             raise ScraperError(
                 f"La descarga base del {previous['fecha_descarga']} ({base_csv}) todavía no está en "
-                f"{FINAL_CSV_NAME}: ejecuta antes 'merge' (o termina esa descarga con 'base --resume'). "
+                f"{FINAL_CSV_NAME}: ejecuta antes 'merge' (o termina esa descarga con --resume). "
                 "Así ninguna descarga se queda fuera de la tabla final."
             )
         if not previous.get("fecha_descarga"):
@@ -1284,7 +1284,7 @@ def start_base_download(output_dir):
     for name in (BASE_CSV_NAME, BASE_PARQUET_NAME):
         path = output_dir / name
         if path.exists():
-            apartadas[name] = str(archivar(path))
+            apartadas[name] = str(archivar(path).resolve())
             log(f"Descarga base anterior: {name} → {apartadas[name]}")
     return {"fecha_descarga": iso_utc(), "ambito": {}, "acumulada": False, "apartadas": apartadas}
 
