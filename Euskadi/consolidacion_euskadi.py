@@ -46,6 +46,7 @@
 
 import json
 import logging
+import os
 import re
 import argparse
 import sys
@@ -151,12 +152,15 @@ REVASCON_CSV_A_XLSX = {
     "código_de_contrato": "código_identificador_del_contrato",
 }
 
+# Con --salida el log va a esa carpeta (usar_carpetas): nada se escribe junto al script
+LOG_NOMBRE = "consolidar_euskadi_v4.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(SCRIPT_DIR / "consolidar_euskadi_v4.log",
+        logging.FileHandler(SCRIPT_DIR / LOG_NOMBRE,
                             encoding="utf-8", delay=True),
     ],
 )
@@ -1374,8 +1378,30 @@ def generar_readme(all_stats: dict):
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
+def _mover_log(carpeta):
+    """Lleva el log del script (el FileHandler llamado LOG_NOMBRE, esté junto al script o en una
+    --salida anterior) a carpeta/LOG_NOMBRE, con el mismo formato y nivel.
+
+    Con --salida no se escribe nada junto al script: en el VPS el repo se monta en solo lectura y
+    el FileHandler (delay=True) fallaría en el primer mensaje. Como configurar_salida() de
+    scripts/ccaa_andalucia.py.
+    """
+    destino = os.path.abspath(Path(carpeta) / LOG_NOMBRE)
+    raiz = logging.getLogger()
+    for handler in list(raiz.handlers):
+        if (isinstance(handler, logging.FileHandler)
+                and os.path.basename(handler.baseFilename) == LOG_NOMBRE
+                and handler.baseFilename != destino):
+            raiz.removeHandler(handler)
+            handler.close()
+            nuevo = logging.FileHandler(destino, encoding="utf-8", delay=True)
+            nuevo.setFormatter(handler.formatter)
+            nuevo.setLevel(handler.level)
+            raiz.addHandler(nuevo)
+
+
 def usar_carpetas(entrada=None, salida=None):
-    """Cambia las carpetas (--entrada, --salida): INPUT_DIR con sus PATHS y OUTPUT_DIR."""
+    """Cambia las carpetas (--entrada, --salida): INPUT_DIR con sus PATHS, OUTPUT_DIR y el log."""
     global INPUT_DIR, OUTPUT_DIR
     if entrada is not None:
         INPUT_DIR = Path(entrada)
@@ -1383,6 +1409,8 @@ def usar_carpetas(entrada=None, salida=None):
             PATHS[clave] = INPUT_DIR / ruta.name
     if salida is not None:
         OUTPUT_DIR = Path(salida)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        _mover_log(OUTPUT_DIR)
 
 
 def argumentos(argv):

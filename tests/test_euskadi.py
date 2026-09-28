@@ -11,7 +11,10 @@ se generan en tmp_path imitando la estructura de los ficheros reales
 import importlib.util
 import io
 import json
+import logging
+import os
 import re
+import shutil
 from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -926,3 +929,75 @@ def test_entrada_y_salida_de_la_consolidacion(monkeypatch, tmp_path):
     # sin opciones no cambia nada
     cons.usar_carpetas(None, None)
     assert (cons.INPUT_DIR, cons.OUTPUT_DIR) == (tmp_path / "in", tmp_path / "out")
+
+
+# ─────────────────────────────────────────────────────────────
+# Log con --salida: en el VPS el repo se monta en solo lectura
+# ─────────────────────────────────────────────────────────────
+
+def _copia_en_solo_lectura(tmp_path, fichero):
+    """Copia el script a tmp/repo/Euskadi (que el test deja en solo lectura, como /repo en el VPS)
+    y lo carga capturando la llamada real a basicConfig. Devuelve (módulo, carpeta, el FileHandler
+    que el script le pasa, con el formato que le pondría basicConfig)."""
+    carpeta = tmp_path / "repo" / "Euskadi"
+    carpeta.mkdir(parents=True)
+    shutil.copy(REPO_ROOT / "Euskadi" / fichero, carpeta / fichero)
+    spec = importlib.util.spec_from_file_location(f"_copia_{fichero[:-3]}", carpeta / fichero)
+    mod = importlib.util.module_from_spec(spec)
+    with mock.patch("logging.basicConfig") as basic:
+        spec.loader.exec_module(mod)
+    kwargs = basic.call_args.kwargs
+    handler = next(h for h in kwargs["handlers"] if isinstance(h, logging.FileHandler))
+    handler.setFormatter(logging.Formatter(kwargs["format"]))   # lo que hace basicConfig
+    return mod, carpeta, handler
+
+
+@pytest.mark.parametrize("fichero", ["ccaa_euskadi.py", "consolidacion_euskadi.py"])
+def test_log_va_a_la_salida_con_el_script_en_solo_lectura(tmp_path, red, fichero):
+    mod, carpeta, handler = _copia_en_solo_lectura(tmp_path, fichero)
+    # El log que el script abre al importarse está junto a él (y se llama LOG_NOMBRE)
+    assert handler.baseFilename == os.path.abspath(carpeta / mod.LOG_NOMBRE)
+    handler.setLevel(logging.INFO)   # para comprobar que el traslado conserva el nivel
+    raiz = logging.getLogger()
+    raiz.addHandler(handler)
+    nivel_raiz = raiz.level
+    raiz.setLevel(logging.INFO)   # el nivel que pone el basicConfig real
+    carpeta.chmod(0o555)
+    try:
+        # Sin --salida falla como en el VPS: el primer mensaje no puede abrir el log (en Windows
+        # chmod no impide escribir y no hay geteuid; como root tampoco se puede comprobar)
+        if os.name == "posix" and os.geteuid() != 0:
+            with pytest.raises(PermissionError):
+                mod.log.warning("antes de --salida")
+        # La ejecución real, por main(): con la red simulada (todo 404) y la entrada vacía
+        salida = tmp_path / "datos" / "salida"
+        args = (["--salida", str(salida)] if fichero == "ccaa_euskadi.py"
+                else ["--entrada", str(tmp_path / "vacia"), "--salida", str(salida)])
+        try:
+            mod.main(args)
+        except SystemExit:
+            pass
+        # Una segunda --salida: el log sigue a la última
+        otra = tmp_path / "datos" / "otra"
+        if fichero == "ccaa_euskadi.py":
+            mod.usar_carpeta(otra)
+        else:
+            mod.usar_carpetas(salida=otra)
+        mod.log.warning("mensaje tras --salida: ñ €")
+        texto = (otra / mod.LOG_NOMBRE).read_text(encoding="utf-8")
+        assert re.search(r"^\d{4}-\d{2}-\d{2} [\d:,]+ \[WARNING\] mensaje tras --salida: ñ €$",
+                         texto, re.MULTILINE), texto
+        assert "mensaje tras --salida" not in (salida / mod.LOG_NOMBRE).read_text(encoding="utf-8")
+        # Nada se ha escrito junto al script
+        assert sorted(p.name for p in carpeta.iterdir()) == [fichero]
+        propios = [h for h in raiz.handlers
+                   if isinstance(h, logging.FileHandler) and str(tmp_path) in h.baseFilename]
+        assert [h.baseFilename for h in propios] == [os.path.abspath(otra / mod.LOG_NOMBRE)]
+        assert propios[0].level == logging.INFO
+    finally:
+        raiz.setLevel(nivel_raiz)
+        carpeta.chmod(0o755)
+        for h in list(raiz.handlers):
+            if isinstance(h, logging.FileHandler) and str(tmp_path) in h.baseFilename:
+                raiz.removeHandler(h)
+                h.close()

@@ -48,6 +48,7 @@ import requests
 import time
 import json
 import logging
+import os
 from collections import Counter
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
@@ -94,12 +95,15 @@ YEAR_NOW = datetime.now().year
 YEAR_MIN_GV     = 2011    # Primer año XLSX disponible
 YEAR_MIN_BILBAO = 2005    # Bilbao publica desde 2005
 
+# Con --salida el log va a esa carpeta (usar_carpeta): nada se escribe junto al script
+LOG_NOMBRE = "descarga_euskadi_v4.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(SCRIPT_DIR / "descarga_euskadi_v4.log",
+        logging.FileHandler(SCRIPT_DIR / LOG_NOMBRE,
                             encoding="utf-8", delay=True),
     ],
 )
@@ -1404,12 +1408,36 @@ def dl_C2_vitoria():
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
+def _mover_log(carpeta):
+    """Lleva el log del script (el FileHandler llamado LOG_NOMBRE, esté junto al script o en una
+    --salida anterior) a carpeta/LOG_NOMBRE, con el mismo formato y nivel.
+
+    Con --salida no se escribe nada junto al script: en el VPS el repo se monta en solo lectura y
+    el FileHandler (delay=True) fallaría en el primer mensaje. Como configurar_salida() de
+    scripts/ccaa_andalucia.py.
+    """
+    destino = os.path.abspath(Path(carpeta) / LOG_NOMBRE)
+    raiz = logging.getLogger()
+    for handler in list(raiz.handlers):
+        if (isinstance(handler, logging.FileHandler)
+                and os.path.basename(handler.baseFilename) == LOG_NOMBRE
+                and handler.baseFilename != destino):
+            raiz.removeHandler(handler)
+            handler.close()
+            nuevo = logging.FileHandler(destino, encoding="utf-8", delay=True)
+            nuevo.setFormatter(handler.formatter)
+            nuevo.setLevel(handler.level)
+            raiz.addHandler(nuevo)
+
+
 def usar_carpeta(base):
-    """Cambia la carpeta de descarga (--salida): BASE_DIR y la de cada módulo en DIRS."""
+    """Cambia la carpeta de descarga (--salida): BASE_DIR, la de cada módulo en DIRS y el log."""
     global BASE_DIR
     BASE_DIR = Path(base)
     for clave, ruta in list(DIRS.items()):
         DIRS[clave] = BASE_DIR / ruta.name
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
+    _mover_log(BASE_DIR)
 
 
 def argumentos(argv):
