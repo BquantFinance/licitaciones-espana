@@ -1,0 +1,4 @@
+FROM licitaciones-scrapers:vps
+USER root
+RUN pip install --no-cache-dir "pandas<3" && pip freeze > /pip-freeze.txt
+USER scraper
