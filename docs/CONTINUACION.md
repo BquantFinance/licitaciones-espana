@@ -128,8 +128,8 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/municipios_menores.py` | Cerrado | `1361abd` | Sí |
 | `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | **No**: el portal no responde desde la nube |
 | `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
-| `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | **En curso** (sesgo del superviviente) | — | — |
-| `galicia/scraper_galicia.py` | **En curso** (sesgo del superviviente) | — | — |
+| `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | Cerrado | `699bf16` | Sí (descarga completa del 2026-09-28) |
+| `galicia/scraper_galicia.py` | Cerrado | `699bf16` | Sí (4 organismos) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Cerrado (sin segmentación por fecha: los órganos grandes quedan fuera del ámbito) | `1fa7f01` | Sí (dos fases) |
 | `borme/scripts/*.py` | Cerrado | `38e72aa` | Sí (boe.es) |
 
