@@ -1087,7 +1087,8 @@ class GaliciaScraperTests(unittest.TestCase):
 
     def test_csv_to_parquet_never_sends_hashes_or_huge_integers_to_to_numeric(self):
         # Un sha256 con pinta de notación científica (13 cifras de exponente: el de la
-        # ficha 'CM500081' del portal simulado) y un entero de 24 cifras no son
+        # ficha 824009 del portal simulado, que llega a la tabla final en
+        # test_main_all_single_org_end_to_end) y un entero de 24 cifras no son
         # números para el Parquet: se quedan como texto, sin pasar por to_numeric.
         # Los demás casos, como siempre.
         if not scraper_galicia.HAS_PYARROW:

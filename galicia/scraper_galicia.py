@@ -1269,11 +1269,17 @@ def start_base_download(output_dir):
     base_csv = output_dir / BASE_CSV_NAME
     previous = read_base_manifest(output_dir)
     if base_csv.exists():
-        if previous.get("fecha_descarga") and not previous.get("acumulada"):
+        # Sin manifiesto (versión anterior del scraper) y sin tabla final, seguro
+        # que no se ha acumulado nunca.
+        pending = (
+            not previous.get("acumulada") if previous.get("fecha_descarga")
+            else not (output_dir / FINAL_CSV_NAME).exists()
+        )
+        if pending:
             raise ScraperError(
-                f"La descarga base del {previous['fecha_descarga']} ({base_csv}) todavía no está en "
-                f"{FINAL_CSV_NAME}: ejecuta antes 'merge' (o termina esa descarga con --resume). "
-                "Así ninguna descarga se queda fuera de la tabla final."
+                f"La descarga base del {previous.get('fecha_descarga') or file_date_iso(base_csv)} ({base_csv}) "
+                f"todavía no está en {FINAL_CSV_NAME}: ejecuta antes 'merge' (o termina esa descarga con "
+                "--resume). Así ninguna descarga se queda fuera de la tabla final."
             )
         if not previous.get("fecha_descarga"):
             log_warn(
