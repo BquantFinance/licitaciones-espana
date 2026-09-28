@@ -1137,11 +1137,12 @@ class TestTedCompletitud:
         assert tm._default_years() == list(range(2006, 2032))
         capturado = {}
         monkeypatch.setattr(tm, "download_ted_spain",
-                            lambda years, force_redownload: capturado.setdefault("years", years))
+                            lambda years, force_redownload, **kw: capturado.update(years=years, **kw))
         monkeypatch.setattr(sys, "argv", ["ted_module.py", "download"])
         tm.main()
         # Antes: '2010-2025' fijo
         assert capturado["years"] == list(range(2006, 2032))
+        assert capturado["semillas"] == []
 
     def test_cache_api_de_version_anterior_se_vuelve_a_descargar(self, monkeypatch, tmp_path, no_sleep):
         # ted_can_2024/2025_ES_api.parquet publicados: sin veat/can-tran/compl ni

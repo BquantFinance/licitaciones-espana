@@ -26,6 +26,16 @@ Estructura de salida:
     ├── manifest.csv          ← registro de descargas (tipo A/B/C/S)
     └── scraper_state.json    ← estado para --resume
 
+Sesgo del superviviente (comun/historico.py):
+    - Un PDF que ya está en disco no se vuelve a pedir: el BORME no se modifica.
+      Lo que falta en disco sí se descarga aunque conste en manifest.csv (una
+      carpeta borrada o una copia parcial se completan al repetir esas fechas).
+    - Todo PDF se escribe con guardar_version: nunca se machaca uno existente.
+      Con --comprobar se vuelven a pedir también los que ya están: si boe.es
+      sirve el mismo contenido no se toca nada; si sirve otro, el anterior pasa a
+      <día>/_historico/<nombre>__<AAAAMMDDTHHMMSSZ>.pdf y borme_batch_parser.py
+      parsea las dos versiones (la anterior queda con _en_ultima_descarga=False).
+
 Licencia de datos:
     Basado en datos de la Agencia Estatal Boletín Oficial del Estado
     https://www.boe.es
@@ -45,14 +55,16 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import urljoin
+from typing import List, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from comun.historico import guardar_version  # noqa: E402
 
 # ─────────────────────────────────────────────
 #  CONFIG
@@ -346,21 +358,22 @@ def scrape_day(
     delay: float,
     dl_lock: Optional[threading.Lock] = None,
     usar_sumario_api: bool = True,
+    comprobar: bool = False,
 ) -> Tuple[int, int]:
     """Scrape un día completo. Thread-safe si se pasa dl_lock.
 
     Los PDFs del día son la unión de los enlazados en el índice HTML y los que
     lista el sumario de la API de datos abiertos (secciones A, B y C).
 
+    Un PDF que ya está en disco no se vuelve a pedir, salvo con comprobar=True:
+    entonces se descarga y guardar_version decide (idéntico: no se toca; otro
+    contenido: el anterior pasa a _historico/). already_downloaded solo registra
+    las URL tratadas: lo que consta en el manifest pero falta en disco se
+    descarga de nuevo. Devuelve (PDFs nuevos o cambiados, bytes).
+
     Lanza DiaIncompleto si el índice, el sumario o algún PDF no se pudo
     descargar; devolver (0, 0) queda reservado para días sin BORME (404 / sin PDFs).
     """
-
-    def _is_downloaded(url):
-        if dl_lock:
-            with dl_lock:
-                return url in already_downloaded
-        return url in already_downloaded
 
     def _mark_downloaded(url):
         if dl_lock:
@@ -430,16 +443,11 @@ def scrape_day(
 
     for link in pdf_links:
         pdf_url = link["url"]
-
-        # Skip ya descargados
-        if _is_downloaded(pdf_url):
-            continue
-
         full_url = BASE_URL + pdf_url
         local_path = day_dir / link["pdf_filename"]
 
-        # Skip si el archivo ya existe en disco
-        if local_path.exists() and local_path.stat().st_size > 0:
+        # Ya en disco: el BORME no cambia, no se vuelve a pedir (salvo --comprobar)
+        if local_path.exists() and local_path.stat().st_size > 0 and not comprobar:
             _mark_downloaded(pdf_url)
             continue
 
@@ -468,12 +476,21 @@ def scrape_day(
             n_fallidos += 1
             continue
 
-        # Guardar vía .part + rename: un corte a medias no deja un PDF truncado
-        # que la siguiente ejecución daría por descargado
+        # Guardar vía .part + guardar_version: un corte a medias no deja un PDF
+        # truncado que la siguiente ejecución daría por descargado, y un PDF que ya
+        # existía nunca se machaca (si cambió, el anterior pasa a _historico/)
         tmp_path = local_path.with_name(local_path.name + ".part")
         with open(tmp_path, "wb") as f:
             f.write(content)
-        os.replace(tmp_path, local_path)
+        if local_path.exists() and local_path.stat().st_size == 0:
+            local_path.unlink()  # resto vacío de una descarga cortada: no es una versión del PDF
+        estado = guardar_version(local_path, desde=tmp_path)
+        _mark_downloaded(pdf_url)
+        if estado == "sin_cambios":
+            continue
+        if estado == "actualizado":
+            log.warning(f"    ⚠️  {link['pdf_filename']} ha cambiado en boe.es: la versión anterior "
+                        f"queda en {day_dir.name}/_historico/")
 
         sha256 = hashlib.sha256(content).hexdigest()
 
@@ -486,7 +503,6 @@ def scrape_day(
             "sha256": sha256,
         })
 
-        _mark_downloaded(pdf_url)
         n_downloaded += 1
         total_bytes += len(content)
 
@@ -544,7 +560,8 @@ def run(args):
         log.info("✅ Nada que hacer — rango ya completado")
         return
 
-    # Cargar URLs ya descargadas del manifest
+    # URLs ya descargadas según el manifest (informativo: lo que decide si un PDF
+    # se pide es que esté en disco)
     already_downloaded = manifest.get_downloaded_urls()
     dl_lock = threading.Lock()  # protege already_downloaded
     log.info(f"📋 {len(already_downloaded):,} PDFs ya en manifest")
@@ -553,10 +570,14 @@ def run(args):
 
     workers = getattr(args, 'workers', 1)
     usar_sumario_api = not getattr(args, 'sin_sumario_api', False)
+    comprobar = getattr(args, 'comprobar', False)
     total_days = (end - start).days + 1
     log.info(f"🚀 BORME Scraper: {start} → {end} ({total_days:,} días)")
     log.info(f"📁 Output: {output_dir}")
     log.info(f"⚡ Workers: {workers} | Delay: {args.delay}s")
+    if comprobar:
+        log.info("🔁 --comprobar: se vuelven a pedir también los PDFs que ya están en disco "
+                 "(si boe.es sirve otro contenido, el anterior pasa a _historico/)")
     log.info("")
 
     # Filtrar solo días laborables
@@ -576,7 +597,7 @@ def run(args):
         try:
             n_pdfs, n_bytes = scrape_day(
                 session, d, output_dir, manifest, already_downloaded, args.delay, dl_lock,
-                usar_sumario_api=usar_sumario_api,
+                usar_sumario_api=usar_sumario_api, comprobar=comprobar,
             )
             with progress_lock:
                 progress["done"] += 1
@@ -698,6 +719,12 @@ def main():
         "--sin-sumario-api", action="store_true",
         help=("No consultar el sumario de la API de datos abiertos del BOE "
               "(solo los PDFs enlazados en el índice HTML del día)")
+    )
+    parser.add_argument(
+        "--comprobar", action="store_true",
+        help=("Volver a pedir también los PDFs que ya están en disco: si boe.es sirve otro "
+              "contenido, la versión anterior pasa a <día>/_historico/ (guardar_version); "
+              "si es idéntico no se toca")
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",

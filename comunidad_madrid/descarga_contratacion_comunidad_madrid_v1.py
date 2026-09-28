@@ -1348,14 +1348,23 @@ def _filas_parquet(pf, filas, columnas):
     return pa.concat_tables(partes).to_pandas().iloc[inversa.ravel()].reset_index(drop=True)
 
 
-def _clave(df):
-    """Columnas de CLAVE_SEMILLA con las celdas vacías como nulas: una fila
-    sin Referencia tiene la clave incompleta y se compara por contenido."""
-    salida = {}
+def _codigos_clave(partes, semilla):
+    """Columnas de CLAVE_SEMILLA de la tabla (las partes) y de la semilla como
+    códigos enteros comunes (Int64): el mismo texto, el mismo código. La
+    celda vacía es nula: una fila sin Referencia tiene la clave incompleta y
+    se compara por contenido. Comparar códigos y no texto ahorra memoria (la
+    semilla tiene 2,5 millones de filas). Devuelve (claves de la tabla,
+    claves de la semilla)."""
+    nuevos, antiguos = {}, {}
     for c in CLAVE_SEMILLA:
-        serie = df[c].astype(object) if c in df.columns else pd.Series([None] * len(df), dtype=object)
-        salida[c] = serie.where(serie.notna() & (serie != ""), None)
-    return pd.DataFrame(salida).reset_index(drop=True)
+        serie = pd.concat([p[c] if c in p.columns else pd.Series([None] * len(p), dtype=object)
+                           for _, p in partes] + [semilla[c]], ignore_index=True)
+        vacia = (serie.isna() | (serie == "")).to_numpy(dtype=bool)
+        codigos = pd.arrays.IntegerArray(pd.factorize(serie)[0].astype(np.int64), vacia)
+        n = len(serie) - len(semilla)
+        nuevos[c], antiguos[c] = codigos[:n], codigos[n:]
+        del serie
+    return pd.DataFrame(nuevos), pd.DataFrame(antiguos)
 
 
 def sembrar_publicado(partes, ruta, origen, consultas):
@@ -1392,8 +1401,7 @@ def sembrar_publicado(partes, ruta, origen, consultas):
 
     posiciones = _posiciones(partes)
     base = leer(CLAVE_SEMILLA + [TIPO] + ([ARCHIVO] if ARCHIVO in nombres else []))
-    claves_s = _clave(base)
-    claves_n = pd.concat([_clave(p) for _, p in partes], ignore_index=True)
+    claves_n, claves_s = _codigos_clave(partes, base)
     # Ámbito: un menor, si su entidad tiene menores en la tabla; lo demás, si
     # su CSV (consulta por mes y tipo) se ha descargado o comprobado
     entidades = set()
@@ -1404,13 +1412,14 @@ def sembrar_publicado(partes, ruta, origen, consultas):
     por_csv = (base[ARCHIVO].isin(consultas).to_numpy() if ARCHIVO in base.columns
                else np.zeros(len(base), dtype=bool))
     en_ambito = np.where(es_menor, base["Entidad Adjudicadora"].isin(entidades).to_numpy(), por_csv)
+    del base
     en_tabla = set(c for _, p in partes for c in p.columns)
     contenido = [c for c in del_portal if c in en_tabla and c not in CLAVE_SEMILLA]
 
     def de_la_tabla(filas):
         return _filas_de_partes(partes, posiciones, filas, contenido)
 
-    motivo = np.empty(len(base), dtype=object)
+    motivo = np.empty(len(claves_s), dtype=object)
     sin_clave = claves_s.isna().all(axis=1).to_numpy()
     # Con alguna columna de la clave: frente a toda la tabla
     con = np.flatnonzero(~sin_clave)
@@ -1427,7 +1436,8 @@ def sembrar_publicado(partes, ruta, origen, consultas):
             lambda filas: de_la_tabla(sin_n[filas]),
             lambda filas: leer(contenido, sin[filas]), en_ambito[sin])
 
-    informe = informe_semilla(motivo, origen, claves_s)
+    # Los ejemplos del informe, con la clave en texto (solo se leen esas filas)
+    informe = informe_semilla(motivo, origen, lambda filas: leer(CLAVE_SEMILLA, filas))
     informe["ruta"] = str(ruta)
     fuera = motivo == FUERA_AMBITO
     informe["fuera_ambito_detalle"] = {

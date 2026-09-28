@@ -9,11 +9,28 @@ Procesa todos los BORME-A-*.pdf (2009-2026) y genera:
 Uso:
   python borme_batch_parser.py --input D:/Licitaciones/borme_pdfs --workers 8
   python borme_batch_parser.py --input D:/Licitaciones/borme_pdfs --workers 16 --resume
+  python borme_batch_parser.py --input D:/Licitaciones/borme_pdfs --reprocesar
+  python borme_batch_parser.py --input D:/Licitaciones/borme_pdfs \\
+      --semilla borme/data/borme_empresas_pub.parquet --semilla borme/data/borme_cargos_pub.parquet
+
+Sin perder lo ya parseado (sesgo del superviviente, comun/historico.py; detalle
+en la sección BATCH RUNNER):
+  - Cada ejecución parsea solo los PDF nuevos o cambiados y acumula el resultado
+    sobre las tablas anteriores (acumular). Las filas de los PDF que ya no están
+    en disco se conservan; si un PDF da otro resultado al volver a parsearlo
+    (--reprocesar, tras cambiar el parser), las filas anteriores se conservan con
+    _en_ultima_descarga=False. Columnas de control: _primera_descarga,
+    _ultima_descarga y _en_ultima_descarga (y _origen en las de la semilla).
+  - Las tablas se escriben con guardar_registros: la anterior pasa a _historico/.
+  - --semilla <parquet publicado>: añade los actos del release que no salen del
+    parse, marcados con _origen='release v2026.02'.
 
 Basado en datos de la Agencia Estatal Boletin Oficial del Estado (https://www.boe.es)
 """
 
+import os
 import re
+import sys
 import json
 import shutil
 import logging
@@ -21,14 +38,23 @@ import argparse
 import pdfplumber
 from pathlib import Path
 from typing import List, Dict, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 try:
+    import numpy as np
     import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 except ImportError:
     print("pip install pandas pyarrow")
     raise
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from comun.historico import (  # noqa: E402
+    COLUMNAS_META, HISTORICO, ORIGEN_SEMILLA, acumular, guardar_registros,
+    imprimir_informe_semilla, leer_registros, sembrar, versiones,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -265,7 +291,8 @@ def _extract_cargo_and_tipo(raw_cargo: str, body: str, match_start: int) -> Tupl
 
 def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
     path = Path(pdf_path)
-    fname = path.name
+    # Una versión anterior guardada en <día>/_historico/ lleva el nombre del PDF
+    fname = _nombre_pdf(path)
 
     bm = re.match(r'BORME-([A-Z])-(\d{4})-(\d+)-(\d+)', fname)
     if not bm:
