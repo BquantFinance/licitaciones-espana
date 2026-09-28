@@ -2,10 +2,12 @@
 
 Esta carpeta es la fuente de lo que corre en el VPS, desplegado en `/opt/apps/licitaciones-vps`
 (ver `docs/CONTINUACION.md`, «Sincronización con el VPS»: el código vive en GitHub `main` y un
-cambio hecho en el VPS se sube con rama y PR el mismo día).
+cambio hecho en el VPS se sube con rama y PR el mismo día). Al promover un commit, el vigía despliega
+esta carpeta de ese commit: lo desplegado es siempre lo que hay en `main`.
 
 Imagen: `docker build -f despliegue/vps/Dockerfile -t licitaciones-scrapers:vps .` desde la raíz del
-repo, o desde `/opt/apps/licitaciones-vps` con su copia de `requirements.txt`.
+repo, o desde `/opt/apps/licitaciones-vps` con su copia de `requirements.txt`. En producción la
+construye el vigía (etiqueta `receta_sha` = huella del Dockerfile y de `requirements.txt`).
 
 Ejecuta los scrapers del repo [BquantFinance/licitaciones-espana](https://github.com/BquantFinance/licitaciones-espana)
 en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del superviviente).
@@ -14,14 +16,14 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 
 | Ruta | Qué es |
 |---|---|
-| `Dockerfile` | Imagen `licitaciones-scrapers:vps` (python 3.12-slim + `requirements.txt` del repo; pandas 3.0.6) |
-| `Dockerfile.pandas22`, `Dockerfile.pandas223` | Imágenes solo para tests (pandas 2.3.3 y 2.2.3) |
+| `Dockerfile` | Imagen `licitaciones-scrapers:vps` (python 3.12-slim + `requirements.txt` del repo; pandas 3.0.6; `unar` para los RAR que libarchive no lee) |
+| `Dockerfile.pandas22`, `Dockerfile.pandas223` | Imágenes solo para tests (pandas 2.3.3 y 2.2.3), sobre la de producción |
 | `runs/<commit>/` | Worktrees del repo, uno por commit revisado (no van en git) |
 | `produccion` | Enlace al worktree que usa producción. Cambiarlo es «promover» otro commit |
-| `bin/ejecutar_fuente.sh <fuente> [primera\|semanal\|prueba]` | Lanza una fuente. Ver la cabecera del script |
-| `bin/cola_primera_descarga.sh` | Primera descarga de cada fuente, una línea de `cola_primera.txt` por noche |
-| `fuentes/<fuente>.sh` | Comandos de cada fuente (`CMD_PRIMERA`, `CMD_SEMANAL`), límites y preparación |
-| `bin/vigia_codigo.sh` | Cron diario (23:00): si `main` avanza, `git pull` de la copia del repo, comprueba la tabla «Estado de los scrapers» (sin WIP tras el cierre) y la suite de tests con pandas 3, y promueve el commit. `vigia_codigo.sh comprobar <ref>` solo comprueba |
+| `bin/ejecutar_fuente.sh <fuente> [primera\|semanal\|prueba]` | Lanza una fuente. Códigos: 2 configuración, 3 disco < 100 GB, 4 ya en marcha, 5 cerrojo global ocupado, 6 preparación, 124 tiempo agotado, 11 semanal con avisos; otro, el del scraper |
+| `bin/cola_primera_descarga.sh [--hasta-vaciar] [--parar-a HH:MM] [--saltar f1,f2]` | Primera descarga de cada fuente en el orden de `cola_primera.txt`: sin opciones, una línea por ejecución (cron de las 00:30) |
+| `fuentes/<fuente>.sh` | Comandos de cada fuente (`CMD_PRIMERA`, `CMD_SEMANAL`), límites y preparación (`PREPARAR_PRIMERA`, `PREPARAR_SEMANAL`) |
+| `bin/vigia_codigo.sh` | Cron diario (23:00). Si `main` avanza: `git pull` de la copia del repo, comprueba que ningún fichero de código tenga como último cambio un commit WIP, la tabla «Estado de los scrapers» y la suite de tests con la imagen que usará producción, y promueve (enlace, `despliegue/vps` e imagen). `vigia_codigo.sh comprobar <ref>` solo comprueba |
 
 ## Datos (`/opt/data/licitaciones-historico/`)
 
@@ -30,20 +32,23 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 | `<fuente>/` | Salida de cada scraper, con sus `_historico/`. Nunca se borra nada |
 | `semillas/vps_20260503/` | Copia completa (sha256) de `/opt/data/buscalicitaciones` del 3-may-2026. Solo lectura |
 | `semillas/release_v2026.02/` | Los 12 ficheros del release v2026.02 y `extraido/` (solo lectura, fechas del ZIP) |
-| `logs/<fuente>/<fecha>_<modo>.log` | Log de cada ejecución |
-| `logs/ejecuciones.jsonl` | Una línea por ejecución: fuente, modo, commit, duración, código de salida, espacio |
-| `cola/<fuente>.ok` / `.fallo` | Estado de la primera descarga de cada fuente |
+| `logs/<fuente>/<fecha>_<modo>.log` | Log de cada ejecución, con el commit usado |
+| `logs/ejecuciones.jsonl` | Una línea por ejecución (también las que no arrancan): fuente, modo, commit, duración, código, espacio |
+| `logs/promocion.log` | Lo que hace el vigía cada noche |
+| `cola/<fuente>.ok` / `.fallo` / `.espera` | Primera descarga hecha, fallida (se revisa a mano) o aparcada (no se ejecuta hasta borrar la marca) |
 | `backups/` | Copias de `compose`, `.env` y crontab antes de cada cambio |
 
 ## Reglas
 
-- Solo se usan scripts «Cerrado» de la tabla «Estado de los scrapers» de `docs/CONTINUACION.md`.
-  Para promover un commit: `git log <cierre>..<commit> -- <script>` sin commits WIP y la suite de
-  tests en verde con pandas 3.
-- Nunca dos descargas pesadas a la vez (cerrojo global). Prioridad baja de CPU y disco.
-  Abortan si quedan menos de 100 GB libres.
+- Solo se usan scripts «Cerrado» de la tabla «Estado de los scrapers» de `docs/CONTINUACION.md`, sin
+  commits WIP después de su cierre, con la suite de tests en verde.
+- Nunca dos descargas a la vez (cerrojo global). Prioridad baja de CPU y disco. Abortan si quedan
+  menos de 100 GB libres (se mira después de conseguir el cerrojo).
 - Comunidad de Madrid y TED escriben junto a su script: se ejecuta una copia byte a byte idéntica
   dentro de su carpeta de datos (el log guarda el sha256 de las dos).
+- PLACSP: la salida se llama `licitaciones_completo_2012_<año>`; al cambiar de año se escribe un
+  fichero con otro nombre. Quien lea la salida tiene que buscarla por patrón y quedarse con la más
+  reciente.
 - El parse privado del BORME (`borme/parse/`) contiene nombres de personas: no se publica. Solo
   `borme/pub/`.
 
