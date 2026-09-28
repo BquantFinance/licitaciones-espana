@@ -194,9 +194,9 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   2. Galicia (~220 mil/año).
   3. Andalucía (~127 mil/año).
   4. Menores de la PSCP de Catalunya.
-  5. Asturias.
-  6. TED.
-  7. BORME.
+  5. TED.
+  6. BORME.
+- Asturias quedó cubierta el 2026-09-28, sin verificar en vivo porque su portal no responde desde la nube.
 
 | Scraper | Qué hay que cambiar |
 |---|---|
@@ -205,7 +205,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | ~~`scripts/ccaa_valencia.py`, `ccaa_valencia_parquet.py`~~ | **Hecho** (`31db07f`). Sin semilla: no hay clave estable y el release es incompatible |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | `VIGENCIA_HORAS` sobrescribe los CSV. Las versiones de un mismo CSV no son "consultas solapadas". Respetar las filas de continuación |
 | ~~`comunidad_madrid/ccaa_madrid_ayuntamiento.py`~~ | **Hecho** (§3.1.4, `73d6e80`): `guardar_version` y `acumular` |
-| `scripts/ccaa_asturias.py` | CSV anuales |
+| ~~`scripts/ccaa_asturias.py`~~ | **Hecho** (2026-09-28): CSV anuales en `raw/` con `guardar_version`, Parquet desde todas las versiones con `acumular` (comparando el texto publicado) y `--semilla` por (`year`, `Nº INSCRIPCION`). El portal no responde desde la nube: falta verificarlo en vivo (VPS) |
 | `galicia/scraper_galicia.py` | Caché SQLite y merge final |
 | `scripts/ccaa_andalucia.py` | El re-scrape completo sobrescribe la salida |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Acumular por registro. Al sembrar, quitar solo las 2,16M copias idénticas del publicado |

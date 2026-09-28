@@ -866,7 +866,20 @@ Contratación centralizada del [Principado de Asturias](https://sede.asturias.es
 
 ```
 ccaa_asturias/
-└── asturias_contracts_ALL_YEARS.parquet   # 375K registros (21 MB, snappy)
+├── asturias_contracts_ALL_YEARS.parquet   # 375K registros (21 MB, snappy)
+├── _historico/                            # versiones anteriores del Parquet
+└── raw/                                   # CSV anuales tal cual; versiones anteriores en raw/_historico/
+```
+
+**Sin sesgo del superviviente.**
+- Cada CSV anual se guarda tal cual en `raw/`. Si el Principado lo cambia, la versión anterior pasa a `raw/_historico/`.
+- El Parquet se construye desde todas las versiones. Las filas se comparan por el texto publicado.
+  - Lo que se retira o cambia se conserva con `_en_ultima_descarga=False` (también llevan `_primera_descarga` y `_ultima_descarga`).
+  - Un año que deja de servirse conserva sus filas.
+- `--semilla <parquet publicado>` añade las inscripciones (`year`, `Nº INSCRIPCION`) que ya no se sirven, marcadas con `_origen`.
+
+```bash
+python scripts/ccaa_asturias.py --semilla asturias_contracts_ALL_YEARS.parquet   # el de v2026.02, la primera vez
 ```
 
 ### Campos principales (99 columnas)

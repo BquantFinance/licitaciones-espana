@@ -3,6 +3,7 @@ import logging
 import os
 import runpy
 import shutil
+import sys
 import tempfile
 import unittest
 from datetime import date
@@ -270,6 +271,191 @@ class AsturiasScraperTests(unittest.TestCase):
         self.assertEqual(dataframe["PRESUPUESTO"].tolist()[:2], [1234.56, 100.5])
 
 
+def csv_bytes(header, rows):
+    """CSV anual como los del Principado ('§', CRLF, Windows-1252)."""
+    lines = ["§".join(header)] + ["§".join(row) for row in rows]
+    return ("\r\n".join(lines) + "\r\n").encode("cp1252")
+
+
+HEADER_H = ["Nº INSCRIPCION", "AÑO", "OBJETO", "IVA", "IMP. ADJ. (CON IVA)", "NIF/CIF CONTRATISTA"]
+FILA_A = [" 00000001-24", "2024", "Suministro de papel", "21", "121,00", "B12345678"]
+FILA_B = [" 00000002-24", "2024", "Reparación de tejado", "10", "1.100,00", "A87654321"]
+FILA_C = [" 00000003-24", "2024", "Servicio de limpieza", "21", "2.420,00", "B11111111"]
+
+
+class AsturiasHistoricoTests(unittest.TestCase):
+    """Sesgo del superviviente: los CSV se guardan con versiones (raw/ y raw/_historico/)
+    y el Parquet se construye desde todas ellas (comun/historico.py)."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+
+    def run_once(self, content_2024, last_year=2024, extra=None, semillas=(), checked_at=None):
+        """Una ejecución con los años 2019-2023 fijos y el CSV de 2024 indicado
+        (None = 404). extra: {nombre_fichero: bytes} de años posteriores."""
+        contents = {name: data for name, data in all_year_contents().items() if not name.endswith("2024.csv")}
+        if content_2024 is not None:
+            contents["dataset-contratacion-centralizada-2024.csv"] = content_2024
+        contents.update(extra or {})
+        processor = ccaa_asturias.AsturiasToParquet(output_dir=self.tmpdir, last_year=last_year, semillas=semillas)
+        if checked_at:
+            processor.checked_at = checked_at
+        with patch.object(ccaa_asturias.requests, "get", side_effect=FakeDownloads(contents).get), patch.object(
+            ccaa_asturias.time, "sleep"
+        ):
+            return processor.run()
+
+    def filas(self, result, year=2024):
+        rows = result[result["year"] == year]
+        return {(r["Nº INSCRIPCION"], r["OBJETO"]): bool(r["_en_ultima_descarga"]) for _, r in rows.iterrows()}
+
+    def historico(self, year):
+        carpeta = self.tmpdir / "raw" / "_historico"
+        return sorted(carpeta.glob(f"dataset-contratacion-centralizada-{year}__*.csv")) if carpeta.is_dir() else []
+
+    def test_second_run_without_changes_keeps_every_row_current(self):
+        first = self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B, FILA_C]))
+        second = self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B, FILA_C]))
+
+        self.assertEqual(len(second), len(first))
+        self.assertTrue(second["_en_ultima_descarga"].all())
+        self.assertEqual(self.historico(2024), [])
+        self.assertTrue((self.tmpdir / "raw" / "dataset-contratacion-centralizada-2024.csv").exists())
+        self.assertEqual(set(first["_primera_descarga"]), set(second["_primera_descarga"]))
+
+    def test_withdrawn_and_changed_rows_are_kept_as_no_longer_published(self):
+        self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B, FILA_C]))
+        cambiada = FILA_C[:2] + ["Servicio de limpieza (lote 2)"] + FILA_C[3:]
+        result = self.run_once(csv_bytes(HEADER_H, [FILA_A, cambiada]))
+
+        self.assertEqual(self.filas(result), {
+            (" 00000001-24", "Suministro de papel"): True,
+            (" 00000002-24", "Reparación de tejado"): False,
+            (" 00000003-24", "Servicio de limpieza"): False,
+            (" 00000003-24", "Servicio de limpieza (lote 2)"): True,
+        })
+        self.assertEqual(len(self.historico(2024)), 1)
+        # los importes se siguen leyendo como siempre, también en las filas retiradas
+        importes = result[result["year"] == 2024].set_index("OBJETO")["IMP. ADJ. (CON IVA)"]
+        self.assertEqual(importes["Reparación de tejado"], 1100.0)
+        self.assertTrue(pd.api.types.is_float_dtype(result["IMP. ADJ. (CON IVA)"]))
+
+    def test_a_type_pandas_infers_differently_is_not_a_change(self):
+        # IVA sin huecos se lee como entero y con un hueco como float (21 frente a 21.0)
+        self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B]))
+        nueva = [" 00000004-24", "2024", "Obra menor", "", "500,00", "B22222222"]
+        result = self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B, nueva]))
+
+        filas = self.filas(result)
+        self.assertEqual(len(filas), 3)
+        self.assertTrue(all(filas.values()))
+
+    def test_a_new_column_does_not_duplicate_rows_and_keeps_its_values(self):
+        self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B]))
+        header = HEADER_H + ["ID. PLACE"]
+        result = self.run_once(csv_bytes(header, [FILA_A + ["111"], FILA_B + ["222"]]))
+
+        rows = result[result["year"] == 2024]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows["_en_ultima_descarga"].all())
+        # el valor de la columna nueva llega también a las filas que ya existían (float: los
+        # demás años no la tienen, como al concatenar años hasta ahora)
+        self.assertEqual(sorted(rows["ID. PLACE"].astype(float)), [111.0, 222.0])
+
+    def test_a_year_that_stops_being_served_keeps_its_rows(self):
+        extra = {"dataset-contratacion-centralizada-2025.csv": build_year_csv(2025)[0]}
+        first = self.run_once(csv_bytes(HEADER_H, [FILA_A]), last_year=2026, extra=extra)
+        self.assertEqual(int((first["year"] == 2025).sum()), 3)
+
+        # 2025 pasa a dar 404 (y 2026 sigue sin publicar): no es un error, pero sus filas no se pierden
+        result = self.run_once(csv_bytes(HEADER_H, [FILA_A]), last_year=2026)
+
+        self.assertIsNotNone(result)
+        filas_2025 = result[result["year"] == 2025]
+        self.assertEqual(len(filas_2025), 3)
+        self.assertFalse(filas_2025["_en_ultima_descarga"].any())
+        self.assertTrue(result.loc[result["year"] != 2025, "_en_ultima_descarga"].all())
+
+    def test_rows_still_published_carry_the_date_of_the_last_check(self):
+        self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B]), checked_at="2026-09-01T00:00:00+00:00")
+        result = self.run_once(csv_bytes(HEADER_H, [FILA_A]), checked_at="2026-09-28T00:00:00+00:00")
+
+        rows = result[result["year"] == 2024].set_index("OBJETO")
+        self.assertEqual(rows.loc["Suministro de papel", "_ultima_descarga"], "2026-09-28T00:00:00+00:00")
+        self.assertNotEqual(rows.loc["Reparación de tejado", "_ultima_descarga"], "2026-09-28T00:00:00+00:00")
+        self.assertFalse(rows.loc["Reparación de tejado", "_en_ultima_descarga"])
+
+    def test_a_year_not_requested_in_this_run_keeps_its_rows_unchanged(self):
+        extra = {"dataset-contratacion-centralizada-2025.csv": build_year_csv(2025)[0]}
+        self.run_once(csv_bytes(HEADER_H, [FILA_A]), last_year=2025, extra=extra)
+
+        # una ejecución que solo llega a 2024 no sabe nada de 2025: ni lo pierde ni lo retira
+        result = self.run_once(csv_bytes(HEADER_H, [FILA_A]), last_year=2024)
+
+        filas_2025 = result[result["year"] == 2025]
+        self.assertEqual(len(filas_2025), 3)
+        self.assertTrue(filas_2025["_en_ultima_descarga"].all())
+
+    def test_the_previous_parquet_is_kept_in_historico(self):
+        self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B]))
+        primero = (self.tmpdir / "asturias_contracts_ALL_YEARS.parquet").read_bytes()
+        self.run_once(csv_bytes(HEADER_H, [FILA_A]))
+
+        guardados = sorted((self.tmpdir / "_historico").glob("asturias_contracts_ALL_YEARS__*.parquet"))
+        self.assertEqual([g.read_bytes() for g in guardados], [primero])
+
+    def test_a_failed_run_does_not_touch_the_previous_parquet_or_raw_versions(self):
+        self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B]))
+        parquet = self.tmpdir / "asturias_contracts_ALL_YEARS.parquet"
+        antes = parquet.read_bytes()
+
+        contents = {name: data for name, data in all_year_contents().items() if not name.endswith("2021.csv")}
+        processor = ccaa_asturias.AsturiasToParquet(output_dir=self.tmpdir, last_year=2024)
+        with patch.object(ccaa_asturias.requests, "get", side_effect=FakeDownloads(contents).get), patch.object(
+            ccaa_asturias.time, "sleep"
+        ):
+            self.assertIsNone(processor.run())
+
+        self.assertEqual(parquet.read_bytes(), antes)
+        self.assertTrue((self.tmpdir / "raw" / "dataset-contratacion-centralizada-2021.csv").exists())
+
+    def test_seed_adds_only_missing_registrations_and_keeps_them_in_later_runs(self):
+        semilla = pd.DataFrame({
+            "Nº INSCRIPCION": [" 00000001-24", " 99999999-24", " 00000009-18"],
+            "OBJETO": ["Suministro de papel", "Contrato retirado del portal", "Fuera del ámbito"],
+            "IMP. ADJ. (CON IVA)": [121.0, 50.0, 10.0],
+            "year": [2024, 2024, 2018],
+            "source_file": ["dataset-contratacion-centralizada-2024.csv"] * 2
+                           + ["dataset-contratacion-centralizada-2018.csv"],
+        })
+        ruta = self.tmpdir / "semilla.parquet"
+        semilla.to_parquet(ruta, index=False)
+
+        result = self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B]), semillas=[ruta])
+
+        sembradas = result[result["_origen"].notna()]
+        self.assertEqual(sembradas["Nº INSCRIPCION"].tolist(), [" 99999999-24"])
+        self.assertEqual(sembradas["_origen"].tolist(), ["release v2026.02"])
+        self.assertFalse(sembradas["_en_ultima_descarga"].any())
+        self.assertEqual(int((result["Nº INSCRIPCION"] == " 00000001-24").sum()), 1)
+
+        # sin --semilla, la siguiente ejecución conserva la fila sembrada y no la duplica
+        again = self.run_once(csv_bytes(HEADER_H, [FILA_A, FILA_B]))
+        self.assertEqual(again.loc[again["_origen"].notna(), "Nº INSCRIPCION"].tolist(), [" 99999999-24"])
+        self.assertEqual(len(again), len(result))
+
+    def test_cli_accepts_output_folder_and_seed(self):
+        with patch.object(ccaa_asturias.AsturiasToParquet, "run", return_value=None) as run, patch.object(
+            ccaa_asturias.AsturiasToParquet, "__init__", return_value=None
+        ) as init:
+            ccaa_asturias.main(["--salida", str(self.tmpdir), "--semilla", "a.parquet", "--semilla", "b.parquet"])
+        init.assert_called_once_with(output_dir=self.tmpdir, semillas=[Path("a.parquet"), Path("b.parquet")])
+        run.assert_called_once_with()
+
+
 class AsturiasEndToEndTests(unittest.TestCase):
     """Ejecuta el script como en el README (`python scripts/ccaa_asturias.py`) con las
     descargas simuladas, sobre una copia en un arbol temporal para no tocar el repo."""
@@ -289,7 +475,9 @@ class AsturiasEndToEndTests(unittest.TestCase):
         previous_cwd = os.getcwd()
         os.chdir(other_cwd)
         try:
-            with patch("requests.get", side_effect=downloads.get), patch("time.sleep"):
+            with patch("requests.get", side_effect=downloads.get), patch("time.sleep"), patch.object(
+                sys, "argv", [str(self.script)]
+            ):
                 runpy.run_path(str(self.script), run_name="__main__")
         finally:
             os.chdir(previous_cwd)

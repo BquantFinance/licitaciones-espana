@@ -1,11 +1,18 @@
+import argparse
+import re
+import sys
 import requests
 import pandas as pd
-import numpy as np
-from datetime import date
+from datetime import date, datetime, timezone
 from io import StringIO
 from pathlib import Path
 import time
 import logging
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import (  # noqa: E402
+    COLUMNAS_META, HISTORICO, acumular, guardar_version, imprimir_informe_semilla, sembrar, versiones,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,21 +27,56 @@ FIRST_YEAR = 2019
 # significa "aún no publicado" y no es un error.
 LAST_VERIFIED_YEAR = 2024
 DATASET_TEMPLATE = "dataset-contratacion-centralizada-{year}.csv"
+PATRON_DATASET = re.compile(r"dataset-contratacion-centralizada-(\d{4})\.csv$")
+PARQUET_NAME = "asturias_contracts_ALL_YEARS.parquet"
+# Clave estable de una inscripción del registro de contratos (para la semilla). En el
+# publicado v2026.02 es única salvo 6 filas vacías y un número repetido en origen
+# (00012791-24, dos contratos distintos): sembrar() compara esos casos por contenido.
+CLAVE = ["year", "Nº INSCRIPCION"]
+
+
+def version_date(path):
+    """Fecha de una versión de un CSV crudo: el sello que guardar_version pone en
+    _historico/ (fecha de esa copia) o, para la copia actual, su fecha de modificación."""
+    path = Path(path)
+    if path.parent.name == HISTORICO:
+        stamps = re.findall(r"__(\d{8}T\d{6}Z)", path.name)
+        if stamps:
+            return datetime.strptime(stamps[-1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).isoformat()
+    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
 
 
 class AsturiasToParquet:
     """
     Descarga TODOS los años de Asturias, maneja duplicados, 
     fuerza tipos compatibles y guarda en Parquet.
+
+    Sesgo del superviviente (comun/historico.py):
+    - Cada CSV descargado se guarda tal cual en raw/ con guardar_version: si el
+      Principado lo cambia, la versión anterior pasa a raw/_historico/.
+    - El Parquet se construye desde todas las versiones de cada CSV con
+      acumular(): lo que se retira o cambia se conserva con
+      _en_ultima_descarga=False. Un año que deja de servirse (404) después de
+      haberse descargado conserva sus filas, marcadas como retiradas.
+    - El Parquet anterior pasa a _historico/ (guardar_version).
+    - Semillas (--semilla, p.ej. el parquet publicado en v2026.02): se añaden las
+      inscripciones (CLAVE) de los años procesados que no están en la descarga,
+      con _origen; en las ejecuciones siguientes se conservan. Traen los errores
+      conocidos del publicado (README): IVA de 2023 multiplicado por 10 y
+      expedientes con letras convertidos en NaN.
     """
     
-    def __init__(self, output_dir=None, last_year=None):
+    def __init__(self, output_dir=None, last_year=None, semillas=()):
         self.base_url = "https://descargas.asturias.es/asturias/opendata/SectorPublico/contratacion"
         # Por defecto <repo>/ccaa_asturias (ruta documentada en el README), sin depender del cwd
         if output_dir is None:
             output_dir = Path(__file__).resolve().parent.parent / "ccaa_asturias"
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Originales tal cual (guardar_version: las versiones anteriores, en raw/_historico/)
+        self.raw_dir = self.output_dir / "raw"
+        self.semillas = [Path(semilla) for semilla in semillas]
+        self.checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         
         # Antes la lista acababa en 2024 fija: 2025 y siguientes no se descargaban nunca
         if last_year is None:
@@ -69,21 +111,33 @@ class AsturiasToParquet:
         except UnicodeDecodeError:
             return content_bytes.decode('latin-1')
 
+    @staticmethod
+    def read_csv_text(content, **kwargs):
+        """read_csv de un CSV ya decodificado: el mismo para el parseo con tipos
+        (parse_text) y para el texto tal cual (read_text), así salen las mismas filas."""
+        return pd.read_csv(StringIO(content), sep='§', engine='python', **kwargs)
+
+    def read_text(self, content_bytes):
+        """El CSV de un año tal cual se publicó: todo texto (celda vacía = ''), con las
+        mismas filas y los mismos nombres de columna que parse_year."""
+        df = self.read_csv_text(self.decode_content(content_bytes), dtype=str,
+                                keep_default_na=False, on_bad_lines=lambda campos: None)
+        df.columns = [str(c).strip() for c in df.columns]
+        return self.deduplicate_columns(df)
+
     def parse_year(self, content_bytes, year):
         """Parsea un año."""
-        content = self.decode_content(content_bytes)
+        return self.parse_text(self.decode_content(content_bytes), year)
+
+    def parse_text(self, content, year):
+        """Parsea el texto de un CSV anual (el descargado o el acumulado de year_table)."""
 
         # Las líneas con más campos que la cabecera se descartaban en silencio
         # (on_bad_lines='skip'): ahora se avisa y se guardan tal cual para revisarlas
         # (list.append devuelve None, que para pandas es "no meter la línea en la tabla")
         bad_lines = []
         
-        df = pd.read_csv(
-            StringIO(content),
-            sep='§',
-            engine='python',
-            on_bad_lines=bad_lines.append,
-        )
+        df = self.read_csv_text(content, on_bad_lines=bad_lines.append)
         
         # Una página HTML (error, mantenimiento...) no contiene '§' y se lee como una
         # sola columna: no es el CSV esperado y no debe mezclarse con los datos
@@ -110,6 +164,49 @@ class AsturiasToParquet:
         df['source_file'] = DATASET_TEMPLATE.format(year=year)
         
         return df
+
+    def year_table(self, year, filename, served=None):
+        """Filas de un año desde todas las versiones guardadas de su CSV (raw/ y
+        raw/_historico/), de la más antigua a la actual, con acumular().
+
+        Se compara el texto publicado (read_text): que pandas infiera otro tipo en
+        otra versión (21 frente a 21.0) no es un cambio, y una columna nueva no
+        duplica las filas. La tabla acumulada se vuelve a leer como el CSV original
+        (parse_text), así los tipos y el tratamiento de los importes son los de
+        siempre. served: True si se ha descargado en esta ejecución (lo vigente
+        lleva la fecha de hoy), False si ha dado 404 (sus filas pasan a retiradas)
+        y None si no se ha pedido (no cambia nada)."""
+        texts, last = None, None
+        for version in versiones(self.raw_dir / filename):
+            last = self.read_text(version.read_bytes())
+            texts = acumular(texts, last, version_date(version), ignorar=())
+        if texts is None:
+            return None
+        if served:
+            texts = acumular(texts, last, self.checked_at, ignorar=())
+        elif served is False:
+            texts = acumular(texts, last.iloc[0:0], self.checked_at, ignorar=(), permitir_vacio=True)
+        data = [c for c in texts.columns if c not in COLUMNAS_META]
+        buffer = StringIO()
+        texts[data].to_csv(buffer, sep='§', index=False)
+        df = self.parse_text(buffer.getvalue(), year)
+        if len(df) != len(texts):
+            raise ValueError(f"{year}: la tabla acumulada tiene {len(texts):,} filas y al leerla salen {len(df):,}")
+        for col in COLUMNAS_META:
+            df[col] = texts[col].to_numpy()
+        retiradas = int((~df["_en_ultima_descarga"]).sum())
+        if retiradas:
+            logger.info(f"{year} - {retiradas:,} filas ya no se publican (se conservan con _en_ultima_descarga=False)")
+        return df
+
+    def years_in_raw(self):
+        """Años con algún CSV guardado en raw/ (también los que ya no se piden)."""
+        if not self.raw_dir.is_dir():
+            return set()
+        nombres = [p.name for p in self.raw_dir.glob("*.csv")]
+        if (self.raw_dir / HISTORICO).is_dir():
+            nombres += [p.name.split("__")[0] + ".csv" for p in (self.raw_dir / HISTORICO).glob("*.csv")]
+        return {int(m.group(1)) for m in map(PATRON_DATASET.search, nombres) if m}
     
     def process_year(self, year, filename):
         """Descarga y parsea un año. Devuelve None si el año aún no está publicado."""
@@ -131,6 +228,9 @@ class AsturiasToParquet:
             
             df = self.parse_year(content_bytes, year)
             logger.info(f"{year} - Parsed: {len(df):,} rows x {len(df.columns)} cols")
+            # Solo un CSV válido llega aquí (una página HTML ya ha fallado al parsear)
+            estado = guardar_version(self.raw_dir / filename, content_bytes)
+            logger.info(f"{year} - Original en raw/: {estado}")
             
             self.all_dfs.append(df)
             return True
@@ -202,7 +302,26 @@ class AsturiasToParquet:
         
         return df
     
-    def save_final_parquet(self):
+    def apply_seeds(self, combined, years):
+        """Añade las filas de las semillas: las ya sembradas en el Parquet anterior
+        (_origen) y las de --semilla. Solo entran las inscripciones (CLAVE) de los
+        años procesados que no están en la descarga; nunca se modifica ni se
+        duplica una fila descargada."""
+        fuentes = []
+        previous = self.output_dir / PARQUET_NAME
+        if previous.exists():
+            anterior = pd.read_parquet(previous)
+            if "_origen" in anterior.columns and anterior["_origen"].notna().any():
+                fuentes.append(("salida anterior", anterior[anterior["_origen"].notna()]))
+        fuentes += [(str(ruta), pd.read_parquet(ruta)) for ruta in self.semillas]
+        for nombre, semilla in fuentes:
+            en_ambito = semilla["year"].isin(years).to_numpy() if "year" in semilla.columns else None
+            combined, informe = sembrar(combined, semilla, CLAVE, en_ambito=en_ambito)
+            informe["ruta"] = nombre
+            imprimir_informe_semilla(informe)
+        return combined
+
+    def save_final_parquet(self, years=None):
         """Concatena, normaliza tipos y guarda."""
         if not self.all_dfs:
             logger.error("No data!")
@@ -221,13 +340,17 @@ class AsturiasToParquet:
         
         # FORZAR TIPOS COMPATIBLES
         combined = self.force_compatible_types(combined)
+        if years is not None:
+            combined = self.apply_seeds(combined, years)
         
-        # Guardar Parquet
-        parquet_path = self.output_dir / "asturias_contracts_ALL_YEARS.parquet"
+        # Guardar Parquet (la versión anterior queda en _historico/)
+        parquet_path = self.output_dir / PARQUET_NAME
         
         try:
-            combined.to_parquet(parquet_path, index=False, compression='snappy', engine='pyarrow')
-            logger.info(f"\n✓✓✓ PARQUET SAVED: {parquet_path}")
+            tmp_path = parquet_path.with_name(f".{parquet_path.name}.nuevo")
+            combined.to_parquet(tmp_path, index=False, compression='snappy', engine='pyarrow')
+            estado = guardar_version(parquet_path, desde=tmp_path)
+            logger.info(f"\n✓✓✓ PARQUET SAVED ({estado}): {parquet_path}")
             logger.info(f"Size: {parquet_path.stat().st_size / (1024**2):.2f} MB")
         except Exception as e:
             logger.error(f"Parquet error: {e}")
@@ -268,10 +391,28 @@ class AsturiasToParquet:
             return None
         if unpublished_years:
             logger.warning(f"Años aún sin publicar (se omiten): {unpublished_years}")
-        return self.save_final_parquet()
+        # El Parquet se construye desde todas las versiones guardadas de cada año,
+        # también las de años que ya no se sirven o que esta ejecución no pide
+        self.all_dfs, years = [], []
+        for year in sorted(set(self.datasets) | self.years_in_raw()):
+            served = True if year in downloaded_years else (False if year in unpublished_years else None)
+            table = self.year_table(year, DATASET_TEMPLATE.format(year=year), served)
+            if table is not None:
+                self.all_dfs.append(table)
+                years.append(year)
+        return self.save_final_parquet(years)
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Contratación centralizada del Principado de Asturias")
+    parser.add_argument("--salida", type=Path, default=None,
+                        help="carpeta de salida (por defecto <repo>/ccaa_asturias)")
+    parser.add_argument("--semilla", type=Path, action="append", default=[],
+                        help="parquet publicado (p.ej. el de v2026.02): añade las inscripciones que ya no se sirven")
+    args = parser.parse_args(argv)
+    return AsturiasToParquet(output_dir=args.salida, semillas=args.semilla).run()
+
 
 if __name__ == "__main__":
-    processor = AsturiasToParquet()
-    df = processor.run()
+    df = main()
     if df is None:
         raise SystemExit(1)
