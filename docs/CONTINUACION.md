@@ -67,7 +67,7 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
 - **PR #24** (@686f6c61, externa): regenera la PLACSP y la calidad con el parser de `627008b` (sin los commits de esta rama), sobre el inventario de 78 ZIP de v2026.02 (hasta enero de 2026). Tiene un prerelease en su fork con hashes: 8.721.484 filas, 20 indicadores, verificación PASS.
   - Su parche de TED ya está aplicado aquí (`9e945c2`), y sus dos observaciones sobre CONS-20, corregidas en `2b184a1`.
   - Propuesta al propietario, pendiente de su decisión: usar su entrega como contraste independiente de la nuestra (filas, importes e indicadores sobre el mismo inventario) y no fusionar su cadena de scripts paralela.
-- **En curso** (si la sesión se corta, se pierde el directorio temporal; los scripts para reanudarlo están en `herramientas/sesion_2026_09_27/`, con su README):
+- **Trabajo de la sesión del 2026-09-27/28.** Los datos descargados quedaron solo en el contenedor de la sesión y no se publicaron. Los scripts para repetirlo están en `herramientas/sesion_2026_09_27/`, con su README, y la puesta en producción se hace en el VPS:
   - **Euskadi `/contracts`: hecho el 2026-09-27**, pero solo en el contenedor, sin publicar.
     - 715.572 de 715.574 registros; faltan 2 sin fecha. La API sirve 217 filas dos veces; quedan 715.357 contratos.
     - **643.462 menores 2014-2026**, con el mismo recuento por año que `minor-contract=true`, CIF en el 100 % y 2.651,8 M€ con IVA. Detalle en `docs/COBERTURA.md` §5.4.
@@ -78,7 +78,7 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - Frente al publicado (2.563.527): 2015-2024 casi idénticos (difieren como mucho 135 filas al año; en 2020 hay 1 menos). 2025: 348.704 frente a 215.353. 2026: 127.001 nuevos.
     - Pendiente: el portal anuncia 4.832.623 en total. Hay que ver si la diferencia son otros tipos de publicación o menores sin entidad (§3.3).
     - La ruta `Entidad Adjudicadora` del publicado es la jerarquía completa (`Consejería de Sanidad··>SERMAS··>…>Hospital…`). Para comparar con las 125 entidades del desplegable hay que usar el primer nivel.
-  - **Galicia**: listado de menores sin detalle HTML, fuera del repo: `python galicia/scraper_galicia.py base --skip-lic --output $TRABAJO/galicia --log-path $TRABAJO/galicia/scraper.log --workers 3`. El portal tiene 1.775.090 menores y el publicado 1,64 M. Después, `merge` y contraste con el publicado.
+  - **Galicia**: la nueva descarga del listado de menores no terminó en la sesión. El portal tiene 1.775.090 frente a 1,64 M publicados, y a 100 filas por petición son unas 10 horas. Se hará en el VPS con el scraper ya cerrado: `python galicia/scraper_galicia.py base --skip-lic --output <datos>/galicia` y después `merge` con `--semilla`.
   - **Extremadura: cerrado** (`scripts/ccaa_extremadura.py`, 71 tests en los dos pandas, 39 mutaciones detectadas, verificado en vivo). Pendiente:
     - La serie 2016-2021 de la Intervención General da 404 en www.juntaex.es. Hay que verificar `instituciones.juntaex.es` desde otra red.
     - El solape con el 1143 está sin medir.
@@ -104,7 +104,7 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - El listado de Fuenlabrada pierde entradas al paginar por fecha. Por eso solo se retira un fichero si su URL da 404.
     - Valladolid publica ficheros acumulados: para contar, el último de cada año.
     - En Córdoba, 2021-2023 cuenta doble (CSV y XLS se solapan).
-    - Si hay commits `WIP (copia de seguridad, sin revisar)`, están a medio hacer: revisar, pasar los tests en los dos pandas, verificar en vivo y cerrar con su propio commit.
+  - Los commits `WIP (copia de seguridad, sin revisar)` son copias automáticas del trabajo de los agentes. Lo que vale es lo que recoge el commit de cierre de cada scraper (tabla siguiente).
 
 ### Estado de los scrapers (para el VPS y producción)
 
