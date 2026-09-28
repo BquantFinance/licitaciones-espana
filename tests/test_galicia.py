@@ -2160,6 +2160,39 @@ class GaliciaOrganismosRetiradosTests(unittest.TestCase):
             self.assertNotIn("retirado enteros", out)
         self.assertIn("descarga con --organismo", stdout)
 
+    def test_resume_of_an_old_download_only_reads_the_list(self):
+        portal = self._portal()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", [seed_lic(5, 910000), seed_lic(2, 700000)])
+            out = tmp / "salida"
+            # Descarga completa del código anterior (sin lista) ya acumulada
+            self.assertEqual(run_at(cli_args(out, "base", "--max-org-id", "48"), portal, FECHA_1)[0], 0)
+            manifest = read_manifest(out)
+            del manifest["descubrimientos"]
+            (out / scraper_galicia.BASE_PROGRESS_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_1)[0], 0)
+            self.assertEqual(seed_added(read_final(out)), [])
+            base_before = (out / scraper_galicia.BASE_CSV_NAME).read_bytes()
+            # --resume: solo lee la lista (no vuelve a pedir ningún organismo) y el
+            # merge siguiente añade el retirado
+            portal.requests.clear()
+            self.assertEqual(run_at(cli_args(out, "base", "--resume", "--max-org-id", "48"), portal, FECHA_2)[0], 0)
+            scans = [r for r in portal.requests if "/table" in r["url"] and r["params"]["length"] != "1"]
+            code, stdout = run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_2)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+            manifest = read_manifest(out)
+            base_after = (out / scraper_galicia.BASE_CSV_NAME).read_bytes()
+
+        self.assertEqual(scans, [])
+        self.assertEqual(base_after, base_before)
+        self.assertEqual([d["fecha"] for d in manifest["descubrimientos"]], [FECHA_2])
+        self.assertEqual(manifest["fecha_descarga"], FECHA_1)
+        self.assertEqual(seed_added(final), [("LIC", "910000")])
+        self.assertIn("1 filas añadidas de 1 organismos que el portal ha retirado enteros", stdout)
+        self.assertEqual(set(final.loc[final["_origen"] == "", "_ultima_descarga"]), {FECHA_1})
+
     def test_interrupted_download_does_not_retire_listed_organisms_it_did_not_read(self):
         portal = self._portal()
         portal.fail_orgs = {48}

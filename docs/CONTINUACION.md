@@ -32,7 +32,7 @@ Desde el 2026-09-28 hay **una sola sesión de trabajo**: la de Claude Code en el
    - Andalucía y las fuentes bloqueadas desde la nube (§3.6.8) se verifican por primera vez desde el VPS.
 5. **`--salida` en Comunidad de Madrid y TED** (lo pide la PR #27).
 6. **Decisiones del propietario pendientes:**
-   - §3.2: cargos repetidos del BORME, retención de `_historico/`, organismos que Galicia retira, segmentación y semilla de la PSCP y huecos de TED (los avisos cancelados ya se conservan, `b8c6709`).
+   - §3.2: cargos repetidos del BORME, retención de `_historico/`, segmentación y semilla de la PSCP y huecos de TED (los avisos cancelados ya se conservan, `b8c6709`).
    - §3.1.4: identificadores truncados del Ayuntamiento de Madrid.
    - §1: los 4,8 M de menores que anuncia el portal de la Comunidad de Madrid frente a los 2,8 M descargados.
 
@@ -287,7 +287,18 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
     - **Primera ejecución:** usar como primera versión de `csv_originales/` los CSV del ZIP del release, que conservan las filas de continuación.
     - El modo `prueba` usa la entidad "38", que ya no es el Gregorio Marañón.
   - **Galicia:**
-    - **Organismos que el portal quita enteros:** sus filas de la semilla no se añaden nunca, porque quedan fuera del ámbito. Recomendado: añadir las de los organismos que ya no aparecen en el descubrimiento, porque son la única copia. Decisión del propietario.
+    - ~~**Organismos que el portal quita enteros:** sus filas de la semilla no se añaden nunca~~: **hecho** (`4bb101f`, decisión 4 del propietario). Se añaden, porque son la única copia, marcadas como las demás de la semilla (`_origen`, `_en_ultima_descarga=False`).
+      - `base` guarda en el manifiesto la lista de organismos que lee `discover()` (`descubrimientos`: fecha, ids probados y CM/LIC que declara cada organismo). Es completa porque `discover()` para ante cualquier sonda fallida. Cada `--resume` añade la suya; con `--organismo` no hay lista.
+      - En `merge`, un organismo de la semilla está retirado si su id se ha probado en todas las listas de la descarga, no está en ninguna y la descarga no lo ha leído. Uno que está en la lista y no se ha leído (un corte, un `--resume` a medias) no lo está: sus filas siguen fuera del ámbito.
+      - No se da por retirado ninguno, con aviso en el log:
+        - si la descarga no tiene lista (`--organismo` o una descarga del código anterior);
+        - si una lista no trae ningún organismo con CM o ninguno con LIC (una sonda ha respondido vacío para todos);
+        - si los organismos que añadirían filas son más de `--max-organismos-retirados` (20; con 0, nunca). El aviso los lista para revisarlo y repetir `merge` con un máximo mayor.
+      - El informe de la semilla da las filas añadidas por organismo retirado, y el resumen del `merge`, el total.
+      - **Primera descarga del VPS:** si se hace con el código anterior, no tiene lista y no añade ninguno. Entran al repetir `merge --semilla` tras una descarga `base` sin `--organismo` con este código, o tras `base --resume` sobre aquella: solo lee la lista (4.000 sondas: los ids 1-2000 en LIC y en CM) y no vuelve a pedir los organismos ya leídos.
+      - Medido sin red con la semilla real, quitando de la descarga los organismos 283, 441 y 54: se añaden exactamente sus 44.830 filas, sin claves repetidas. Sin lista, ninguna.
+      - Riesgo que queda: un organismo al que las dos sondas respondan vacío por error en todas las listas de la descarga se da por retirado. Si vuelve, sus filas de la descarga entran como altas junto a las de la semilla (el mismo contrato dos veces, una con `_origen`).
+      - Pendiente de decidir: las filas de nuestras propias descargas de un organismo que el portal retira después siguen con `_en_ultima_descarga=True` (quedan fuera del ámbito), y un tipo (CM o LIC) que se queda a cero en un organismo que sigue en la lista no cuenta como retirado.
     - El importe de la semilla va a `importe_semilla`, sin corregir el ×10/×100.
     - `csv_to_parquet` ya no pasa a `to_numeric` textos que no son números normales. Algunos hashes parecen notación científica, y es la causa probable del segfault del VPS en pandas 2.2 (sin confirmar).
     - `csv_to_parquet` convierte en nulo el texto literal `NA`/`null` (código anterior; el publicado no tiene ninguno).

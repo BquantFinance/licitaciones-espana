@@ -962,6 +962,8 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
   - LIC: si llegan exactamente `recordsTotal` ids.
   - Ventanas de CM: si traen exactamente `recordsFiltered` ids.
 - `--semilla` añade por (`_tipo`, `id`) lo que ya no se sirve. El importe publicado (inflado ×10/×100) va a `importe_semilla` sin corregir.
+  - También las filas de los organismos que el portal ha retirado enteros: los que no están en la lista de organismos que la descarga guarda en el manifiesto (`descubrimientos`) y la descarga no ha leído.
+  - Sin esa lista (`--organismo` o una descarga del código anterior) no se da por retirado ninguno. Tampoco si serían más de 20 organismos (`--max-organismos-retirados`), por si la lista está mal leída. En los dos casos, con aviso.
 - `detail` sin `--resume` ya no rehace todo: reintenta las fichas pendientes. Para rehacerlo todo, `--force-detail`.
 
 **Pipeline incremental y reanudable**:
