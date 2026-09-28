@@ -15,7 +15,7 @@ Regeneración completa del conjunto nacional (PLACSP) con el código corregido d
 | `importe_sin_iva` cambiado | 4.314.328 (50,8 %). El publicado es el `valor_estimado_contrato` en el 100 % de los casos (0 diferencias) |
 | `importe_con_iva` distinto | 0 |
 | SARA en TED (última versión) | 153.110 de 257.637 (59,4 %); 11.677 de 2026 quedan sin evaluar |
-| Calidad | Score medio 93,3 (mediana 94,7) |
+| Calidad | Score medio 93,3 (mediana 94,7); con INT-FIA-12, añadido después, 93,6 (§5) |
 
 Coincide con la regeneración independiente de la PR #24: 4.383.029 cambios de 8.612.333 comparables (50,9 %), también con 0 y 0 (§3).
 
@@ -133,6 +133,26 @@ Coincide con la regeneración independiente de la PR #24: 4.383.029 cambios de 8
   - En las entidades que no se inscriben en el Registro Mercantil pasa del 95 %: G (asociaciones y fundaciones), F (cooperativas), Q (organismos públicos), U (UTE), J (sociedades civiles), E (comunidades de bienes), N (entidades extranjeras) y V.
   - También D (comanditarias), con un 98,6 %, y W (establecimientos de no residentes), con un 71,7 %.
   - Para el modelo antifraude conviene leerlo solo en A y B. Aun así, la mitad sin encontrar apunta a nombres que no casan más que a empresas inexistentes.
+
+### Añadido después: INT-FIA-12 e importes corregidos (issue #22)
+
+La tabla anterior es anterior a los dos. Medidos después sobre la misma PLACSP regenerada y la misma salida de calidad:
+
+- **INT-FIA-12** (presupuesto y adjudicación del mismo orden de magnitud, adjudicación < 100 × presupuesto): 495 fallos de 4.831.209 licitaciones evaluadas (0,010 %; en menores 0,003 %, en el resto 0,030 %). Con todas las versiones, 860 de 6.410.691.
+  - Entra en el score: la media pasa de 93,30 a 93,58 y la mediana de 94,7 a 95,0 (menores 93,99; resto 92,74).
+- **Importes corregidos** (`calidad/correcciones.py`, sin tocar los publicados), en la última versión:
+
+  | Motivo | Campo | Licitaciones |
+  |---|---|---:|
+  | `no_comparable` | presupuesto (1 €, precios unitarios) | 441 |
+  | `escala_x100` | adjudicación | 24 |
+  | `escala_x1000` | adjudicación | 6 |
+  | `inverosimil` | adjudicación | 23 |
+  | `registro` | adjudicación y valor estimado | 1 y 1 (URDINBERRI) |
+
+  - La adjudicación publicada suma 525.800 M€ y la corregida 520.130 M€.
+  - CONSTRUCCIONES URDINBERRI, S.L. pasa de 2.381,6 M€ a 26,4 M€.
+- **INT-CONS-20 de URDINBERRI.** Da fallo porque el cruce toma el valor estimado publicado (25.188.819,27 €, por encima del umbral SARA de obras), pero la plataforma de origen y la PLACSP declaran el contrato no sujeto a regulación armonizada. El valor estimado está en el registro de errores como probable errata.
 
 ## 6. Limitaciones y cómo reproducirlo
 

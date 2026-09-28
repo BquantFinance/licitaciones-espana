@@ -1,10 +1,22 @@
 # Continuación del trabajo (instrucciones para la próxima sesión de Claude Code)
 
 Ramas:
-- `claude/continue-previous-process-wsi03z`: trabajo desde el 2026-09-27 por la tarde. Contiene toda la PR #23 más lo nuevo.
-- `claude/determined-albattani-5ze2p8`: cabeza de la [PR #23](https://github.com/BquantFinance/licitaciones-espana/pull/23).
+- `main`: todo el trabajo de la PR #23 y de las sesiones del 2026-09-27/28, fusionado con la [PR #25](https://github.com/BquantFinance/licitaciones-espana/pull/25) (`8eb1540`).
+- `claude/continue-previous-process-wsi03z`: trabajo nuevo, que sale siempre de `main` y vuelve a `main` por PR cuando está cerrado.
 
-Hay que llevar a la PR los commits de la primera rama cuando el propietario lo autorice: subirlos a su rama o abrir una PR nueva. No hacer merge hasta cerrar lo pendiente.
+### Sincronización con el VPS (buscalicitaciones.com)
+
+La web (buscador) y el modelo antifraude se alimentan desde el VPS con el código de este repo. Para que no haya desfase:
+- **El código vive solo en GitHub `main`.**
+  - Antes de cada ejecución en el VPS: `git pull` en la copia del repo que usa, y anotar `git rev-parse --short HEAD` en el registro de la ejecución y en las notas del release.
+- **Un cambio de código hecho en el VPS se sube a GitHub** (rama y PR a `main`) el mismo día; nada se queda solo en el VPS.
+  - Si desde el VPS no se puede subir, se deja el parche (`git diff > cambio.patch`) para aplicarlo desde aquí.
+- **Los datos no están en el repo**: los genera el VPS.
+  - Un cambio en `calidad/` no obliga a volver a descargar nada. Basta con repetir la calidad sobre la PLACSP ya generada, o aplicar `calidad.correcciones.corregir_importes` al cargar.
+- **Importes (issue #22):**
+  - La web enseña el importe publicado y, al lado, el corregido con su motivo (`<campo>_corregido`, `correccion_<campo>`).
+  - Los rankings, las cuotas y el modelo usan el corregido.
+  - Ver README, «Importes publicados y corregidos».
 
 ## 0. Prompt para pegar al empezar
 
@@ -105,6 +117,15 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - Valladolid publica ficheros acumulados: para contar, el último de cada año.
     - En Córdoba, 2021-2023 cuenta doble (CSV y XLS se solapan).
   - Los commits `WIP (copia de seguridad, sin revisar)` son copias automáticas del trabajo de los agentes. Lo que vale es lo que recoge el commit de cierre de cada scraper (tabla siguiente).
+- **Issue #22 (2026-09-28, después de la PR #25): importes publicados y corregidos.**
+  - URDINBERRI (entrada 15091104 de la agregación) publica 2.357.531.666 € de adjudicación para una obra de 2.518.819,27 €.
+    - La plataforma de origen (Euskadi) da 2.593.284,83 € con IVA del 10 %: 2.357.531,67 € sin IVA, con la coma decimal perdida.
+    - El valor estimado (25.188.819,27 €) tiene además un 8 repetido.
+  - Lo publicado no se toca. `calidad/correcciones.py` añade `<campo>_corregido` y `correccion_<campo>` con dos fuentes de corrección:
+    - el registro verificado `calidad/errores_fuente.csv`;
+    - las reglas de escala.
+  - Nuevo indicador INT-FIA-12. Cifras sobre la regeneración en `docs/REGENERACION_ISSUE_6.md` §5.
+  - Pendiente del propietario: responder en el issue #22 (hay un borrador en la sesión).
 
 ### Estado de los scrapers (para el VPS y producción)
 
@@ -113,7 +134,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | Script | Estado | Commit de cierre | Verificado en vivo |
 |---|---|---|---|
 | `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `de70485` | Sí (regeneración del 2026-09-27) |
-| `calidad/calidad_licitaciones.py` | Cerrado | `2b184a1` | Sí |
+| `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
 | `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `e3abbe7` | Sí |
 | `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | Sí |
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | — |

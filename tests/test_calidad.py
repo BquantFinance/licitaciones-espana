@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 RAIZ = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("calidad_licitaciones", RAIZ / "calidad" / "calidad_licitaciones.py")
@@ -80,6 +81,75 @@ def test_cons08_usa_el_par_con_iva_si_falta_sin_iva():
     })
     r = calidad.calcular_indicadores_base(df)
     assert r["INT-CONS-08"].tolist() == [False, True]
+
+
+def test_fia12_salto_de_escala_entre_presupuesto_y_adjudicacion():
+    df = pd.DataFrame({
+        # URDINBERRI (issue #22), normal, justo 100 veces, sin presupuesto,
+        # presupuesto 0, adjudicación 0 y el par con IVA si falta el sin IVA
+        "importe_sin_iva": [2518819.27, 100.0, 100.0, np.nan, 0.0, 100.0, np.nan],
+        "importe_adjudicacion": [2357531666.0, 99.0, 10000.0, 5.0, 5.0, 0.0, np.nan],
+        "importe_con_iva": [np.nan] * 6 + [121.0],
+        "importe_adj_con_iva": [np.nan] * 6 + [12100.0],
+    })
+    r = calidad.calcular_indicadores_base(df)["INT-FIA-12"]
+    assert r.tolist()[:3] == [False, True, False]
+    assert r.iloc[3:6].isna().all()
+    assert r.iloc[6] == False  # noqa: E712
+    # CONS-08 marca lo mismo y además los sobrecostes pequeños (5 %)
+    assert calidad.calcular_indicadores_base(df)["INT-CONS-08"].tolist() == [False, True, False, True, True, True, False]
+
+
+def _lista(s):
+    """Valores de una columna con None en los nulos (NaN, None o pd.NA según pandas)."""
+    return [None if pd.isna(v) else v for v in s]
+
+
+def test_run_sirve_lo_publicado_y_al_lado_lo_corregido(tmp_path):
+    urdinberri = "https://contrataciondelestado.es/sindicacion/PlataformasAgregadasSinMenores/15091104"
+    df = pd.DataFrame({
+        "id": [urdinberri, urdinberri, "irizar"],
+        "expediente": ["01/2024", "01/2024", "E9"],
+        "conjunto": ["agregacion", "agregacion", "licitaciones"],
+        "tipo_contrato_code": [3.0, 3.0, 1.0],
+        "procedimiento_code": [1.0, 1.0, 1.0],
+        "estado_code": ["PUB", "RES", "RES"],
+        "valor_estimado_contrato": [25188819.27, 25188819.27, 1.0],
+        "importe_sin_iva": [2518819.27, 2518819.27, 1.0],
+        "importe_con_iva": [np.nan, np.nan, 1.21],
+        "importe_adjudicacion": [np.nan, 2357531666.0, 24450000.0],
+        "importe_adj_con_iva": [np.nan, np.nan, 29584500.0],
+        "num_ofertas": [np.nan, 4, 3],
+        "fecha_updated": pd.to_datetime(["2024-06-10", "2025-03-11", "2024-01-01"], utc=True),
+    })
+    entrada = tmp_path / "nacional.parquet"
+    df.to_parquet(entrada, index=False)
+    args = argparse.Namespace(input=str(entrada), output=str(tmp_path / "out"), sample=None,
+                              ted=None, borme=None, solo_ultima_version=False)
+    calidad.run(args)
+    res = pd.read_parquet(tmp_path / "out" / "calidad_licitaciones_resultado.parquet")
+
+    # Lo publicado, intacto; lo corregido, al lado con su motivo
+    assert res["importe_adjudicacion"].iloc[1] == 2357531666.0
+    assert res["importe_adjudicacion_corregido"].iloc[1] == pytest.approx(2357531.666)
+    assert _lista(res["correccion_importe_adjudicacion"]) == [None, "registro", None]
+    assert res["valor_estimado_contrato"].tolist()[:2] == [25188819.27] * 2
+    assert res["valor_estimado_contrato_corregido"].tolist() == [2518819.27, 2518819.27, 1.0]
+    assert _lista(res["correccion_valor_estimado_contrato"]) == ["registro", "registro", None]
+    # IRIZAR: el presupuesto de 1 EUR no es comparable; la adjudicación se mantiene
+    assert res["importe_adjudicacion_corregido"].iloc[2] == 24450000.0
+    assert np.isnan(res["importe_sin_iva_corregido"].iloc[2])
+    assert _lista(res["correccion_importe_sin_iva"]) == [None, None, "no_comparable"]
+    # Los indicadores evalúan lo publicado
+    assert _lista(res["INT-FIA-12"]) == [None, False, False]
+    assert not res["INT-CONS-08"].iloc[1]
+
+    # Sin registro, la regla de escala corrige igual la adjudicación
+    args.errores_fuente = ""
+    calidad.run(args)
+    res = pd.read_parquet(tmp_path / "out" / "calidad_licitaciones_resultado.parquet")
+    assert _lista(res["correccion_importe_adjudicacion"]) == [None, "escala_x1000", None]
+    assert res["correccion_valor_estimado_contrato"].isna().all()
 
 
 def _nacional_cons20():

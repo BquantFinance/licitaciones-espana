@@ -2,7 +2,7 @@
 ============================================================================
 PIPELINE DE CALIDAD — Licitaciones Publicas de Espana (v4.0)
 ============================================================================
-20 indicadores sobre PLACSP nacional + TED + BORME.
+21 indicadores sobre PLACSP nacional + TED + BORME.
 
 Uso:
   python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
@@ -25,6 +25,11 @@ PLACSP publica una entrada por cada actualizacion de una licitacion (8,7M
 entradas de 4,7M licitaciones en v2026.02). La salida incluye
 es_ultima_version / n_versiones para agregar por licitacion;
 --solo-ultima-version evalua solo la version mas reciente de cada una.
+
+Los indicadores evaluan los importes tal como se publican. Al lado, la salida
+lleva su version corregida y el motivo (calidad/correcciones.py): los errores
+de la fuente verificados a mano en calidad/errores_fuente.csv y los saltos de
+escala de la adjudicacion (INT-FIA-12). Las columnas publicadas no se tocan.
 ============================================================================
 """
 import pandas as pd
@@ -37,6 +42,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from nacional.licitaciones import leer_placsp  # noqa: E402
+from calidad import correcciones  # noqa: E402
 
 if sys.stdout.encoding != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -81,6 +87,7 @@ CATALOGO = {
     "INT-FIA-08": {"nombre": "PBL atipico/inverosimil (outlier)", "dimension": "Fiabilidad", "fuente": "PPDS"},
     "INT-FIA-09": {"nombre": "PA plausible respecto a comparables por CPV", "dimension": "Fiabilidad", "fuente": "PPDS"},
     "INT-FIA-11": {"nombre": "Trazabilidad minima del expediente", "dimension": "Fiabilidad", "fuente": "PPDS"},
+    "INT-FIA-12": {"nombre": "PBL y PA del mismo orden de magnitud (PA < 100 x PBL)", "dimension": "Fiabilidad", "fuente": "Issue #22"},
 }
 
 # ======================================================================
@@ -176,7 +183,7 @@ def normalizar_nombre_empresa(nombre):
 
 
 # ======================================================================
-# 17 INDICADORES BASE
+# 19 INDICADORES BASE
 # ======================================================================
 
 def calcular_indicadores_base(df):
@@ -252,12 +259,8 @@ def calcular_indicadores_base(df):
     else: r["INT-CONS-01"] = np.nan
 
     # CONS-08 (cada fila con el primer par licitacion/adjudicacion que tenga informado)
-    ok = pd.Series(True, index=df.index); usado = pd.Series(False, index=df.index); done=False
-    for cl,ca in [("importe_sin_iva","importe_adjudicacion"),("importe_con_iva","importe_adj_con_iva")]:
-        if cl in df.columns and ca in df.columns:
-            lic=_num(df[cl]); adj=_num(df[ca]); both=lic.notna()&adj.notna()&(lic>0)&~usado
-            ok = ok.where(~both, adj<=lic*(1+CONFIG["tolerancia_adj_lic"])); usado|=both; done=True
-    r["INT-CONS-08"] = ok if done else np.nan
+    lic_par, adj_par, _ = correcciones.par_presupuesto_adjudicacion(df)
+    r["INT-CONS-08"] = (lic_par.isna()|(adj_par<=lic_par*(1+CONFIG["tolerancia_adj_lic"]))) if lic_par is not None else np.nan
 
     # FIA-01
     if "num_ofertas" in df.columns:
@@ -294,6 +297,12 @@ def calcular_indicadores_base(df):
     has_url = df["url"].notna() if "url" in df.columns else pd.Series(False,index=df.index)
     has_id = df["id"].notna() if "id" in df.columns else pd.Series(False,index=df.index)
     r["INT-FIA-11"] = has_exp&(has_url|has_id)
+
+    # FIA-12 (salto de escala: la adjudicacion es 100 veces el presupuesto o mas,
+    # como la coma decimal perdida en origen del issue #22 o un presupuesto de
+    # 1 EUR). Mismo par que CONS-08; sin evaluar si falta alguno o la
+    # adjudicacion no es positiva
+    r["INT-FIA-12"] = ~correcciones.salto_escala(lic_par, adj_par) if lic_par is not None else np.nan
 
     return r
 
@@ -440,7 +449,7 @@ def run(args):
         for val, cnt in df["conjunto"].value_counts().items():
             print(f"    {str(val):<20s} {cnt:>12,} ({cnt/len(df)*100:.1f}%)")
 
-    print(f"\n  Calculando 17 indicadores base...")
+    print(f"\n  Calculando 19 indicadores base...")
     sc = calcular_indicadores_base(df)
 
     if args.ted and os.path.exists(args.ted):
@@ -455,10 +464,19 @@ def run(args):
     score = calcular_score(sc)
     imprimir_resumen(sc, len(df), df)
 
+    # Importes corregidos al lado de los publicados (no cuentan en el score)
+    registro = correcciones.cargar_registro(getattr(args, "errores_fuente", correcciones.REGISTRO))
+    print(f"\n  Correcciones de importes (errores de la fuente registrados: "
+          f"{0 if registro is None else len(registro)})...")
+    corr = correcciones.corregir_importes(df, registro)
+    for f in correcciones.resumen(corr).itertuples(index=False):
+        print(f"    {f.campo:<26s} {f.motivo:<14s} {f.filas:>10,}")
+
     # Consolidar
     print(f"\n  Consolidando CSV...")
     res = pd.concat([df.reset_index(drop=True),sc.reset_index(drop=True),
-                      score.rename("score_calidad").reset_index(drop=True)],axis=1)
+                      score.rename("score_calidad").reset_index(drop=True),
+                      corr.reset_index(drop=True)],axis=1)
     if "conjunto" in df.columns:
         res["es_menor"]=df["conjunto"].astype(str).str.lower().values=="menores"
 
@@ -479,7 +497,7 @@ def run(args):
 
 
 def main():
-    p=argparse.ArgumentParser(description="Pipeline calidad PLACSP v4 — 20 indicadores")
+    p=argparse.ArgumentParser(description="Pipeline calidad PLACSP v4 — 21 indicadores")
     p.add_argument("-i","--input",required=True,help="Nacional parquet")
     p.add_argument("-o","--output",default="calidad")
     p.add_argument("-s","--sample",type=int,default=None)
@@ -487,6 +505,8 @@ def main():
     p.add_argument("--borme",default=None,help="borme_empresas.parquet")
     p.add_argument("--solo-ultima-version",action="store_true",
                    help="Evaluar solo la version mas reciente de cada licitacion")
+    p.add_argument("--errores-fuente",default=correcciones.REGISTRO,
+                   help="Registro de errores de la fuente verificados (CSV); '' para no usarlo")
     run(p.parse_args())
 
 if __name__ == "__main__":
