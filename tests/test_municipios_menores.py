@@ -531,6 +531,14 @@ def test_vigo_csv_anual_ckan_y_anios_no_publicados(portal, tmp_path):
     assert f"vigo: {ANIO}" in log and "4 registros en 5 líneas" in log
 
 
+def test_vigo_catalogo_ckan_caido_no_impide_la_descarga(portal, tmp_path):
+    portal.ckan[M.URL_CKAN_VIGO] = 503
+    assert _ejecutar(tmp_path, "--municipio", "vigo") == 0
+    assert len(portal.pedidas_de(M.URL_CKAN_VIGO)) == M.INTENTOS_OPCIONAL == 2   # opcional: no espera minutos
+    assert len(_parquet(tmp_path, "vigo")) == 3 + (ANIO - 2019)                  # las URL conocidas
+    assert "vigo: catálogo CKAN" in _log(tmp_path)
+
+
 def test_vigo_anio_confirmado_que_no_esta_es_un_error(portal, tmp_path):
     del portal.urls[M.URL_VIGO.format(aa="21")]
     assert _ejecutar(tmp_path, "--municipio", "vigo") == 1

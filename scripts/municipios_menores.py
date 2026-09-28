@@ -63,9 +63,15 @@ Qué se descarga:
 Lectura (todo como texto, sin convertir nada): CSV con comun.lectura_csv
 (detecta codificación y separador; las filas de título de encima de la
 cabecera van a _titulo_tabla), JSON con los números tal cual vienen escritos,
-Excel (XLSX con openpyxl, XLS con xlrd) y ODS (content.xml: párrafos de una
-celda separados por saltos de línea, que el lector de pandas pierde). Se leen
-todas las hojas (columna _hoja), salvo en Valladolid (ver abajo).
+Excel (XLSX con openpyxl, deshaciendo el escape _x000D_ de OOXML; XLS con
+xlrd) y ODS (content.xml: párrafos de una celda separados por saltos de
+línea, que el lector de pandas pierde; comprobado contra el XLSX del mismo
+trimestre de Málaga: iguales las 2.376 celdas). Se leen todas las hojas
+(columna _hoja), salvo en Valladolid (ver abajo). La cabecera es la primera
+fila con al menos el 60 % de las celdas llenas, o la anterior si esa trae
+datos y la anterior son solo rótulos (cabeceras sobre celdas combinadas); una
+hoja cuya primera fila es mitad o más números, fechas o NIF no tiene cabecera
+(columnas columna_1…). Así ningún registro acaba de nombre de columna.
 
 FUENTES
 -------
@@ -79,8 +85,9 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     ("**35**63**", ~21 %). _anio = columna ejercicio.
   - Vigo: https://datos.vigo.org/data/sector-publico/contratos-menores-{AA}.csv
     (AA = 19..26; 2017 y 2018 dan 404). Catálogo CKAN datos-ckan.vigo.org
-    (contratos_menores-AA, también JSON y XLS). 9 columnas (8 en 2019, sin
-    expediente), sin NIF: 956-2.067 filas al año.
+    (contratos_menores-AA, también JSON y XLS; es opcional: el 2026-09-28 no
+    respondía y se sigue con las URL conocidas tras 2 intentos). 9 columnas
+    (8 en 2019, sin expediente), sin NIF: 956-2.067 filas al año.
   - Valladolid: https://www.valladolid.gob.es/es/perfil-contratante/
     contratos-menores-volumen-contratacion-tipo-procedimiento: una página por
     año (ano-2017..ano-2026) y subpáginas por entidad. Ayuntamiento: XLSX del
@@ -103,7 +110,12 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     título (_titulo_tabla) y filas de subtotal "Total <adjudicatario>"
     intercaladas (así se publican). La lista incluye también encargos a medios
     propios, basados en acuerdo marco y contratos Next Generation 2021-2025
-    (_titulo lo indica).
+    (_titulo lo indica). En algunas hojas de 2019 (p.ej. Sumario de
+    AYTO-1T-2019.ods; avisos de columnas sin nombre en PMC-1T, PMC-3T y el 4T)
+    hay debajo una segunda tabla con otra cabecera (formato del Tribunal de
+    Cuentas: NIFENTIDAD, OBJETO...): su fila de cabecera queda como una fila
+    más y sus columnas de más como 'Unnamed: 9'… (no se pierde nada, pero hay
+    que separarla al unificar).
   - Leganés: https://www.leganes.org/web/transparencia/contratos-menores
     (Liferay; da 403 al User-Agent de curl, no al del script). XLSX mensual o
     trimestral con NIF 2019-2026 (informe con ENTIDAD, AÑO y periodo encima de
@@ -115,7 +127,8 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     77 conjuntos "Contratos menores N trimestre AAAA - Ayuntamiento de Málaga"
     (2016-2026) y "- CEMI" (2016-2024), cada uno con PDF y XLSX/XLS (y ODS
     desde 2025): se baja la hoja de cálculo. Con CIF desde 2019 (2016-2018
-    solo el nombre del tercero).
+    solo el nombre del tercero). El XLSX del 4T de 2020 del Ayuntamiento da
+    404 (error en cada ejecución; ese trimestre solo está en PDF).
   - Córdoba: CKAN https://datosabiertos.cordoba.es (q=menores): conjuntos
     "Contratos menores" (CSV 2021-2024, XLS 2021-2023 y XLSX 2023 de lo
     publicado en PLACSP) y "Contratación administrativa - Contratos menores"
@@ -231,6 +244,7 @@ ERRORES_RED = (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
                requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError)
 ESTADOS_OK = ("nuevo", "actualizado", "sin_cambios")
 PARAMETROS_VOLATILES = {"t"}             # ?t=<marca de tiempo> de Liferay (Leganés)
+INTENTOS_OPCIONAL = 2                    # catálogos opcionales (CKAN de Vigo)
 
 # Columnas que añade el script, en el orden en que quedan al final del Parquet.
 # Las de origen no cuentan al comparar registros entre versiones: el mismo
@@ -281,10 +295,10 @@ def _espera(intento, respuesta=None):
     return min(ESPERA_BASE * 2 ** (intento - 1), ESPERA_MAXIMA)
 
 
-def _pedir(url, params=None):
+def _pedir(url, params=None, intentos=INTENTOS):
     """GET con reintentos (red, 429, 5xx); un 4xx lanza ErrorPortal con el código."""
     detalle = ""
-    for intento in range(1, INTENTOS + 1):
+    for intento in range(1, intentos + 1):
         respuesta = None
         try:
             respuesta = requests.get(url, params=params, headers=CABECERAS, timeout=TIMEOUT_API)
@@ -300,23 +314,23 @@ def _pedir(url, params=None):
             detalle = f"{type(e).__name__}: {str(e)[:150]}"
         except requests.exceptions.RequestException as e:
             raise ErrorPortal(f"{type(e).__name__}: {str(e)[:150]}") from e
-        if intento < INTENTOS:
+        if intento < intentos:
             time.sleep(_espera(intento, respuesta))
-    raise ErrorPortal(f"{detalle} (tras {INTENTOS} intentos)")
+    raise ErrorPortal(f"{detalle} (tras {intentos} intentos)")
 
 
-def pedir_json(url, params=None):
+def pedir_json(url, params=None, intentos=INTENTOS):
     """GET a una API JSON con reintentos; una respuesta que no es JSON también se reintenta."""
     detalle = ""
-    for intento in range(1, INTENTOS + 1):
-        respuesta = _pedir(url, params)
+    for intento in range(1, intentos + 1):
+        respuesta = _pedir(url, params, intentos)
         try:
             return respuesta.json()
         except ValueError as e:
             detalle = f"respuesta no JSON ({str(e)[:80]})"
-        if intento < INTENTOS:
+        if intento < intentos:
             time.sleep(_espera(intento))
-    raise ErrorPortal(f"{detalle} (tras {INTENTOS} intentos)")
+    raise ErrorPortal(f"{detalle} (tras {intentos} intentos)")
 
 
 def pedir_texto(url, params=None):
@@ -1290,7 +1304,8 @@ def descubrir_vigo(resumen):
                                 sondeo=True, confirmado=anio in VIGO_CONFIRMADOS))
         vistos.add(url)
     try:
-        paquetes = _paquetes_ckan(URL_CKAN_VIGO, "contratos menores")
+        # Catálogo opcional (las URL ya se conocen): pocos intentos para no esperar minutos
+        paquetes = _paquetes_ckan(URL_CKAN_VIGO, "contratos menores", intentos=INTENTOS_OPCIONAL)
     except ErrorPortal as e:
         resumen.avisos.append(f"vigo: catálogo CKAN ({URL_CKAN_VIGO}): {e}; se sigue con las URL conocidas")
         return recursos, []
@@ -1445,11 +1460,11 @@ def descubrir_leganes(resumen):
 
 # --- CKAN (Málaga y Córdoba) ---------------------------------------------------
 
-def _paquetes_ckan(url_api, consulta):
+def _paquetes_ckan(url_api, consulta, intentos=INTENTOS):
     """Todos los conjuntos de datos de package_search (paginado)."""
     paquetes, inicio, total = {}, 0, None
     for _ in range(MAX_PAGINAS):
-        datos = pedir_json(url_api, params={"q": consulta, "rows": FILAS_CKAN, "start": inicio})
+        datos = pedir_json(url_api, params={"q": consulta, "rows": FILAS_CKAN, "start": inicio}, intentos=intentos)
         if not isinstance(datos, dict) or datos.get("success") is False:
             raise ErrorPortal(f"respuesta de CKAN sin éxito: {str(datos)[:150]}")
         resultado = datos.get("result") or {}
