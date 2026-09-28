@@ -660,7 +660,7 @@ def guardar_tabla(df: pd.DataFrame, destino: Path, formato: str = 'parquet', cua
     con la misma dataUltimaPublicacio (p.ej. los contratos de una misma relación
     agregada, comprobado en vivo): sin esto, cada descarga idéntica sería una versión."""
     destino = Path(destino)
-    if False:
+    if cualquier_orden and destino.exists() and _mismas_filas(df, destino, formato):
         return 'sin_cambios'
     destino.parent.mkdir(parents=True, exist_ok=True)
     tmp = destino.with_name(f".{destino.name}.nuevo")

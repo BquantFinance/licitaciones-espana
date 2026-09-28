@@ -1871,6 +1871,28 @@ class GaliciaHistoricoTests(unittest.TestCase):
         self.assertEqual(set(final["_ultima_descarga"]), {legacy_date})
         self.assertEqual(set(final["_en_ultima_descarga"]), {"True"})
 
+    def test_legacy_base_without_final_table_must_be_merged_before_a_new_download(self):
+        portal = FakePortal(lic={48: fake_lic_records(2)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            # CSV base de la versión anterior (sin manifiesto) y sin tabla final
+            with patch("sys.stdout", new_callable=io.StringIO):
+                scraper_galicia.append_base_records(
+                    [dict(r, _organismo_id=48, _tipo="LIC") for r in portal.lic[48]], out
+                )
+            base_bytes = (out / scraper_galicia.BASE_CSV_NAME).read_bytes()
+            code, stdout = run_at(cli_args(out, "base", "--organismo", "48"), portal, FECHA_2)
+            self.assertEqual(code, 1)
+            self.assertIn("todavía no está en contratos_galicia.csv", stdout)
+            self.assertEqual((out / scraper_galicia.BASE_CSV_NAME).read_bytes(), base_bytes)
+            self.assertEqual(historico(out), [])
+            # Tras 'merge' ya se puede empezar otra descarga (la anterior va a _historico/)
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_2)[0], 0)
+            portal.lic[48] = portal.lic[48] + fake_lic_records(1, first_id=824500)
+            self.assertEqual(run_at(cli_args(out, "base", "--organismo", "48"), portal, FECHA_3)[0], 0)
+            hist = historico(out)
+        self.assertTrue(any(n.startswith("contratos_galicia_base__") and n.endswith(".csv") for n in hist))
+
     def test_final_table_of_the_previous_scraper_version_is_kept(self):
         lic = fake_lic_records(3)
         portal = FakePortal(lic={48: list(lic)})

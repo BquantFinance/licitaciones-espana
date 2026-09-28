@@ -68,8 +68,9 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   * importe inflado x10/x100: el scraper antiguo quitaba el punto decimal del
     número JSON (674.78 -> 67478; 14900.0 -> 149000). No se puede deshacer con
     certeza (67478 puede ser 674.78 o 6747.8), así que en las filas añadidas
-    'importe' queda vacío y el valor publicado va a 'importe_semilla'. (Solo
-    es seguro cuando acaba en 0: entonces es x10.)
+    'importe' queda vacío y el valor publicado va a 'importe_semilla'. (Si el
+    portal sirve siempre el importe como decimal, 14900.0 como en septiembre
+    de 2026, uno que acaba en 0 es x10; no se corrige.)
   * estado: el texto 'nan' (NaN del scraper antiguo) en los CM queda vacío,
     como lo escribe el scraper actual; '6.0' se conserva.
   * publicado y modificado se escriben como en el CSV base (AAAA-MM-DD, con
@@ -79,6 +80,18 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   Una semilla que sea una salida de este script (con _en_ultima_descarga) se
   toma tal cual y necesita --origen-semilla; no puede ser la propia tabla
   final de --output.
+- Versión anterior del scraper: su CSV base (progreso sin fecha ni ámbito) se
+  puede acumular con 'merge' o seguir con --resume (fecha: la del CSV; ámbito
+  de sus organismos: los tipos que trae, enteros), y su tabla final (sin
+  columnas de control) cuenta como una descarga con la fecha del fichero.
+
+Verificado el 2026-09-28: en vivo, con los mismos CSV base y caché, la tabla
+de un organismo (190: 59 filas) es la del código anterior más las 3 columnas
+de control (CSV línea a línea y Parquet); la segunda descarga sin cambios deja
+el CSV y el Parquet base sin tocar y no pide fichas. Sin red, con las
+1.685.789 filas del publicado como descarga: quitando y cambiando un 1 % salen
+exactamente las altas y retiradas esperadas, y la semilla v2026.02 añade
+justo las 16.941 claves quitadas (pico de 1,9-2,8 GB y 2-3,5 min por merge).
 """
 
 import argparse
