@@ -295,6 +295,9 @@ def argumentos(argv):
                         help=f"carpeta de los CSV (por defecto {INPUT_DIR}, relativa al directorio actual)")
     parser.add_argument("--salida", type=Path, default=None,
                         help=f"carpeta de los Parquet (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    parser.add_argument("--categorias", default=None,
+                        type=lambda s: {c.strip() for c in s.split(",") if c.strip()},
+                        help="solo estas categorías (subcarpetas de la entrada), separadas por comas; por defecto, todas")
     return parser.parse_args(list(argv))
 
 
@@ -321,9 +324,16 @@ def main(argv=()):
     total_registros = 0
     fallidos = []
     
+    if args.categorias is not None:
+        faltan = sorted(c for c in args.categorias if not (INPUT_DIR / c).is_dir())
+        if faltan:
+            print(f"⚠️ Categorías sin carpeta en la entrada: {', '.join(faltan)}")
+
     # Procesar cada categoría
     for category_dir in sorted(INPUT_DIR.iterdir()):
         if not category_dir.is_dir():
+            continue
+        if args.categorias is not None and category_dir.name not in args.categorias:
             continue
         
         csv_files = list(category_dir.glob("*.csv"))

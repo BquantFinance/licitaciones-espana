@@ -556,6 +556,16 @@ Dataset nuevo con **3.024.000 filas** de contratos menores del sector público c
 
 **Ventanas móviles.** El RPC (`hb6v-jcbf`) y los menores de la Generalitat (`qjue-2pk9`, 2020-2024, importes en céntimos tal como se publican; antes se pedía `ydq4-xy5b`, que da 404) solo sirven los últimos 5 años. `ccaa_cataluna.py` guarda la versión anterior de cada CSV en `_historico/` y `ccaa_cataluna_parquet.py` construye cada parquet con todas las versiones: lo que sale de la ventana sigue con `_en_ultima_descarga=False`.
 
+**Semilla del release (`--semilla`).** Lo que salió de la ventana antes de la primera descarga solo está en el release v2026.02. `ccaa_cataluna_parquet.py --semilla <carpeta catalunya del release>` añade las filas del publicado cuya clave ya no está en la descarga, con `_origen='release v2026.02'` y `_en_ultima_descarga=False` (claves en `SEMILLAS`).
+- Medido el 28-sep-2026 frente a la primera descarga del VPS:
+  - RPC: 751.187 filas, sobre todo menores y liquidaciones de 2021.
+  - PSCP: 187.577, de publicaciones que ya no están.
+  - Fase de ejecución: 9.047.
+  - Contratación programada: 5.095.
+- Adjudicaciones de la Generalitat, COVID y el Tribunal coinciden con el publicado.
+
+**Solo algunas categorías (`--categorias`).** `ccaa_cataluna.py` y `ccaa_cataluna_parquet.py` aceptan `--categorias contratacion,subvenciones,...` (por defecto, todas). Open Data Barcelona va con `contratacion`. El VPS de buscalicitaciones.com solo pide `contratacion`: las concesiones RAISC pesan 19 GB por descarga.
+
 ---
 
 ## 🆕 Euskadi
@@ -631,6 +641,8 @@ El scraper sigue una arquitectura **API-first** con múltiples capas de fallback
 ## 🍊 Valencia
 
 Datos del portal [Dades Obertes GVA](https://dadesobertes.gva.es) (CKAN API).
+
+`ccaa_valencia.py` y `ccaa_valencia_parquet.py` aceptan `--categorias contratacion,...` (por defecto, todas); el VPS de buscalicitaciones.com solo pide `contratacion`.
 
 | Categoría | Archivos | Registros | Contenido |
 |-----------|----------|-----------|-----------|
