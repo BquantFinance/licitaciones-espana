@@ -8,23 +8,35 @@ Uso:
   python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
 
   python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
-    --ted ted/crossval_sara_v2.parquet \
+    --ted ted/crossval_sara.parquet \
     --borme borme_empresas.parquet
 
   python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
-    --ted ted/crossval_sara_v2.parquet \
+    --ted ted/crossval_sara.parquet \
     --borme borme_empresas.parquet \
     -s 200000
 
 Salida: calidad/calidad_licitaciones_resultado.parquet
+
+La entrada se normaliza con nacional.licitaciones.leer_placsp (semantica
+actual de importes: importe_sin_iva = presupuesto base sin IVA,
+valor_estimado_contrato = valor estimado) y se evaluan TODAS sus filas: la
+PLACSP publica una entrada por cada actualizacion de una licitacion (8,7M
+entradas de 4,7M licitaciones en v2026.02). La salida incluye
+es_ultima_version / n_versiones para agregar por licitacion;
+--solo-ultima-version evalua solo la version mas reciente de cada una.
 ============================================================================
 """
 import pandas as pd
 import numpy as np
+import pyarrow.parquet as pq
 import re
 import argparse
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from nacional.licitaciones import leer_placsp  # noqa: E402
 
 if sys.stdout.encoding != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -79,6 +91,16 @@ def _dt(s):
     return s if pd.api.types.is_datetime64_any_dtype(s) else pd.to_datetime(s, errors="coerce")
 def _num(s):
     return s if pd.api.types.is_numeric_dtype(s) else pd.to_numeric(s, errors="coerce")
+
+def _coalesce_num(df, cols):
+    """Primer importe informado de cada fila entre 'cols' (None si no hay ninguna columna)."""
+    cols = [c for c in cols if c in df.columns]
+    if not cols:
+        return None
+    out = _num(df[cols[0]])
+    for c in cols[1:]:
+        out = out.fillna(_num(df[c]))
+    return out
 
 _NIF_LETRAS = "TRWAGMYFPDXBNJZSQVHLCKE"
 def _nif_letra(n): return _NIF_LETRAS[int(n) % 23]
@@ -160,16 +182,16 @@ def normalizar_nombre_empresa(nombre):
 def calcular_indicadores_base(df):
     r = pd.DataFrame(index=df.index)
 
-    # VAL-01
-    c = "importe_sin_iva" if "importe_sin_iva" in df.columns else "importe_con_iva" if "importe_con_iva" in df.columns else None
-    r["INT-VAL-01"] = _num(df[c]).notna() if c else np.nan
+    # VAL-01 (presupuesto base de licitacion sin/con IVA; si no, valor estimado)
+    lic = _coalesce_num(df, ["importe_sin_iva", "importe_con_iva", "valor_estimado_contrato"])
+    r["INT-VAL-01"] = lic.notna() if lic is not None else np.nan
 
     # VAL-02
     c = "importe_adjudicacion" if "importe_adjudicacion" in df.columns else "importe_adj_con_iva" if "importe_adj_con_iva" in df.columns else None
     r["INT-VAL-02"] = _num(df[c]).notna() if c else np.nan
 
     # VAL-03
-    ic = [c for c in ["importe_sin_iva","importe_con_iva","importe_adjudicacion","importe_adj_con_iva"] if c in df.columns]
+    ic = [c for c in ["importe_sin_iva","importe_con_iva","valor_estimado_contrato","importe_adjudicacion","importe_adj_con_iva"] if c in df.columns]
     if ic:
         imp = df[ic].apply(pd.to_numeric,errors="coerce")
         r["INT-VAL-03"] = (imp>=CONFIG["importe_minimo"]).any(axis=1)|imp.isna().all(axis=1)
@@ -229,13 +251,13 @@ def calcular_indicadores_base(df):
         r["INT-CONS-01"] = ~est.str.contains("adjud|formaliz|resuel",na=False)|(_num(df["num_ofertas"])>=1)
     else: r["INT-CONS-01"] = np.nan
 
-    # CONS-08
-    done=False
+    # CONS-08 (cada fila con el primer par licitacion/adjudicacion que tenga informado)
+    ok = pd.Series(True, index=df.index); usado = pd.Series(False, index=df.index); done=False
     for cl,ca in [("importe_sin_iva","importe_adjudicacion"),("importe_con_iva","importe_adj_con_iva")]:
         if cl in df.columns and ca in df.columns:
-            lic=_num(df[cl]); adj=_num(df[ca]); both=lic.notna()&adj.notna()&(lic>0)
-            r["INT-CONS-08"] = ~both|(adj<=lic*(1+CONFIG["tolerancia_adj_lic"])); done=True; break
-    if not done: r["INT-CONS-08"] = np.nan
+            lic=_num(df[cl]); adj=_num(df[ca]); both=lic.notna()&adj.notna()&(lic>0)&~usado
+            ok = ok.where(~both, adj<=lic*(1+CONFIG["tolerancia_adj_lic"])); usado|=both; done=True
+    r["INT-CONS-08"] = ok if done else np.nan
 
     # FIA-01
     if "num_ofertas" in df.columns:
@@ -255,8 +277,8 @@ def calcular_indicadores_base(df):
     else: r["INT-FIA-04"] = np.nan
 
     # FIA-08
-    c = "importe_sin_iva" if "importe_sin_iva" in df.columns else "importe_con_iva" if "importe_con_iva" in df.columns else None
-    r["INT-FIA-08"] = (_num(df[c]).isna()|(_num(df[c])<=CONFIG["pbl_outlier"])) if c else np.nan
+    pbl = _coalesce_num(df, ["importe_sin_iva", "importe_con_iva"])
+    r["INT-FIA-08"] = (pbl.isna()|(pbl<=CONFIG["pbl_outlier"])) if pbl is not None else np.nan
 
     # FIA-09
     ca = "importe_adjudicacion" if "importe_adjudicacion" in df.columns else "importe_adj_con_iva" if "importe_adj_con_iva" in df.columns else None
@@ -280,8 +302,48 @@ def calcular_indicadores_base(df):
 # CONS-20 (TED) y CONS-18 (BORME)
 # ======================================================================
 
+def _clave_version(df):
+    """(id, fecha_updated en µs desde 1970) para unir por versión, sea cual sea la
+    resolución del timestamp en cada parquet."""
+    f = pd.to_datetime(df["fecha_updated"], utc=True, errors="coerce").astype("datetime64[us, UTC]")
+    return pd.DataFrame({"id": df["id"].astype("string").to_numpy(),
+                         "_t": f.astype("int64").to_numpy()})
+
+
+def _cons20_por_version(df, path_ted, columnas):
+    """El resultado del cruce (una versión por id: la última) se une por id y
+    fecha_updated: solo esa versión lo recibe, no las anteriores ni otro
+    expediente homónimo. Sin coincidencia en un año que el snapshot TED no
+    cubre (_ted_anio_cubierto=False), queda sin evaluar."""
+    leer = ["id", "fecha_updated", "_ted_validated"] + [c for c in ["_ted_anio_cubierto"] if c in columnas]
+    ted = pd.read_parquet(path_ted, columns=leer)
+    val = ted["_ted_validated"].astype("boolean")
+    if "_ted_anio_cubierto" in ted.columns:
+        sin_cobertura = ~ted["_ted_anio_cubierto"].astype(bool) & ~val.fillna(False)
+        val = val.mask(sin_cobertura)
+        print(f"  {len(ted):,} contratos SARA; sin evaluar por año fuera de TED: {int(sin_cobertura.sum()):,}")
+    else:
+        print(f"  {len(ted):,} contratos SARA")
+    ted = _clave_version(ted).assign(_r=val.to_numpy())
+    repetidas = ted.duplicated(["id", "_t"])
+    if repetidas.any():
+        print(f"  AVISO: {int(repetidas.sum()):,} versiones con más de un resultado TED; cuenta si alguno casa")
+        ted = ted.groupby(["id", "_t"], as_index=False, sort=False)["_r"].max()
+    res = _clave_version(df).merge(ted, on=["id", "_t"], how="left", sort=False)["_r"]
+    res.index = df.index
+    n_eval = res.notna().sum(); n_ok = (res == True).sum(); n_miss = (res == False).sum()  # noqa: E712
+    print(f"  SARA en nacional (por versión): {n_eval:,} | En TED: {n_ok:,} "
+          f"({n_ok/max(n_eval,1)*100:.1f}%) | Missing: {n_miss:,}")
+    return res
+
+
 def calcular_cons20(df, path_ted):
     print(f"  Cargando TED: {path_ted}")
+    columnas = pq.read_schema(path_ted).names
+    if {"id", "fecha_updated"} <= set(columnas) and {"id", "fecha_updated"} <= set(df.columns):
+        return _cons20_por_version(df, path_ted, columnas)
+    print("  Cruce TED sin id/fecha_updated (anterior a la unión por versión): "
+          "se une por expediente|adjudicatario")
     ted = pd.read_parquet(path_ted, columns=["expediente","nif_adjudicatario",
                                               "_ted_validated","_ted_missing",
                                               "_match_strategy"])
@@ -289,7 +351,7 @@ def calcular_cons20(df, path_ted):
     ted["_key"] = ted["expediente"].astype(str)+"|"+ted["nif_adjudicatario"].astype(str)
     td = dict(zip(ted["_key"], ted["_ted_validated"]))
     n_val = ted["_ted_validated"].sum()
-    print(f"  Validados por 5 estrategias: {n_val:,} ({n_val/len(ted)*100:.1f}%)")
+    print(f"  Validados en TED: {n_val:,} ({n_val/len(ted)*100:.1f}%)")
     del ted
     if all(c in df.columns for c in ["expediente","nif_adjudicatario"]):
         keys = df["expediente"].astype(str)+"|"+df["nif_adjudicatario"].astype(str)
@@ -367,7 +429,7 @@ def run(args):
     empresas_borme = cargar_borme(args.borme) if args.borme else None
 
     print(f"\n  Cargando {args.input}...")
-    df = pd.read_parquet(args.input)
+    df = leer_placsp(args.input, solo_ultima_version=args.solo_ultima_version)
     if args.sample:
         df=df.sample(min(args.sample,len(df)),random_state=42)
         print(f"  Muestra: {len(df):,}")
@@ -401,7 +463,7 @@ def run(args):
         res["es_menor"]=df["conjunto"].astype(str).str.lower().values=="menores"
 
     p=os.path.join(args.output,"calidad_licitaciones_resultado.parquet")
-    res.to_parquet(p,index=False)
+    res.to_parquet(p,index=False,compression='zstd',compression_level=3,row_group_size=100000)
     size_mb = os.path.getsize(p)/1024**2
     print(f"\n  -> {p}")
     print(f"     {len(res):,} filas x {len(res.columns)} columnas ({size_mb:.0f} MB)")
@@ -421,8 +483,10 @@ def main():
     p.add_argument("-i","--input",required=True,help="Nacional parquet")
     p.add_argument("-o","--output",default="calidad")
     p.add_argument("-s","--sample",type=int,default=None)
-    p.add_argument("--ted",default=None,help="crossval_sara_v2.parquet")
+    p.add_argument("--ted",default=None,help="crossval_sara.parquet")
     p.add_argument("--borme",default=None,help="borme_empresas.parquet")
+    p.add_argument("--solo-ultima-version",action="store_true",
+                   help="Evaluar solo la version mas reciente de cada licitacion")
     run(p.parse_args())
 
 if __name__ == "__main__":

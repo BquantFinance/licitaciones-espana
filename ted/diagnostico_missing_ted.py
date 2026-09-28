@@ -26,11 +26,15 @@ from collections import defaultdict
 #  CONFIG
 # ======================================================================
 
-MISSING_PATH = Path("data/ted/crossval_missing.parquet")
-SARA_PATH = Path("data/ted/crossval_sara.parquet")
-MATCHED_PATH = Path("data/ted/crossval_matched.parquet")
-TED_PATH = Path("data/ted/ted_es_can.parquet")
-OUTPUT_DIR = Path("data/ted")
+# Entradas = salidas de run_ted_crossvalidation.py (ted/crossval_*.parquet) y el
+# TED consolidado (ted/ted_es_can.parquet); rutas relativas al repo, no al cwd.
+# La salida se mantiene en data/ted para no pisar ted/missing_alta_confianza.parquet
+_REPO_DIR = Path(__file__).resolve().parent.parent
+MISSING_PATH = _REPO_DIR / "ted" / "crossval_missing.parquet"
+SARA_PATH = _REPO_DIR / "ted" / "crossval_sara.parquet"
+MATCHED_PATH = _REPO_DIR / "ted" / "crossval_matched.parquet"
+TED_PATH = _REPO_DIR / "ted" / "ted_es_can.parquet"
+OUTPUT_DIR = _REPO_DIR / "data" / "ted"
 
 MATCH_TOLERANCE_PCT = 0.15   # Mas generoso para fuzzy
 MATCH_TOLERANCE_ABS = 10_000
@@ -179,6 +183,8 @@ for idx, row in df_miss_sample.iterrows():
     tol = max(imp * MATCH_TOLERANCE_PCT, MATCH_TOLERANCE_ABS)
     
     # Buscar por nombre organo truncado
+    row_matched = False  # por fila (antes se usaba el contador global y, tras el
+                         # primer match, se cortaba en el 1er año con avisos)
     for yr_try in [yr, yr-1, yr+1]:
         key = (organ[:40], yr_try)
         entries = ted_by_buyer.get(key, [])
@@ -188,6 +194,7 @@ for idx, row in df_miss_sample.iterrows():
             diff = abs(entry['importe'] - imp)
             if diff <= tol:
                 n_buyer_match += 1
+                row_matched = True
                 entry['consumed'] = True
                 # Razon: NIF diferente?
                 nif_placsp = str(row.get('nif_adjudicatario', '')).strip().upper()
@@ -199,7 +206,7 @@ for idx, row in df_miss_sample.iterrows():
                 else:
                     buyer_match_reasons['otro'] += 1
                 break
-        if n_buyer_match > 0 and entries:
+        if row_matched:
             break
 
 pct_buyer = n_buyer_match / max(sample_size, 1) * 100
@@ -309,6 +316,7 @@ for idx, row in sample2.iterrows():
     yr = int(yr)
     tol = max(imp * MATCH_TOLERANCE_PCT, MATCH_TOLERANCE_ABS)
     
+    row_matched = False
     for yr_try in [yr, yr-1, yr+1]:
         key = (nif_org, yr_try)
         entries = ted_by_cae_nif.get(key, [])
@@ -318,9 +326,10 @@ for idx, row in sample2.iterrows():
             diff = abs(entry['importe'] - imp)
             if diff <= tol:
                 n_cae_match += 1
+                row_matched = True
                 entry['consumed'] = True
                 break
-        if n_cae_match > 0 and entries:
+        if row_matched:
             break
 
 pct_cae = n_cae_match / max(sample_size, 1) * 100
@@ -404,6 +413,7 @@ if len(missing_hc) > 0:
     save_cols = [c for c in missing_hc.columns if not c.startswith('_')]
     save_cols += ['_es_sara', '_ted_missing', '_is_age', '_is_sector']
     save_cols = [c for c in save_cols if c in missing_hc.columns]
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     missing_hc[save_cols].to_parquet(OUTPUT_DIR / "missing_alta_confianza.parquet", index=False)
     print(f"\n  Guardado: {OUTPUT_DIR / 'missing_alta_confianza.parquet'} ({len(missing_hc):,})")
 

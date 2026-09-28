@@ -13,15 +13,19 @@ Incluye: Contratación, Subvenciones, Convenios, Presupuestos, Sector Público,
 ================================================================================
 """
 
+import argparse
 import os
 import time
 import json
 import requests
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import sys
 import logging
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import guardar_version  # noqa: E402
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -50,7 +54,9 @@ SOCRATA_DATASETS = {
     'dkrd-id95': ('01_contratacion/resoluciones_tribunal', 'Resoluciones Tribunal Catalán Contratos'),
     'nn7v-4yxe': ('01_contratacion/adjudicaciones_generalitat', 'Adjudicaciones Generalitat Catalunya'),
     '8idu-wkjv': ('01_contratacion/fase_ejecucion', 'Publicaciones fase ejecución'),
-    'ydq4-xy5b': ('01_contratacion/contratos_menores_generalitat', 'Contratos Menores Generalitat'),
+    # Menores de la Generalitat y su sector público, 2020-2024 (ventana de 5 años). Los
+    # importes vienen en céntimos y se sirven tal cual. Antes se pedía ydq4-xy5b (404)
+    'qjue-2pk9': ('01_contratacion/contratos_menores_generalitat', 'Contratos Menores Generalitat'),
     'jxvs-kzbu': ('01_contratacion/adjudicaciones_contractuales_quincenal', 'Adjudicaciones contractuales quincenales'),
     
     # =========================================================================
@@ -115,7 +121,11 @@ BCN_DATASETS = {
     'relacio-contractistes': 'contratistas',
     'resums-trimestrals-contractacio': 'resumen_trimestral',
     'modificacions-de-contractes': 'modificaciones_contratos',
-    'contractes-menors-autoritzacio-generica': 'contratos_menores_autorizacion',
+    # "Contractes menors derivats d'una autorització genèrica de despesa". El slug
+    # anterior ('contractes-menors-autoritzacio-generica') no existe en el portal
+    # (package_list: ... 'contractes-menors', 'contractes-menors-a-generica',
+    # 'corredors-bici-bcn' ...): package_show daba 404 y no se descargaba nada.
+    'contractes-menors-a-generica': 'contratos_menores_autorizacion',
 }
 
 # =============================================================================
@@ -140,16 +150,53 @@ session.headers['User-Agent'] = 'BQuantFinance/2.0 (Gerard BQuant - Investigaci�
 # FUNCIONES AUXILIARES
 # =============================================================================
 
-def download_with_progress(url, path, desc="", timeout=600):
-    """Descarga un archivo con indicador de progreso"""
+def epoch_ckan(valor):
+    """Fecha ISO de CKAN (UTC sin zona, p. ej. '2025-11-03T10:15:00.123456') -> epoch, o None"""
+    if not valor:
+        return None
+    try:
+        fecha = datetime.fromisoformat(str(valor).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if fecha.tzinfo is None:
+        fecha = fecha.replace(tzinfo=timezone.utc)
+    return fecha.timestamp()
+
+
+def fecha_actualizacion_socrata(dataset_id):
+    """rowsUpdatedAt (epoch) de un dataset Socrata, o None si no se puede saber"""
+    try:
+        r = session.get(f"{SOCRATA_BASE}/api/views/{dataset_id}.json", timeout=30)
+        if r.status_code == 200:
+            valor = r.json().get('rowsUpdatedAt')
+            return float(valor) if valor else None
+    except Exception:
+        pass
+    return None
+
+
+def download_with_progress(url, path, desc="", timeout=600, modificado=None):
+    """Descarga un archivo con indicador de progreso.
+
+    modificado: fecha (epoch) de la última actualización en el portal. Si la copia
+    local es anterior se vuelve a descargar (antes un archivo ya descargado no se
+    actualizaba nunca y los datasets que crecen se quedaban congelados).
+    La copia anterior no se machaca: guardar_version la deja en _historico/ si
+    el contenido cambió (el RPC y los menores de la Generalitat son ventanas
+    móviles de 5 años: lo que sale de la ventana solo queda en esas versiones).
+    """
     global stats
     
     if not FORCE_DOWNLOAD and path.exists() and path.stat().st_size > 0:
-        log(f"⏭️ Skip: {path.name}")
-        stats['skipped'] += 1
-        return True
+        if modificado is None or path.stat().st_mtime >= modificado:
+            log(f"⏭️ Skip: {path.name}")
+            stats['skipped'] += 1
+            return True
+        log(f"🔄 {path.name}: actualizado en el portal después de la copia local, se vuelve a descargar")
     
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Descargar a un temporal: un archivo cortado no debe quedar como "ya descargado"
+    tmp_path = path.with_name(path.name + '.part')
     
     try:
         r = session.get(url, timeout=timeout, stream=True)
@@ -159,7 +206,7 @@ def download_with_progress(url, path, desc="", timeout=600):
         downloaded = 0
         start_time = time.time()
         
-        with open(path, 'wb') as f:
+        with open(tmp_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
@@ -177,11 +224,14 @@ def download_with_progress(url, path, desc="", timeout=600):
         
         print()  # Nueva línea
         
-        size = path.stat().st_size
+        size = tmp_path.stat().st_size
         if size == 0:
-            path.unlink()
+            tmp_path.unlink()
+            log(f"❌ Error {desc}: respuesta vacía")
+            stats['failed'] += 1
             return False
         
+        guardar_version(path, desde=tmp_path)
         stats['downloaded'] += 1
         stats['bytes'] += size
         size_str = f"{size/1024:.1f}KB" if size < 1024*1024 else f"{size/1024/1024:.2f}MB"
@@ -192,6 +242,7 @@ def download_with_progress(url, path, desc="", timeout=600):
         print()
         log(f"❌ Error {desc}: {e}")
         stats['failed'] += 1
+        tmp_path.unlink(missing_ok=True)
         return False
 
 
@@ -204,10 +255,10 @@ def count_csv_records(path):
                     df = pd.read_csv(path, encoding=encoding, sep=sep, on_bad_lines='skip', low_memory=False, nrows=None)
                     if len(df.columns) > 1:
                         return len(df)
-                except:
+                except Exception:
                     continue
         return 0
-    except:
+    except Exception:
         return 0
 
 
@@ -235,8 +286,9 @@ def download_socrata_datasets(output_dir):
         # Descargar CSV
         url_csv = f"{SOCRATA_BASE}/api/views/{dataset_id}/rows.csv?accessType=DOWNLOAD"
         path_csv = Path(str(full_path) + ".csv")
+        modificado = fecha_actualizacion_socrata(dataset_id)
         
-        if download_with_progress(url_csv, path_csv, descripcion):
+        if download_with_progress(url_csv, path_csv, descripcion, modificado=modificado):
             n = count_csv_records(path_csv)
             if n > 0:
                 log(f"   📝 {n:,} registros")
@@ -265,8 +317,10 @@ def download_socrata_metadata(output_dir):
             if r.status_code == 200:
                 with open(path, 'w', encoding='utf-8') as f:
                     json.dump(r.json(), f, ensure_ascii=False, indent=2)
-        except:
-            pass
+            else:
+                log(f"   ⚠️ Metadatos {dataset_id}: HTTP {r.status_code}")
+        except Exception as e:
+            log(f"   ⚠️ Metadatos {dataset_id}: {e}")
         
         time.sleep(0.3)
     
@@ -301,11 +355,12 @@ def download_barcelona_datasets(output_dir):
                     
                     dataset_dir = bcn_dir / local_name
                     dataset_dir.mkdir(exist_ok=True)
+                    rutas_usadas = {}  # ruta -> url, para detectar recursos distintos con el mismo nombre
                     
                     for resource in resources:
-                        res_url = resource.get('url', '')
-                        res_name = resource.get('name', 'unknown')
-                        res_format = resource.get('format', '').lower()
+                        res_url = resource.get('url') or ''
+                        res_name = resource.get('name') or 'unknown'  # CKAN puede devolver null
+                        res_format = (resource.get('format') or '').lower()
                         
                         if res_format in ['csv', 'xlsx', 'xls', 'json']:
                             safe_name = "".join(c if c.isalnum() or c in '._-' else '_' for c in res_name)
@@ -313,7 +368,13 @@ def download_barcelona_datasets(output_dir):
                                 safe_name = f"{safe_name}.{res_format}"
                             
                             path = dataset_dir / safe_name
-                            if download_with_progress(res_url, path, res_name):
+                            if rutas_usadas.get(path, res_url) != res_url:
+                                # Mismo nombre que otro recurso: no saltarlo como "ya descargado"
+                                res_id = str(resource.get('id') or '')[:8]
+                                path = dataset_dir / f"{Path(safe_name).stem}_{res_id}.{res_format}"
+                            rutas_usadas[path] = res_url
+                            modificado = epoch_ckan(resource.get('last_modified') or resource.get('metadata_modified'))
+                            if download_with_progress(res_url, path, res_name, modificado=modificado):
                                 if res_format == 'csv':
                                     n = count_csv_records(path)
                                     if n > 0:
@@ -376,7 +437,18 @@ def download_gencat_adicional(output_dir):
 # MAIN
 # =============================================================================
 
-def main():
+def argumentos(argv):
+    parser = argparse.ArgumentParser(description="Descarga los datos públicos de contratación de Catalunya")
+    parser.add_argument("--salida", default=None,
+                        help=f"carpeta de descarga (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()):
+    global OUTPUT_DIR
+    args = argumentos(argv)
+    if args.salida is not None:
+        OUTPUT_DIR = str(args.salida)
     start = time.time()
     
     print("\n" + "="*70)
@@ -400,7 +472,7 @@ Categorías incluidas:
     print("="*70)
     
     output_dir = Path(OUTPUT_DIR)
-    output_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     log(f"📁 {output_dir.absolute()}")
     
     # === DESCARGAS ===
@@ -501,7 +573,7 @@ Categorías incluidas:
 - Resoluciones Tribunal (dkrd-id95)
 - Adjudicaciones Generalitat (nn7v-4yxe)
 - Fase ejecución (8idu-wkjv)
-- Contratos menores (ydq4-xy5b)
+- Contratos menores de la Generalitat (qjue-2pk9; importes en céntimos)
 - Adjudicaciones quincenales (jxvs-kzbu)
 
 #### Subvenciones y Ayudas ({len([k for k in SOCRATA_DATASETS if '02_subvenciones' in SOCRATA_DATASETS[k][0]])} datasets)
@@ -562,4 +634,4 @@ Categorías incluidas:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

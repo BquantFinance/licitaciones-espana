@@ -6,8 +6,13 @@ y los cruza contra el Diario Oficial de la UE (TED) con 9 estrategias.
 
 Reglas SARA (Sujeto a Regulacion Armonizada):
   - Umbral varia por BIENIO, TIPO DE CONTRATO y TIPO DE PODER ADJUDICADOR
-  - Se aplica sobre importe_sin_iva (proxy del Valor Estimado del Contrato)
-  - Suma de lotes del mismo expediente cuenta como un solo VEC
+  - Se aplica sobre el Valor Estimado del Contrato (valor_estimado_contrato;
+    si falta, presupuesto base sin IVA y en ultimo caso importe adjudicado)
+  - Suma de lotes del mismo expediente (y organo) cuenta como un solo VEC
+  - PLACSP se lee con nacional.licitaciones.leer_placsp y el cruce se hace
+    por licitacion (su version mas reciente, es_ultima_version): la PLACSP
+    publica una entrada por cada actualizacion y contarlas todas repetiria
+    el mismo contrato SARA. Los datos nacionales no se modifican.
   - Contratos menores, encargos, privados, patrimoniales: excluidos
 
 Estrategias de matching:
@@ -34,18 +39,24 @@ Outputs:
 import pandas as pd
 import numpy as np
 import re
+import sys
 import time
 from pathlib import Path
 from collections import defaultdict
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from nacional.licitaciones import leer_placsp  # noqa: E402
 
 
 # ======================================================================
 #  CONFIG
 # ======================================================================
 
-PLACSP_PATH = Path("nacional/licitaciones_espana.parquet")
-TED_PATH = Path("ted/ted_es_can.parquet")
-OUTPUT_DIR = Path("ted")
+# Rutas relativas a la raíz del repo (no al cwd)
+_REPO_DIR = Path(__file__).resolve().parent.parent
+PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_espana.parquet"
+TED_PATH = _REPO_DIR / "ted" / "ted_es_can.parquet"
+OUTPUT_DIR = _REPO_DIR / "ted"
 
 # -- Umbrales SARA por bienio (sin IVA, en euros) --
 SARA_THRESHOLDS = {
@@ -177,8 +188,13 @@ ORGAN_ALIASES = {
 
 def get_sara_threshold(year, tipo_contrato, is_age, is_sector):
     """Devuelve el umbral SARA aplicable. None si no es candidato SARA."""
-    if tipo_contrato in ('Privado', 'Patrimonial', 'Administrativo Especial',
-                         'Gestion Servicios Publicos', '22', '32', '999', 'nan', ''):
+    # Tipo desconocido: según la versión de pandas llega como NaN, None o 'None'
+    if tipo_contrato is None or pd.isna(tipo_contrato):
+        return None
+    # Comparación sin acentos: el scraper nacional emite 'Gestión Servicios Públicos'
+    tipo_norm = normalize_name(tipo_contrato)
+    if tipo_norm in ('PRIVADO', 'PATRIMONIAL', 'ADMINISTRATIVO ESPECIAL',
+                     'GESTION SERVICIOS PUBLICOS', '22', '32', '999', 'NAN', 'NONE', ''):
         return None
 
     thresholds = None
@@ -190,6 +206,10 @@ def get_sara_threshold(year, tipo_contrato, is_age, is_sector):
         thresholds = list(SARA_THRESHOLDS.values())[-1]
 
     if tipo_contrato == 'Obras':
+        return thresholds['obras']
+    elif tipo_norm.startswith('CONCESION'):
+        # Concesiones de obras y de servicios: mismo umbral que obras
+        # (art. 20 LCSP, Directiva 2014/23/UE; art. 14 TRLCSP)
         return thresholds['obras']
     elif tipo_contrato in ('Servicios', 'Suministros'):
         if is_sector:
@@ -204,17 +224,19 @@ def get_sara_threshold(year, tipo_contrato, is_age, is_sector):
 
 def classify_buyer(dependencia):
     """Clasifica: (is_age, is_sector)."""
-    if not dependencia or pd.isna(dependencia):
+    if pd.isna(dependencia) or not dependencia:
         return False, False
-    dep_upper = str(dependencia).upper()
-    is_sector = any(p.upper() in dep_upper for p in SECTORES_PATTERNS)
-    is_age = any(p.upper() in dep_upper for p in AGE_PATTERNS) and not is_sector
+    # Sin acentos y por palabra completa: como subcadena 'ICO ' casaba con
+    # 'PÚBLICO ' (todo 'Sector Público > ...' salía AGE) y 'BOE' con 'BOECILLO'
+    dep_norm = normalize_name(dependencia)
+    is_sector = bool(_SECTORES_RE.search(dep_norm))
+    is_age = bool(_AGE_RE.search(dep_norm)) and not is_sector
     return is_age, is_sector
 
 
 def normalize_name(name):
     """Normaliza nombre organo para matching fuzzy."""
-    if not name or pd.isna(name):
+    if pd.isna(name) or not name:
         return ''
     s = str(name).upper().strip()
     for a, b in [('Á','A'),('É','E'),('Í','I'),('Ó','O'),('Ú','U'),
@@ -225,9 +247,42 @@ def normalize_name(name):
     return s
 
 
+def _patterns_regex(patterns):
+    """Regex de patrones normalizados (sin acentos) que solo casa palabras completas."""
+    alts = sorted({normalize_name(p) for p in patterns}, key=len, reverse=True)
+    return re.compile(r'(?<!\w)(?:' + '|'.join(re.escape(a) for a in alts) + r')(?!\w)')
+
+
+_AGE_RE = _patterns_regex(AGE_PATTERNS)
+_SECTORES_RE = _patterns_regex(SECTORES_PATTERNS)
+
+
+def _str_or_empty(val):
+    """str(val), salvo nulos (None/NaN) → '' (evita 'nan'/'None' como texto)."""
+    try:
+        if pd.isna(val):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    return str(val)
+
+
+# Expedientes nulos convertidos a texto por astype(str) (pandas 2: 'None'/'nan')
+_EXP_NULOS = frozenset(['NONE', 'NAN'])
+
+
+def _clave_organo_expediente(df, exp_col):
+    """Clave (órgano, expediente): el nº de expediente solo es único dentro de un órgano
+    ('1/2024' existe en cientos de órganos). NaN si el expediente no es utilizable."""
+    exp = df[exp_col].map(_str_or_empty).astype(str).str.strip()
+    valido = (exp.str.len() > 3) & ~exp.str.upper().isin(_EXP_NULOS)
+    clave = df['organo_contratante'].map(_str_or_empty).astype(str) + '||' + exp
+    return clave.where(valido)
+
+
 def clean_nif(nif):
     """Limpia NIF: mayusculas, sin prefijo ES."""
-    if not nif or pd.isna(nif):
+    if pd.isna(nif) or not nif:
         return ''
     s = str(nif).strip().upper()
     s = re.sub(r'^ES[-\s]*', '', s)
@@ -269,20 +324,38 @@ def token_overlap(name_a, name_b, min_tokens=2):
 #  1. CARGA PLACSP
 # ======================================================================
 
+def _num_col(df, col):
+    """Columna numerica (NaN si no existe)."""
+    if col not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+    return pd.to_numeric(df[col], errors='coerce')
+
+
 def load_placsp(path):
-    """Carga PLACSP: adjudicaciones validas, identifica SARA."""
+    """Carga PLACSP: adjudicaciones validas, identifica SARA.
+
+    Se usa la version mas reciente de cada licitacion (es_ultima_version): la
+    PLACSP publica una entrada por cada actualizacion y cada version adjudicada
+    contaria como un contrato SARA distinto.
+    """
     print(f"\n{'='*70}")
     print(f"  CARGA PLACSP")
     print(f"{'='*70}")
-    df = pd.read_parquet(path)
-    print(f"  Total registros: {len(df):,}")
+    df = leer_placsp(path, solo_ultima_version=True)
+    print(f"  Total licitaciones (version mas reciente de cada id): {len(df):,}")
 
-    # Solo adjudicaciones reales
+    # Solo adjudicaciones reales ('tipo_registro' solo existe en los parquet publicados)
+    if 'tipo_registro' in df.columns:
+        es_licitacion = df['tipo_registro'] == 'LICITACION'
+    else:
+        es_licitacion = df['conjunto'] != 'consultas'
+    cols_importe = [c for c in ('importe_adjudicacion', 'valor_estimado_contrato', 'importe_sin_iva')
+                    if c in df.columns]
     mask = (
-        (df['tipo_registro'] == 'LICITACION') &
+        es_licitacion &
         (df['estado'].isin(['Resuelta', 'Adjudicada'])) &
         (df['nif_adjudicatario'].notna()) &
-        (df['importe_adjudicacion'].notna() | df['importe_sin_iva'].notna())
+        df[cols_importe].notna().any(axis=1)
     )
     df = df[mask].copy()
     print(f"  Adjudicaciones con NIF + importe: {len(df):,}")
@@ -304,9 +377,10 @@ def load_placsp(path):
     if n_con > 0:
         print(f"  Excluidas consultas: {n_con:,}")
 
-    # Excluir tipos no SARA (art. 25-27 LCSP)
+    # Excluir tipos no SARA (art. 25-27 LCSP). Las concesiones (22/31/32) si son
+    # SARA, con el umbral de obras (get_sara_threshold)
     tipos_no_sara = ['Privado', 'Patrimonial', 'Administrativo Especial',
-                     '22', '999', '32']
+                     'Gestión Servicios Públicos', 'Otros']
     _tc = df['tipo_contrato'].astype(str).replace('nan', '')
     mask_no_sara = _tc.isin(tipos_no_sara)
     n_no_sara = mask_no_sara.sum()
@@ -318,26 +392,28 @@ def load_placsp(path):
 
     # -- Campos auxiliares --
     df['_nif'] = df['nif_adjudicatario'].apply(clean_nif)
-    df['_imp_adj'] = pd.to_numeric(df['importe_adjudicacion'].astype(str).replace('nan', ''), errors='coerce')
-    df['_imp_sin_iva'] = pd.to_numeric(df['importe_sin_iva'].astype(str).replace('nan', ''), errors='coerce')
+    df['_imp_adj'] = _num_col(df, 'importe_adjudicacion')
+    df['_imp_sin_iva'] = _num_col(df, 'importe_sin_iva')          # presupuesto base sin IVA
+    df['_imp_vec'] = _num_col(df, 'valor_estimado_contrato')      # valor estimado del contrato
 
-    # Para SARA: usar importe_sin_iva (proxy VEC), fallback a importe_adjudicacion
-    df['_imp_sara'] = np.where(df['_imp_sin_iva'].notna(), df['_imp_sin_iva'], df['_imp_adj'])
+    # Para SARA: el umbral se aplica al valor estimado; si falta, presupuesto base
+    # sin IVA (<= VEC, conservador) y en ultimo caso el importe adjudicado
+    df['_imp_sara'] = df['_imp_vec'].fillna(df['_imp_sin_iva']).fillna(df['_imp_adj'])
 
-    # Para matching contra TED: preferir imp_adj (comparable con award_value), fallback sin_iva
-    df['_imp_match'] = np.where(
-        df['_imp_adj'].notna() & (df['_imp_adj'] > 0),
-        df['_imp_adj'], df['_imp_sin_iva']
-    )
+    # Para matching contra TED: preferir imp_adj (comparable con award_value)
+    df['_imp_match'] = (df['_imp_adj'].where(df['_imp_adj'] > 0)
+                        .fillna(df['_imp_sin_iva']).fillna(df['_imp_vec']))
 
-    n_sin_iva = df['_imp_sin_iva'].notna().sum()
-    n_fallback = (df['_imp_sin_iva'].isna() & df['_imp_adj'].notna()).sum()
-    print(f"  Importe SARA: {n_sin_iva:,} usan importe_sin_iva, {n_fallback:,} fallback a importe_adjudicacion")
+    n_vec = df['_imp_vec'].notna().sum()
+    n_pbl = (df['_imp_vec'].isna() & df['_imp_sin_iva'].notna()).sum()
+    n_fallback = (df['_imp_vec'].isna() & df['_imp_sin_iva'].isna() & df['_imp_adj'].notna()).sum()
+    print(f"  Importe SARA: {n_vec:,} valor estimado, {n_pbl:,} presupuesto sin IVA, "
+          f"{n_fallback:,} importe adjudicado")
 
     df['_ano'] = pd.to_numeric(df['ano'], errors='coerce')
     df = df[(df['_ano'] >= 2010) & (df['_ano'] <= 2027)].copy()
 
-    df['_expediente'] = df['expediente'].astype(str).replace('nan', '').str.strip()
+    df['_expediente'] = df['expediente'].map(_str_or_empty).str.strip()
     df['_fecha_adj'] = pd.to_datetime(df['fecha_adjudicacion'], errors='coerce')
     df['_tipo_contrato'] = df['tipo_contrato'].astype(str).replace('nan', '').str.strip()
     df['_procedimiento'] = df['procedimiento'].astype(str).replace('nan', '').str.strip()
@@ -361,22 +437,33 @@ def load_placsp(path):
     df['_es_sara'] = df['_umbral_sara'].notna() & (df['_imp_sara'] >= df['_umbral_sara'])
 
     # -- Suma de lotes por expediente (VEC = suma de todos los lotes) --
+    # Clave (organo, expediente): el mismo n de expediente existe en muchos organos
     n_sara_before_lots = df['_es_sara'].sum()
+    df['_sara_por_lotes'] = False
+    clave_lote = _clave_organo_expediente(df, '_expediente')
 
-    non_sara = df[~df['_es_sara'] & (df['_expediente'].str.len() > 3)].copy()
+    non_sara = df[~df['_es_sara'] & clave_lote.notna()].copy()
     if len(non_sara) > 0:
-        lot_sums = non_sara.groupby('_expediente').agg(
-            imp_total=('_imp_sara', 'sum'),
+        non_sara['_clave_lote'] = clave_lote[non_sara.index]
+        lot_sums = non_sara.groupby('_clave_lote').agg(
+            imp_suma=('_imp_sara', 'sum'),
+            vec_max=('_imp_vec', 'max'),
+            vec_distintos=('_imp_vec', 'nunique'),
+            vec_informados=('_imp_vec', 'count'),
             n_lotes=('_imp_sara', 'count'),
             umbral=('_umbral_sara', 'min'),
         )
+        # Si todas las filas repiten el mismo valor estimado (el del expediente
+        # completo) se cuenta una vez: sumarlo lo multiplicaria por el n de filas
+        repetido = (lot_sums['vec_distintos'] == 1) & (lot_sums['vec_informados'] == lot_sums['n_lotes'])
+        lot_sums['imp_total'] = lot_sums['imp_suma'].where(~repetido, lot_sums['vec_max'])
         lot_sums = lot_sums[
             (lot_sums['n_lotes'] >= 2) &
             lot_sums['umbral'].notna() &
             (lot_sums['imp_total'] >= lot_sums['umbral'])
         ]
         sara_expedientes = set(lot_sums.index)
-        lot_mask = (~df['_es_sara']) & (df['_expediente'].isin(sara_expedientes))
+        lot_mask = (~df['_es_sara']) & clave_lote.isin(sara_expedientes)
         df.loc[lot_mask, '_es_sara'] = True
         df.loc[lot_mask, '_sara_por_lotes'] = True
 
@@ -386,9 +473,7 @@ def load_placsp(path):
         print(f"    Contratos adicionales marcados SARA:       {n_sara_lots:,}")
         print(f"    SARA antes de lotes: {n_sara_before_lots:,} -> despues: {df['_es_sara'].sum():,}")
 
-    if '_sara_por_lotes' not in df.columns:
-        df['_sara_por_lotes'] = False
-    df['_sara_por_lotes'] = df['_sara_por_lotes'].fillna(False).astype(bool)
+    df['_sara_por_lotes'] = df['_sara_por_lotes'].astype(bool)
 
     # Negociado sin publicidad
     df['_es_neg_sin_pub'] = df['_procedimiento'].str.contains(
@@ -428,6 +513,33 @@ def load_placsp(path):
 #  2. CARGA TED
 # ======================================================================
 
+def ultima_version_por_aviso(df):
+    """Última versión de cada aviso (mismo criterio que
+    ted_module.ultima_version_por_aviso; este script no importa ted_module).
+
+    ted_es_can.parquet conserva el histórico: las filas con
+    _en_ultima_descarga=False son versiones anteriores de avisos que TED ha
+    cambiado, avisos retirados o avisos sembrados del release. En el cruce
+    cada aviso cuenta una vez (si no, un aviso cambiado validaría dos
+    contratos): sus filas vigentes o, si TED ya no lo sirve, las de la última
+    descarga en que apareció (se publicó, así que no es 'missing').
+    Sin esas columnas devuelve la tabla tal cual."""
+    if '_en_ultima_descarga' not in df.columns or 'ted_notice_id' not in df.columns:
+        return df
+    vigente = df['_en_ultima_descarga'].astype('boolean').fillna(True).astype(bool)
+    ids = df['ted_notice_id'].astype(object)
+    sin_id = pd.Series([f"\x00{i}" for i in range(len(df))], index=df.index)
+    aviso = ids.where(ids.notna(), sin_id).astype(str)
+    if '_ultima_descarga' in df.columns:
+        ultima = df['_ultima_descarga'].astype(object)
+        ultima = ultima.where(ultima.notna(), '').astype(str)
+    else:
+        ultima = pd.Series('', index=df.index)
+    con_vigente = aviso.isin(set(aviso[vigente]))
+    ultima_del_aviso = ultima.groupby(aviso).transform('max')
+    return df[vigente | (~con_vigente & (ultima == ultima_del_aviso))]
+
+
 def load_ted(path):
     """Carga TED: limpia NIFs, normaliza importes."""
     print(f"\n{'='*70}")
@@ -435,6 +547,10 @@ def load_ted(path):
     print(f"{'='*70}")
     df = pd.read_parquet(path)
     print(f"  Total registros: {len(df):,}")
+    n_total = len(df)
+    df = ultima_version_por_aviso(df).reset_index(drop=True)
+    if len(df) < n_total:
+        print(f"  Filas de versiones anteriores de un aviso (fuera del cruce): {n_total - len(df):,}")
 
     for col in ['year', 'number_offers']:
         if col in df.columns:
@@ -488,26 +604,29 @@ def run_e1_e2(df_placsp, df_ted):
         imp = row['importe_ted']
         yr = row.get('year', np.nan)
 
+        # _str_or_empty: filas CSV bulk sin campos eForms -> '' (no 'nan'/'None')
         entry = {
             'importe': imp,
-            'ted_id': str(row.get('ted_notice_id', '')),
+            'ted_id': _str_or_empty(row.get('ted_notice_id', '')),
             'n_ofertas': row.get('number_offers', np.nan),
-            'cpv_ted': str(row.get('cpv', '')),
-            'cae_ted': str(row.get('cae_name', '')),
-            'win_size': str(row.get('win_size', '')),
-            'direct_award': str(row.get('direct_award_justification', '')),
-            'sme_part': str(row.get('sme_participation', '')),
-            'buyer_legal_type': str(row.get('buyer_legal_type', '')),
+            'cpv_ted': _str_or_empty(row.get('cpv', '')),
+            'cae_ted': _str_or_empty(row.get('cae_name', '')),
+            'win_size': _str_or_empty(row.get('win_size', '')),
+            'direct_award': _str_or_empty(row.get('direct_award_justification', '')),
+            'sme_part': _str_or_empty(row.get('sme_participation', '')),
+            'buyer_legal_type': _str_or_empty(row.get('buyer_legal_type', '')),
             'duration_lot': row.get('duration_lot', np.nan),
-            'award_criterion_type': str(row.get('award_criterion_type', '')),
-            'internal_id': str(row.get('internal_id_proc', '')),
+            'award_criterion_type': _str_or_empty(row.get('award_criterion_type', '')),
+            'internal_id': _str_or_empty(row.get('internal_id_proc', '')),
             'consumed': False,
         }
 
         if nif and len(nif) >= 5 and pd.notna(yr):
             ted_lookup[(nif, int(yr))].append(entry)
 
-        exp_id = str(row.get('internal_id_proc', '')).strip()
+        # Nulos fuera: con pandas 2 str(None) = 'None' agrupaba todos los avisos
+        # sin internal_id (todo el CSV bulk) bajo la clave 'NONE'
+        exp_id = entry['internal_id'].strip()
         if exp_id and len(exp_id) >= 4:
             ted_lookup_exp[exp_id.upper()].append(entry)
 
@@ -568,9 +687,11 @@ def run_e1_e2(df_placsp, df_ted):
                             best_i = i
                             best_lookup = ted_lookup
 
-        # E2: expediente + importe
+        # E2: expediente + importe (con pandas 3 el expediente nulo llega como NaN)
         if best_match is None:
-            exp_id = row['_expediente'].strip().upper()
+            exp_id = _str_or_empty(row['_expediente']).strip().upper()
+            if exp_id in _EXP_NULOS:
+                exp_id = ''
             if exp_id and len(exp_id) >= 4:
                 entries = ted_lookup_exp.get(exp_id, [])
                 for i, entry in enumerate(entries):
@@ -606,7 +727,11 @@ def run_e1_e2(df_placsp, df_ted):
     ]
 
     if len(sara_lot_not_matched) > 0:
-        lot_expedientes = sara_lot_not_matched.groupby('_expediente').agg(
+        # Agrupar por (órgano, expediente): el mismo nº de expediente se repite en
+        # órganos distintos y un aviso TED no debe validar los lotes de otro órgano
+        lot_expedientes = sara_lot_not_matched.groupby(
+            [sara_lot_not_matched['organo_contratante'].map(_str_or_empty), '_expediente']
+        ).agg(
             indices=('_expediente', lambda x: list(x.index)),
             n_lotes=('_expediente', 'count'),
             imp_total=('_imp_sara', 'sum'),
@@ -615,8 +740,9 @@ def run_e1_e2(df_placsp, df_ted):
             ano=('_ano', 'first'),
         )
 
-        for exp_id, grp in lot_expedientes.iterrows():
-            if not exp_id or len(exp_id) < 4:
+        for (_organo, exp_id), grp in lot_expedientes.iterrows():
+            exp_id = _str_or_empty(exp_id)
+            if not exp_id or len(exp_id) < 4 or exp_id.strip().upper() in _EXP_NULOS:
                 continue
             exp_upper = exp_id.strip().upper()
             entries = ted_lookup_exp.get(exp_upper, [])
@@ -1009,16 +1135,15 @@ def run_advanced_matching(df_sara, df_ted, matched_idx_prev, match_data_prev, co
     all_matched_idx_pre = matched_set | e3_idx | e4_matched_idx | e5_idx | e3b_idx | e7_idx
     exp_col = '_expediente' if '_expediente' in df_sara.columns else 'expediente'
 
+    # Propagar solo dentro del MISMO órgano: clave (órgano, expediente)
+    clave_sara = _clave_organo_expediente(df_sara, exp_col)
     matched_expedientes = set(
-        df_sara.loc[
-            df_sara.index.isin(all_matched_idx_pre) & (df_sara[exp_col].str.len() > 3),
-            exp_col
-        ]
+        clave_sara[df_sara.index.isin(all_matched_idx_pre)].dropna()
     )
 
+    clave_missing = _clave_organo_expediente(df_missing_after_e7, exp_col)
     e6_candidates = df_missing_after_e7[
-        df_missing_after_e7[exp_col].isin(matched_expedientes) &
-        (df_missing_after_e7[exp_col].str.len() > 3)
+        clave_missing.isin(matched_expedientes) & clave_missing.notna()
     ]
 
     e6_matched_idx = set(e6_candidates.index)
@@ -1047,20 +1172,16 @@ def run_advanced_matching(df_sara, df_ted, matched_idx_prev, match_data_prev, co
     for s_idx_e7, t_idx_e7, _ in e7_matched:
         all_ted_ids[s_idx_e7] = str(ted_valid.loc[t_idx_e7, 'ted_notice_id'])
 
-    # Build lookup: expediente -> ted_id (from matched rows)
+    # Build lookup: (organo, expediente) -> ted_id (from matched rows)
     exp_to_tid = {}
-    matched_sara = df_sara.loc[
-        df_sara.index.isin(all_matched_idx_pre) & (df_sara[exp_col].str.len() > 3),
-        [exp_col]
-    ]
-    for sidx, row in matched_sara.iterrows():
-        exp = row[exp_col]
+    matched_claves = clave_sara[df_sara.index.isin(all_matched_idx_pre)].dropna()
+    for sidx, exp in matched_claves.items():
         if exp not in exp_to_tid and sidx in all_ted_ids:
             exp_to_tid[exp] = all_ted_ids[sidx]
 
     if len(e6_matched_idx) > 0:
         for idx in e6_matched_idx:
-            exp = df_missing_after_e7.loc[idx, exp_col]
+            exp = clave_missing.loc[idx]
             if exp in exp_to_tid:
                 e6_ted_ids[idx] = exp_to_tid[exp]
 
@@ -1100,9 +1221,21 @@ def run_advanced_matching(df_sara, df_ted, matched_idx_prev, match_data_prev, co
 #  5. APLICAR RESULTADOS + RESUMEN
 # ======================================================================
 
+def anios_cubiertos(df_ted):
+    """Años con avisos en el snapshot TED (columna year), o None si no se sabe."""
+    if 'year' not in df_ted.columns:
+        return None
+    return set(pd.to_numeric(df_ted['year'], errors='coerce').dropna().astype(int))
+
+
 def apply_results_and_report(df_placsp, matched_idx, match_data,
-                              n_e1, n_e2, n_e2b, e2b_matched_idx, adv):
-    """Marca matched/missing, genera resumen, guarda outputs."""
+                              n_e1, n_e2, n_e2b, e2b_matched_idx, adv, anios_ted=None):
+    """Marca matched/missing, genera resumen, guarda outputs.
+
+    anios_ted: años que cubre el snapshot TED (anios_cubiertos). Un SARA de otro
+    año (p.ej. 2026 con TED hasta 2025) sin coincidencia queda sin evaluar
+    (_ted_anio_cubierto=False), no como missing; una coincidencia sí cuenta.
+    """
     print(f"\n{'='*70}")
     print(f"  RESUMEN CONSOLIDADO")
     print(f"{'='*70}")
@@ -1111,7 +1244,7 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
 
     # -- Marcar E1/E2/E2b --
     df_placsp['_ted_validated'] = False
-    df_placsp['_match_strategy'] = ''
+    df_placsp['_match_strategy'] = pd.Series('', index=df_placsp.index, dtype=object)
 
     # Enrich fields
     enrich_defaults = {
@@ -1121,29 +1254,30 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
         '_ted_internal_id': '',
     }
     for col, default in enrich_defaults.items():
-        df_placsp[col] = default
+        # Mutable strings avoid copying an Arrow array for every scalar update.
+        df_placsp[col] = pd.Series(default, index=df_placsp.index, dtype=object)
     df_placsp['_ted_n_ofertas'] = np.nan
     df_placsp['_ted_duration'] = np.nan
 
     for idx in matched_idx:
-        df_placsp.loc[idx, '_ted_validated'] = True
+        df_placsp.at[idx, '_ted_validated'] = True
         # Asignar estrategia correcta
         if idx in e2b_matched_idx:
-            df_placsp.loc[idx, '_match_strategy'] = 'E2b_exp_lotes'
+            df_placsp.at[idx, '_match_strategy'] = 'E2b_exp_lotes'
         else:
-            df_placsp.loc[idx, '_match_strategy'] = 'E1_E2'
+            df_placsp.at[idx, '_match_strategy'] = 'E1_E2'
         if idx in match_data:
             m = match_data[idx]
-            df_placsp.loc[idx, '_ted_id'] = m.get('ted_id', '')
-            df_placsp.loc[idx, '_ted_n_ofertas'] = pd.to_numeric(m.get('n_ofertas', np.nan), errors='coerce')
-            df_placsp.loc[idx, '_ted_cpv'] = m.get('cpv_ted', '')
-            df_placsp.loc[idx, '_ted_win_size'] = m.get('win_size', '')
-            df_placsp.loc[idx, '_ted_direct_award'] = m.get('direct_award', '')
-            df_placsp.loc[idx, '_ted_sme_part'] = m.get('sme_part', '')
-            df_placsp.loc[idx, '_ted_buyer_legal_type'] = m.get('buyer_legal_type', '')
-            df_placsp.loc[idx, '_ted_duration'] = pd.to_numeric(m.get('duration_lot', np.nan), errors='coerce')
-            df_placsp.loc[idx, '_ted_award_criterion'] = m.get('award_criterion_type', '')
-            df_placsp.loc[idx, '_ted_internal_id'] = m.get('internal_id', '')
+            df_placsp.at[idx, '_ted_id'] = m.get('ted_id', '')
+            df_placsp.at[idx, '_ted_n_ofertas'] = pd.to_numeric(m.get('n_ofertas', np.nan), errors='coerce')
+            df_placsp.at[idx, '_ted_cpv'] = m.get('cpv_ted', '')
+            df_placsp.at[idx, '_ted_win_size'] = m.get('win_size', '')
+            df_placsp.at[idx, '_ted_direct_award'] = m.get('direct_award', '')
+            df_placsp.at[idx, '_ted_sme_part'] = m.get('sme_part', '')
+            df_placsp.at[idx, '_ted_buyer_legal_type'] = m.get('buyer_legal_type', '')
+            df_placsp.at[idx, '_ted_duration'] = pd.to_numeric(m.get('duration_lot', np.nan), errors='coerce')
+            df_placsp.at[idx, '_ted_award_criterion'] = m.get('award_criterion_type', '')
+            df_placsp.at[idx, '_ted_internal_id'] = m.get('internal_id', '')
 
     # -- Marcar E3 --
     ted_enrich_cols = {
@@ -1160,62 +1294,73 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
 
     def _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols):
         """Enrich PLACSP row with TED fields from ted_valid DataFrame."""
-        df_placsp.loc[s_idx, '_ted_id'] = str(ted_valid.loc[t_idx, 'ted_notice_id'])
+        df_placsp.at[s_idx, '_ted_id'] = str(ted_valid.loc[t_idx, 'ted_notice_id'])
         for dest_col, src_col in ted_enrich_cols.items():
             if src_col in ted_valid.columns:
                 val = ted_valid.loc[t_idx, src_col]
                 if dest_col in ('_ted_n_ofertas', '_ted_duration'):
-                    df_placsp.loc[s_idx, dest_col] = pd.to_numeric(val, errors='coerce')
+                    df_placsp.at[s_idx, dest_col] = pd.to_numeric(val, errors='coerce')
                 else:
-                    df_placsp.loc[s_idx, dest_col] = str(val) if pd.notna(val) else ''
+                    df_placsp.at[s_idx, dest_col] = str(val) if pd.notna(val) else ''
 
     for s_idx, t_idx, _ in adv['e3_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E3_nif_org'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E3_nif_org'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E4 --
     for indices, t_idx, _, _ in adv['e4_matched_groups']:
         for s_idx in indices:
-            df_placsp.loc[s_idx, '_match_strategy'] = 'E4_lotes'
-            df_placsp.loc[s_idx, '_ted_validated'] = True
+            df_placsp.at[s_idx, '_match_strategy'] = 'E4_lotes'
+            df_placsp.at[s_idx, '_ted_validated'] = True
             _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E5 --
     for s_idx, t_idx, _ in adv['e5_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E5_nombre'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E5_nombre'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E3b --
     for s_idx, t_idx, _ in adv['e3b_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E3b_alias'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E3b_alias'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E7 --
     for s_idx, t_idx, _ in adv['e7_matched']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E7_fuzzy'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E7_fuzzy'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         _enrich_from_ted_valid(df_placsp, s_idx, t_idx, ted_valid, ted_enrich_cols)
 
     # -- Marcar E6 --
     for s_idx in adv['e6_matched_idx']:
-        df_placsp.loc[s_idx, '_match_strategy'] = 'E6_propagacion'
-        df_placsp.loc[s_idx, '_ted_validated'] = True
+        df_placsp.at[s_idx, '_match_strategy'] = 'E6_propagacion'
+        df_placsp.at[s_idx, '_ted_validated'] = True
         if s_idx in adv['e6_ted_ids']:
-            df_placsp.loc[s_idx, '_ted_id'] = adv['e6_ted_ids'][s_idx]
+            df_placsp.at[s_idx, '_ted_id'] = adv['e6_ted_ids'][s_idx]
+
+    # -- Cobertura del snapshot TED --
+    ano_col = '_ano' if '_ano' in df_placsp.columns else 'ano'
+    if anios_ted is None:
+        df_placsp['_ted_anio_cubierto'] = True
+    else:
+        df_placsp['_ted_anio_cubierto'] = df_placsp[ano_col].isin(anios_ted)
+    cubierto = df_placsp['_ted_anio_cubierto']
 
     # -- Missing flags --
     df_placsp['_ted_missing'] = (
         df_placsp['_es_sara'] &
         ~df_placsp['_ted_validated'] &
-        ~df_placsp['_es_neg_sin_pub']
+        ~df_placsp['_es_neg_sin_pub'] &
+        cubierto
     )
     df_placsp['_ted_missing_incl_neg'] = (
         df_placsp['_es_sara'] &
-        ~df_placsp['_ted_validated']
+        ~df_placsp['_ted_validated'] &
+        cubierto
     )
+    n_sin_cobertura = int((df_placsp['_es_sara'] & ~df_placsp['_ted_validated'] & ~cubierto).sum())
 
     # -- Counts --
     n_sara = df_placsp['_es_sara'].sum()
@@ -1246,10 +1391,14 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
     print(f"  Neg. sin pub. (no matched):     {n_neg:>8,}  ({n_neg/n_sara*100:>5.1f}%)")
     print(f"  Missing (excl. neg s/p):    {n_missing:>8,}  ({n_missing/n_sara*100:>5.1f}%)")
     print(f"  Missing (incl. neg s/p):    {n_missing_incl_neg:>8,}  ({n_missing_incl_neg/n_sara*100:>5.1f}%)")
+    if anios_ted is not None:
+        print(f"  Sin evaluar (año fuera de TED {min(anios_ted, default='-')}-"
+              f"{max(anios_ted, default='-')}): {n_sin_cobertura:>8,}  ({n_sin_cobertura/n_sara*100:>5.1f}%)")
 
     # -- Por año --
     df_missing_final = adv['df_missing_final']
-    ano_col = '_ano' if '_ano' in df_placsp.columns else 'ano'
+    if anios_ted is not None:
+        df_missing_final = df_missing_final[df_missing_final[ano_col].isin(anios_ted)]
 
     print(f"\n  {'Ano':>6} {'SARA':>8} {'Match':>8} {'%':>6} {'Missing':>8}")
     print(f"  {'-'*42}")
@@ -1314,7 +1463,8 @@ def apply_results_and_report(df_placsp, matched_idx, match_data,
     # -- Missing a nivel expediente --
     exp_col = '_expediente' if '_expediente' in df_placsp.columns else 'expediente'
     sara_all = df_placsp[df_placsp['_es_sara']].copy()
-    exp_stats = sara_all.groupby(exp_col).agg(
+    # Un expediente = (órgano, nº expediente): el mismo número se repite entre órganos
+    exp_stats = sara_all.groupby(_clave_organo_expediente(sara_all, exp_col)).agg(
         n_lotes=('_es_sara', 'count'),
         any_matched=('_ted_validated', 'any'),
         es_lotes=('_sara_por_lotes', 'any'),
@@ -1339,15 +1489,17 @@ def save_outputs(df_placsp, df_missing_final, hc):
     """Guarda parquets de resultados."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # id + fecha_updated: calidad une el resultado por versión (no por expediente)
     save_cols = [
+        'id', 'fecha_updated',
         'expediente', 'organo_contratante', 'nif_organo', 'dependencia',
         'nif_adjudicatario', 'adjudicatario', 'importe_adjudicacion',
-        'importe_sin_iva', 'ano', 'estado', 'conjunto', 'tipo_contrato',
+        'valor_estimado_contrato', 'importe_sin_iva', 'ano', 'estado', 'conjunto', 'tipo_contrato',
         'procedimiento', 'cpv_principal', 'fecha_adjudicacion',
         '_es_sara', '_umbral_sara', '_imp_sara', '_imp_match',
         '_sara_por_lotes', '_is_age', '_is_sector',
         '_es_neg_sin_pub', '_tipo_contrato', '_procedimiento',
-        '_ted_validated', '_ted_missing', '_ted_missing_incl_neg',
+        '_ted_validated', '_ted_missing', '_ted_missing_incl_neg', '_ano', '_ted_anio_cubierto',
         '_match_strategy',
         '_ted_id', '_ted_n_ofertas', '_ted_cpv', '_ted_win_size',
         '_ted_direct_award', '_ted_sme_part', '_ted_buyer_legal_type',
@@ -1396,7 +1548,8 @@ if __name__ == "__main__":
 
     # 4. Aplicar resultados + resumen
     df_placsp, df_missing_final, hc = apply_results_and_report(
-        df_placsp, matched_idx, match_data, n_e1, n_e2, n_e2b, e2b_matched_idx, adv
+        df_placsp, matched_idx, match_data, n_e1, n_e2, n_e2b, e2b_matched_idx, adv,
+        anios_ted=anios_cubiertos(df_ted)
     )
 
     # 5. Guardar

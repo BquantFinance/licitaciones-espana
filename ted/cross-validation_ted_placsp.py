@@ -5,11 +5,11 @@ Cruza el parquet de licitaciones nacionales contra los datos TED
 para detectar contratos que deberían estar publicados en TED pero no lo están.
 
 Uso:
-    python run_ted_crossvalidation.py
+    python ted/cross-validation_ted_placsp.py
 
 Inputs:
     - nacional/licitaciones_espana.parquet  (PLACSP)
-    - data/ted/ted_es_can.parquet           (TED, generado por ted_module.py)
+    - ted/ted_es_can.parquet                (TED, generado por ted_module.py)
 
 Outputs:
     - data/ted/crossval_matched.parquet     (contratos PLACSP validados por TED)
@@ -27,9 +27,13 @@ from collections import defaultdict
 #  CONFIG
 # ═══════════════════════════════════════════════════════════════════════════
 
-PLACSP_PATH = Path("nacional/licitaciones_espana.parquet")
-TED_PATH = Path("data/ted/ted_es_can.parquet")
-OUTPUT_DIR = Path("data/ted")
+# Rutas relativas a la raíz del repo (no al cwd). El TED está en ted/ (donde lo
+# guarda ted_module.py); las salidas van a data/ted para no pisar las de
+# run_ted_crossvalidation.py (ted/crossval_*.parquet)
+_REPO_DIR = Path(__file__).resolve().parent.parent
+PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_espana.parquet"
+TED_PATH = _REPO_DIR / "ted" / "ted_es_can.parquet"
+OUTPUT_DIR = _REPO_DIR / "data" / "ted"
 
 # Umbrales UE (2024, sin IVA)
 EU_THRESHOLD_MIN = 140_000  # Umbral mínimo (suministros/servicios AGE)
@@ -38,6 +42,16 @@ EU_THRESHOLD_MIN = 140_000  # Umbral mínimo (suministros/servicios AGE)
 MATCH_TOLERANCE_PCT = 0.10   # ±10%
 MATCH_TOLERANCE_ABS = 5_000  # O ±5000€
 MATCH_YEAR_WINDOW = 1        # ±1 año
+
+
+def _str_or_empty(val):
+    """str(val), salvo nulos (None/NaN) → '' (evita 'nan'/'None' como texto)."""
+    try:
+        if pd.isna(val):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    return str(val)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -159,26 +173,30 @@ def cross_validate(df_placsp, df_ted):
         imp = row['importe_ted']
         yr = row.get('year', np.nan)
         
+        # _str_or_empty: filas CSV bulk sin campos eForms -> '' (no 'nan'/'None'),
+        # si no las estadísticas de enriquecimiento las cuentan como rellenas
         entry = {
             'importe': imp,
-            'ted_id': str(row.get('ted_notice_id', '')),
+            'ted_id': _str_or_empty(row.get('ted_notice_id', '')),
             'n_ofertas': row.get('number_offers', np.nan),
-            'cpv_ted': str(row.get('cpv', '')),
-            'cae_ted': str(row.get('cae_name', '')),
-            'win_size': str(row.get('win_size', '')),
-            'direct_award': str(row.get('direct_award_justification', '')),
-            'sme_part': str(row.get('sme_participation', '')),
-            'buyer_legal_type': str(row.get('buyer_legal_type', '')),
+            'cpv_ted': _str_or_empty(row.get('cpv', '')),
+            'cae_ted': _str_or_empty(row.get('cae_name', '')),
+            'win_size': _str_or_empty(row.get('win_size', '')),
+            'direct_award': _str_or_empty(row.get('direct_award_justification', '')),
+            'sme_part': _str_or_empty(row.get('sme_participation', '')),
+            'buyer_legal_type': _str_or_empty(row.get('buyer_legal_type', '')),
             'duration_lot': row.get('duration_lot', np.nan),
-            'award_criterion_type': str(row.get('award_criterion_type', '')),
-            'internal_id': str(row.get('internal_id_proc', '')),
+            'award_criterion_type': _str_or_empty(row.get('award_criterion_type', '')),
+            'internal_id': _str_or_empty(row.get('internal_id_proc', '')),
             'consumed': False,
         }
         
         if nif and len(nif) >= 5 and pd.notna(yr):
             ted_lookup[(nif, int(yr))].append(entry)
         
-        exp_id = str(row.get('internal_id_proc', '')).strip()
+        # Nulos fuera: con pandas 2 str(None) = 'None' agrupaba todos los avisos
+        # sin internal_id (todo el CSV bulk) bajo la clave 'NONE'
+        exp_id = entry['internal_id'].strip()
         if exp_id and len(exp_id) >= 4:
             ted_lookup_exp[exp_id.upper()].append(entry)
     
@@ -328,6 +346,14 @@ def cross_validate(df_placsp, df_ted):
     n_matched = len(matched_idx)
     n_missing = df_placsp['_ted_missing'].sum()
     n_sobre_ue = pipeline_ue[~pipeline_ue['_es_menor']].shape[0]
+    # Denominador del % de missing = mismo universo que el numerador (no-menores
+    # sobre umbral en 2010-2025, tengan o no NIF válido); antes podía pasar del 100%
+    n_base_missing = (
+        df_placsp['_sobre_umbral_ue'] &
+        ~df_placsp['_es_menor'] &
+        (df_placsp['_año'] >= 2010) &
+        (df_placsp['_año'] <= 2025)
+    ).sum()
     
     print(f"\n{'='*60}")
     print(f"  RESULTADOS CROSS-VALIDATION")
@@ -338,7 +364,7 @@ def cross_validate(df_placsp, df_ted):
     print(f"\n  ✅ Validados por TED: {n_matched:,} ({n_matched/len(pipeline_ue)*100:.1f}%)")
     print(f"     Por NIF+importe: {n_match_nif:,}")
     print(f"     Por expediente:  {n_match_exp:,}")
-    print(f"\n  ⚠️  Missing in TED: {n_missing:,} ({n_missing/max(n_sobre_ue,1)*100:.1f}% de no-menores sobre umbral)")
+    print(f"\n  ⚠️  Missing in TED: {n_missing:,} ({n_missing/max(n_base_missing,1)*100:.1f}% de no-menores sobre umbral)")
     
     # Desglose por año
     if n_matched > 0:

@@ -1,0 +1,214 @@
+<!-- Sintética (no es una entrada real): reúne los elementos CODICE que
+     licitaciones.py extrae además de los de entry_lotes.xml (UTE, lotes con
+     importes/CPV/lugar, criterios de adjudicación, contadores de ofertas,
+     formalización, pliegos, modificación...). Las rutas marcadas "sin
+     verificar" en licitaciones.py (OverThresholdIndicator,
+     ContractModification) no se han contrastado con datos reales. -->
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2">
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/TEST-DETALLE-001</id>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=DET001"/>
+    <title>Test detalle</title>
+    <updated>2025-09-01T10:00:00.000+02:00</updated>
+    <cac-place-ext:ContractFolderStatus>
+        <cbc:ContractFolderID>TEST/2025/DETALLE</cbc:ContractFolderID>
+        <cbc-place-ext:ContractFolderStatusCode>RES</cbc-place-ext:ContractFolderStatusCode>
+        <cac-place-ext:LocatedContractingParty>
+            <cac:Party>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="DIR3">L01280796</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>Ayuntamiento de Pruebas</cbc:Name>
+                </cac:PartyName>
+            </cac:Party>
+        </cac-place-ext:LocatedContractingParty>
+        <cac:ProcurementProject>
+            <cbc:Name>Servicio de limpieza en dos lotes</cbc:Name>
+            <cbc:TypeCode>2</cbc:TypeCode>
+            <cac:BudgetAmount>
+                <cbc:EstimatedOverallContractAmount currencyID="EUR">400000</cbc:EstimatedOverallContractAmount>
+                <cbc:TotalAmount currencyID="EUR">242000</cbc:TotalAmount>
+                <cbc:TaxExclusiveAmount currencyID="EUR">200000</cbc:TaxExclusiveAmount>
+            </cac:BudgetAmount>
+            <cac:RequiredCommodityClassification>
+                <cbc:ItemClassificationCode>90910000</cbc:ItemClassificationCode>
+            </cac:RequiredCommodityClassification>
+        </cac:ProcurementProject>
+        <cac:ProcurementProjectLot>
+            <cbc:ID schemeName="ID_LOTE">1</cbc:ID>
+            <cac:ProcurementProject>
+                <cbc:Name>Lote 1: edificios</cbc:Name>
+                <cac:BudgetAmount>
+                    <cbc:TotalAmount currencyID="EUR">145200</cbc:TotalAmount>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">120000</cbc:TaxExclusiveAmount>
+                </cac:BudgetAmount>
+                <cac:RequiredCommodityClassification>
+                    <cbc:ItemClassificationCode>90911200</cbc:ItemClassificationCode>
+                </cac:RequiredCommodityClassification>
+                <cac:RequiredCommodityClassification>
+                    <cbc:ItemClassificationCode>90919200</cbc:ItemClassificationCode>
+                </cac:RequiredCommodityClassification>
+                <cac:RealizedLocation>
+                    <cbc:CountrySubentity>Madrid</cbc:CountrySubentity>
+                    <cbc:CountrySubentityCode>ES300</cbc:CountrySubentityCode>
+                </cac:RealizedLocation>
+            </cac:ProcurementProject>
+            <cac:TenderingTerms>
+                <cbc:FundingProgramCode>EU</cbc:FundingProgramCode>
+                <cac:AwardingTerms>
+                    <cac:AwardingCriteria>
+                        <cbc:Description>Precio</cbc:Description>
+                        <cbc:AwardingCriteriaTypeCode>OBJ</cbc:AwardingCriteriaTypeCode>
+                        <cbc:WeightNumeric>70</cbc:WeightNumeric>
+                    </cac:AwardingCriteria>
+                </cac:AwardingTerms>
+            </cac:TenderingTerms>
+        </cac:ProcurementProjectLot>
+        <cac:ProcurementProjectLot>
+            <cbc:ID schemeName="ID_LOTE">2</cbc:ID>
+            <cac:ProcurementProject>
+                <cbc:Name>Lote 2: colegios</cbc:Name>
+                <cac:BudgetAmount>
+                    <cbc:TotalAmount currencyID="EUR">96800</cbc:TotalAmount>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">80000</cbc:TaxExclusiveAmount>
+                </cac:BudgetAmount>
+            </cac:ProcurementProject>
+        </cac:ProcurementProjectLot>
+        <cac:TenderResult>
+            <cbc:ResultCode>8</cbc:ResultCode>
+            <cbc:Description>Oferta con mejor relación calidad-precio</cbc:Description>
+            <cbc:AwardDate>2025-06-01</cbc:AwardDate>
+            <cbc:ReceivedTenderQuantity>5</cbc:ReceivedTenderQuantity>
+            <cbc:LowerTenderAmount currencyID="EUR">95000</cbc:LowerTenderAmount>
+            <cbc:HigherTenderAmount currencyID="EUR">119000</cbc:HigherTenderAmount>
+            <cbc:SMEAwardedIndicator>false</cbc:SMEAwardedIndicator>
+            <cbc:AbnormallyLowTendersIndicator>true</cbc:AbnormallyLowTendersIndicator>
+            <cbc:StartDate>2025-07-01</cbc:StartDate>
+            <cbc:SMEsReceivedTenderQuantity>3</cbc:SMEsReceivedTenderQuantity>
+            <cac:Contract>
+                <cbc:ID>CT-2025-001</cbc:ID>
+                <cbc:IssueDate>2025-06-20</cbc:IssueDate>
+            </cac:Contract>
+            <cac:WinningParty>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">B11111111</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>LIMPIEZAS UNO SL</cbc:Name>
+                </cac:PartyName>
+            </cac:WinningParty>
+            <cac:WinningParty>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">A22222222</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>SERVICIOS DOS SA</cbc:Name>
+                </cac:PartyName>
+            </cac:WinningParty>
+            <cac:AwardedTenderedProject>
+                <cbc:ProcurementProjectLotID>1</cbc:ProcurementProjectLotID>
+                <cac:LegalMonetaryTotal>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">100000</cbc:TaxExclusiveAmount>
+                    <cbc:PayableAmount currencyID="EUR">121000</cbc:PayableAmount>
+                </cac:LegalMonetaryTotal>
+            </cac:AwardedTenderedProject>
+        </cac:TenderResult>
+        <cac:TenderResult>
+            <cbc:ResultCode>4</cbc:ResultCode>
+            <cbc:AwardDate>2025-06-01</cbc:AwardDate>
+            <cbc:ReceivedTenderQuantity>0</cbc:ReceivedTenderQuantity>
+            <cac:AwardedTenderedProject>
+                <cbc:ProcurementProjectLotID>2</cbc:ProcurementProjectLotID>
+            </cac:AwardedTenderedProject>
+        </cac:TenderResult>
+        <cac:TenderingTerms>
+            <cbc:FundingProgramCode>EU</cbc:FundingProgramCode>
+            <cbc:FundingProgramCode>PRTR</cbc:FundingProgramCode>
+            <cac:AwardingTerms>
+                <cac:AwardingCriteria>
+                    <cbc:Description>Precio</cbc:Description>
+                    <cbc:AwardingCriteriaTypeCode>OBJ</cbc:AwardingCriteriaTypeCode>
+                    <cbc:AwardingCriteriaSubTypeCode>1</cbc:AwardingCriteriaSubTypeCode>
+                    <cbc:WeightNumeric>60</cbc:WeightNumeric>
+                </cac:AwardingCriteria>
+                <cac:AwardingCriteria>
+                    <cbc:Description>Memoria técnica</cbc:Description>
+                    <cbc:AwardingCriteriaTypeCode>SUBJ</cbc:AwardingCriteriaTypeCode>
+                    <cbc:WeightNumeric>40</cbc:WeightNumeric>
+                </cac:AwardingCriteria>
+            </cac:AwardingTerms>
+        </cac:TenderingTerms>
+        <cac:TenderingProcess>
+            <cbc:ProcedureCode>1</cbc:ProcedureCode>
+            <cbc:UrgencyCode>1</cbc:UrgencyCode>
+            <cbc:SubmissionMethodCode>1</cbc:SubmissionMethodCode>
+            <cbc:ContractingSystemCode>0</cbc:ContractingSystemCode>
+            <cbc:OverThresholdIndicator>true</cbc:OverThresholdIndicator>
+            <cac:DocumentAvailabilityPeriod>
+                <cbc:EndDate>2025-03-20</cbc:EndDate>
+                <cbc:EndTime>14:00:00</cbc:EndTime>
+            </cac:DocumentAvailabilityPeriod>
+            <cac:TenderSubmissionDeadlinePeriod>
+                <cbc:StartDate>2025-03-01</cbc:StartDate>
+                <cbc:EndDate>2025-03-31</cbc:EndDate>
+                <cbc:EndTime>23:59:00</cbc:EndTime>
+            </cac:TenderSubmissionDeadlinePeriod>
+            <cac:ParticipationRequestReceptionPeriod>
+                <cbc:EndDate>2025-03-15</cbc:EndDate>
+                <cbc:EndTime>12:00:00</cbc:EndTime>
+            </cac:ParticipationRequestReceptionPeriod>
+        </cac:TenderingProcess>
+        <cac:LegalDocumentReference>
+            <cbc:ID>PCAP.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/doc/PCAP-001</cbc:URI>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:LegalDocumentReference>
+        <cac:TechnicalDocumentReference>
+            <cbc:ID>PPT.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/doc/PPT-001</cbc:URI>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:TechnicalDocumentReference>
+        <cac:AdditionalDocumentReference>
+            <cbc:ID>Anexo I.pdf</cbc:ID>
+        </cac:AdditionalDocumentReference>
+        <cac:AdditionalDocumentReference>
+            <cbc:ID>Anexo II.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/doc/ANEXO2-001</cbc:URI>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:AdditionalDocumentReference>
+        <cac-place-ext:ContractModification>
+            <cbc:ID>1</cbc:ID>
+            <cbc:ContractID>CT-2025-001</cbc:ContractID>
+            <cbc:Note>Ampliación del servicio</cbc:Note>
+            <cbc-place-ext:ContractModificationDurationMeasure unitCode="MON">3</cbc-place-ext:ContractModificationDurationMeasure>
+            <cbc-place-ext:FinalDurationMeasure unitCode="MON">27</cbc-place-ext:FinalDurationMeasure>
+            <cac-place-ext:ContractModificationLegalMonetaryTotal>
+                <cbc:TaxExclusiveAmount currencyID="EUR">10000</cbc:TaxExclusiveAmount>
+            </cac-place-ext:ContractModificationLegalMonetaryTotal>
+            <cac-place-ext:FinalLegalMonetaryTotal>
+                <cbc:TaxExclusiveAmount currencyID="EUR">110000</cbc:TaxExclusiveAmount>
+            </cac-place-ext:FinalLegalMonetaryTotal>
+        </cac-place-ext:ContractModification>
+        <cac-place-ext:ValidNoticeInfo>
+            <cbc-place-ext:NoticeTypeCode>DOC_CN</cbc-place-ext:NoticeTypeCode>
+            <cac-place-ext:AdditionalPublicationStatus>
+                <cac-place-ext:AdditionalPublicationDocumentReference>
+                    <cbc:IssueDate>2025-03-01</cbc:IssueDate>
+                </cac-place-ext:AdditionalPublicationDocumentReference>
+            </cac-place-ext:AdditionalPublicationStatus>
+        </cac-place-ext:ValidNoticeInfo>
+    </cac-place-ext:ContractFolderStatus>
+</entry>

@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""
+r"""
 Validación del parser BORME v2 (regex genérico + approach B)
 Ejecutar ANTES de relanzar el batch.
 
 Uso: python borme_validate.py --input D:\Licitaciones\borme_pdfs --sample 300
 """
 
-import re, glob, random, pdfplumber, argparse
+import re, random, pdfplumber, argparse
 from collections import Counter
 from pathlib import Path
 
 # ─── REGEX (idéntico al batch parser) ───
-ENTRY_START_RE = re.compile(r'^(\d{4,7})\s*-\s*', re.MULTILINE)
+# La numeración se reinicia cada año: el primer BORME del año trae anuncios de 1-3 cifras
+ENTRY_START_RE = re.compile(r'^(\d{1,7})\s*-\s*', re.MULTILINE)
 
 _BODY_START_RE = re.compile(r'(?<=\.)\s+(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})')
 _FE_ERRATAS_RE = re.compile(r'\.\s+Fe de erratas')
@@ -71,6 +72,21 @@ def clean(raw):
     return "\n".join(lines)
 
 
+def entry_starts(text):
+    """Inicios de anuncio (como _entry_starts del batch parser): un número de
+    1-3 cifras solo cuenta con formato "N - " y si es el primero o continúa
+    la numeración."""
+    starts = []
+    for m in ENTRY_START_RE.finditer(text):
+        num = m.group(1)
+        if len(num) < 4 and (
+                num.startswith("0") or not m.group(0).startswith(num + " ")
+                or (starts and int(num) != int(starts[-1].group(1)) + 1)):
+            continue
+        starts.append(m)
+    return starts
+
+
 def extract_cargo_and_tipo(raw_cargo, body, match_start):
     c = raw_cargo.strip()
     for prefix, tipo in SECTION_MAP.items():
@@ -101,7 +117,9 @@ def find_empresa(block):
             break
         rest = block[m.end():m.end() + 40]
         first_word = rest.split('.')[0].split(':')[0].split(' ')[0].strip()
-        if first_word in _LEGAL_FORMS:
+        # "Sociedad unipersonal." es un acto, no parte de la forma jurídica
+        if first_word in _LEGAL_FORMS and not rest.startswith(
+                ("Sociedad unipersonal.", "Sociedad unipersonal:")):
             continue
         body_pos = m.start() + 1
         break
@@ -115,11 +133,11 @@ def validate_pdf(pdf_path):
     try:
         with pdfplumber.open(pdf_path) as pdf:
             raw = "\n".join(p.extract_text() or "" for p in pdf.pages)
-    except:
+    except Exception:
         return {"error": True, "path": str(pdf_path)}
 
     text = clean(raw)
-    splits = list(ENTRY_START_RE.finditer(text))
+    splits = entry_starts(text)
 
     stats = {
         "path": str(pdf_path),
@@ -180,7 +198,8 @@ def main():
     parser.add_argument("--sample", type=int, default=300)
     args = parser.parse_args()
 
-    pdfs = sorted(Path(args.input).rglob("BORME-A-*.pdf"))
+    # Sin las versiones anteriores que borme_scraper.py guarda en <día>/_historico/
+    pdfs = sorted(p for p in Path(args.input).rglob("BORME-A-*.pdf") if p.parent.name != "_historico")
     print(f"Total BORME-A PDFs: {len(pdfs):,}")
 
     sample = random.sample(pdfs, min(args.sample, len(pdfs)))
@@ -212,14 +231,14 @@ def main():
             print(f"  {i+1}/{len(sample)}...")
 
     print(f"\n{'='*60}")
-    print(f"RESULTADOS VALIDACIÓN v2")
+    print("RESULTADOS VALIDACIÓN v2")
     print(f"{'='*60}")
     print(f"PDFs procesados: {len(sample) - errors}")
     print(f"Errores: {errors}")
     print(f"Entradas totales: {total_entries:,}")
     print(f"Cargos capturados: {total_cargos:,}")
 
-    print(f"\n--- BODY START WORDS (top 30) ---")
+    print("\n--- BODY START WORDS (top 30) ---")
     for word, n in all_body_words.most_common(30):
         print(f"  {n:6,}x  {word}")
 
@@ -227,7 +246,7 @@ def main():
     for cargo, n in all_cargo_types.most_common(50):
         print(f"  {n:6,}x  {cargo}")
 
-    print(f"\n--- DISTRIBUCIÓN TIPO ACTO ---")
+    print("\n--- DISTRIBUCIÓN TIPO ACTO ---")
     for tipo, n in all_tipo_actos.most_common():
         print(f"  {n:6,}x  {tipo}")
 
@@ -236,19 +255,19 @@ def main():
         for name in long_names[:10]:
             print(f"  {name[:150]}...")
     else:
-        print(f"\n--- ✅ NOMBRES EMPRESA: todos <150 chars ---")
+        print("\n--- ✅ NOMBRES EMPRESA: todos <150 chars ---")
 
     if all_unknown:
         print(f"\n--- ⚠️  CARGOS NO CAPTURADOS ({len(all_unknown)}) ---")
         for pattern, n in all_unknown.most_common(30):
             print(f"  {n:4}x  {pattern}")
     else:
-        print(f"\n--- ✅ CARGOS: no se detectan patrones perdidos ---")
+        print("\n--- ✅ CARGOS: no se detectan patrones perdidos ---")
 
     if not long_names and not all_unknown:
-        print(f"\n✅ VALIDACIÓN OK — listo para relanzar batch")
+        print("\n✅ VALIDACIÓN OK — listo para relanzar batch")
     else:
-        print(f"\n⚠️  Revisar antes de relanzar")
+        print("\n⚠️  Revisar antes de relanzar")
 
 
 if __name__ == "__main__":

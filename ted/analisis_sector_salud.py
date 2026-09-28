@@ -31,11 +31,14 @@ from collections import defaultdict, Counter
 #  CONFIG
 # ======================================================================
 
-SARA_V2_PATH = Path("data/ted/crossval_sara_v2.parquet")
-SARA_V1_PATH = Path("data/ted/crossval_sara.parquet")
-TED_PATH = Path("data/ted/ted_es_can.parquet")
-PLACSP_PATH = Path("nacional/licitaciones_espana.parquet")
-OUTPUT_DIR = Path("data/ted")
+# Entradas = salidas de run_ted_crossvalidation.py (ted/crossval_sara*.parquet) y
+# el TED consolidado (ted/ted_es_can.parquet); rutas relativas al repo, no al cwd
+_REPO_DIR = Path(__file__).resolve().parent.parent
+SARA_V2_PATH = _REPO_DIR / "ted" / "crossval_sara_v2.parquet"
+SARA_V1_PATH = _REPO_DIR / "ted" / "crossval_sara.parquet"
+TED_PATH = _REPO_DIR / "ted" / "ted_es_can.parquet"
+PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_espana.parquet"
+OUTPUT_DIR = _REPO_DIR / "data" / "ted"
 
 # Patrones para detectar organos de salud
 HEALTH_PATTERNS = [
@@ -330,7 +333,8 @@ print(f"  3. ANALISIS CPV — SECTOR SALUD")
 print(f"{'='*70}")
 
 cpv_col = None
-for c in ['cpv', 'cpv_code', 'codigo_cpv']:
+# crossval_sara.parquet (run_ted_crossvalidation.py) trae el CPV de PLACSP como 'cpv_principal'
+for c in ['cpv_principal', 'cpv', 'cpv_code', 'codigo_cpv']:
     if c in df_health.columns:
         cpv_col = c
         break
@@ -503,7 +507,11 @@ individual_missing = len(health_missing_df) - n_lotes_contratos
 # Cobertura ajustada: matched + (missing_individual como missing real)
 # Los lotes cuentan como n_grupos contratos en TED, no como n contratos
 adjusted_missing = individual_missing + n_lotes_grupos
-adjusted_total = health_matched + adjusted_missing
+# El total ajustado solo cambia los lotes por grupos: los SARA no validados que no
+# cuentan como missing (negociado sin publicidad) siguen en el denominador, como
+# en la cobertura sin ajustar (antes se caían y la cobertura "ajustada" subía sin lotes)
+n_otros_no_validados = health_total - health_matched - len(health_missing_df)
+adjusted_total = health_matched + adjusted_missing + n_otros_no_validados
 adjusted_coverage = health_matched / max(adjusted_total, 1) * 100
 
 print(f"\n  Missing bruto salud:          {len(health_missing_df):,}")
@@ -557,7 +565,9 @@ def detect_ccaa(organ):
     organ_upper = str(organ).upper()
     for ccaa, patterns in ccaa_patterns.items():
         for pat in patterns:
-            if pat in organ_upper:
+            # Inicio de palabra (y '.' como comodín, p.ej. 'IB.SALUT'): como
+            # subcadena 'SAS' casaba con 'CASAS' y 'ARAGON' con 'TARRAGONA'
+            if re.search(r'\b' + pat, organ_upper):
                 return ccaa
     return 'Otros'
 
