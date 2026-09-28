@@ -73,7 +73,10 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - **643.462 menores 2014-2026**, con el mismo recuento por año que `minor-contract=true`, CIF en el 100 % y 2.651,8 M€ con IVA. Detalle en `docs/COBERTURA.md` §5.4.
     - Para publicarlo, el propietario ejecuta `euskadi/contratos_api_tramo.py` por tramos y `euskadi/terminar.sh` (unas 2 h con 4 procesos). Las ventanas completas no se vuelven a bajar.
   - **PLACSP para Elicita** (§3.3): hecho en la sesión (`docs/REGENERACION_ISSUE_6.md`). Falta el release en borrador, que tiene que crear el propietario con `publicar_release.py`: desde la sesión da 403.
-  - **Comunidad de Madrid**: los menores se vuelven a bajar con una copia de `descarga_contratacion_comunidad_madrid_v1.py` fuera del repo (`python <copia> menores`: 126 entidades, con subdivisión por importe al llegar a 50.000 filas).
+  - **Comunidad de Madrid: descarga hecha el 2026-09-28**, en el contenedor y sin publicar. Se hizo con una copia de `descarga_contratacion_comunidad_madrid_v1.py` fuera del repo (`python <copia> menores`: 126 entidades, subdividiendo por importe al llegar a 50.000 filas).
+    - 343 CSV y 2.794.757 filas, 5.103 de ellas repetidas entre consultas. NIF en el 99,999 %.
+    - Frente al publicado (2.563.527): 2015-2024 casi idénticos (difieren como mucho 135 filas al año; en 2020 hay 1 menos). 2025: 348.704 frente a 215.353. 2026: 127.001 nuevos.
+    - Pendiente: el portal anuncia 4.832.623 en total. Hay que ver si la diferencia son otros tipos de publicación o menores sin entidad (§3.3).
     - La ruta `Entidad Adjudicadora` del publicado es la jerarquía completa (`Consejería de Sanidad··>SERMAS··>…>Hospital…`). Para comparar con las 125 entidades del desplegable hay que usar el primer nivel.
   - **Galicia**: listado de menores sin detalle HTML, fuera del repo: `python galicia/scraper_galicia.py base --skip-lic --output $TRABAJO/galicia --log-path $TRABAJO/galicia/scraper.log --workers 3`. El portal tiene 1.775.090 menores y el publicado 1,64 M. Después, `merge` y contraste con el publicado.
   - **Extremadura: cerrado** (`scripts/ccaa_extremadura.py`, 71 tests en los dos pandas, 39 mutaciones detectadas, verificado en vivo). Pendiente:

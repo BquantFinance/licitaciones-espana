@@ -49,6 +49,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Catalunya | RPC (`contratos_registro`, Generalitat + locales + universidades; ventana móvil de 5 años) | 5 | 22 | 6.316 | 402.546 | 414.021 | 426.680 | 371.466 | 186.417 |
 | Catalunya | PSCP (`contractacio_menors`) | 1.424 | 1.913 | 2.387 | 20.550 | 24.107 | 27.085 | 34.079 | 49.207 |
 | Madrid | Comunidad (portal de contratación) | 206.629 | 174.992 | 171.760 | 164.473 | 320.026 | 439.322 | 384.677 | 215.353 |
+| Madrid | Comunidad, descarga del 2026-09-28 (sin publicar): 126 entidades, 2,79 M filas, NIF 99,999 % | 206.630 | 174.992 | 171.759 | 164.473 | 320.027 | 439.418 | 384.812 | 348.704 |
 | Madrid | Ayuntamiento (datos.madrid.es) | 7.857 | 8.772 | 6.152 | 6.753 | 6.566 | 5.719 | 5.535 | 4.730 |
 | Galicia | Xunta (contratosdegalicia) | 156.608 | 186.075 | 181.151 | 204.315 | 200.331 | 191.457 | 221.827 | 251.968 |
 | Andalucía | Junta (buscador; faltan ~41K del SAS) | 30.786 | 77.237 | 59.366 | 96.777 | 64.945 | 106.580 | 126.517 | 115.696 |
@@ -92,7 +93,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Andalucía | 75-85 % | = | 98 % | SAS ~41 mil (CSV del CKAN de la Junta, bloqueado desde la nube), 6 universidades, capitales y diputaciones de Granada y Huelva |
 | Castilla y León | Junta ~100 % | = | 99 % | Valladolid, León, Salamanca, Ponferrada; diputaciones de Burgos y Ávila. SACYL publica ~2,4 mil/año (probable caja fija, art. 63.4) |
 | Asturias | ~100 % del Principado hasta 2024 | = | 99,9 % combinando columnas | 2025-2026 bloqueado desde la nube; Gijón (64 mil con CIF desde 2018), Oviedo, Avilés |
-| Madrid | ~52 % (Comunidad) | ~100 % (nueva descarga en curso) | 99 % | Ayuntamientos de Alcalá, Fuenlabrada, Móstoles, Leganés, Parla; universidades |
+| Madrid | Comunidad: 2015-2024 completo (la descarga del 2026-09-28 cuadra con el publicado); faltaban 2025 (215 mil de 349 mil) y 2026 | 2025-2026 al día (+133 mil y +127 mil, descargados el 2026-09-28, sin publicar) | 99,999 % | Ayuntamientos de Alcalá, Fuenlabrada, Móstoles, Leganés, Parla; universidades |
 | Murcia | ~45 % | **~85-90 %** (SMS 2019-2025 hecho: +594 mil líneas) | 85-100 % (personas físicas enmascaradas) | UPCT, 14 ayuntamientos |
 | País Vasco | ~11 % con importe y NIF | **~98 %** (API `/contracts` descargada: 643.462 menores 2014-2026; falta publicarla) | 100 % | Bilbao y Donostia (PDF), Barakaldo (nada desde 2021) |
 | La Rioja | ~4 % | **~100 % del Gobierno** (CSV 2018-2026: `scripts/ccaa_la_rioja.py`, 350.967 filas, verificado en vivo) | 91,9 % válido; 8,1 % personas físicas enmascaradas | Universidad, empresas públicas, Parlamento, ~120 municipios |
@@ -455,7 +456,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 
 | Fuente | Órganos | Formato | Periodo | Vol./año | ¿Tenemos? | 1143 | Conf. | URL |
 |---|---|---|---|---|---|---|---|---|
-| Portal de Contratación CM | 125 entidades: consejerías, OOAA, SERMAS, Canal, Metro, RTVM, fundaciones | CSV de 18 col. con NIF (CAPTCHA) | ≤2017- | 340-440 mil (4.832.623 en total) | Parcial: el publicado tiene 2,53 M | No | A | contratos-publicos.comunidad.madrid/contratos |
+| Portal de Contratación CM | 125 entidades: consejerías, OOAA, SERMAS, Canal, Metro, RTVM, fundaciones | CSV de 18 col. con NIF (CAPTCHA) | ≤2017- | 340-440 mil (4.832.623 en total según el portal) | Sí: el publicado tiene 2,56 M; la descarga del 2026-09-28, 2,79 M (2015-2024 casi idénticos: difieren como mucho 135 filas al año; 2025 y 2026, nuevos). **Pendiente**: explicar la diferencia con los 4,83 M del portal (¿otros tipos de publicación o menores sin entidad?, §3.3) | No | A | contratos-publicos.comunidad.madrid/contratos |
 | datos.madrid.es | Ayuntamiento y OOAA | CSV/XLSX | 2015- | ~7 mil | Sí | 3,1 mil | A | datos.madrid.es |
 | PLACSP 1143 | 113 entes locales, fundaciones hospitalarias, empresas municipales | ATOM | 2018- | 23 mil | Sí (nacional) | — | A | sindicacion_1143 |
 | Alcalá, CKAN | Ayuntamiento | XLSX trimestral: informe contable ADO pasado de PDF (408 hojas), con NIF | 2024 | ~4,5 mil operaciones | No | 0 | A | opendata.ayto-alcaladehenares.es/dataset/contratos-menores |
