@@ -226,7 +226,11 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 - **Sin cubrir**, por orden de impacto en los menores:
   1. Comunidad de Madrid (~385 mil/año).
   2. Galicia (~220 mil/año).
-  3. Menores de la PSCP de Catalunya.
+- Los menores de la PSCP quedaron cubiertos el 2026-09-28. Pendientes que dejó su revisión:
+  - **Cobertura:** `totalElements` nunca pasa de 10.000, así que los órganos grandes (ICS, UPF…) desbordan la ventana. Quedan fuera del ámbito (ni se retiran ni se siembran) hasta que haya **segmentación por fecha**. `recuperar_hueco` nunca llega a ejecutarse con la API real.
+  - **Semilla:** con la clave por publicación no entran las versiones de febrero de 2026 de publicaciones que han cambiado desde entonces. La alternativa es tomar el publicado como primera descarga, comparando por contenido. Decisión del propietario.
+  - **Disco:** cada ejecución con cambios guarda en `_historico/` el crudo, las fases y la salida anteriores, y el crudo repite las filas de las fases. Una opción es dejar de escribir el crudo.
+  - **No usar el commit `d4aad7a`:** es una copia WIP que se hizo durante las pruebas de mutación y contiene un mutante. Los posteriores están bien.
 - El BORME quedó cubierto el 2026-09-28. Pendientes que dejó su revisión:
   - **Contra la regla 1 de §2:** el parser descarta desde siempre los cargos repetidos dentro de un mismo acto (misma persona y cargo; 119 filas en 47 PDF, sobre todo en actos concursales). Hay que conservarlos y marcarlos (`_repetido`), y adaptar los consumidores.
   - **Retención de `_historico/`:** cada ejecución que cambia las tablas crudas guarda una copia entera (del orden de GB). Hay que decidir cuántas se conservan.
@@ -251,7 +255,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | ~~`scripts/ccaa_asturias.py`~~ | **Hecho** (2026-09-28): CSV anuales en `raw/` con `guardar_version`, Parquet desde todas las versiones con `acumular` (comparando el texto publicado) y `--semilla` por (`year`, `Nº INSCRIPCION`). El portal no responde desde la nube: falta verificarlo en vivo (VPS) |
 | `galicia/scraper_galicia.py` | Caché SQLite y merge final |
 | ~~`scripts/ccaa_andalucia.py`~~ | **Hecho** (2026-09-28): `raw/` con `guardar_version`, `acumular` con ámbito (no se retira nada de consultas con el tope o incompletas), `--semilla` por `id_expediente`, reanudación y `procesar` sin red. Probado sin red con las 808.441 filas del publicado. El portal corta desde la nube: falta la prueba en vivo y la partición por mes del SAS |
-| `scripts/ccaa_cataluna_contratosmenores.py` | Acumular por registro. Al sembrar, quitar solo las 2,16M copias idénticas del publicado |
+| ~~`scripts/ccaa_cataluna_contratosmenores.py`~~ | **Hecho** (2026-09-28): fases, crudo y salida con `guardar_version`; `acumular` con ámbito por grupo (normales o agregadas) leído entero; `--semilla` por (`id`, `expedientId`), quitando solo las 2,16 M copias idénticas del publicado. Verificado en vivo (fases 500 y 1100). Pendiente: ver la lista de la PSCP más abajo |
 | `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Hecho**: capa cruda (`78d4f39`, `guardar_version`) y Parquet con todas las versiones (`1e28560`, `acumular`) |
 | `Euskadi/ccaa_euskadi.py` | La tabla de la API ya acumula (`consolidacion_euskadi.py`, `_en_ultima_descarga`). Falta revisar el refresco de los ficheros crudos que "siguen cambiando" |
 

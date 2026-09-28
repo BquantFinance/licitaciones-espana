@@ -472,7 +472,13 @@ catalunya/
 
 Dataset nuevo con **3.024.000 filas** de contratos menores del sector público catalán.
 
-> ⚠️ En el parquet publicado solo 868.063 filas son distintas: las otras 2.155.739 son copias idénticas de la misma publicación devuelta por varias consultas de fase (artefacto de la descarga, hasta 7 copias). Además la descarga se quedaba corta frente al dataset PSCP de Socrata (`ybgg-dgi6`): p.ej. 301.614 contratos menores agregados de 2025 frente a 529.780, ICS o UPF muy por debajo, por el tope de 20.000 resultados por consulta. El script ahora solo quita filas idénticas, recupera los segmentos incompletos y compara con el total de la API; los órganos más grandes necesitan una segmentación adicional por fecha (pendiente de verificar en vivo). En los parquet publicados se perdían los ceros a la izquierda de códigos postales e INE (`08002` → 8002) y el dataset `contractes-menors-a-generica` de Barcelona no se descargaba (slug erróneo); ambos corregidos.
+> ⚠️ En el parquet publicado solo 868.063 filas son distintas: las otras 2.155.739 son copias idénticas de la misma publicación devuelta por varias consultas de fase (artefacto de la descarga, hasta 7 copias). Además la descarga se quedaba corta frente al dataset PSCP de Socrata (`ybgg-dgi6`): p.ej. 301.614 contratos menores agregados de 2025 frente a 529.780, ICS o UPF muy por debajo, por el tope de 20.000 resultados por consulta. El script ahora solo quita filas idénticas.
+- **Límite de la API:** `totalElements` nunca pasa de 10.000, así que el total no sirve para saber si falta algo. Los segmentos incompletos se detectan cuando los órdenes ascendente y descendente no se solapan.
+- **Sin sesgo del superviviente:**
+  - Las fases, el crudo y la salida limpia se guardan con `guardar_version`.
+  - La salida limpia se acumula con `acumular`: lo retirado queda con `_en_ultima_descarga=False`, solo dentro del grupo (normales o agregadas) que se ha leído entero.
+  - `--semilla` añade, por (`id`, `expedientId`), lo que ya no se sirve.
+- **Pendiente:** los órganos más grandes (ICS, UPF…) desbordan la ventana y quedan fuera del ámbito hasta que haya segmentación por fecha. En los parquet publicados se perdían los ceros a la izquierda de códigos postales e INE (`08002` → 8002) y el dataset `contractes-menors-a-generica` de Barcelona no se descargaba (slug erróneo); ambos corregidos.
 
 
 - **43 columnas**: `id`, `titol`, `descripcio`, `pressupostLicitacio`, `pressupostAdjudicacio`, `organ`, `idOrgan`, `codiExpedient`, `expedientId`, `esPlacsp`, `esAgregatContractes`, `esAgregatEncarrecs`, `nomPublicacioAgregada` y `fasesVigents_<FASE>_{lotsActius,dataPublicacio,idPublicacio}` para 10 fases (no incluye nombre ni NIF del adjudicatario)
