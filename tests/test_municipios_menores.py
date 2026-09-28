@@ -559,7 +559,7 @@ def test_valladolid_solo_hojas_de_operaciones_y_trimestres_acumulados(portal, tm
     assert [(r["url"], r["estructurado"], r["motivo"]) for r in inventario if r["formato"] == "pdf"] == [
         (VLL_PDF, False, "PDF")]
     log = _log(tmp_path)
-    assert "no se cargan 2 hojas de resumen o auxiliares" in log and "Hoja1 (1 filas), MENOR-AREA (3 filas)" in log
+    assert "no se cargan 2 hojas de resumen o auxiliares" in log and "Hoja1 (2 filas), MENOR-AREA (3 filas)" in log
     assert "valladolid: 1 ficheros (PDF: 1)" in log
 
 
@@ -631,6 +631,28 @@ def test_leganes_url_nueva_del_mismo_fichero_es_una_version_nueva(portal, tmp_pa
     assert len(df) == 2 and df["_en_ultima_descarga"].all()                 # mismas filas: no se duplican
 
 
+def test_cada_url_conserva_su_ruta_local(portal, tmp_path):
+    """Una URL ya descargada sigue en su ruta aunque cambie el texto del enlace
+    (y con él el periodo), y un fichero nuevo con el mismo nombre que se enlaza
+    antes no la ocupa: lleva un hash de su URL."""
+    rel = "leganes/2024/Informe+julio+y+agosto+menores.xlsx"
+    portal.urls[M.URL_LEGANES] = pagina_leganes([(LEG_JULIO_AGOSTO, "Menores julio y agosto 2024")])
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 0
+    SLEEP_REAL(1.1)
+    otro = f"{L}/documents/113177/999999/Informe+julio+y+agosto+menores.xlsx/aa11?t=1"
+    portal.urls[otro] = _leganes("JULIO Y AGOSTO (OO.AA.)", 2024)
+    portal.urls[M.URL_LEGANES] = pagina_leganes([(otro, "Menores julio y agosto 2024 OO.AA."),
+                                                 (LEG_JULIO_AGOSTO, "Menores julio y agosto")])   # sin año
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 0
+
+    manifiesto = _manifiesto(tmp_path)
+    assert manifiesto[rel]["url"] == LEG_JULIO_AGOSTO and manifiesto[rel]["publicado"]
+    [nuevo] = [r for r in manifiesto if r != rel]
+    assert nuevo.startswith("leganes/2024/Informe+julio+y+agosto+menores__") and manifiesto[nuevo]["url"] == otro
+    df = _parquet(tmp_path, "leganes")
+    assert len(df) == 4 and df["_en_ultima_descarga"].all()                 # nada duplicado ni retirado
+
+
 def test_malaga_ckan_formato_preferido_y_periodo_del_titulo(portal, tmp_path, monkeypatch):
     monkeypatch.setattr(M, "FILAS_CKAN", 1)
     assert _ejecutar(tmp_path, "--municipio", "malaga") == 0
@@ -697,6 +719,29 @@ def test_xls_binario(tmp_path):
     df, _ = M.leer_tabla(ruta)
     assert df[["Num. Expe.", "Fecha Aprobación", "Importe", "_hoja", "_titulo_tabla"]].values.tolist() == [
         ["2018/002198", "2018-10-01", "10760.53", "PMD 4ºTR 2018", "PATRONATO DE DEPORTES"]]
+
+
+def test_cabecera_con_huecos_y_hoja_sin_cabecera_no_se_comen_el_primer_registro(tmp_path):
+    """Málaga, 2T 2017: 4 rótulos sobre 8 columnas (celdas combinadas); 3T 2021,
+    Hoja2: lista de códigos de área sin cabecera."""
+    ruta = tmp_path / "CONTRATOS_MENORES_2TRIMESTRE_2017.xlsx"
+    ruta.write_bytes(_xlsx({
+        "C.M.2trim2017": [
+            ["CONTRATOS MENORES TRAMITADOS EN EL SEGUNDO TRIMESTRE DE 2017"],
+            ["Expte.", None, "Descripción", None, None, "Total", None, "Tercero"],
+            [2017000395, 108, "SERVICIO DE DIFUSIÓN Y PUESTA EN VALOR DEL MUSEO DEL PATRIMONIO MUNICIPAL", "SV",
+             17900, 21659, "01   3335 22609", "FACTORÍA DE ARTE Y DESARROLLO S.L.U."],
+            [2017000416, 94, "SERVICIO ESTERILIZACIÓN PARA LOS ANIMALES EN ADOPCIÓN", "SV", 2999.99, 3629.99,
+             "21   3115 22706", "EMILIO GARCIA-MONCLUS DEL CASTILLO"]],
+        "Hoja2": [[19, "ALCALDÍA"], [22, "INFRAESTR. Y PROYECTOS"]]}))
+    df, avisos = M.leer_tabla(ruta)
+    cm = df[df["_hoja"] == "C.M.2trim2017"]
+    assert cm["Expte."].tolist() == ["2017000395", "2017000416"]
+    assert cm["Total"].tolist() == ["21659", "3629.99"] and cm["Unnamed: 4"].tolist() == ["17900", "2999.99"]
+    assert set(cm["_titulo_tabla"]) == {"CONTRATOS MENORES TRAMITADOS EN EL SEGUNDO TRIMESTRE DE 2017"}
+    codigos = df[df["_hoja"] == "Hoja2"]
+    assert codigos[["columna_1", "columna_2"]].values.tolist() == [["19", "ALCALDÍA"], ["22", "INFRAESTR. Y PROYECTOS"]]
+    assert any("[C.M.2trim2017]: 4 columnas con valores y sin nombre" in a for a in avisos)
 
 
 # ---------------------------------------------------------------------------

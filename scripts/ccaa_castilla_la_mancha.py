@@ -1235,15 +1235,17 @@ def _filas_previas(destino, rel):
     return tabla.select(llenas).to_pandas()
 
 
-def unir_partes(partes, destino):
+def unir_partes(partes, destino, previas=()):
     """Escribe `destino` con las partes (Parquet temporales, uno por fichero
-    crudo) en una sola tabla: la unión de sus columnas (las del portal por orden
-    de aparición y después las del script), nulas donde una parte no las trae.
-    Se escribe parte a parte (sin cargar todo en memoria) en un temporal que pasa
-    por guardar_version: la versión anterior del Parquet queda en _historico/."""
+    crudo) en una sola tabla: la unión de sus columnas, nulas donde una parte no
+    las trae. Las del Parquet anterior (`previas`) siguen en su orden (nunca se
+    pierde una columna, aunque esté vacía, y regenerar sin cambios da el mismo
+    fichero) y las nuevas van detrás por orden de aparición; al final, las del
+    script. Se escribe parte a parte (sin cargar todo en memoria) en un temporal
+    que pasa por guardar_version: la versión anterior queda en _historico/."""
     destino = Path(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
-    nombres = list(dict.fromkeys(c for parte in partes for c in pq.read_schema(parte).names))
+    nombres = list(dict.fromkeys(list(previas) + [c for parte in partes for c in pq.read_schema(parte).names]))
     orden = [c for c in nombres if c not in ORDEN_METADATOS] + [c for c in ORDEN_METADATOS if c in nombres]
     esquema = pa.schema([pa.field(c, pa.bool_() if c == "_en_ultima_descarga" else pa.string()) for c in orden])
     tmp = destino.with_name(f".{destino.name}.nuevo")
@@ -1333,6 +1335,7 @@ def construir_parquet(destino, ficheros, raw, manifiesto, resumen):
     destino = Path(destino)
     try:
         previos = _origenes_previos(destino)
+        columnas_previas = pq.read_schema(destino).names if destino.exists() else []
     except Exception as e:
         resumen.fallidos.append(f"{destino.name}: no se pudo leer el Parquet anterior ({e}); no se regenera")
         return None
@@ -1373,7 +1376,7 @@ def construir_parquet(destino, ficheros, raw, manifiesto, resumen):
             guardar_parte(grupo)
         if not partes:
             return None
-        estado, columnas = unir_partes(partes, destino)
+        estado, columnas = unir_partes(partes, destino, columnas_previas)
     resumen.parquets.append((destino.name, filas, columnas, retiradas))
     print(f"  💾 {destino.name}: {filas:,} filas ({estado})")
     return filas, columnas

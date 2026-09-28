@@ -692,6 +692,19 @@ def test_segunda_ejecucion_solo_lee_lo_que_se_ha_vuelto_a_comprobar(portal, tmp_
     assert len(sescam) == 2 and sescam["_en_ultima_descarga"].all()
 
 
+def test_regenerar_sin_cambios_no_crea_versiones_ni_pierde_columnas_vacias(portal, tmp_path):
+    # Una columna con cabecera y ningún valor (como OBSERVACIONES en el SESCAM)
+    portal.urls[f"{FICHEROS}2024-05/CM_PRIMER_TRIMESTRE_SESCAM.zip"] = _zip({
+        "a.xlsx": _xlsx({"Hoja1": [["Gerencia", "OBSERVACIONES", "Artículo"], ["G1", None, "X"]]}),
+        "b.xlsx": _xlsx({"Hoja1": [["Gerencia", "Importe"], ["G2", 5]]})})
+    assert _ejecutar(tmp_path, "--fuente", "jccm") == 0
+    antes = pq.read_schema(tmp_path / "sescam.parquet").names
+    assert antes[:4] == ["Gerencia", "OBSERVACIONES", "Artículo", "Importe"]
+    assert _ejecutar(tmp_path, "--solo-parquet") == 0
+    assert pq.read_schema(tmp_path / "sescam.parquet").names == antes
+    assert not (tmp_path / M.HISTORICO).exists()                  # ningún Parquet ha cambiado
+
+
 def test_fichero_que_ya_no_esta_en_raw_conserva_sus_filas(portal, tmp_path):
     assert _ejecutar(tmp_path) == 0
     antes = _parquet(tmp_path, "sescam")

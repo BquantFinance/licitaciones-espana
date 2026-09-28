@@ -393,9 +393,7 @@ def validar_contenido(ruta, tipo):
     if not cabeza.strip():
         return "respuesta vacía", False
     formato = formato_fichero(ruta)
-    if formato in ("html", "xml"):
-        return f"la respuesta es {formato.upper()}, no un fichero de datos", False
-    if formato not in TABULARES:
+    if formato not in TABULARES:           # p.ej. una página HTML de error servida con 200
         return f"la respuesta es {formato.upper()}, no una tabla", False
     if tipo in HOJAS_CALCULO and formato not in HOJAS_CALCULO or tipo in ("csv", "json") and formato != tipo:
         return f"se esperaba {tipo.upper()} y llegó {formato.upper()}", False
@@ -694,11 +692,16 @@ PATRON_DATO = re.compile(r"-?\d+(?:[.,]\d+)*|\d{4}-\d{2}-\d{2}(?:[ T][\d:.]+)?|[
                          re.IGNORECASE)
 
 
+def _es_dato(valor):
+    return valor is not None and bool(PATRON_DATO.fullmatch(str(valor).strip()))
+
+
 def _parece_registro(fila):
-    """¿La fila detectada como cabecera son datos? Lo son si la mayoría de sus
-    celdas con valor son números, fechas o NIF (una cabecera son rótulos)."""
+    """¿La fila detectada como cabecera son datos? Lo son si al menos la mitad
+    de sus celdas con valor son números, fechas o NIF (una cabecera son
+    rótulos): ['19', 'ALCALDÍA'] es la primera fila de una lista de códigos."""
     valores = [str(v).strip() for v in fila if v is not None and str(v).strip()]
-    return bool(valores) and sum(bool(PATRON_DATO.fullmatch(v)) for v in valores) * 2 > len(valores)
+    return bool(valores) and sum(bool(PATRON_DATO.fullmatch(v)) for v in valores) * 2 >= len(valores)
 
 
 def _tabla(filas, nombre, hoja, avisos):
@@ -714,6 +717,13 @@ def _tabla(filas, nombre, hoja, avisos):
     maximo = max(llenas)
     umbral = 1 if maximo < 2 else max(2, math.ceil(0.6 * maximo))
     pos = next((i for i, n in enumerate(llenas[:30]) if n >= umbral), 0)
+    # Cabecera con huecos (rótulos sobre celdas combinadas: 'Expte.', -, 'Descripción',
+    # -, -, 'Total'...) que no llega al umbral: si la fila elegida trae datos y la
+    # anterior son solo rótulos, la cabecera es la anterior (si no, el primer
+    # registro acabaría de cabecera)
+    if (pos > 0 and any(_es_dato(v) for v in filas[pos]) and llenas[pos - 1] >= 2
+            and not any(_es_dato(v) for v in filas[pos - 1])):
+        pos -= 1
     titulo = " | ".join(" ".join(str(v) for v in f if v is not None) for f in filas[:pos])
     ancho = max(len(f) for f in filas)
     cabecera = filas[pos] + [None] * (ancho - len(filas[pos]))
