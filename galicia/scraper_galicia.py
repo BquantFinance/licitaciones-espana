@@ -1088,10 +1088,11 @@ def paginate_cm_window(session, org_id, date_start, date_end, informe=None):
 def window_check(recs, date_start, date_end, informe):
     """Completa el informe de una ventana de CM (paginate_cm_window): 'fuera'
     (filas sin 'publicado' o con él fuera de la ventana), 'sin_id' y 'completa':
-    exactamente recordsFiltered filas, con id distinto y todas dentro de la
-    ventana (0 y 0 también: una ventana vacía coherente). paginate_cm_full solo
-    cuenta las ventanas completas como vueltas a leer, y ninguna si el
-    organismo entero responde vacío."""
+    exactamente recordsFiltered filas, con id distinto (una fila sin id no
+    cuenta en 'unicos') y todas dentro de la ventana (0 y 0 también: una
+    ventana vacía coherente). paginate_cm_full solo cuenta las ventanas
+    completas como vueltas a leer, y ninguna si el organismo entero responde
+    vacío."""
     fechas = parse_datetime_series(pd.Series([r.get("publicado") for r in recs], dtype=object)).dt.normalize()
     dentro = fechas.between(pd.Timestamp(date_start), pd.Timestamp(date_end))
     informe["fuera"] = int((~dentro).sum())
@@ -1104,7 +1105,6 @@ def window_check(recs, date_start, date_end, informe):
         filtrados is not None
         and informe["filas"] == informe["unicos"] == filtrados
         and not informe["fuera"]
-        and not informe["sin_id"]
     )
     return informe
 

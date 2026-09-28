@@ -1600,6 +1600,12 @@ class GaliciaHistoricoTests(unittest.TestCase):
             (out / scraper_galicia.DETAIL_DB_NAME).unlink()
             self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_2)[0], 0)
             without_cache = read_final(out).set_index("id")
+            # ...también con una caché que tiene un error donde la tabla tenía la ficha
+            conn = scraper_galicia.init_detail_db(out)
+            scraper_galicia.persist_detail_results(conn, [detail_cache_row("LIC", 824000, 48, "failed")])
+            conn.close()
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_2)[0], 0)
+            failed_cache = read_final(out).set_index("id")
 
         self.assertEqual(
             cache,
@@ -1616,6 +1622,7 @@ class GaliciaHistoricoTests(unittest.TestCase):
         self.assertEqual(merged.loc["824001", "detail_referencia"], "REF-NUEVA")
         self.assertEqual(set(merged["detail_status"]), {"done"})
         self.assertTrue(without_cache.equals(merged))
+        self.assertTrue(failed_cache.equals(merged))
 
     def test_detail_without_resume_keeps_cache_and_retries_exhausted_failures(self):
         portal = FakePortal(lic={48: fake_lic_records(2)})
@@ -1698,7 +1705,7 @@ class GaliciaHistoricoTests(unittest.TestCase):
                     portal, FECHA_1,
                 )
                 self.assertEqual(code, 1)
-                self.assertIn("es una salida de", stdout3)
+                self.assertIn("usa otra carpeta de salida", stdout3)
 
         self.assertIn("8 filas leídas → 4 añadidas", stdout)
         self.assertIn("2 filas de la semilla fuera del ámbito", stdout)
