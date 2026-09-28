@@ -130,7 +130,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | **En curso** (sesgo del superviviente) | — | — |
 | `galicia/scraper_galicia.py` | **En curso** (sesgo del superviviente) | — | — |
-| `scripts/ccaa_cataluna_contratosmenores.py` | **En curso** (sesgo del superviviente) | — | — |
+| `scripts/ccaa_cataluna_contratosmenores.py` | Cerrado (sin segmentación por fecha: los órganos grandes quedan fuera del ámbito) | `1fa7f01` | Sí (dos fases) |
 | `borme/scripts/*.py` | Cerrado | `38e72aa` | Sí (boe.es) |
 
 Avisos de la sesión del VPS (2026-09-28):
