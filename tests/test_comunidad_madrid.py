@@ -3252,3 +3252,19 @@ def test_cam_a_block_in_several_csvs_is_kept_as_the_present_copy_with_all_its_da
     assert sorted(df.index) == ["X-1", "Y-1"]
     assert df.loc["X-1", ["_archivo_fuente"] + META_CAM].tolist() == \
         ["menores_ent120_b.csv", _iso(DIA1), _iso(DIA2), "True"]
+
+
+def test_cam_the_parquet_bytes_do_not_depend_on_how_pandas_chunks_a_column(cam_dirs):
+    # pandas 3 gives the columns in Arrow chunks and pandas 2 in one piece: the
+    # output must be the same file (or switching pandas would add a version
+    # to _historico/). Enough distinct values to overflow Parquet's dictionary.
+    import pyarrow as pa
+    valores = [f"EXP-{i:07d}-{i * 7919 % 100003:06d}" for i in range(120_000)]
+    columnas = ["Nº Expediente", "_en_ultima_descarga"]
+    entera = pd.DataFrame({"Nº Expediente": pd.Series(valores, dtype=object), "_en_ultima_descarga": True})
+    troceada = pd.DataFrame({"Nº Expediente": pd.Series(pd.arrays.ArrowStringArray(
+        pa.chunked_array([valores[:1000], valores[1000:50_000], valores[50_000:]]))), "_en_ultima_descarga": True})
+    assert cam.escribir_salidas([("x.csv", entera)], columnas)["contratacion_comunidad_madrid_completo.parquet"] == "nuevo"
+    assert cam.escribir_salidas([("x.csv", troceada)], columnas) == {
+        "contratacion_comunidad_madrid_completo.csv": "sin_cambios",
+        "contratacion_comunidad_madrid_completo.parquet": "sin_cambios"}
