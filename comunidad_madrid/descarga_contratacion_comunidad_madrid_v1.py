@@ -1219,12 +1219,15 @@ def quitar_repetidos_entre_ficheros(partes):
     por orden de los CSV (o la primera, si ninguna lo está: así queda con
     _en_ultima_descarga=True si alguna lo está), con la _primera_descarga
     mínima y la _ultima_descarga máxima. Se compara columna a columna, sin
-    juntar la tabla (no cabría dos veces en memoria). Devuelve (partes sin
-    los bloques repetidos, nº de filas quitadas)."""
-    partes = [(nombre, p.reset_index(drop=True)) for nombre, p in partes]
+    juntar la tabla, y la lista `partes` se modifica en su sitio: cada parte
+    filtrada sustituye a la anterior, así la tabla no está dos veces en
+    memoria. Devuelve el nº de filas quitadas."""
+    for i, (nombre, p) in enumerate(partes):
+        if not isinstance(p.index, pd.RangeIndex) or p.index.start != 0:
+            partes[i] = (nombre, p.reset_index(drop=True))
     posiciones = _posiciones(partes)
     if posiciones[-1] == 0:
-        return partes, 0
+        return 0
     columnas = list(dict.fromkeys(c for _, p in partes for c in p.columns
                                   if c != ARCHIVO and c not in COLUMNAS_META))
     # Identificador de fila: igual solo si todas las columnas son iguales
@@ -1275,7 +1278,7 @@ def quitar_repetidos_entre_ficheros(partes):
     for i in np.flatnonzero(np.bincount(fichero, weights=sobra, minlength=len(partes)) > 0):
         nombre, p = partes[i]
         partes[i] = (nombre, p.loc[~sobra[posiciones[i]:posiciones[i + 1]]].reset_index(drop=True))
-    return partes, int(sobra.sum())
+    return int(sobra.sum())
 
 
 def ordenar_columnas(columnas):
@@ -1486,7 +1489,7 @@ def unificar_csvs(semillas=(), origen=ORIGEN_SEMILLA):
     # No por Nº Expediente + Referencia + Entidad (colapsaba lotes y todas las
     # filas de continuación) ni por filas idénticas (se perdían duplicados que
     # sirve el portal y continuaciones de otros contratos).
-    partes, quitadas = quitar_repetidos_entre_ficheros(partes)
+    quitadas = quitar_repetidos_entre_ficheros(partes)
     if quitadas:
         log.info(f"  Eliminadas {quitadas:,} filas de registros repetidos en dos CSV")
 

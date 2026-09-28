@@ -60,9 +60,9 @@ Sesgo del superviviente (docs/CONTINUACION.md, regla 3; comun/historico.py)
 - Pendiente: partir por mes de publicacion los segmentos del SAS que siguen por encima
   del tope (docs/COBERTURA.md, 4.2). No se ha podido verificar en vivo: el portal corta la
   conexion desde la nube de Claude Code.
-- Memoria, medida con las 808.441 filas del publicado reconstruidas como descargas: unos
-  2,5 GB al generar la salida desde una descarga, 3,2 GB al incorporar la siguiente y
-  1,8 GB al sembrar.
+- Memoria, medida con pandas 3 y las 808.441 filas del publicado reconstruidas como
+  descargas: 2,4 GB al generar la salida desde una descarga, 3,2 GB al incorporar la
+  siguiente y 1,8 GB al sembrar (con pandas 2 el texto va en objetos: algo mas).
 
 Semilla (--semilla; docs/CONTINUACION.md, regla 4)
 --------------------------------------------------
