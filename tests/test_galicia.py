@@ -129,14 +129,35 @@ PORTAL_DETAIL_TEMPLATE = """
 """
 
 
+EMPTY_DETAIL_HTML = """
+<html>
+  <head><title>Detalle procedemento: {n} - Contratos Públicos de Galicia</title></head>
+  <body><h2>Información del procedimiento</h2></body>
+</html>
+"""
+
+
 class FakePortal:
-    """contratosdegalicia.gal simulado: tablas DataTables LIC/CM + ficha HTML."""
+    """contratosdegalicia.gal simulado: tablas DataTables LIC/CM + ficha HTML.
+
+    Como el portal real (verificado en vivo el 2026-09-28): en CM recordsTotal es
+    el total del organismo y recordsFiltered el de la ventana de fechas.
+    fail_orgs: organismos cuya tabla responde 403 (salvo las sondas del
+    descubrimiento); empty_orgs: responden 0 registros (p. ej. sin contexto de
+    sesión); hidden_ids: filas que la paginación se salta aunque cuentan en
+    recordsFiltered; details: N de la ficha -> código HTTP de error, 'vacia' o
+    un texto que sustituye a la referencia (ficha cambiada).
+    """
 
     def __init__(self, lic=None, cm=None):
         self.lic = lic or {}
         self.cm = cm or {}
         self.requests = []
         self.lock = threading.Lock()
+        self.fail_orgs = set()
+        self.empty_orgs = set()
+        self.hidden_ids = set()
+        self.details = {}
 
     def __call__(self, session, method, url, params=None, data=None, timeout=None, headers=None, **kwargs):
         with self.lock:
@@ -155,6 +176,10 @@ class FakePortal:
             org_id = int(match.group(1))
             start = int(params["start"])
             length = int(params["length"])
+            if org_id in self.fail_orgs and length != 1:
+                response.status_code = 403
+                response.ok = False
+                return response
             if match.group(2) == "licitaciones":
                 rows = self.lic.get(org_id, [])
                 total = len(rows)
@@ -168,15 +193,28 @@ class FakePortal:
                     row for row in all_rows
                     if first <= date.fromisoformat(row["publicado"][:10]) <= last
                 ]
+            filtered = len(rows)
+            if org_id in self.empty_orgs:
+                rows, total, filtered = [], 0, 0
+            visible = [row for row in rows if row["id"] not in self.hidden_ids]
             response.json.return_value = {
                 "draw": int(params["draw"]),
                 "recordsTotal": total,
-                "recordsFiltered": total,
-                "data": [dict(row) for row in rows[start : start + length]],
+                "recordsFiltered": filtered,
+                "data": [dict(row) for row in visible[start : start + length]],
             }
             return response
         if method == "POST" and url.endswith("/licitacion"):
-            response.text = PORTAL_DETAIL_TEMPLATE.format(n=data["N"])
+            special = self.details.get(data["N"])
+            if isinstance(special, int):
+                response.status_code = special
+                response.ok = False
+            elif special == "vacia":
+                response.text = EMPTY_DETAIL_HTML.format(n=data["N"])
+            else:
+                response.text = PORTAL_DETAIL_TEMPLATE.format(n=data["N"])
+                if special:
+                    response.text = response.text.replace(f"REF-{data['N']}", special)
             return response
         if "resultadoIndex.jsp" in url or "consultaOrganismo.jsp" in url:
             response.text = "<html></html>"
@@ -1122,8 +1160,13 @@ class GaliciaScraperTests(unittest.TestCase):
         self.assertIn(("CM", "CM500000", "48"), payloads)
 
         # Final: 12 + 52 columnas (las 62 del README + adjudicaciones y campos extra en
-        # JSON), mismas filas, detalle mapeado.
-        self.assertEqual(len(final_text.columns), 64)
+        # JSON) y, al final, las 3 de control de comun/historico.py; mismas filas,
+        # detalle mapeado.
+        self.assertEqual(len(final_text.columns), 67)
+        self.assertEqual(
+            list(final_text.columns[-3:]), ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]
+        )
+        self.assertEqual(set(final_text["_en_ultima_descarga"]), {"True"})
         self.assertEqual(len(final_text), 380)
         self.assertEqual(set(final_text["detail_status"]), {"done"})
         final_by_key = final_text.set_index(["_tipo", "id"])
@@ -1164,6 +1207,526 @@ class GaliciaScraperTests(unittest.TestCase):
             if (m := re.search(r"/organismos/(\d+)/(\w+)/table", r["url"])) and r["params"]["length"] != "1"
         }
         self.assertEqual(scraped, {(2, "licitaciones"), (3, "contratosmenores")})
+
+
+# ── Sesgo del superviviente (comun/historico.py) ────────────────────────────
+
+FECHA_1 = "2026-01-01T00:00:00Z"
+FECHA_2 = "2026-02-01T00:00:00Z"
+FECHA_3 = "2026-03-01T00:00:00Z"
+FECHA_4 = "2026-04-01T00:00:00Z"
+META = ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]
+
+
+def run_at(argv, portal, fecha):
+    """run_main con la fecha de la descarga (y de las marcas) fijada."""
+    with patch.object(scraper_galicia, "iso_utc", return_value=fecha):
+        return run_main(argv, portal)
+
+
+def read_final(output_dir):
+    return pd.read_csv(
+        Path(output_dir) / scraper_galicia.FINAL_CSV_NAME,
+        sep=";",
+        encoding="utf-8-sig",
+        dtype=str,
+        keep_default_na=False,
+    )
+
+
+def historico(output_dir):
+    folder = Path(output_dir) / "_historico"
+    return sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
+
+
+def snapshot(output_dir):
+    """Bytes de los ficheros de datos de la carpeta de salida (sin _historico/)."""
+    return {
+        path.name: path.read_bytes()
+        for path in Path(output_dir).iterdir()
+        if path.is_file() and path.suffix in (".csv", ".parquet")
+    }
+
+
+def published_seed(path, rows):
+    """Parquet con el esquema del publicado v2026.02 (scraper antiguo): id e importe
+    int64 (importe sin el punto decimal: inflado), estado texto ('nan' en CM),
+    fechas datetime64 y el resto texto."""
+    df = pd.DataFrame(
+        {
+            "id": pd.array([row["id"] for row in rows], dtype="Int64"),
+            "objeto": [row.get("objeto", "Objeto") for row in rows],
+            "importe": [int(str(float(row["importe"])).replace(".", "")) for row in rows],
+            "estado": [row.get("estado", "nan") for row in rows],
+            "estadoDesc": [row.get("estadoDesc") for row in rows],
+            "publicado": pd.to_datetime([row["publicado"] for row in rows]),
+            "modificado": pd.to_datetime([row.get("modificado") for row in rows]),
+            "_organismo_id": pd.array([row["_organismo_id"] for row in rows], dtype="Int64"),
+            "_tipo": [row["_tipo"] for row in rows],
+            "nif": [row.get("nif") for row in rows],
+            "adjudicatario": [row.get("adjudicatario") for row in rows],
+            "duracion": [row.get("duracion") for row in rows],
+        }
+    )
+    df.to_parquet(path, index=False)
+    return path
+
+
+class GaliciaHistoricoTests(unittest.TestCase):
+    """Nada de lo descargado alguna vez se pierde (docs/CONTINUACION.md §2 y §3.2)."""
+
+    def test_withdrawn_contracts_stay_with_en_ultima_descarga_false(self):
+        lic = fake_lic_records(3)
+        cm = fake_cm_records(4)
+        portal = FakePortal(lic={48: list(lic)}, cm={48: list(cm)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            first = read_final(out)
+            # El portal retira una licitación y un contrato menor
+            portal.lic[48] = [r for r in lic if r["id"] != 824001]
+            portal.cm[48] = [r for r in cm if r["id"] != 500002]
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_2)[0], 0)
+            final = read_final(out)
+            hist = historico(out)
+            if scraper_galicia.HAS_PYARROW:
+                parquet = pd.read_parquet(out / scraper_galicia.FINAL_PARQUET_NAME)
+            else:
+                parquet = None
+
+        self.assertEqual(len(final), 7)
+        by_id = final.set_index("id")
+        for rid in ("824001", "500002"):
+            self.assertEqual(by_id.loc[rid, "_en_ultima_descarga"], "False")
+            self.assertEqual(by_id.loc[rid, "_primera_descarga"], FECHA_1)
+            self.assertEqual(by_id.loc[rid, "_ultima_descarga"], FECHA_1)
+            # La fila retirada sigue tal cual (listado y ficha)
+            antes = first.set_index("id").loc[rid].drop(META)
+            self.assertTrue(by_id.loc[rid].drop(META).equals(antes))
+        current = final[~final["id"].isin(["824001", "500002"])]
+        self.assertEqual(set(current["_en_ultima_descarga"]), {"True"})
+        self.assertEqual(set(current["_primera_descarga"]), {FECHA_1})
+        self.assertEqual(set(current["_ultima_descarga"]), {FECHA_2})
+        # Capa cruda y tabla anterior en _historico/
+        self.assertTrue(any(n.startswith("contratos_galicia_base__") and n.endswith(".csv") for n in hist))
+        self.assertTrue(any(n.startswith("contratos_galicia_base__") and n.endswith(".parquet") for n in hist))
+        self.assertTrue(any(n.startswith("contratos_galicia__") and n.endswith(".csv") for n in hist))
+        self.assertTrue(any(n.startswith("contratos_galicia__") and n.endswith(".parquet") for n in hist))
+        if parquet is not None:
+            self.assertEqual(str(parquet["_en_ultima_descarga"].dtype), "bool")
+            self.assertEqual(int((~parquet["_en_ultima_descarga"]).sum()), 2)
+
+    def test_changed_contract_keeps_the_previous_version(self):
+        lic = fake_lic_records(2)
+        cm = fake_cm_records(2)
+        portal = FakePortal(lic={48: list(lic)}, cm={48: list(cm)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            # La licitación pasa a formalizada: otro estado y otra fecha de modificación
+            portal.lic[48] = [
+                dict(lic[0], estado=5, estadoDesc="Formalizado", modificado="2025-03-01T09:00:00+0100"),
+                lic[1],
+            ]
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_2)[0], 0)
+            final = read_final(out)
+
+        self.assertEqual(len(final), 5)
+        versions = final[final["id"] == "824000"]
+        self.assertEqual(
+            versions[["estadoDesc", "_en_ultima_descarga", "_ultima_descarga"]].values.tolist(),
+            [["Adjudicado", "False", FECHA_1], ["Formalizado", "True", FECHA_2]],
+        )
+        self.assertEqual(versions["modificado"].tolist(), ["2024-12-01 10:30:00", "2025-03-01 09:00:00"])
+        # La ficha es la del contrato: la llevan las dos versiones
+        self.assertEqual(set(versions["detail_referencia"]), {"REF-824000"})
+        self.assertEqual(set(final.loc[final["id"] != "824000", "_en_ultima_descarga"]), {"True"})
+
+    def _three_orgs(self):
+        return FakePortal(
+            lic={2: fake_lic_records(3, first_id=700000), 48: fake_lic_records(2)},
+            cm={3: fake_cm_records(4, first_id=600000), 48: fake_cm_records(3)},
+        )
+
+    def test_single_org_run_does_not_withdraw_other_organismos(self):
+        portal = self._three_orgs()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_1)[0], 0)
+            self.assertEqual(len(read_final(out)), 12)
+            # El portal retira un contrato de cada organismo; solo se vuelve a leer el 3
+            portal.lic[2] = [r for r in portal.lic[2] if r["id"] != 700001]
+            portal.cm[3] = [r for r in portal.cm[3] if r["id"] != 600001]
+            portal.cm[48] = [r for r in portal.cm[48] if r["id"] != 500001]
+            self.assertEqual(run_at(cli_args(out, "--organismo", "3"), portal, FECHA_2)[0], 0)
+            final = read_final(out).set_index("id")
+
+        self.assertEqual(len(final), 12)
+        self.assertEqual(final.loc["600001", "_en_ultima_descarga"], "False")
+        for rid in ("700001", "500001"):
+            # Fuera del ámbito: siguen como estaban
+            self.assertEqual(final.loc[rid, "_en_ultima_descarga"], "True")
+            self.assertEqual(final.loc[rid, "_ultima_descarga"], FECHA_1)
+        self.assertEqual(set(final.loc[final["_organismo_id"] == "3", "_ultima_descarga"]), {FECHA_1, FECHA_2})
+        self.assertEqual(set(final.loc[final["_organismo_id"] == "2", "_ultima_descarga"]), {FECHA_1})
+
+    def test_skip_cm_run_neither_withdraws_cm_nor_duplicates_lic_written_otherwise(self):
+        portal = FakePortal(lic={48: fake_lic_records(2)}, cm={48: fake_cm_records(3)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            first = read_final(out)
+            portal.cm[48] = portal.cm[48][:1]
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48", "--skip-cm"), portal, FECHA_2)[0], 0)
+            base = pd.read_csv(out / scraper_galicia.BASE_CSV_NAME, sep=";", dtype=str, keep_default_na=False)
+            final = read_final(out)
+
+        # Con CM en el mismo organismo, 'estado' se escribía 4.0; solo con LIC, 4: es
+        # el mismo valor, no un contrato cambiado.
+        self.assertEqual(set(first.loc[first["_tipo"] == "LIC", "estado"]), {"4.0"})
+        self.assertEqual(set(base["estado"]), {"4"})
+        self.assertEqual(len(final), 5)
+        lic = final[final["_tipo"] == "LIC"]
+        self.assertEqual(set(lic["estado"]), {"4.0"})
+        self.assertEqual(set(lic["_ultima_descarga"]), {FECHA_2})
+        cm = final[final["_tipo"] == "CM"]
+        self.assertEqual(set(cm["_en_ultima_descarga"]), {"True"})
+        self.assertEqual(set(cm["_ultima_descarga"]), {FECHA_1})
+
+    def test_interrupted_run_withdraws_only_what_it_read_and_resume_completes_it(self):
+        portal = self._three_orgs()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_1)[0], 0)
+            portal.lic[2] = [r for r in portal.lic[2] if r["id"] != 700001]
+            portal.cm[48] = [r for r in portal.cm[48] if r["id"] != 500001]
+            portal.fail_orgs = {48}
+            # La descarga se corta en el organismo 48 (HTTP 403)
+            code, _ = run_at(cli_args(out, "base", "--max-org-id", "48"), portal, FECHA_2)
+            self.assertEqual(code, 1)
+            # Una descarga a medias sin acumular no deja empezar otra
+            code, stdout = run_at(cli_args(out, "base", "--max-org-id", "48"), portal, FECHA_3)
+            self.assertEqual(code, 1)
+            self.assertIn("todavía no está en contratos_galicia.csv", stdout)
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_3)[0], 0)
+            partial = read_final(out).set_index("id")
+            # Se reanuda sin el fallo: la misma descarga (misma fecha), ahora completa
+            portal.fail_orgs = set()
+            self.assertEqual(run_at(cli_args(out, "base", "--resume", "--max-org-id", "48"), portal, FECHA_4)[0], 0)
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_4)[0], 0)
+            final = read_final(out).set_index("id")
+            manifest = json.loads((out / scraper_galicia.BASE_PROGRESS_NAME).read_text(encoding="utf-8"))
+
+        self.assertEqual(partial.loc["700001", "_en_ultima_descarga"], "False")
+        self.assertEqual(partial.loc["500001", "_en_ultima_descarga"], "True")
+        self.assertEqual(partial.loc["500001", "_ultima_descarga"], FECHA_1)
+        self.assertEqual(set(partial.loc[partial["_organismo_id"] == "48", "_ultima_descarga"]), {FECHA_1})
+        self.assertEqual(final.loc["500001", "_en_ultima_descarga"], "False")
+        self.assertEqual(final.loc["500001", "_ultima_descarga"], FECHA_1)
+        vigentes = final[final["_en_ultima_descarga"] == "True"]
+        self.assertEqual(set(vigentes["_ultima_descarga"]), {FECHA_2})
+        self.assertEqual(len(final), 12)
+        self.assertEqual(manifest["fecha_descarga"], FECHA_2)
+        self.assertTrue(manifest["acumulada"])
+        self.assertEqual(sorted(manifest["ambito"]), ["2", "3", "48"])
+
+    def test_incomplete_window_does_not_withdraw_its_contracts(self):
+        portal = FakePortal(cm={3: fake_cm_records(4, first_id=600000)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "3"), portal, FECHA_1)[0], 0)
+            # La paginación se salta 600002, que el portal sigue contando (recordsFiltered);
+            # 600003 sí se ha retirado de verdad (su ventana llega completa).
+            portal.hidden_ids = {600002}
+            portal.cm[3] = [r for r in portal.cm[3] if r["id"] != 600003]
+            code, stdout = run_at(cli_args(out, "--organismo", "3"), portal, FECHA_2)
+            self.assertEqual(code, 0)
+            final = read_final(out).set_index("id")
+            manifest = json.loads((out / scraper_galicia.BASE_PROGRESS_NAME).read_text(encoding="utf-8"))
+
+        self.assertIn("ventana incompleta", stdout)
+        self.assertEqual(final.loc["600002", "_en_ultima_descarga"], "True")
+        self.assertEqual(final.loc["600002", "_ultima_descarga"], FECHA_1)
+        self.assertEqual(final.loc["600003", "_en_ultima_descarga"], "False")
+        scope = manifest["ambito"]["3"]
+        self.assertEqual(len(scope["CM"]), 2)
+        self.assertEqual(len(scope["CM_incompletas"]), 1)
+        self.assertEqual(scope["CM_incompletas"][0]["filtrados"], 1)
+        self.assertEqual(scope["CM_incompletas"][0]["filas"], 0)
+
+    def test_failed_or_empty_downloads_withdraw_nothing(self):
+        portal = self._three_orgs()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_1)[0], 0)
+            before = snapshot(out)
+            final_before = before[scraper_galicia.FINAL_CSV_NAME]
+
+            # 1. Falla el único organismo pedido: no hay descarga y la tabla no cambia
+            portal.fail_orgs = {48}
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_2)[0], 1)
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_2)[0], 1)
+            self.assertEqual((out / scraper_galicia.FINAL_CSV_NAME).read_bytes(), final_before)
+            # La descarga anterior no se ha perdido: está en _historico/
+            self.assertTrue(any(n.startswith("contratos_galicia_base__") for n in historico(out)))
+
+            # 2. El organismo responde vacío (0 registros): no se retira nada suyo
+            portal.fail_orgs = set()
+            portal.empty_orgs = {3}
+            code, _ = run_at(cli_args(out, "--organismo", "3"), portal, FECHA_3)
+            self.assertEqual(code, 1)  # sin ningún contrato no hay CSV base que acumular
+            self.assertEqual((out / scraper_galicia.FINAL_CSV_NAME).read_bytes(), final_before)
+
+            # 3. Descubrimiento completo con el 3 vacío: no se barre ni se retira
+            code, _ = run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_4)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+
+            # 4. Un CSV base solo con la cabecera no cambia la tabla
+            final_bytes = (out / scraper_galicia.FINAL_CSV_NAME).read_bytes()
+            (out / scraper_galicia.BASE_CSV_NAME).write_text(
+                ";".join(scraper_galicia.BASE_EXPORT_FIELDS) + "\n", encoding="utf-8-sig"
+            )
+            code, stdout = run_at(cli_args(out, "merge"), portal, FECHA_4)
+            self.assertEqual(code, 1)
+            self.assertIn("una descarga vacía no cambia la tabla final", stdout)
+            self.assertEqual((out / scraper_galicia.FINAL_CSV_NAME).read_bytes(), final_bytes)
+
+        org3 = final[final["_organismo_id"] == "3"]
+        self.assertEqual(len(org3), 4)
+        self.assertEqual(set(org3["_en_ultima_descarga"]), {"True"})
+        self.assertEqual(set(org3["_ultima_descarga"]), {FECHA_1})
+        self.assertEqual(set(final.loc[final["_organismo_id"] != "3", "_ultima_descarga"]), {FECHA_4})
+
+    def test_detail_cache_never_loses_a_downloaded_detail(self):
+        portal = FakePortal(lic={48: fake_lic_records(2)}, cm={48: fake_cm_records(2)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            # Al volver a pedirlas: error, ficha vacía y ficha cambiada
+            portal.details = {"824000": 404, "CM500000": "vacia", "824001": "REF-NUEVA"}
+            self.assertEqual(run_at(cli_args(out, "detail", "--force-detail"), portal, FECHA_2)[0], 0)
+            conn = scraper_galicia.init_detail_db(out)
+            cache = {
+                row["record_id"]: (row["status"], json.loads(row["mapped_json"])["detail_referencia"])
+                for row in conn.execute("SELECT record_id, status, mapped_json FROM detail_cache")
+            }
+            archived = [
+                (row["record_id"], json.loads(row["mapped_json"])["detail_referencia"])
+                for row in conn.execute("SELECT record_id, mapped_json FROM detail_cache_historico")
+            ]
+            conn.close()
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_2)[0], 0)
+            merged = read_final(out).set_index("id")
+            # Sin la caché (perdida o sustituida), la tabla final conserva las fichas
+            (out / scraper_galicia.DETAIL_DB_NAME).unlink()
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_2)[0], 0)
+            without_cache = read_final(out).set_index("id")
+
+        self.assertEqual(
+            cache,
+            {
+                "824000": ("done", "REF-824000"),
+                "824001": ("done", "REF-NUEVA"),
+                "500000": ("done", "REF-CM500000"),
+                "500001": ("done", "REF-CM500001"),
+            },
+        )
+        self.assertEqual(archived, [("824001", "REF-824001")])
+        self.assertEqual(merged.loc["824000", "detail_referencia"], "REF-824000")
+        self.assertEqual(merged.loc["500000", "detail_referencia"], "REF-CM500000")
+        self.assertEqual(merged.loc["824001", "detail_referencia"], "REF-NUEVA")
+        self.assertEqual(set(merged["detail_status"]), {"done"})
+        self.assertTrue(without_cache.equals(merged))
+
+    def test_detail_without_resume_keeps_cache_and_retries_exhausted_failures(self):
+        portal = FakePortal(lic={48: fake_lic_records(2)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            with patch("sys.stdout", new_callable=io.StringIO):
+                scraper_galicia.append_base_records(portal.lic[48] and [
+                    dict(r, _organismo_id=48, _tipo="LIC") for r in portal.lic[48]
+                ], out)
+            conn = scraper_galicia.init_detail_db(out)
+            scraper_galicia.persist_detail_results(conn, [
+                detail_cache_row("LIC", 824000, 48, "done"),
+                detail_cache_row("LIC", 824001, 48, "failed", attempts=scraper_galicia.DETAIL_MAX_ATTEMPTS),
+            ])
+            conn.close()
+            self.assertEqual(run_at(cli_args(out, "detail", "--resume"), portal, FECHA_1)[0], 0)
+            self.assertEqual(portal.calls("/licitacion", "POST"), [])
+            self.assertEqual(run_at(cli_args(out, "detail"), portal, FECHA_1)[0], 0)
+            conn = scraper_galicia.init_detail_db(out)
+            statuses = dict(conn.execute("SELECT record_id, status FROM detail_cache").fetchall())
+            conn.close()
+
+        # Sin --resume ya no se borra la caché: la 'done' sigue y la agotada se reintenta
+        self.assertEqual([c["data"]["N"] for c in portal.calls("/licitacion", "POST")], ["824001"])
+        self.assertEqual(statuses, {"824000": "done", "824001": "done"})
+
+    def test_seed_adds_only_missing_keys_of_the_run_scope(self):
+        lic = fake_lic_records(2)
+        cm = fake_cm_records(2)  # publicado 2018-01-01 y 2019-02-02
+        portal = FakePortal(lic={48: list(lic), 2: fake_lic_records(1, first_id=700000)}, cm={48: list(cm)})
+        seed_rows = [
+            # En la descarga (con el importe inflado del publicado): no se añade
+            dict(lic[0], _organismo_id=48, _tipo="LIC", estado="4.0"),
+            dict(cm[1], _organismo_id=48, _tipo="CM"),
+            # Retiradas por el portal, del ámbito de la descarga: se añaden
+            dict(lic[1], id=824009, _organismo_id=48, _tipo="LIC", estado="6.0", importe=129.18),
+            dict(cm[0], id=500007, _organismo_id=48, _tipo="CM", importe=674.78),
+            # Mismo id que una licitación descargada pero es un CM: otra clave
+            dict(cm[0], id=824000, _organismo_id=48, _tipo="CM", importe=82.5),
+            # CM de una ventana que ahora llega vacía y licitación de un organismo que
+            # no se ha vuelto a leer: fuera del ámbito, no se añaden
+            dict(cm[0], id=500008, _organismo_id=48, _tipo="CM", publicado="2023-06-01T00:00:00+0100"),
+            dict(lic[0], id=700005, _organismo_id=2, _tipo="LIC"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "contratos_galicia_publicado.parquet", seed_rows)
+            plain, seeded = tmp / "sin", tmp / "con"
+            self.assertEqual(run_at(cli_args(plain, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            code, stdout = run_at(cli_args(seeded, "--organismo", "48", "--semilla", str(seed)), portal, FECHA_1)
+            self.assertEqual(code, 0)
+            without_seed = read_final(plain)
+            final = read_final(seeded)
+            # Sembrar otra vez no añade nada ni cambia la tabla
+            before = snapshot(seeded)
+            self.assertEqual(run_at(cli_args(seeded, "merge", "--semilla", str(seed)), portal, FECHA_1)[0], 0)
+            self.assertEqual(snapshot(seeded), before)
+            self.assertEqual(historico(seeded), [])
+            parquet = pd.read_parquet(seeded / scraper_galicia.FINAL_PARQUET_NAME) if scraper_galicia.HAS_PYARROW else None
+
+            # Una salida de este script como semilla necesita --origen-semilla, y la
+            # semilla no puede ser la propia salida
+            if parquet is not None:
+                code, stdout2 = run_at(
+                    cli_args(plain, "merge", "--semilla", str(seeded / scraper_galicia.FINAL_PARQUET_NAME)),
+                    portal, FECHA_1,
+                )
+                self.assertEqual(code, 1)
+                self.assertIn("--origen-semilla", stdout2)
+                code, stdout3 = run_at(
+                    cli_args(plain, "merge", "--semilla", str(plain / scraper_galicia.FINAL_PARQUET_NAME)),
+                    portal, FECHA_1,
+                )
+                self.assertEqual(code, 1)
+                self.assertIn("es una salida de", stdout3)
+
+        self.assertIn("7 filas leídas → 3 añadidas", stdout)
+        # Las filas de la descarga no cambian (solo se añaden las columnas de la semilla)
+        download = final.iloc[: len(without_seed)]
+        self.assertTrue(download[without_seed.columns].equals(without_seed))
+        self.assertEqual(set(download["_origen"]), {""})
+        self.assertEqual(set(download[scraper_galicia.SEED_AMOUNT_COLUMN]), {""})
+        added = final.iloc[len(without_seed):]
+        self.assertEqual(
+            sorted(zip(added["_tipo"], added["id"])),
+            [("CM", "500007"), ("CM", "824000"), ("LIC", "824009")],
+        )
+        self.assertEqual(set(added["_origen"]), {"release v2026.02"})
+        self.assertEqual(set(added["_en_ultima_descarga"]), {"False"})
+        self.assertEqual(set(added["_primera_descarga"]) | set(added["_ultima_descarga"]), {""})
+        by_key = added.set_index(["_tipo", "id"])
+        # Importe inflado del publicado: fuera de 'importe'
+        self.assertEqual(by_key.loc[("LIC", "824009"), "importe"], "")
+        self.assertEqual(by_key.loc[("LIC", "824009"), scraper_galicia.SEED_AMOUNT_COLUMN], "12918")
+        self.assertEqual(by_key.loc[("CM", "500007"), scraper_galicia.SEED_AMOUNT_COLUMN], "67478")
+        self.assertEqual(by_key.loc[("LIC", "824009"), "estado"], "6.0")
+        self.assertEqual(by_key.loc[("CM", "500007"), "estado"], "")
+        self.assertEqual(by_key.loc[("CM", "500007"), "publicado"], "2018-01-01")
+        self.assertEqual(set(added["detail_status"]), {"missing"})
+        if parquet is not None:
+            self.assertEqual(str(parquet["_en_ultima_descarga"].dtype), "bool")
+            self.assertEqual(sorted(parquet[scraper_galicia.SEED_AMOUNT_COLUMN].dropna().tolist()), [825, 12918, 67478])
+            self.assertTrue(pd.api.types.is_datetime64_any_dtype(parquet["publicado"]))
+
+    def test_seed_does_not_duplicate_a_contract_already_withdrawn_in_the_table(self):
+        lic = fake_lic_records(2)
+        portal = FakePortal(lic={48: list(lic)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            out = tmp / "salida"
+            seed = published_seed(tmp / "publicado.parquet", [dict(lic[1], _organismo_id=48, _tipo="LIC", estado="4.0")])
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            portal.lic[48] = lic[:1]
+            self.assertEqual(
+                run_at(cli_args(out, "--organismo", "48", "--semilla", str(seed)), portal, FECHA_2)[0], 0
+            )
+            final = read_final(out)
+
+        # 824001 ya estaba (de la primera descarga, ahora retirada): no se vuelve a añadir
+        self.assertEqual(final["id"].tolist(), ["824000", "824001"])
+        self.assertEqual(final["_en_ultima_descarga"].tolist(), ["True", "False"])
+        self.assertEqual(set(final["_origen"]), {""})
+
+    def test_rerun_without_changes_writes_nothing_new(self):
+        portal = FakePortal(lic={48: fake_lic_records(2)}, cm={48: fake_cm_records(3)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            first = snapshot(out)
+            base_mtime = (out / scraper_galicia.BASE_CSV_NAME).stat().st_mtime
+            first_final = read_final(out)
+            # 1. merge otra vez (sin descarga nueva): no cambia nada
+            self.assertEqual(run_at(cli_args(out, "merge"), portal, FECHA_2)[0], 0)
+            self.assertEqual(snapshot(out), first)
+            self.assertEqual(historico(out), [])
+            # 2. Descarga nueva sin cambios en el portal: la capa cruda no cambia, no se
+            # piden fichas y la tabla solo actualiza _ultima_descarga
+            portal.requests.clear()
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_2)[0], 0)
+            second = snapshot(out)
+            posts = portal.calls("/licitacion", "POST")
+            final = read_final(out)
+            hist = historico(out)
+            self.assertEqual((out / scraper_galicia.BASE_CSV_NAME).stat().st_mtime, base_mtime)
+
+        for name in (scraper_galicia.BASE_CSV_NAME, scraper_galicia.BASE_PARQUET_NAME):
+            self.assertEqual(second[name], first[name])
+        self.assertEqual(posts, [])
+        self.assertFalse(any(n.startswith("contratos_galicia_base__") for n in hist))
+        self.assertEqual(len(final), len(first_final))
+        self.assertTrue(final.drop(columns="_ultima_descarga").equals(first_final.drop(columns="_ultima_descarga")))
+        self.assertEqual(set(final["_ultima_descarga"]), {FECHA_2})
+
+    def test_listing_fingerprint_compares_values_as_in_parquet(self):
+        rows = pd.DataFrame(
+            {
+                "id": ["1", "1.0", "1", "1", "1", "2"],
+                "estado": ["4", "4.0", "4", "4", "5", "4"],
+                "publicado": ["2024-01-15", "2024-01-15 00:00:00", "2024-01-16", "2024-01-15", "2024-01-15",
+                              "2024-01-15"],
+                "importe": ["10.5"] * 6,
+                "_organismo_id": ["48"] * 6,
+                "_tipo": ["LIC"] * 6,
+                "objeto": ["Obra"] * 6,
+            }
+        )
+        huella = scraper_galicia.listing_fingerprint(rows)
+        self.assertEqual(huella[0], huella[1])
+        self.assertEqual(len(set(huella[[0, 2, 4, 5]])), 4)
+        self.assertEqual(huella[0], huella[3])
+        # Un texto que no es número no se confunde con el vacío
+        extra = pd.DataFrame({"id": ["", "x"], "_tipo": ["CM", "CM"]})
+        a, b = scraper_galicia.listing_fingerprint(extra)
+        self.assertNotEqual(a, b)
+
+    def test_rows_in_scope_uses_complete_windows_by_publicado(self):
+        df = pd.DataFrame(
+            {
+                "_tipo": ["CM", "CM", "CM", "CM", "LIC", "LIC", "CM"],
+                "_organismo_id": ["3", "3", "3", "3", "3", "2", "48"],
+                "publicado": ["2026-01-01", "2026-03-31 00:00:00", "2025-12-31", "", "2020-01-01",
+                              "2020-01-01", "1999-01-01"],
+            }
+        )
+        scope = {"3": {"LIC": False, "CM": [["2026-01-01", "2026-03-31"]]}, "2": {"LIC": True}, "48": {"CM": "todo"}}
+        self.assertEqual(
+            scraper_galicia.rows_in_scope(df, scope).tolist(),
+            [True, True, False, False, False, True, True],
+        )
 
 
 if __name__ == "__main__":

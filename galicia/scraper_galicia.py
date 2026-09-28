@@ -1153,8 +1153,20 @@ def paginate_cm_full(session, org_id, informe=None):
         de = d_end.strftime("%Y-%m-%d")
         total_windows += 1
 
-        recs, reported = paginate_cm_window(session, org_id, ds, de)
+        window = {}
+        recs, reported = paginate_cm_window(session, org_id, ds, de, informe=window)
         reported_total = max(reported_total, reported)
+        window_check(recs, ds, de, window)
+        if window["completa"]:
+            complete_windows.append([ds, de])
+        elif window["filas"] or window["filtrados"]:
+            incomplete_windows.append(dict(window, desde=ds, hasta=de))
+            log_warn(
+                f"Org {org_id} CM [{ds}→{de}]: ventana incompleta (el portal declara "
+                f"{window['filtrados']}, llegan {window['filas']:,} filas, {window['unicos']:,} ids "
+                f"distintos, {window['fuera']:,} fuera de la ventana y {window['sin_id']:,} sin id): "
+                "sus contratos no se dan por retirados en esta descarga"
+            )
 
         new_recs = []
         for r in recs:
@@ -1187,6 +1199,12 @@ def paginate_cm_full(session, org_id, informe=None):
             f"Org {org_id} CM: DESAJUSTE el portal declara {reported_total:,} y las ventanas "
             f"[{DATE_ORIGIN} → {date_end}] devuelven {len(all_recs):,} únicos"
         )
+    if informe is not None:
+        informe["CM"] = {
+            "declarados": reported_total,
+            "ventanas": complete_windows,
+            "incompletas": incomplete_windows,
+        }
 
     for r in all_recs:
         r["_organismo_id"] = org_id
@@ -1198,35 +1216,152 @@ def paginate_cm_full(session, org_id, informe=None):
 # BASE SCRAPE PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def remove_if_exists(path):
-    path = Path(path)
-    if path.exists():
-        path.unlink()
+def iso_utc(momento=None):
+    """Fecha ISO 8601 en UTC al segundo ('2026-09-28T06:20:15Z'), ordenable como texto."""
+    momento = momento or datetime.now(timezone.utc)
+    return momento.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def prepare_base_outputs(output_dir, resume=False):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if resume:
-        return
-    remove_if_exists(output_dir / BASE_CSV_NAME)
-    remove_if_exists(output_dir / BASE_PARQUET_NAME)
-    remove_if_exists(output_dir / BASE_PROGRESS_NAME)
+def file_date_iso(path):
+    """Fecha de modificación de un fichero (iso_utc)."""
+    return iso_utc(datetime.fromtimestamp(Path(path).stat().st_mtime, timezone.utc))
+
+
+def read_base_manifest(output_dir):
+    """Contenido del progreso/manifiesto de la descarga base ({} si no hay o no se lee)."""
+    path = Path(output_dir) / BASE_PROGRESS_NAME
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def prepare_detail_outputs(output_dir, resume=False):
+    """Carpeta de salida del detalle. La caché SQLite nunca se borra (antes, sin
+    --resume se borraba entera y se perdía todo el detalle ya descargado)."""
+    del resume
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+
+def start_base_download(output_dir):
+    """Empieza una descarga base nueva (sin --resume) sin perder la anterior.
+
+    Si la descarga anterior (con manifiesto) aún no está en la tabla final, no se
+    empieza (ScraperError): hay que ejecutar antes 'merge' o seguirla con
+    --resume. El CSV y el Parquet base anteriores pasan a _historico/ (archivar)
+    y se anotan en el manifiesto para que publish_base, si la descarga nueva
+    resulta idéntica, devuelva la anterior a su sitio. Devuelve el manifiesto.
+    """
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if resume:
+    base_csv = output_dir / BASE_CSV_NAME
+    previous = read_base_manifest(output_dir)
+    if base_csv.exists():
+        if previous.get("fecha_descarga") and not previous.get("acumulada"):
+            raise ScraperError(
+                f"La descarga base del {previous['fecha_descarga']} ({base_csv}) todavía no está en "
+                f"{FINAL_CSV_NAME}: ejecuta antes 'merge' (o termina esa descarga con 'base --resume'). "
+                "Así ninguna descarga se queda fuera de la tabla final."
+            )
+        if not previous.get("fecha_descarga"):
+            log_warn(
+                f"{base_csv.name} sin manifiesto (versión anterior del scraper): no se sabe si ya está en "
+                f"{FINAL_CSV_NAME}; se guarda en {base_csv.parent / '_historico'}"
+            )
+    apartadas = {}
+    for name in (BASE_CSV_NAME, BASE_PARQUET_NAME):
+        path = output_dir / name
+        if path.exists():
+            apartadas[name] = str(archivar(path))
+            log(f"Descarga base anterior: {name} → {apartadas[name]}")
+    return {"fecha_descarga": iso_utc(), "ambito": {}, "acumulada": False, "apartadas": apartadas}
+
+
+def resume_base_manifest(output_dir):
+    """Manifiesto de la descarga que se reanuda (--resume). Un progreso de una
+    versión anterior del scraper no tiene fecha ni ámbito: la fecha es la del CSV
+    base y el ámbito de sus organismos se deduce al acumular (merge)."""
+    output_dir = Path(output_dir)
+    manifest = read_base_manifest(output_dir)
+    if manifest.get("fecha_descarga"):
+        manifest.setdefault("ambito", {})
+        manifest.setdefault("apartadas", {})
+        return manifest
+    base_csv = output_dir / BASE_CSV_NAME
+    return {
+        "fecha_descarga": file_date_iso(base_csv) if base_csv.exists() else iso_utc(),
+        "ambito": {},
+        "acumulada": False,
+        "apartadas": {},
+    }
+
+
+def scope_from_report(informe):
+    """Ámbito de un organismo (manifiesto) a partir de lo que ha informado su
+    paginación: LIC si está completa y CM con sus ventanas completas y no vacías
+    (window_check), más el diagnóstico de las incompletas."""
+    scope = {}
+    lic = informe.get("LIC")
+    if lic is not None:
+        scope["LIC"] = bool(lic.get("completo"))
+        scope["LIC_informe"] = {k: lic[k] for k in ("declarados", "filas", "unicos")}
+    cm = informe.get("CM")
+    if cm is not None:
+        scope["CM"] = list(cm.get("ventanas") or [])
+        if cm.get("incompletas"):
+            scope["CM_incompletas"] = [
+                {k: w.get(k) for k in ("desde", "hasta", "filtrados", "filas", "unicos", "fuera", "sin_id")}
+                for w in cm["incompletas"]
+            ]
+    return scope
+
+
+def close_version(path, apartada):
+    """guardar_version para un fichero escrito en su sitio después de apartar
+    (archivar) la versión anterior: si es idéntico a ella, la anterior vuelve a
+    su sitio con su fecha y no queda nada nuevo en _historico/ ('sin_cambios');
+    si cambió, la anterior se queda en _historico/ ('actualizado'); sin
+    anterior, 'nuevo'."""
+    path = Path(path)
+    if not apartada or not Path(apartada).exists():
+        return "nuevo"
+    if path.exists() and filecmp.cmp(path, apartada, shallow=False):
+        os.replace(apartada, path)
+        return "sin_cambios"
+    return "actualizado"
+
+
+def publish_base(output_dir, manifest, label="[BASE FINAL] "):
+    """Cierra la versión del CSV base (close_version) y genera su Parquet
+    (csv_to_parquet, con guardar_version). Devuelve la ruta del Parquet o None."""
+    output_dir = Path(output_dir)
+    base_csv = output_dir / BASE_CSV_NAME
+    apartadas = manifest.get("apartadas") or {}
+    if not base_csv.exists():
+        log_warn(f"{label}Sin {BASE_CSV_NAME}: la descarga no ha traído ningún contrato.")
+        return None
+    state = close_version(base_csv, apartadas.get(BASE_CSV_NAME))
+    log(f"{label}{BASE_CSV_NAME}: {state}")
+    parquet_path = finalize_base_parquet(output_dir, label=label)
+    if parquet_path:
+        state = close_version(parquet_path, apartadas.get(BASE_PARQUET_NAME))
+        log(f"{label}{BASE_PARQUET_NAME}: {state}")
+    return parquet_path
+
+
+def mark_base_accumulated(output_dir, fecha):
+    """Anota en el manifiesto que la descarga base ya está en la tabla final."""
+    path = Path(output_dir) / BASE_PROGRESS_NAME
+    manifest = read_base_manifest(output_dir)
+    if not manifest.get("fecha_descarga"):
         return
-    remove_if_exists(output_dir / DETAIL_DB_NAME)
-
-
-def prepare_final_outputs(output_dir):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    remove_if_exists(output_dir / FINAL_CSV_NAME)
-    remove_if_exists(output_dir / FINAL_PARQUET_NAME)
+    manifest["acumulada"] = True
+    manifest["acumulada_en"] = iso_utc()
+    manifest["fecha_acumulada"] = fecha
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(compact_json(manifest), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def run_base_scrape(
@@ -1240,8 +1375,16 @@ def run_base_scrape(
     resume=False,
     autosave_every=AUTOSAVE_EVERY,
 ):
-    prepare_base_outputs(output_dir, resume=resume)
-    completed_orgs, previous_stats = load_base_resume(output_dir) if resume else (set(), {})
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if resume:
+        completed_orgs, previous_stats = load_base_resume(output_dir)
+        manifest = resume_base_manifest(output_dir)
+    else:
+        manifest = start_base_download(output_dir)
+        completed_orgs, previous_stats = set(), {}
+    manifest["opciones"] = {"organismo": organismo, "skip_cm": skip_cm, "skip_lic": skip_lic}
+    log(f"Descarga base del {manifest['fecha_descarga']}")
 
     if organismo:
         org_list = [(organismo, None, None)]
@@ -1265,29 +1408,34 @@ def run_base_scrape(
     }
     # Checkpoint inicial: fija el tamaño del CSV base antes del primer organismo
     # para poder recortar también un corte durante su escritura.
-    save_base_progress(output_dir, completed_orgs, stats=stats)
+    save_base_progress(output_dir, completed_orgs, stats=stats, manifest=manifest)
     for idx, (org_id, est_cm, est_lic) in enumerate(pending_orgs, start=1):
         org_records = []
+        report = {}
         log(f"{'═'*60}")
         log(f"BASE organismo {org_id} ({idx}/{len(pending_orgs)})")
         log(f"{'═'*60}")
 
         if not skip_lic and (est_lic is None or est_lic > 0):
-            recs = paginate_lic(session, org_id)
+            recs = paginate_lic(session, org_id, informe=report)
             org_records.extend(recs)
             stats["lic_total"] += len(recs)
             stats["records_total"] += len(recs)
 
         if not skip_cm and (est_cm is None or est_cm > 0):
-            recs = paginate_cm_full(session, org_id)
+            recs = paginate_cm_full(session, org_id, informe=report)
             org_records.extend(recs)
             stats["cm_total"] += len(recs)
             stats["records_total"] += len(recs)
 
         append_base_records(org_records, output_dir, label=f"[BASE ORG {org_id}] ")
         completed_orgs.add(org_id)
+        # Lo que se ha vuelto a leer completo de este organismo (ámbito de la
+        # descarga): con él merge decide qué contratos se dan por retirados.
+        manifest["ambito"][str(org_id)] = scope_from_report(report)
+        manifest["acumulada"] = False
         stats["completed_orgs_count"] = len(completed_orgs)
-        save_base_progress(output_dir, completed_orgs, stats=stats)
+        save_base_progress(output_dir, completed_orgs, stats=stats, manifest=manifest)
 
         if idx % autosave_every == 0:
             log(f"BASE checkpoint {idx}/{len(pending_orgs)} organismos.")
@@ -1299,8 +1447,8 @@ def run_base_scrape(
         )
         print()
 
-    save_base_progress(output_dir, completed_orgs, stats=stats)
-    base_parquet_path = finalize_base_parquet(output_dir, label="[BASE FINAL] ")
+    save_base_progress(output_dir, completed_orgs, stats=stats, manifest=manifest)
+    base_parquet_path = publish_base(output_dir, manifest, label="[BASE FINAL] ")
     return {
         "base_csv_path": str(Path(output_dir) / BASE_CSV_NAME),
         "base_parquet_path": str(base_parquet_path) if base_parquet_path else None,
@@ -1426,14 +1574,17 @@ def save_csv(records, path, label=""):
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False, encoding="utf-8-sig", sep=";")
+    # guardar_version: si ya existía y cambia, la versión anterior va a _historico/
+    tmp_path = path.with_name(f".{path.name}.nuevo")
+    df.to_csv(tmp_path, index=False, encoding="utf-8-sig", sep=";")
+    state = guardar_version(path, desde=tmp_path)
     mb = path.stat().st_size / 1024 / 1024
 
     n_cm = len(df[df["_tipo"] == "CM"]) if "_tipo" in df.columns else 0
     n_lic = len(df[df["_tipo"] == "LIC"]) if "_tipo" in df.columns else 0
     n_orgs = df["_organismo_id"].nunique() if "_organismo_id" in df.columns else 0
 
-    log(f"{label}CSV: {path}")
+    log(f"{label}CSV: {path} ({state})")
     log(f"{label}  {len(df):,} filas ({mb:.1f} MB) | CM: {n_cm:,} | LIC: {n_lic:,} | Orgs: {n_orgs}")
 
     if "importe" in df.columns:
@@ -1455,9 +1606,11 @@ def save_parquet(df, path, label=""):
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False, engine="pyarrow")
+    tmp_path = path.with_name(f".{path.name}.nuevo")
+    df.to_parquet(tmp_path, index=False, engine="pyarrow")
+    state = guardar_version(path, desde=tmp_path)
     mb = path.stat().st_size / 1024 / 1024
-    log(f"{label}Parquet: {path}")
+    log(f"{label}Parquet: {path} ({state})")
     log(f"{label}  {len(df):,} filas ({mb:.1f} MB)")
     return path
 
@@ -1471,14 +1624,20 @@ PARQUET_DATE_COLUMNS = (
     "detail_fecha_formalizacion",
 )
 # Códigos con pinta de número que deben seguir siendo texto (hay NIF/NIPC
-# puramente numéricos de empresas portuguesas, CPs, teléfonos...).
+# puramente numéricos de empresas portuguesas, CPs, teléfonos...). Las fechas
+# de control (_primera_descarga, _ultima_descarga) y _origen son texto.
 PARQUET_TEXT_COLUMNS = (
     "nif",
     "detail_referencia",
     "detail_cp",
     "detail_telefono",
     "detail_fax",
+    "_primera_descarga",
+    "_ultima_descarga",
+    "_origen",
 )
+# Booleanas: en el CSV, 'True' / 'False'.
+PARQUET_BOOL_COLUMNS = ("_en_ultima_descarga",)
 
 
 def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSIZE):
@@ -1488,7 +1647,9 @@ def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSI
 
     1ª pasada: tipo estable por columna mirando TODO el CSV (numérica solo si
     todos sus valores lo son, como haría un read_csv completo). 2ª pasada:
-    convierte cada chunk a ese esquema y lo escribe.
+    convierte cada chunk a ese esquema y lo escribe. Se publica con
+    guardar_version: si el Parquet ya existía y cambia, el anterior va a
+    _historico/; si es idéntico no se toca.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -1513,7 +1674,7 @@ def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSI
         if columns is None:
             columns = list(chunk.columns)
             for column in columns:
-                if column not in PARQUET_DATE_COLUMNS and column not in PARQUET_TEXT_COLUMNS:
+                if column not in PARQUET_DATE_COLUMNS + PARQUET_TEXT_COLUMNS + PARQUET_BOOL_COLUMNS:
                     numeric[column] = integer[column] = True
         total_rows += len(chunk)
         for column in numeric:
@@ -1533,6 +1694,8 @@ def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSI
     for column in columns:
         if column in PARQUET_DATE_COLUMNS:
             fields.append(pa.field(column, pa.timestamp("ns")))
+        elif column in PARQUET_BOOL_COLUMNS:
+            fields.append(pa.field(column, pa.bool_()))
         elif integer.get(column):
             fields.append(pa.field(column, pa.int64()))
         elif numeric.get(column):
@@ -1543,18 +1706,24 @@ def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSI
 
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = parquet_path.with_name(parquet_path.name + ".tmp")
-    with pq.ParquetWriter(tmp_path, schema) as writer:
-        for chunk in read_chunks():
-            for column in columns:
-                if column in PARQUET_DATE_COLUMNS:
-                    chunk[column] = parse_datetime_series(chunk[column])
-                elif numeric.get(column):
-                    chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
-            writer.write_table(pa.Table.from_pandas(chunk, schema=schema, preserve_index=False))
-    tmp_path.replace(parquet_path)
+    try:
+        with pq.ParquetWriter(tmp_path, schema) as writer:
+            for chunk in read_chunks():
+                for column in columns:
+                    if column in PARQUET_DATE_COLUMNS:
+                        chunk[column] = parse_datetime_series(chunk[column])
+                    elif column in PARQUET_BOOL_COLUMNS:
+                        chunk[column] = chunk[column].map({"True": True, "False": False}).astype(object)
+                    elif numeric.get(column):
+                        chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
+                writer.write_table(pa.Table.from_pandas(chunk, schema=schema, preserve_index=False))
+        state = guardar_version(parquet_path, desde=tmp_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
     mb = parquet_path.stat().st_size / 1024 / 1024
-    log(f"{label}Parquet: {parquet_path}")
+    log(f"{label}Parquet: {parquet_path} ({state})")
     log(f"{label}  {total_rows:,} filas ({mb:.1f} MB)")
     return parquet_path
 
@@ -1618,16 +1787,20 @@ def finalize_base_parquet(output_dir, label=""):
     return csv_to_parquet(base_csv_path, base_parquet_path, label=label)
 
 
-def save_base_progress(output_dir, completed_orgs, stats=None):
+def save_base_progress(output_dir, completed_orgs, stats=None, manifest=None):
+    """Checkpoint de la descarga base. manifest (run_base_scrape): fecha de la
+    descarga, ámbito por organismo, si ya está en la tabla final y las versiones
+    anteriores apartadas en _historico/ (ver start_base_download)."""
     progress_path = Path(output_dir) / BASE_PROGRESS_NAME
     csv_path = Path(output_dir) / BASE_CSV_NAME
-    progress = {
+    progress = dict(manifest or {})
+    progress.update({
         "saved_at": datetime.now().isoformat(),
         "completed_orgs": sorted(completed_orgs),
         # Tamaño del CSV base que solo contiene organismos completos: al reanudar
         # se recorta lo escrito después (organismo cortado o sin checkpoint).
         "base_csv_bytes": csv_path.stat().st_size if csv_path.exists() else 0,
-    }
+    })
     if stats:
         progress["stats"] = stats
     # Escritura atómica: un JSON a medio escribir dejaba --resume sin organismos
@@ -1738,6 +1911,34 @@ def init_detail_db(output_dir):
     }
     if "raw_gzip" not in existing_columns:
         conn.execute("ALTER TABLE detail_cache ADD COLUMN raw_gzip BLOB")
+    # Fichas 'done' que el portal ha cambiado después: la versión anterior se
+    # guarda aquí antes de sustituirla (persist_detail_results); nunca se borra.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS detail_cache_historico (
+            record_type TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            organismo_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            last_http_status INTEGER,
+            updated_at TEXT NOT NULL,
+            detail_url TEXT,
+            page_title TEXT,
+            html_sha256 TEXT,
+            mapped_json TEXT,
+            raw_gzip BLOB,
+            archived_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_detail_historico_clave
+        ON detail_cache_historico (record_type, record_id, organismo_id)
+        """
+    )
     conn.commit()
     return conn
 
@@ -1795,7 +1996,12 @@ def iter_detail_batches(
     only_org_id=None,
     retryable_only=False,
     retryable_ignore_max_attempts=False,
+    ignore_max_attempts=False,
 ):
+    """Lotes (por organismo) de registros del CSV base cuyo detalle hay que pedir:
+    los que no están en la caché, los que no están 'done' (hasta
+    DETAIL_MAX_ATTEMPTS intentos, salvo ignore_max_attempts: 'detail' sin
+    --resume) y, con force, también los 'done'."""
     batch = []
     current_org = None
 
@@ -1822,7 +2028,7 @@ def iter_detail_batches(
                 continue
             if cached["status"] == "done":
                 continue
-            if cached["attempts"] >= DETAIL_MAX_ATTEMPTS:
+            if cached["attempts"] >= DETAIL_MAX_ATTEMPTS and not ignore_max_attempts:
                 continue
             record["_detail_attempts"] = cached["attempts"]
             todo.append(record)
@@ -1951,9 +2157,83 @@ def fetch_detail_batch(
     return results
 
 
+def _detail_has_content(row):
+    """Si una ficha 'done' de la caché trae algún par o tabla (no está vacía)."""
+    try:
+        mapped = json.loads(row.get("mapped_json") or "{}")
+    except ValueError:
+        return False
+    return bool(mapped.get("detail_pairs_count") or mapped.get("detail_tables_count"))
+
+
+def _raw_bytes(value):
+    return None if value is None else bytes(value)
+
+
 def persist_detail_results(conn, results):
+    """Guarda en la caché los resultados de fetch_detail_batch sin perder nunca
+    una ficha ya descargada:
+
+    - una ficha 'done' no se sustituye por un error (retryable/failed) ni por
+      una ficha vacía (sin pares ni tablas): se conserva la anterior;
+    - si el portal la ha cambiado (otro mapped_json o crudo), la anterior pasa
+      a detail_cache_historico antes de guardar la nueva.
+
+    Devuelve {'conservadas': n, 'archivadas': n}.
+    """
+    counts = {"conservadas": 0, "archivadas": 0}
     if not results:
-        return
+        return counts
+    existing = query_detail_rows(
+        conn,
+        [
+            {"_tipo": r["record_type"], "id": r["record_id"], "_organismo_id": r["organismo_id"]}
+            for r in results
+        ],
+    )
+    to_write = []
+    to_archive = []
+    archived_at = iso_utc()
+    for result in results:
+        key = (result["record_type"], normalize_record_id(result["record_id"]), int(result["organismo_id"]))
+        old = existing.get(key)
+        if old is not None and old["status"] == "done":
+            if result["status"] != "done" or (not _detail_has_content(result) and _detail_has_content(old)):
+                counts["conservadas"] += 1
+                continue
+            if result.get("raw_gzip") is None and old.get("raw_gzip") is not None \
+                    and result.get("mapped_json") == old.get("mapped_json"):
+                # Misma ficha pedida con --no-raw-detail: se conserva el crudo.
+                result = dict(result, raw_gzip=old["raw_gzip"])
+            if (result.get("mapped_json") != old.get("mapped_json")
+                    or _raw_bytes(result.get("raw_gzip")) != _raw_bytes(old.get("raw_gzip"))):
+                to_archive.append(dict(old, archived_at=archived_at))
+        to_write.append(result)
+    if to_archive:
+        conn.executemany(
+            """
+            INSERT INTO detail_cache_historico (
+                record_type, record_id, organismo_id, status, attempts,
+                last_error, last_http_status, updated_at, detail_url,
+                page_title, html_sha256, mapped_json, raw_gzip, archived_at
+            ) VALUES (
+                :record_type, :record_id, :organismo_id, :status, :attempts,
+                :last_error, :last_http_status, :updated_at, :detail_url,
+                :page_title, :html_sha256, :mapped_json, :raw_gzip, :archived_at
+            )
+            """,
+            to_archive,
+        )
+        counts["archivadas"] = len(to_archive)
+    if counts["conservadas"]:
+        log_warn(
+            f"DETALLE: {counts['conservadas']:,} fichas ya descargadas se conservan "
+            "(el portal ha dado un error o una ficha vacía)"
+        )
+    results = to_write
+    if not results:
+        conn.commit()
+        return counts
     conn.executemany(
         """
         INSERT INTO detail_cache (
@@ -1980,6 +2260,7 @@ def persist_detail_results(conn, results):
         results,
     )
     conn.commit()
+    return counts
 
 
 def run_detail_enrichment(
@@ -1995,6 +2276,7 @@ def run_detail_enrichment(
     only_org_id=None,
     retryable_only=False,
     retryable_ignore_max_attempts=False,
+    ignore_max_attempts=False,
 ):
     conn = init_detail_db(output_dir)
     pending_batches = iter_detail_batches(
@@ -2006,6 +2288,7 @@ def run_detail_enrichment(
         only_org_id=only_org_id,
         retryable_only=retryable_only,
         retryable_ignore_max_attempts=retryable_ignore_max_attempts,
+        ignore_max_attempts=ignore_max_attempts,
     )
 
     submitted = {}
@@ -2117,50 +2400,494 @@ def load_detail_map(conn, records):
     return mapped
 
 
-def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE):
+# ─────────────────────────────────────────────────────────────────────────────
+# TABLA FINAL ACUMULADA (sesgo del superviviente) Y SEMILLA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def read_text_csv(path, usecols=None, chunksize=None):
+    """CSV del scraper (;) como texto tal cual ('' si vacío), sin inferir tipos."""
+    return pd.read_csv(
+        path,
+        sep=";",
+        encoding="utf-8-sig",
+        dtype=str,
+        keep_default_na=False,
+        usecols=usecols,
+        chunksize=chunksize,
+    )
+
+
+def _is_blank(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value == ""
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _as_text(series):
+    """Serie de texto (object) con '' en los nulos."""
+    values = series.astype(object)
+    if values.map(lambda v: isinstance(v, str)).all():
+        return values
+    return pd.Series(["" if _is_blank(v) else str(v) for v in values], index=series.index, dtype=object)
+
+
+def _org_keys(series):
+    """Id de organismo como texto comparable ('48', también si viene como 48.0)."""
+    return np.array([normalize_record_id(v) if not _is_blank(v) else "" for v in series.astype(object)], dtype=object)
+
+
+def listing_fingerprint(df):
+    """Huella (uint64) del contenido de cada fila en las 12 columnas del listado
+    (BASE_EXPORT_FIELDS) con los valores como quedan en el Parquet: los números
+    (LISTING_NUMERIC_COLUMNS) como número y las fechas (LISTING_DATE_COLUMNS) como
+    instante, así que '4' y '4.0' o '2024-01-15' y '2024-01-15 00:00:00' son el
+    mismo valor; un texto que no es número o fecha cuenta tal cual. Dos filas con
+    la misma huella son el mismo registro para acumular() (que también compara
+    por un hash de 64 bits de las filas). Las columnas de la ficha, de control y
+    de la semilla no cuentan."""
+    canon = {}
+    for column in BASE_EXPORT_FIELDS:
+        if column in df.columns:
+            text = _as_text(df[column])
+        else:
+            text = pd.Series("", index=df.index, dtype=object)
+        if column in LISTING_NUMERIC_COLUMNS:
+            value = pd.to_numeric(text.where(text != ""), errors="coerce").astype("float64")
+            canon[column] = value
+            canon[f"{column}|texto"] = text.where(value.isna(), "")
+        elif column in LISTING_DATE_COLUMNS:
+            value = parse_datetime_series(text.where(text != ""))
+            canon[column] = value.to_numpy(dtype="datetime64[ns]").view("int64")
+            canon[f"{column}|texto"] = text.where(value.isna(), "")
+        else:
+            canon[column] = text
+    return pd.util.hash_pandas_object(pd.DataFrame(canon, index=df.index), index=False).to_numpy()
+
+
+def effective_scope(manifest, new):
+    """Ámbito de la descarga por organismo (clave: su id como texto): el del
+    manifiesto (scope_from_report) y, para los organismos del CSV base que no lo
+    tienen (descargados por una versión anterior del scraper o CSV base sin
+    manifiesto), los tipos que trae el CSV, enteros ('LIC' y CM 'todo'): esa
+    versión abortaba ante cualquier error, así que lo que está es completo salvo
+    por ventanas cortadas que no sabía detectar."""
+    recorded = {str(key): value for key, value in (manifest.get("ambito") or {}).items()}
+    derived = {}
+    if len(new):
+        pairs = pd.DataFrame({"org": _org_keys(new["_organismo_id"]), "tipo": _as_text(new["_tipo"]).to_numpy()})
+        for org, tipo in pairs.drop_duplicates().itertuples(index=False):
+            if not org or org in recorded:
+                continue
+            info = derived.setdefault(org, {})
+            if tipo == "LIC":
+                info["LIC"] = True
+            elif tipo == "CM":
+                info["CM"] = "todo"
+    if derived:
+        log_warn(
+            f"{len(derived)} organismos del CSV base sin ámbito en el manifiesto (descarga de una versión "
+            "anterior del scraper): se toma como leído todo lo que trae de cada tipo"
+        )
+    scope = dict(recorded)
+    scope.update(derived)
+    return scope
+
+
+def rows_in_scope(df, ambito):
+    """True en las filas (columnas del CSV: _tipo, _organismo_id, publicado) que la
+    descarga ha vuelto a leer completas (effective_scope): LIC de un organismo
+    con 'LIC' y CM de un organismo con 'publicado' dentro de una de sus ventanas
+    completas (cualquier CM si es 'todo'). Fuera de eso no se sabe si el portal
+    los sigue listando."""
+    inside = np.zeros(len(df), dtype=bool)
+    if not ambito or not len(df):
+        return inside
+    orgs = _org_keys(df["_organismo_id"])
+    kinds_all = _as_text(df["_tipo"]).to_numpy()
+    groups = pd.Series(np.arange(len(df))).groupby(orgs).indices
+    for org, positions in groups.items():
+        info = ambito.get(org)
+        if not info:
+            continue
+        kinds = kinds_all[positions]
+        if info.get("LIC"):
+            inside[positions[kinds == "LIC"]] = True
+        windows = info.get("CM")
+        cm = positions[kinds == "CM"]
+        if not windows or not len(cm):
+            continue
+        if windows == "todo":
+            inside[cm] = True
+            continue
+        dates = parse_datetime_series(
+            _as_text(df["publicado"].iloc[cm]).reset_index(drop=True).replace("", np.nan)
+        ).dt.normalize().to_numpy(dtype="datetime64[ns]")
+        starts = np.array([np.datetime64(window[0], "ns") for window in windows])
+        ends = np.array([np.datetime64(window[1], "ns") for window in windows])
+        order = np.argsort(starts)
+        starts, ends = starts[order], ends[order]
+        found = np.searchsorted(starts, dates, side="right") - 1
+        ok = ~np.isnat(dates) & (found >= 0)
+        ok[ok] = dates[ok] <= ends[found[ok]]
+        inside[cm[ok]] = True
+    return inside
+
+
+def read_previous_final(output_dir):
+    """Registros de la tabla final anterior, de su CSV (el texto tal cual), sin las
+    columnas de la ficha (se vuelven a sacar al escribir). None si no hay. Una
+    tabla de una versión anterior del scraper (sin columnas de control) cuenta
+    como una descarga con la fecha del fichero. Sin el CSV no se puede acumular
+    sin perder texto: con solo el Parquet final se para (ScraperError)."""
+    output_dir = Path(output_dir)
+    final_csv = output_dir / FINAL_CSV_NAME
+    final_parquet = output_dir / FINAL_PARQUET_NAME
+    if not final_csv.exists():
+        if final_parquet.exists():
+            raise ScraperError(
+                f"Existe {final_parquet} sin {FINAL_CSV_NAME}: la tabla final se acumula desde su CSV, así "
+                "que no se toca. Recupera el CSV (p. ej. de _historico/) o usa ese Parquet como --semilla "
+                "desde otra carpeta de salida."
+            )
+        return None
+    previous = read_text_csv(final_csv, usecols=lambda column: column not in DETAIL_EXPORT_FIELDS)
+    if not len(previous):
+        return None
+    missing = [column for column in COLUMNAS_META if column not in previous.columns]
+    if missing and len(missing) < len(COLUMNAS_META):
+        raise ScraperError(f"{final_csv} tiene solo algunas columnas de control (faltan {missing}): no se toca")
+    if missing:
+        fecha = file_date_iso(final_csv)
+        log_warn(f"{final_csv.name} sin columnas de control (versión anterior del scraper): sus filas cuentan "
+                 f"como descargadas el {fecha}")
+        previous["_primera_descarga"] = fecha
+        previous["_ultima_descarga"] = fecha
+        previous["_en_ultima_descarga"] = True
+    else:
+        flags = previous["_en_ultima_descarga"].map({"True": True, "False": False})
+        if flags.isna().any():
+            raise ScraperError(f"{final_csv}: valores inesperados en _en_ultima_descarga; no se toca")
+        previous["_en_ultima_descarga"] = flags.astype(bool)
+    return previous
+
+
+def accumulate_listing(previous, new, fecha, ambito):
+    """acumular() del CSV base (`new`) con la tabla final anterior (`previous`):
+    las filas se comparan por listing_fingerprint (una columna _huella; el resto
+    va en `ignorar`) y solo se dan por retiradas las del ámbito de la descarga
+    (rows_in_scope; columna _ambito: 'dentro' en todo `new` y en las filas de
+    `previous` del ámbito, 'fuera' en las demás). Devuelve (tabla, resumen)."""
+    new = new.reset_index(drop=True)
+    new["_huella"] = listing_fingerprint(new)
+    new["_ambito"] = "dentro"
+    summary = {"descargadas": len(new), "anteriores": 0, "altas": len(new), "retiradas": 0, "fuera_ambito": 0}
+    if previous is None:
+        out = acumular(None, new, fecha)
+    else:
+        previous = previous.reset_index(drop=True)
+        inside = rows_in_scope(previous, ambito)
+        previous["_huella"] = listing_fingerprint(previous)
+        previous["_ambito"] = np.where(inside, "dentro", "fuera")
+        current_before = previous["_en_ultima_descarga"].to_numpy(dtype=bool).copy()
+        columns = dict.fromkeys(list(previous.columns) + list(new.columns))
+        ignorar = tuple(IGNORAR_POR_DEFECTO) + tuple(
+            column for column in columns if column != "_huella" and column not in COLUMNAS_META
+        )
+        out = acumular(previous, new, fecha, ambito=["_ambito"], ignorar=ignorar)
+        n_previous = len(previous)
+        current_after = out["_en_ultima_descarga"].to_numpy(dtype=bool)[:n_previous]
+        seen = out["_ultima_descarga"].astype(object).to_numpy()[:n_previous] == fecha
+        summary.update(
+            anteriores=n_previous,
+            altas=len(out) - n_previous,
+            retiradas=int((current_before & ~current_after).sum()),
+            # Vigentes que esta descarga no ha vuelto a ver y no se dan por
+            # retiradas porque no son de su ámbito.
+            fuera_ambito=int((current_before & ~inside & ~seen).sum()),
+        )
+    return out.drop(columns=["_huella", "_ambito"]), summary
+
+
+def _csv_text(series):
+    """Valores de una columna (tipada, p. ej. de un Parquet publicado) como los
+    escribe el CSV base: enteros sin '.0', decimales con repr, fechas AAAA-MM-DD
+    (con la hora si no es medianoche) y '' en los nulos."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        values = series
+        if getattr(values.dt, "tz", None) is not None:
+            values = values.dt.tz_convert("UTC").dt.tz_localize(None)
+        long_format = values.dt.strftime("%Y-%m-%d %H:%M:%S")
+        short_format = values.dt.strftime("%Y-%m-%d")
+        text = long_format.where(values.dt.normalize() != values, short_format)
+        return text.astype(object).where(values.notna(), "")
+    if pd.api.types.is_bool_dtype(series):
+        return pd.Series(["" if _is_blank(v) else str(bool(v)) for v in series.astype(object)],
+                         index=series.index, dtype=object)
+    if pd.api.types.is_integer_dtype(series):
+        return pd.Series(["" if _is_blank(v) else str(int(v)) for v in series.astype(object)],
+                         index=series.index, dtype=object)
+    if pd.api.types.is_float_dtype(series):
+        return pd.Series(["" if _is_blank(v) else repr(float(v)) for v in series.astype(object)],
+                         index=series.index, dtype=object)
+    return _as_text(series)
+
+
+def seed_as_text(df, published):
+    """Filas de una semilla como texto del CSV (_csv_text). published=True (un
+    publicado del scraper antiguo, sin columnas de control) corrige sus errores
+    conocidos (ver el docstring del módulo): 'importe' queda vacío y su valor
+    inflado va a importe_semilla; 'estado' = 'nan' queda vacío."""
+    out = pd.DataFrame(
+        {column: _csv_text(df[column]) for column in df.columns if column != "_en_ultima_descarga"},
+        index=df.index,
+    )
+    if published:
+        if "importe" in out.columns:
+            out[SEED_AMOUNT_COLUMN] = out["importe"]
+            out["importe"] = ""
+        if "estado" in out.columns:
+            out["estado"] = out["estado"].where(out["estado"].str.lower() != "nan", "")
+    return out.reset_index(drop=True)
+
+
+def _key_frame(df):
+    """Clave estable (_tipo, id) como texto comparable (None si falta)."""
+    return pd.DataFrame(
+        {
+            "_tipo": [None if _is_blank(v) else str(v).strip() for v in df["_tipo"].astype(object)],
+            "id": [None if _is_blank(v) else normalize_record_id(v) for v in df["id"].astype(object)],
+        },
+        dtype=object,
+    )
+
+
+def check_seeds(semillas, output_dir):
+    """Cada semilla existe y no es una salida de esta carpeta (el publicado es la
+    única copia histórica: no se lee y se sustituye a la vez)."""
+    outputs = {
+        (Path(output_dir) / name).resolve()
+        for name in (FINAL_CSV_NAME, FINAL_PARQUET_NAME, BASE_CSV_NAME, BASE_PARQUET_NAME)
+    }
+    for path in semillas or ():
+        path = Path(path)
+        if not path.exists():
+            raise ScraperError(f"No existe la semilla {path}")
+        if path.resolve() in outputs:
+            raise ScraperError(f"La semilla {path} es una salida de {output_dir}: usa otra carpeta de salida")
+
+
+def apply_seed(acumulado, path, ambito, origen_semilla=None):
+    """Añade a `acumulado` las filas de la semilla `path` (parquet) cuya clave
+    (_tipo, id) no está en la tabla, solo del ámbito de la descarga
+    (rows_in_scope), con _origen (el suyo o origen_semilla / 'release v2026.02')
+    y _en_ultima_descarga=False (seleccionar_semilla, como sembrar). Nunca
+    modifica ni duplica una fila de la tabla. Devuelve (tabla, informe, fichas
+    de la semilla por posición en la tabla, si trae columnas de la ficha)."""
+    path = Path(path)
+    seed = pd.read_parquet(path)
+    ours = "_en_ultima_descarga" in seed.columns
+    if ours and not origen_semilla:
+        raise ScraperError(f"{path} es una salida de este script (tiene _en_ultima_descarga): "
+                           "indica su origen con --origen-semilla")
+    missing = [column for column in SEED_KEY + ["_organismo_id", "publicado"] if column not in seed.columns]
+    if missing:
+        raise ScraperError(f"La semilla {path} no tiene las columnas {missing}")
+    origen = origen_semilla or ORIGEN_SEMILLA
+    seed = seed.reset_index(drop=True)
+    columns = [c for c in dict.fromkeys(SEED_KEY + ["_organismo_id", "publicado"] + list(SEED_CONTENT_COLUMNS))
+               if c in seed.columns]
+    view = pd.DataFrame({column: _csv_text(seed[column]) for column in columns})
+    seed_keys = _key_frame(view)
+    inside = rows_in_scope(view, ambito)
+    contenido = [c for c in SEED_CONTENT_COLUMNS if c in view.columns and c in acumulado.columns]
+    motivo = seleccionar_semilla(
+        _key_frame(acumulado),
+        seed_keys,
+        lambda filas: acumulado.iloc[filas][contenido].reset_index(drop=True),
+        lambda filas: view.iloc[filas][contenido].reset_index(drop=True),
+        inside,
+    )
+    informe = informe_semilla(motivo, origen, seed_keys)
+    informe["ruta"] = str(path)
+    outside = motivo == FUERA_AMBITO
+    if outside.any():
+        by_org = pd.Series(_org_keys(view["_organismo_id"])[outside]).value_counts()
+        detalle = {f"organismo {org}": int(n) for org, n in by_org.head(10).items()}
+        if len(by_org) > 10:
+            detalle["otros"] = int(by_org.iloc[10:].sum())
+        informe["fuera_ambito_detalle"] = detalle
+    imprimir_informe_semilla(informe)
+
+    rows = np.flatnonzero(motivo == ANADIDA)
+    added = seed_as_text(seed.iloc[rows], published=not ours)
+    own = added["_origen"] if "_origen" in added.columns else pd.Series("", index=added.index, dtype=object)
+    added["_origen"] = own.where(own != "", origen)
+    added["_en_ultima_descarga"] = False
+    for column in ("_primera_descarga", "_ultima_descarga"):
+        if column not in added.columns:
+            # No se sabe cuándo se descargaron las filas del publicado.
+            added[column] = ""
+    details = {}
+    detail_columns = [column for column in DETAIL_EXPORT_FIELDS if column in added.columns]
+    if detail_columns:
+        offset = len(acumulado)
+        for i, record in enumerate(added[detail_columns].to_dict("records")):
+            details[offset + i] = record
+        added = added.drop(columns=detail_columns)
+    out = pd.concat([acumulado, added], ignore_index=True, sort=False)
+    return out, informe, details
+
+
+def _detail_key(record):
+    """(tipo, id, organismo) de una fila para la caché de detalle, o None."""
+    tipo, record_id, org = record.get("_tipo"), record.get("id"), record.get("_organismo_id")
+    if _is_blank(tipo) or _is_blank(record_id) or _is_blank(org):
+        return None
+    try:
+        org = int(float(str(org)))
+    except ValueError:
+        return None
+    return (str(tipo), normalize_record_id(record_id), org)
+
+
+def _choose_detail(cached, previous):
+    """Ficha de una fila de la tabla final: la 'done' de la caché; si la caché no
+    la tiene 'done', la de la tabla anterior (o de la semilla) si era 'done' (una
+    caché que se ha perdido o sustituido no borra fichas de la tabla); si no, la
+    de la caché y, sin nada en la caché, la anterior."""
+    if cached and cached.get("detail_status") == "done":
+        return cached
+    if previous and previous.get("detail_status") == "done":
+        return previous
+    if cached:
+        return cached
+    if previous and previous.get("detail_status") not in (None, "", "missing"):
+        return previous
+    return {}
+
+
+def _csv_value(value):
+    return "" if _is_blank(value) else value
+
+
+def write_final_csv(acumulado, tmp_path, conn, fieldnames, previous_csv, n_previous, seed_details, chunksize):
+    """Escribe la tabla final por trozos: columnas del listado y de control de
+    `acumulado` y las de la ficha (_choose_detail) de la caché o, a la vez que se
+    leen por trozos del CSV final anterior (sus n_previous filas son las
+    primeras de `acumulado`, en el mismo orden), de la tabla anterior."""
+    previous_chunks = None
+    if n_previous:
+        previous_chunks = read_text_csv(
+            previous_csv,
+            usecols=lambda column: column in DETAIL_EXPORT_FIELDS or column in ("_tipo", "id", "_organismo_id"),
+            chunksize=chunksize,
+        )
+    total_rows = 0
+    with tmp_path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=";")
+        writer.writeheader()
+        for start in range(0, len(acumulado), chunksize):
+            records = acumulado.iloc[start : start + chunksize].to_dict("records")
+            keys = [_detail_key(record) for record in records]
+            detail_map = load_detail_map(
+                conn,
+                [{"_tipo": key[0], "id": key[1], "_organismo_id": key[2]} for key in keys if key],
+            )
+            previous_rows = []
+            if previous_chunks is not None and start < n_previous:
+                previous_rows = next(previous_chunks).to_dict("records")
+            rows = []
+            for i, (record, key) in enumerate(zip(records, keys)):
+                if i < len(previous_rows):
+                    previous = previous_rows[i]
+                    if _detail_key(previous) != key:
+                        raise ScraperError(f"Tabla final anterior desalineada en la fila {start + i + 1}; no se toca")
+                else:
+                    previous = seed_details.get(start + i)
+                detail = _choose_detail(detail_map.get(key) if key else None, previous)
+                row = {column: _csv_value(record.get(column)) for column in fieldnames
+                       if column not in DETAIL_EXPORT_FIELDS}
+                for column in DETAIL_EXPORT_FIELDS:
+                    row[column] = detail.get(column)
+                if not row.get("detail_status"):
+                    row["detail_status"] = "missing"
+                rows.append(row)
+            writer.writerows(rows)
+            total_rows += len(rows)
+            log(f"MERGE: {total_rows:,} filas")
+    return total_rows
+
+
+def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=(), origen_semilla=None):
+    """Tabla final contratos_galicia.csv/.parquet: la tabla anterior acumulada con
+    la descarga base (accumulate_listing), las semillas (apply_seed) y las fichas
+    de la caché de detalle. Se publica con guardar_version (la anterior va a
+    _historico/; si no cambia nada no se toca). Una descarga base vacía no
+    cambia nada (ScraperError)."""
     output_dir = Path(output_dir)
     base_csv_path = output_dir / BASE_CSV_NAME
     final_csv_path = output_dir / FINAL_CSV_NAME
     final_parquet_path = output_dir / FINAL_PARQUET_NAME
-    conn = init_detail_db(output_dir)
+    check_seeds(semillas, output_dir)
 
-    fieldnames = None
-    total_rows = 0
-    # Se escribe a un temporal y se renombra al terminar: un merge cortado no
-    # deja un CSV final truncado que parezca completo.
+    manifest = read_base_manifest(output_dir)
+    fecha = manifest.get("fecha_descarga") or file_date_iso(base_csv_path)
+    new = read_text_csv(base_csv_path)
+    if not len(new):
+        raise ScraperError(f"{base_csv_path} no tiene ningún contrato: una descarga vacía no cambia la tabla final")
+    base_columns = list(new.columns)
+    ambito = effective_scope(manifest, new)
+    previous = read_previous_final(output_dir)
+    n_previous = 0 if previous is None else len(previous)
+    acumulado, summary = accumulate_listing(previous, new, fecha, ambito)
+    del previous, new
+
+    seed_details = {}
+    seeded = 0
+    for path in semillas or ():
+        before = len(acumulado)
+        acumulado, _, details = apply_seed(acumulado, path, ambito, origen_semilla)
+        seeded += len(acumulado) - before
+        seed_details.update(details)
+
+    helper = set(BASE_EXPORT_FIELDS) | set(base_columns) | set(DETAIL_EXPORT_FIELDS) | set(COLUMNAS_META)
+    fieldnames = list(dict.fromkeys(
+        base_columns
+        + DETAIL_EXPORT_FIELDS
+        + list(COLUMNAS_META)
+        + [column for column in acumulado.columns if column not in helper]
+    ))
+    conn = init_detail_db(output_dir)
+    # Se escribe a un temporal y se publica al terminar (guardar_version): un merge
+    # cortado no deja un CSV final truncado que parezca completo.
     tmp_csv_path = final_csv_path.with_name(final_csv_path.name + ".tmp")
-    with tmp_csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
-        writer = None
-        for chunk in iter_base_chunks(base_csv_path, chunksize=chunksize, as_text=True):
-            records = chunk.to_dict("records")
-            detail_map = load_detail_map(conn, records)
-            merged_rows = []
-            for record in records:
-                key = (
-                    record["_tipo"],
-                    normalize_record_id(record["id"]),
-                    int(record["_organismo_id"]),
-                )
-                detail = detail_map.get(key, {})
-                merged = dict(record)
-                for column in DETAIL_EXPORT_FIELDS:
-                    merged[column] = detail.get(column)
-                if not merged.get("detail_status"):
-                    merged["detail_status"] = "missing"
-                merged_rows.append(merged)
-            if merged_rows and writer is None:
-                fieldnames = list(merged_rows[0].keys())
-                writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=";")
-                writer.writeheader()
-            if writer:
-                writer.writerows(merged_rows)
-            total_rows += len(merged_rows)
-            log(f"MERGE: {total_rows:,} filas")
-    tmp_csv_path.replace(final_csv_path)
+    try:
+        total_rows = write_final_csv(
+            acumulado, tmp_csv_path, conn, fieldnames, final_csv_path, n_previous, seed_details, chunksize
+        )
+        state = guardar_version(final_csv_path, desde=tmp_csv_path)
+    finally:
+        conn.close()
+        if tmp_csv_path.exists():
+            tmp_csv_path.unlink()
+    log(f"[FINAL] {final_csv_path}: {state} ({total_rows:,} filas)")
 
     parquet_path = None
     if HAS_PYARROW:
         parquet_path = csv_to_parquet(final_csv_path, final_parquet_path, "[FINAL] ", chunksize=chunksize)
+    mark_base_accumulated(output_dir, fecha)
+    current = int(acumulado["_en_ultima_descarga"].astype(bool).sum())
+    log(
+        f"[FINAL] descarga del {fecha}: {summary['descargadas']:,} filas; tabla anterior {summary['anteriores']:,} "
+        f"| altas (contratos nuevos o cambiados) {summary['altas']:,} | retiradas en esta descarga "
+        f"{summary['retiradas']:,} | vigentes sin volver a ver, fuera del ámbito {summary['fuera_ambito']:,} "
+        f"| de semillas {seeded:,} | total {len(acumulado):,} ({current:,} en la última descarga)"
+    )
     return final_csv_path, parquet_path
 
 
@@ -2202,7 +2929,27 @@ def build_parser():
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Reanudar usando el CSV base / SQLite de detalle existentes",
+        help=(
+            "Reanudar la descarga base en curso (sin él, se empieza otra; la anterior pasa a _historico/). "
+            "En detail, respeta el máximo de intentos de las fichas fallidas (sin él se reintentan todas; "
+            "la caché de detalle nunca se borra)"
+        ),
+    )
+    parser.add_argument(
+        "--semilla",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Parquet publicado (p. ej. contratos_galicia.parquet de v2026.02) que se incorpora en merge como la "
+            "instantánea más antigua: solo las filas cuya clave (_tipo, id) no está en la tabla y del ámbito "
+            "de la descarga. Repetible"
+        ),
+    )
+    parser.add_argument(
+        "--origen-semilla",
+        default=None,
+        help=f"_origen de las filas añadidas desde --semilla (por defecto '{ORIGEN_SEMILLA}')",
     )
     parser.add_argument(
         "--autosave-every",
@@ -2243,7 +2990,10 @@ def build_parser():
     parser.add_argument(
         "--force-detail",
         action="store_true",
-        help="Reprocesar detalle aunque ya exista en caché",
+        help=(
+            "Reprocesar detalle aunque ya exista en caché (una ficha ya descargada no se pierde: se conserva "
+            "si el portal da error o una ficha vacía y, si cambió, la anterior va a detail_cache_historico)"
+        ),
     )
     parser.add_argument(
         "--retryable-only",
@@ -2305,6 +3055,8 @@ def main(argv=None):
     print(f"  Resume:        {'sí' if args.resume else 'no'}")
     print(f"  Raw detalle:   {'sí' if args.store_raw_detail else 'no'}")
     print(f"  Auto-save:     cada {args.autosave_every} organismos")
+    for seed in args.semilla:
+        print(f"  Semilla:       {seed} ({args.origen_semilla or ORIGEN_SEMILLA})")
     print(f"  Output dir:    {output_dir}")
     print(f"  Log:           {args.log_path}")
     print("=" * 70)
@@ -2317,6 +3069,12 @@ def main(argv=None):
         detail_stats = None
         final_csv_path = None
         final_parquet_path = None
+
+        if args.semilla:
+            if args.mode not in ("all", "merge"):
+                raise ScraperError("--semilla solo se aplica en merge (o all).")
+            # Antes de descargar nada: una semilla que no existe o que es una salida.
+            check_seeds(args.semilla, output_dir)
 
         if args.mode in ("all", "base"):
             if args.skip_cm and args.skip_lic:
@@ -2337,8 +3095,9 @@ def main(argv=None):
         if args.mode in ("all", "detail"):
             if not base_csv_path.exists():
                 raise ScraperError(f"No existe el base CSV: {base_csv_path}")
-            # --retryable-only trabaja sobre la caché existente: sin --resume la
-            # borraba entera y después no quedaba ningún retryable que procesar.
+            # La caché de detalle nunca se borra (antes, sin --resume, se borraba
+            # entera y se perdían las fichas ya descargadas). Sin --resume se
+            # reintentan todas las que no están 'done', como hacía empezar de cero.
             prepare_detail_outputs(output_dir, resume=args.resume or args.retryable_only)
             detail_stats = run_detail_enrichment(
                 base_csv_path=base_csv_path,
@@ -2353,13 +3112,15 @@ def main(argv=None):
                 only_org_id=args.organismo,
                 retryable_only=args.retryable_only,
                 retryable_ignore_max_attempts=args.retryable_ignore_max_attempts,
+                ignore_max_attempts=not args.resume,
             )
 
         if args.mode in ("all", "merge"):
             if not base_csv_path.exists():
                 raise ScraperError(f"No existe el base CSV: {base_csv_path}")
-            prepare_final_outputs(output_dir)
-            final_csv_path, final_parquet_path = merge_base_and_detail(output_dir)
+            final_csv_path, final_parquet_path = merge_base_and_detail(
+                output_dir, semillas=args.semilla, origen_semilla=args.origen_semilla
+            )
 
         elapsed = time.time() - t0
         hours = int(elapsed // 3600)

@@ -30,10 +30,11 @@ v4 - Producción:
        - Período: 2017-año actual por meses + un CSV por tipo con todo lo
          publicado antes (el portal tiene anuncios desde 2014)
 
-    Cada ejecución vuelve a pedir los CSV con más de VIGENCIA_HORAS: los de
-    menores (sin fechas) acumulan los contratos nuevos y los de cada mes
-    cambian de estado, adjudicatario, prórrogas... Los más recientes se
-    saltan, así que una ejecución cortada se reanuda donde se quedó.
+    Cada ejecución vuelve a pedir los CSV comprobados hace más de
+    VIGENCIA_HORAS: los de menores (sin fechas) acumulan los contratos nuevos
+    y los de cada mes cambian de estado, adjudicatario, prórrogas... Los
+    comprobados hace menos se saltan (también los que dieron 0 filas o no
+    cambiaron), así que una ejecución cortada se reanuda donde se quedó.
 
     Columnas CSV (18):
     Tipo de Publicación; Estado; Entidad Adjudicadora; Nº Expediente;
@@ -43,6 +44,106 @@ v4 - Producción:
     Fecha del contrato; Importe de adjudicación;
     Importe de las modificaciones; Importe de las prórrogas;
     Importe de la liquidación
+
+HISTÓRICO: NUNCA SE MACHACA NADA (comun/historico.py)
+    Capa cruda (csv_originales/):
+      - Cada CSV descargado pasa por guardar_version: si no cambió no se
+        toca; si cambió, la copia anterior va a csv_originales/_historico/
+        <nombre>__<AAAAMMDDTHHMMSSZ>.csv (fecha de esa copia).
+      - Una descarga vacía (0 filas) o fallida no sustituye nada.
+      - Una respuesta con UMBRAL_TRUNCADO filas que se va a partir por
+        importe no se guarda: son las primeras 50.000 filas, no lo que
+        publica el portal para esa consulta. Se guardan sus rangos.
+      - El número de entidad del desplegable cambia entre ejecuciones (la
+        Consejería de Sanidad era la 28 en febrero de 2026 y la 60 en
+        septiembre): el mismo menor llega en CSV de nombres distintos. Al
+        terminar una descarga completa de menores, los CSV de menores que ya
+        no son de ninguna consulta de la ejecución pasan a _historico/
+        (archivar): otro número de entidad, o el CSV entero de una entidad
+        o de un rango que ahora se parte. Si el desplegable trae menos de la
+        mitad de las entidades conocidas no se archiva nada: es más probable
+        un fallo del portal.
+      - csv_originales/_comprobaciones.json: fecha y resultado de la última
+        comprobación de cada consulta, también de las que dan 0 filas, no
+        cambian (guardar_version no toca el fichero) o se parten. Con ella
+        se reanuda una ejecución cortada. Si se pierde, se usa la fecha del
+        fichero.
+    Tabla consolidada (unificar):
+      - Se construye desde TODAS las versiones de cada CSV (versiones()), de
+        la más antigua a la vigente, con acumular(): nada de lo visto se
+        pierde, y lo que el portal retira o cambia queda con
+        _en_ultima_descarga=False. _primera_descarga y _ultima_descarga son
+        las fechas de la primera y la última versión del CSV que traen el
+        registro. La de una versión es la de su sello en _historico/ o la de
+        modificación de la vigente; una descarga idéntica a la anterior no
+        crea versión.
+      - Se compara por bloque: el registro con sus filas de continuación
+        (sin Tipo de Publicación: más lotes, adjudicatarios, prórrogas,
+        modificaciones). Esas filas se repiten entre contratos distintos
+        ('...;0,00;0,00;0,00;0,00'), así que fila a fila la de un contrato
+        retirado casaría con la de otro. Un bloque que cambia en cualquier
+        fila es un registro nuevo entero (el anterior queda con False), y sus
+        filas siguen juntas y en orden.
+      - Una versión vacía o ilegible no retira nada (se avisa).
+      - Un CSV sin copia vigente (solo con versiones en _historico/, p.ej.
+        archivado por la descarga) está sustituido: sus filas quedan con
+        _en_ultima_descarga=False, salvo que otro CSV traiga el mismo bloque.
+      - Consultas solapadas (bloques en varios CSV): frontera entre rangos de
+        importe, entidades que incluyen las de sus dependientes, un CSV
+        sustituido y su sucesor. De cada bloque se deja una copia por cada
+        una de las que tiene el CSV que más tiene (duplicados de origen),
+        contando primero las presentes en la última descarga. Cada copia se
+        queda con _en_ultima_descarga=True si algún CSV la trae en su última
+        versión, la _primera_descarga mínima y la _ultima_descarga máxima.
+      - Salidas: contratacion_comunidad_madrid_completo.csv (';', utf-8-sig)
+        y .parquet (texto; _en_ultima_descarga booleana), las dos con
+        guardar_version: la anterior va a _historico/, y si no cambian no se
+        tocan. Columnas: las del portal, _archivo_fuente, _primera_descarga,
+        _ultima_descarga, _en_ultima_descarga y, con --semilla, _origen.
+    Semilla (unificar --semilla <parquet publicado>, repetible):
+      - Clave estable: Referencia + Entidad Adjudicadora. Referencia es el
+        identificador del anuncio en el portal ('D957_2', '1152625',
+        'C11537'). Comprobado con datos reales:
+        · Es única en cada instantánea, quitados los solapes entre CSV: en
+          los 2.568.350 registros de los CSV originales del release (9-2-2026)
+          y en los de septiembre de 2026.
+        · Es estable: de los 1.612.229 menores de febrero de las entidades ya
+          descargadas en septiembre, 1.612.228 siguen con la misma clave y la
+          fila idéntica. El que falta (D1325_1, Hospital Central de la Cruz
+          Roja) no reaparece con otra referencia.
+        · La Referencia sola no basta: en el publicado, 62 anuncios comparten
+          referencia con el de otra entidad.
+        · No se añade el Nº Expediente: no hace falta para que sea única, y
+          así una corrección del expediente no crea otro registro.
+      - Solo se añaden las filas de la semilla cuya clave no está en la
+        tabla (contando las semillas anteriores), al final, marcadas con
+        _origen='release v2026.02' y _en_ultima_descarga=False. Nunca se toca
+        ni se duplica una fila descargada. Las filas sin Referencia
+        (continuaciones y 6 anuncios del publicado) tienen la clave
+        incompleta y se comparan por contenido (comun.historico); las que no
+        tienen ninguna columna de la clave, solo con las filas de la tabla
+        que tampoco la tienen.
+      - Ámbito: una fila de la semilla solo se añade si su consulta se ha
+        vuelto a descargar. Un menor, si su entidad aparece en los menores de
+        la tabla; lo demás, si su CSV (_archivo_fuente, por mes y tipo) está
+        en csv_originales/ o se comprobó (_comprobaciones.json). Si no, no se
+        sabe si sigue publicada: no se añade y se cuenta en el informe.
+      - Errores conocidos del publicado (release v2026.02; CSV originales
+        descargados el 9-2-2026 y que vienen en el ZIP del release):
+        · Las celdas vacías son el texto 'nan'. Al sembrar se dejan vacías
+          otra vez: en los CSV originales no hay ningún 'nan' literal.
+        · Deduplicó por Nº Expediente + Referencia + Entidad y perdió 22.628
+          de las 22.629 filas de continuación (lotes, adjudicatarios,
+          prórrogas y modificaciones de los tipos que no son menores).
+          También quitó los 4.824 menores repetidos en dos rangos de importe,
+          que sí sobraban.
+        · Fuera de eso, cada fila es idéntica a una de su CSV original.
+        · Presupuesto de licitación llega en varios formatos ('1.161,60',
+          '252338.62', '1.448228264E7'): así lo sirve el portal, no es un
+          error del publicado.
+        Esos CSV originales conservan las filas de continuación. Se pueden
+        usar como la versión más antigua de la capa cruda: basta copiarlos a
+        csv_originales/, con su fecha, antes de la primera descarga.
 =============================================================================
 """
 
@@ -50,14 +151,24 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import json
+import os
 import time
+import warnings
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pathlib import Path
 from calendar import monthrange
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from comun.historico import (ANADIDA, COLUMNAS_META, HISTORICO, ORIGEN_SEMILLA, acumular,  # noqa: E402
+                             archivar, guardar_version, imprimir_informe_semilla, informe_semilla,
+                             seleccionar_semilla, versiones)
+from comun.lectura_csv import registros_csv  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN
@@ -106,16 +217,26 @@ PAUSA_BASE = 5
 # un único CSV por tipo con solo fecha hasta (el portal tiene anuncios de 2014)
 ANIO_INICIO = 2017
 
-# Un CSV descargado hace más de VIGENCIA_HORAS se vuelve a descargar (menos de
-# 24 h para que una ejecución diaria los refresque todos)
+# Un CSV descargado o comprobado hace más de VIGENCIA_HORAS se vuelve a
+# descargar (menos de 24 h para que una ejecución diaria los refresque todos)
 VIGENCIA_HORAS = 20
+
+# Última comprobación de cada consulta (en CSV_DIR; ver HISTÓRICO)
+COMPROBACIONES = "_comprobaciones.json"
+
+# Tabla consolidada (en OUTPUT_DIR)
+SALIDA_CSV = "contratacion_comunidad_madrid_completo.csv"
+SALIDA_PARQUET = "contratacion_comunidad_madrid_completo.parquet"
+
+# Profundidad máxima de la subdivisión de un rango de importe truncado
+PROFUNDIDAD_MAXIMA = 5
 
 # Rangos de presupuesto para subdividir entidades truncadas (>50K)
 # La mayoría de contratos menores son <100€, necesitamos rangos muy finos abajo.
 # Un límite vacío es un rango abierto: hay menores con presupuesto negativo, 0
 # o por encima de 50.000 € que ningún rango cerrado recogería. Los límites son
 # inclusivos: lo que cae justo en la frontera sale en dos CSV y unificar_csvs()
-# lo deja una vez.
+# lo deja una vez (quitar_repetidos_entre_ficheros).
 RANGOS_IMPORTE = [
     ("", "0"),
     ("0", "10"),
@@ -190,9 +311,70 @@ def nombre_csv_hasta(anio, tipo_pub):
     return f"hasta_{anio}_{tp}.csv"
 
 
-def es_reciente(filepath):
-    """¿Se descargó hace menos de VIGENCIA_HORAS?"""
-    return time.time() - filepath.stat().st_mtime < VIGENCIA_HORAS * 3600
+def iso_utc(epoch):
+    """Fecha ISO 8601 en UTC al segundo ('2026-09-27T14:43:00Z', ordenable como texto)."""
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def epoch_de_iso(texto):
+    """Epoch de una fecha de iso_utc, o None si no lo es."""
+    try:
+        return datetime.strptime(texto, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def leer_comprobaciones():
+    """{nombre del CSV: {'comprobado', 'intento', 'resultado', 'filas'}} de
+    csv_originales/_comprobaciones.json. Si no existe o no se puede leer se
+    empieza de cero: solo sirve para no repetir comprobaciones recientes y
+    para el ámbito de la semilla."""
+    ruta = CSV_DIR / COMPROBACIONES
+    if not ruta.exists():
+        return {}
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        if isinstance(datos, dict):
+            return {k: v for k, v in datos.items() if isinstance(v, dict)}
+        motivo = "no es un objeto JSON"
+    except (OSError, ValueError) as e:
+        motivo = str(e)
+    log.warning(f"  {COMPROBACIONES} no se puede leer ({motivo}): se ignora")
+    return {}
+
+
+def guardar_comprobaciones(comprobaciones):
+    """Escribe _comprobaciones.json de forma atómica."""
+    ruta = CSV_DIR / COMPROBACIONES
+    tmp = ruta.with_name(f".{ruta.name}.nuevo")
+    tmp.write_text(json.dumps(comprobaciones, ensure_ascii=False, indent=1, sort_keys=True),
+                   encoding="utf-8")
+    os.replace(tmp, ruta)
+
+
+def es_reciente(filepath, comprobaciones=None):
+    """¿Se descargó o comprobó hace menos de VIGENCIA_HORAS? Cuenta la fecha de
+    la copia vigente y la última comprobación anotada: una descarga idéntica a
+    la anterior no toca el fichero, y una de 0 filas no lo crea."""
+    momentos = []
+    if filepath.exists() and filepath.stat().st_size > 100:
+        momentos.append(filepath.stat().st_mtime)
+    anotada = epoch_de_iso((comprobaciones or {}).get(filepath.name, {}).get("comprobado"))
+    if anotada is not None:
+        momentos.append(anotada)
+    return bool(momentos) and time.time() - max(momentos) < VIGENCIA_HORAS * 3600
+
+
+def sub_rangos(importe_desde, importe_hasta):
+    """Las dos mitades de un rango de importe, o None si no se puede partir
+    (rango abierto o de un euro)."""
+    if not importe_desde or not importe_hasta:
+        return None
+    low, high = int(importe_desde), int(importe_hasta)
+    mid = (low + high) // 2
+    if mid <= low or mid >= high:
+        return None
+    return [(str(low), str(mid)), (str(mid), str(high))]
 
 
 def generar_segmentos_mensuales(anio_inicio, anio_fin):
@@ -221,11 +403,15 @@ class DescargadorComunidadMadrid:
         self.antibot_key = None
         self.entidades = []  # Se carga del dropdown
         self.stats = {
-            "ok": 0, "error": 0, "skip_existe": 0,
-            "skip_vacio": 0, "filas": 0, "bytes": 0,
-            "archivos": [],
+            "ok": 0, "nuevo": 0, "actualizado": 0, "sin_cambios": 0,
+            "error": 0, "skip_existe": 0, "skip_vacio": 0, "partidos": 0,
+            "archivados": 0, "filas": 0, "bytes": 0, "archivos": [],
         }
         self.t_inicio = None
+        self.comprobaciones = leer_comprobaciones()
+        # CSV de menores de las consultas de esta ejecución (las que no se
+        # parten): al terminar todas, los demás CSV de menores se archivan
+        self.vigentes = set()
 
     # -----------------------------------------------------------------------
     # PASO 0: Obtener antibot_key + lista de entidades
@@ -455,20 +641,33 @@ class DescargadorComunidadMadrid:
     # GUARDAR CSV
     # -----------------------------------------------------------------------
     def _guardar(self, csv_data, filepath):
-        """Guarda CSV, retorna nº de filas."""
-        # Escritura atómica: un corte a medias no deja un CSV truncado que la
-        # siguiente ejecución daría por bueno (o que sustituiría al anterior)
-        tmp = filepath.with_name(filepath.name + ".part")
-        tmp.write_bytes(csv_data)
-        tmp.replace(filepath)
+        """Guarda el CSV con guardar_version: escritura atómica, y si cambió la
+        copia anterior pasa a _historico/ (si no cambió no se toca). Devuelve
+        'nuevo', 'actualizado' o 'sin_cambios'."""
+        estado = guardar_version(filepath, csv_data)
         n_filas = csv_data.count(b'\n') - 1
         size_mb = len(csv_data) / (1024 * 1024)
-        log.info(f"  ✓ {filepath.name} ({n_filas:,} filas, {size_mb:.1f} MB)")
+        log.info(f"  ✓ {filepath.name} ({n_filas:,} filas, {size_mb:.1f} MB, {estado})")
         self.stats["ok"] += 1
+        self.stats[estado] += 1
         self.stats["filas"] += max(n_filas, 0)
         self.stats["bytes"] += len(csv_data)
         self.stats["archivos"].append(str(filepath))
-        return n_filas
+        return estado
+
+    def _anotar(self, nombre, resultado, filas=None):
+        """Anota en _comprobaciones.json el resultado de una consulta: 'nuevo',
+        'actualizado', 'sin_cambios', 'vacio' o 'partido' (comprobada) o
+        'error' (solo el intento: se vuelve a pedir)."""
+        entrada = dict(self.comprobaciones.get(nombre, {}))
+        ahora = iso_utc(time.time())
+        entrada.update(intento=ahora, resultado=resultado)
+        if resultado != "error":
+            entrada["comprobado"] = ahora
+        if filas is not None:
+            entrada["filas"] = filas
+        self.comprobaciones[nombre] = entrada
+        guardar_comprobaciones(self.comprobaciones)
 
     # -----------------------------------------------------------------------
     # DESCARGA CON REINTENTOS
@@ -476,19 +675,23 @@ class DescargadorComunidadMadrid:
     def _descargar_con_reintentos(self, filepath, label,
                                    fecha_desde="", fecha_hasta="",
                                    tipo_pub=None, entidad=None,
-                                   extra_params=None):
-        """Descarga un CSV con reintentos. Retorna (True/False, n_filas).
-
-        Un CSV ya descargado solo se salta si tiene menos de VIGENCIA_HORAS;
-        si no, se vuelve a pedir (y si falla se conserva el anterior).
+                                   extra_params=None, partir_si_truncado=False):
+        """Descarga un CSV con reintentos. Devuelve (estado, n_filas):
+          'reciente'  comprobado hace menos de VIGENCIA_HORAS: no se pide;
+          'guardado'  guardar_version (nuevo, actualizado o sin cambios);
+          'vacio'     0 filas: no se guarda y se conserva la copia anterior;
+          'truncado'  llega a UMBRAL_TRUNCADO y partir_si_truncado: no se
+                      guarda (son las primeras filas) y el llamante lo parte;
+          'error'     falló: se conserva la copia anterior.
+        Un CSV truncado que no se puede partir se guarda tal cual (con aviso).
         """
-        if filepath.exists() and filepath.stat().st_size > 100:
-            if es_reciente(filepath):
-                log.info(f"    Ya existe: {filepath.name}, skip")
-                self.stats["skip_existe"] += 1
-                return True, 0
-            log.info(f"    {filepath.name} tiene más de {VIGENCIA_HORAS} h: "
-                     f"se vuelve a descargar")
+        if es_reciente(filepath, self.comprobaciones):
+            log.info(f"    Ya comprobado hace menos de {VIGENCIA_HORAS} h: {filepath.name}, skip")
+            self.stats["skip_existe"] += 1
+            return "reciente", 0
+        if filepath.exists():
+            log.info(f"    {filepath.name}: comprobado hace más de {VIGENCIA_HORAS} h, se vuelve "
+                     f"a descargar (si cambió, la copia anterior pasa a {HISTORICO}/)")
 
         for intento in range(MAX_REINTENTOS):
             try:
@@ -504,16 +707,22 @@ class DescargadorComunidadMadrid:
                             log.warning(f"    0 filas: se conserva la descarga "
                                         f"anterior de {filepath.name}")
                         else:
-                            log.info(f"    0 filas, skip")
+                            log.info("    0 filas, skip")
                         self.stats["skip_vacio"] += 1
-                        return True, 0
+                        self._anotar(filepath.name, "vacio", 0)
+                        return "vacio", 0
 
                     if n_filas >= UMBRAL_TRUNCADO:
                         log.warning(f"    ⚠ {n_filas:,} filas — posible "
                                     f"truncamiento para: {label}")
+                        if partir_si_truncado:
+                            self.stats["partidos"] += 1
+                            self._anotar(filepath.name, "partido", n_filas)
+                            return "truncado", n_filas
 
-                    self._guardar(csv_data, filepath)
-                    return True, n_filas
+                    estado = self._guardar(csv_data, filepath)
+                    self._anotar(filepath.name, estado, n_filas)
+                    return "guardado", n_filas
 
                 log.warning(f"    Intento {intento+1}/{MAX_REINTENTOS} sin CSV")
 
@@ -524,7 +733,8 @@ class DescargadorComunidadMadrid:
             self._reset_sesion()
 
         self.stats["error"] += 1
-        return False, 0
+        self._anotar(filepath.name, "error")
+        return "error", 0
 
     # ===================================================================
     # A) CONTRATOS MENORES — por entidad adjudicadora (sin fechas)
@@ -544,19 +754,13 @@ class DescargadorComunidadMadrid:
         log.info(f"  Subdivisión automática por rango de importe si >50K")
         log.info(f"{'='*65}")
 
+        self.vigentes = set()
         for i, (val, nombre) in enumerate(self.entidades):
             fp = CSV_DIR / nombre_csv_entidad(int(val), nombre)
             label = f"{nombre[:50]}"
             log.info(f"\n  [{i+1}/{total}] {label}")
 
-            # Comprobar si ya está subdividido por importe
-            slug = re.sub(r'[^a-z0-9]+', '_', nombre.lower().strip(' -'))[:30]
-            patron_rango = f"menores_ent{int(val):03d}_{slug}_imp"
-            ya_subdividido = any(
-                f.name.startswith(patron_rango)
-                for f in CSV_DIR.glob(f"menores_ent{int(val):03d}_*_imp*.csv")
-            )
-            if ya_subdividido:
+            if self._entidad_partida(val, nombre):
                 # No saltar la entidad entera: si la ejecución anterior se cortó
                 # o falló algún rango, hay que completar los que falten
                 # (los rangos ya descargados se saltan uno a uno)
@@ -564,38 +768,55 @@ class DescargadorComunidadMadrid:
                 self._descargar_menores_por_importe(val, nombre)
                 continue
 
-            ok, n_filas = self._descargar_con_reintentos(
+            estado, n_filas = self._descargar_con_reintentos(
                 fp, label,
                 tipo_pub="Contratos Menores",
-                entidad=val
+                entidad=val,
+                partir_si_truncado=True,
             )
 
-            # ¿Truncado? → subdividir por rango de importe
-            if ok and n_filas >= UMBRAL_TRUNCADO:
-                log.info(f"    → Subdividiendo por rango de importe...")
-                # Borrar el CSV truncado y revert stats
-                if fp.exists():
-                    file_size = fp.stat().st_size
-                    fp.unlink()
-                    self.stats["ok"] -= 1
-                    self.stats["filas"] -= n_filas
-                    self.stats["bytes"] -= file_size
-                    if self.stats["archivos"] and str(fp) == self.stats["archivos"][-1]:
-                        self.stats["archivos"].pop()
-
+            # ¿Truncado? → subdividir por rango de importe. La respuesta
+            # truncada no se ha guardado; una copia anterior del CSV entero
+            # (de cuando la entidad no llegaba al límite) se conserva y se
+            # archiva al final (_archivar_sustituidos)
+            if estado == "truncado":
+                log.info("    → Subdividiendo por rango de importe...")
                 self._descargar_menores_por_importe(val, nombre)
+            else:
+                self.vigentes.add(fp.name)
 
             time.sleep(PAUSA_BASE)
+
+        self._archivar_sustituidos()
+
+    def _entidad_partida(self, val, nombre):
+        """¿La entidad ya se descarga por rangos de importe? (hay CSV de sus
+        rangos o su consulta entera se partió)"""
+        slug = re.sub(r'[^a-z0-9]+', '_', nombre.lower().strip(' -'))[:30]
+        patron_rango = f"menores_ent{int(val):03d}_{slug}_imp"
+        if any(f.name.startswith(patron_rango)
+               for f in CSV_DIR.glob(f"menores_ent{int(val):03d}_*_imp*.csv")):
+            return True
+        entera = nombre_csv_entidad(int(val), nombre)
+        return self.comprobaciones.get(entera, {}).get("resultado") == "partido"
+
+    def _rango_partido(self, entidad_val, entidad_nombre, imp_desde, imp_hasta, mitades):
+        """¿El rango ya se descarga por sus dos mitades? (hay CSV de alguna o su
+        consulta se partió). Así no se vuelve a pedir en cada ejecución una
+        respuesta truncada que no se guarda."""
+        fp = CSV_DIR / nombre_csv_entidad_rango(int(entidad_val), entidad_nombre, imp_desde, imp_hasta)
+        if self.comprobaciones.get(fp.name, {}).get("resultado") == "partido":
+            return True
+        return any((CSV_DIR / nombre_csv_entidad_rango(int(entidad_val), entidad_nombre, d, h)).exists()
+                   for d, h in mitades)
 
     def _descargar_menores_por_importe(self, entidad_val, entidad_nombre,
                                         rangos=None, depth=0):
         """Descarga contratos menores de una entidad subdivididos por importe.
-        Si un rango sigue truncado, lo subdivide recursivamente."""
+        Si un rango sigue truncado, lo subdivide recursivamente (hasta
+        PROFUNDIDAD_MAXIMA; más abajo se guarda tal cual, con aviso)."""
         if rangos is None:
             rangos = RANGOS_IMPORTE
-        if depth > 5:
-            log.error(f"      ⚠ Profundidad máxima alcanzada, abortando subdivisión")
-            return
 
         indent = "      " + "  " * depth
         for imp_desde, imp_hasta in rangos:
@@ -605,48 +826,67 @@ class DescargadorComunidadMadrid:
             label = f"{entidad_nombre[:30]} imp {imp_desde}-{imp_hasta}"
             log.info(f"{indent}→ Importe {imp_desde}-{imp_hasta}€")
 
-            ok, n_filas = self._descargar_con_reintentos(
+            mitades = sub_rangos(imp_desde, imp_hasta) if depth < PROFUNDIDAD_MAXIMA else None
+            if mitades and self._rango_partido(entidad_val, entidad_nombre, imp_desde, imp_hasta, mitades):
+                log.info(f"{indent}  Ya subdividido, completando sus mitades")
+                self._descargar_menores_por_importe(entidad_val, entidad_nombre, mitades, depth + 1)
+                continue
+
+            estado, n_filas = self._descargar_con_reintentos(
                 fp, label,
                 tipo_pub="Contratos Menores",
                 entidad=entidad_val,
                 extra_params={
                     "presupuesto_base_licitacion_total": imp_desde,
                     "presupuesto_base_licitacion_total_1": imp_hasta,
-                }
+                },
+                partir_si_truncado=bool(mitades),
             )
 
-            # Si sigue truncado → partir el rango por la mitad
-            if ok and n_filas >= UMBRAL_TRUNCADO:
-                if not imp_desde or not imp_hasta:
-                    log.warning(f"{indent}  ⚠ Rango abierto {imp_desde}-{imp_hasta} "
-                                f"truncado ({n_filas:,} filas): no se subdivide")
-                    continue
-                low = int(imp_desde)
-                high = int(imp_hasta)
-                mid = (low + high) // 2
-                if mid <= low or mid >= high:
-                    log.warning(f"{indent}  ⚠ Rango {imp_desde}-{imp_hasta} "
-                                f"no se puede subdividir más ({n_filas:,} filas)")
-                    continue
-
+            # Si sigue truncado → partir el rango por la mitad (la respuesta
+            # truncada no se ha guardado)
+            if estado == "truncado":
+                (low, mid), (_, high) = mitades
                 log.info(f"{indent}  → Re-subdividiendo {imp_desde}-{imp_hasta} "
                          f"en {low}-{mid} y {mid}-{high}")
-                # Borrar CSV truncado
-                if fp.exists():
-                    file_size = fp.stat().st_size
-                    fp.unlink()
-                    self.stats["ok"] -= 1
-                    self.stats["filas"] -= n_filas
-                    self.stats["bytes"] -= file_size
-                    if self.stats["archivos"] and str(fp) == self.stats["archivos"][-1]:
-                        self.stats["archivos"].pop()
-
-                sub_rangos = [(str(low), str(mid)), (str(mid), str(high))]
                 self._descargar_menores_por_importe(
-                    entidad_val, entidad_nombre, sub_rangos, depth + 1
+                    entidad_val, entidad_nombre, mitades, depth + 1
                 )
+            else:
+                self.vigentes.add(fp.name)
+                if estado == "guardado" and n_filas >= UMBRAL_TRUNCADO:
+                    log.warning(f"{indent}  ⚠ Rango {imp_desde}-{imp_hasta} truncado "
+                                f"({n_filas:,} filas): no se puede subdividir más, se guarda tal cual")
 
             time.sleep(PAUSA_BASE)
+
+    def _archivar_sustituidos(self):
+        """Tras recorrer todas las entidades: los CSV de menores que no son de
+        ninguna consulta de esta ejecución pasan a _historico/ (archivar).
+        Pueden ser de otro número de entidad (el desplegable se renumera al
+        añadir o quitar entidades) o el CSV entero de una entidad o de un
+        rango que ahora se parte. Sus filas siguen en la tabla consolidada,
+        con _en_ultima_descarga=False salvo que otra consulta vigente traiga
+        el mismo bloque. Si el desplegable trae menos de la mitad de las
+        entidades con CSV no se archiva nada (más probable un fallo)."""
+        actuales = sorted(p for p in CSV_DIR.glob("menores_*.csv") if not p.name.startswith("."))
+        sobran = [p for p in actuales if p.name not in self.vigentes]
+        if not sobran:
+            return
+        conocidas = {p.name.split("_")[1] for p in actuales}
+        if 2 * len(self.entidades) < len(conocidas):
+            log.warning(f"  ⚠ El desplegable trae {len(self.entidades)} entidades y hay CSV de "
+                        f"{len(conocidas)}: no se archiva ningún CSV de menores (más probable un "
+                        f"fallo del portal que tantas entidades retiradas)")
+            return
+        log.info(f"\n  {len(sobran)} CSV de menores ya no son de ninguna consulta (otro número de "
+                 f"entidad en el desplegable, o una consulta que ahora se parte por importe): pasan "
+                 f"a {HISTORICO}/ y sus filas quedan con _en_ultima_descarga=False salvo que otra "
+                 f"consulta las traiga")
+        for p in sobran:
+            destino = archivar(p)
+            self.stats["archivados"] += 1
+            log.info(f"    {p.name} → {HISTORICO}/{destino.name}")
 
     # ===================================================================
     # B) OTROS TIPOS — por mes + tipo publicación (con fechas)
@@ -730,22 +970,15 @@ class DescargadorComunidadMadrid:
             label = f"{nombre[:50]}"
             log.info(f"\n  [MENORES] {label}")
 
-            ok, n_filas = self._descargar_con_reintentos(
+            estado, _ = self._descargar_con_reintentos(
                 fp, label,
                 tipo_pub="Contratos Menores",
-                entidad=val
+                entidad=val,
+                partir_si_truncado=True,
             )
 
-            if ok and n_filas >= UMBRAL_TRUNCADO:
-                log.info(f"    → Subdividiendo recursivamente por importe...")
-                if fp.exists():
-                    file_size = fp.stat().st_size
-                    fp.unlink()
-                    self.stats["ok"] -= 1
-                    self.stats["filas"] -= n_filas
-                    self.stats["bytes"] -= file_size
-                    if self.stats["archivos"] and str(fp) == self.stats["archivos"][-1]:
-                        self.stats["archivos"].pop()
+            if estado == "truncado":
+                log.info("    → Subdividiendo recursivamente por importe...")
                 self._descargar_menores_por_importe(val, nombre)
 
         self._resumen()
@@ -758,10 +991,13 @@ class DescargadorComunidadMadrid:
 
         log.info(f"\n{'='*65}")
         log.info("RESUMEN")
-        log.info(f"  Descargas OK:    {self.stats['ok']}")
+        log.info(f"  Descargas OK:    {self.stats['ok']} (nuevos {self.stats['nuevo']}, "
+                 f"actualizados {self.stats['actualizado']}, sin cambios {self.stats['sin_cambios']})")
         log.info(f"  Errores:         {self.stats['error']}")
-        log.info(f"  Ya existían:     {self.stats['skip_existe']}")
+        log.info(f"  Ya comprobados:  {self.stats['skip_existe']}")
         log.info(f"  Vacíos:          {self.stats['skip_vacio']}")
+        log.info(f"  Partidos:        {self.stats['partidos']}")
+        log.info(f"  Archivados:      {self.stats['archivados']}")
         log.info(f"  Filas totales:   {self.stats['filas']:,}")
         log.info(f"  Tamaño total:    {total_mb:.1f} MB")
         log.info(f"  Archivos:        {len(self.stats['archivos'])}")
