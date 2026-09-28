@@ -971,7 +971,7 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
         logger.info(f"   Auto-cleanup: {cleanup}")
     
     total_api = None
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:  # usa HTTPS_PROXY si existe
         # Total que anuncia la API sin filtro de fase: control de cobertura final
         # (registros cuya fase vigente no está en FASES_ALL no salen en ninguna consulta)
         try:
