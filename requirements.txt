@@ -9,3 +9,5 @@ tqdm>=4.66.0       # Catalunya: contratos menores
 pdfplumber>=0.10.0 # BORME: parser de PDFs
 xlrd>=2.0.1        # .xls: Ayuntamiento de Madrid, Castilla y León, Murcia, Aragón
 odfpy>=1.4         # .ods: Aragón
+rarfile>=4.0       # Castilla-La Mancha: RAR (necesita unrar, unar, 7z o bsdtar en el sistema)
+libarchive-c>=5.0  # Castilla-La Mancha: RAR sin unrar (usa la biblioteca libarchive del sistema)

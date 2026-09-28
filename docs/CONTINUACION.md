@@ -85,7 +85,12 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - En vivo, con las páginas en castellano: 1.425.763 filas de 6 fuentes. Hay otras 216.660 en las versiones que solo enlazan las páginas en valenciano (`*_va`), en su mayoría repetidas.
     - La UV publica ficheros acumulados que repiten filas: son unos 39.300 contratos distintos en 2024.
     - Pendiente: Elche, Castelló y la Diputació de València cortan la conexión desde la nube. Hay que verificarlo desde otra red.
-  - **Scrapers nuevos**, hechos por agentes y sin revisar: Castilla-La Mancha y municipios (`scripts/ccaa_castilla_la_mancha.py` y `municipios_menores.py`, con sus tests).
+  - **Castilla-La Mancha: cerrado** (`scripts/ccaa_castilla_la_mancha.py`, 48 tests en los dos pandas, unas 50 mutaciones detectadas, descarga completa en vivo: 555 MB y pico de 2,1 GB).
+    - UCLM: 253.571 menores 2017-2026 con NIF. Junta: 14-50 mil al año. SESCAM: 4,16 M de líneas de factura sin NIF, que no son contratos (columna `_unidad`).
+    - Solapes que se conservan tal cual: el anual de la Junta frente a sus trimestres (`_periodo`); 30.707 filas de la UCLM dentro de la Junta de 2023; ficheros repetidos en sector público.
+    - En origen, el SESCAM de 2015 y del 2T de 2016 están cortados en 65.535 filas (el máximo de un .xls).
+    - Para los RAR: `rarfile` con `unrar`, o `libarchive-c`; están en `requirements.txt`. Sin ellos, los RAR quedan pendientes y la ejecución sale con código 1.
+  - **Scraper de municipios** (`scripts/municipios_menores.py`), hecho por un agente y sin revisar.
     - Si hay commits `WIP (copia de seguridad, sin revisar)`, están a medio hacer: revisar, pasar los tests en los dos pandas, verificar en vivo y cerrar con su propio commit.
 
 ## 2. Reglas innegociables
