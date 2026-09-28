@@ -1632,9 +1632,13 @@ def _normalizar_columnas(df):
     if 'procedimiento_code' in df.columns:
         procedimiento = etiquetar(df['procedimiento_code'], PROCEDIMIENTOS)
         if 'procedimiento' in df.columns and 'conjunto' in df.columns:
-            # Las consultas preliminares de mercado usan sus propias etiquetas
+            # Las consultas preliminares de mercado usan sus propias etiquetas. El texto
+            # 'nan' del publicado (v2026.02) es un artefacto del código anterior (str de
+            # un nulo), no algo que publique la PLACSP: pasa a nulo como en el resto
             es_consulta = df['conjunto'].astype(str) == 'consultas'
-            procedimiento = procedimiento.where(~es_consulta, df['procedimiento'].astype(object))
+            propia = df['procedimiento'].astype(object)
+            propia = propia.where(propia.astype(str) != 'nan')
+            procedimiento = procedimiento.where(~es_consulta, propia)
         df['procedimiento'] = procedimiento
     if 'estado_code' in df.columns:
         estado_code = codigos_a_texto(df['estado_code'])

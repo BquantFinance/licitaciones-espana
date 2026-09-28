@@ -5,7 +5,7 @@ REPO=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$REPO"
 R=$TRABAJO/regen
 bajar() { $PY nacional/licitaciones.py --solo-descargar --conjunto $1 --anos $2 --data-dir $R/zips --output-dir $R/tmp_out > $R/logs/descarga_$1_$2.log 2>&1; echo "$1 $2 exit=$?" >> $R/logs/descarga_fin.txt; }
-bajar licitaciones 2013-2018 &
+bajar licitaciones 2012-2018 &
 bajar licitaciones 2019-2021 &
 bajar licitaciones 2022-2023 &
 bajar licitaciones 2024-2026 &

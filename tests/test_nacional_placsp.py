@@ -1626,6 +1626,19 @@ class TestTextosOriginales:
         assert out.isna().tolist() == [True, True, False, True]
 
 
+def test_normalizar_pasa_a_nulo_el_texto_nan_de_las_consultas_del_publicado():
+    # v2026.02 trae 'nan' literal en procedimiento: 15.707 filas con código (ya salían
+    # nulas) y 1.728 consultas sin procedimiento_code, que conservaban el texto
+    df = pd.DataFrame({
+        "conjunto": ["consultas", "consultas", "licitaciones"],
+        "procedimiento": ["nan", "Consulta preliminar de mercado", "nan"],
+        "procedimiento_code": [None, None, None],
+    })
+    out = lic._normalizar_columnas(df)
+    assert out["procedimiento"].isna().tolist() == [True, False, True]
+    assert out["procedimiento"].iloc[1] == "Consulta preliminar de mercado"
+
+
 class TestConsultasYEncargosReales:
     """Entradas reales (tests/fixtures/*_real.xml): campos verificados con los ZIP."""
 
