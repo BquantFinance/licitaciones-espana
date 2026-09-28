@@ -1,6 +1,8 @@
 # Datos CSV originales (muy grandes, no subir)
 catalunya_datos_completos/
 *.csv
+# salvo el registro de errores de la fuente, que se mantiene a mano
+!calidad/errores_fuente.csv
 
 # Python
 __pycache__/
