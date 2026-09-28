@@ -168,8 +168,8 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `de70485` | Sí (regeneración del 2026-09-27) |
 | `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
 | `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `b8c6709` | Sí (y el lector nuevo del CSV, con los CSV reales de 2019 y 2021) |
-| `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | Sí |
-| `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | — |
+| `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `95815b3` | Sí (la semilla, con la primera descarga del VPS) |
+| `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`) | `95815b3` | Sí (primera descarga del VPS, 2026-09-28) |
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
 | `scripts/ccaa_murcia.py` | Cerrado | `8791825` | Sí |
@@ -292,6 +292,14 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
     - `csv_to_parquet` ya no pasa a `to_numeric` textos que no son números normales. Algunos hashes parecen notación científica, y es la causa probable del segfault del VPS en pandas 2.2 (sin confirmar).
     - `csv_to_parquet` convierte en nulo el texto literal `NA`/`null` (código anterior; el publicado no tiene ninguno).
   - **`_ultima_descarga`** es la fecha de la última versión que trae la fila, no la de la última comprobación. Así una re-ejecución idéntica no reescribe la salida. Es igual en TED, Comunidad de Madrid y Galicia.
+- **Catalunya (Socrata): semilla del release** (`95815b3`, 2026-09-28). `ccaa_cataluna_parquet.py` no la admitía.
+  - Lo que la ventana móvil sacó antes de la primera descarga del VPS solo estaba en el release.
+  - Medido: RPC +751.187 filas (2021, sobre todo), PSCP +187.577, fase de ejecución +9.047 y contratación programada +5.095.
+  - Pendiente: **Barcelona** (`consolidar_bcn`) no acumula versiones ni siembra. El crudo sí guarda versiones.
+    - Medirlo cuando el VPS descargue Barcelona por primera vez: la primera descarga murió por memoria en RAISC antes de llegar.
+- **Solo contratación en el VPS** (`--categorias contratacion`, `95815b3`), por decisión del propietario.
+  - Las subvenciones, presupuestos, RRHH… de Catalunya y Valencia no se usan.
+  - Las subvenciones se harán a nivel estatal.
 - Los menores de la PSCP quedaron cubiertos el 2026-09-28. Pendientes que dejó su revisión:
   - **Cobertura:** `totalElements` nunca pasa de 10.000, así que los órganos grandes (ICS, UPF…) desbordan la ventana. Quedan fuera del ámbito (ni se retiran ni se siembran) hasta que haya **segmentación por fecha**. `recuperar_hueco` nunca llega a ejecutarse con la API real.
   - **Semilla:** con la clave por publicación no entran las versiones de febrero de 2026 de publicaciones que han cambiado desde entonces. La alternativa es tomar el publicado como primera descarga, comparando por contenido. Decisión del propietario.
