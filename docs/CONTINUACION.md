@@ -147,7 +147,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_la_rioja.py`, `scripts/ccaa_valencia_menores.py` | Cerrado | `9190268` | Sí |
 | `scripts/ccaa_castilla_la_mancha.py` | Cerrado | `d015194` | Sí |
 | `scripts/municipios_menores.py` | Cerrado | `1361abd` | Sí |
-| `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | **No**: el portal no responde desde la nube |
+| `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | Sí, desde el VPS (2026-09-28): 2019-2024, 375.380 filas; la semilla no añade ninguna; 2025 y 2026 dan 404 en `dataset-contratacion-centralizada-<año>.csv` |
 | `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | Cerrado | `699bf16` | Sí (descarga completa del 2026-09-28) |
 | `galicia/scraper_galicia.py` | Cerrado | `699bf16` | Sí (4 organismos) |
@@ -155,7 +155,11 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `borme/scripts/*.py` | Cerrado | `38e72aa` | Sí (boe.es) |
 
 Avisos de la sesión del VPS (2026-09-28):
-- **Galicia:** segfault en pandas 2.2.3 dentro de `to_numeric` (`csv_to_parquet`). Aquí no se reproduce (pandas 2.2.3, numpy 2.4.6, pyarrow 25.0.1). Ese código es anterior a esta sesión. Faltan las versiones del VPS y el valor que lo dispara.
+- **Galicia:** segfault dentro de `to_numeric` (`csv_to_parquet`). Aquí no se reproduce (pandas 2.2.3, numpy 2.4.6, pyarrow 25.0.1). Ese código es anterior a esta sesión.
+  - **Versiones del VPS** (medidas el 2026-09-28): el fallo era con **pandas 2.3.3**, numpy 2.5.3 y pyarrow 25.0.1, no con 2.2.3; la imagen se había construido con `pandas<3`.
+  - En `db64717`, `tests/test_galicia.py` da segfault con 2.3.3 (código de salida 139) y pasa con 2.2.3.
+  - En `main` (`8eb1540`) pasa 3 de 3 con las dos versiones: el arreglo de `csv_to_parquet` lo resuelve.
+  - Sigue sin saberse qué valor lo dispara.
 - **`test_ayto_a_corrupt_manifest_is_recovered_from_its_history`:** intermitente si dos ejecuciones caen en el mismo segundo, porque el manifiesto sale idéntico. El código es correcto; el test se hace determinista.
 
 ## 2. Reglas innegociables

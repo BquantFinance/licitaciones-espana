@@ -1,0 +1,13 @@
+# Primera descarga: una línea por noche (sus fuentes van una detrás de otra). Lo lanza
+# bin/cola_primera_descarga.sh desde cron a las 00:30. Asturias se probó a mano el 28-sep.
+nacional
+ted
+catalunya valencia
+euskadi
+andalucia
+comunidad_madrid
+galicia
+catalunya_menores
+borme
+ayto_madrid aragon castilla_leon murcia
+extremadura la_rioja valencia_menores castilla_la_mancha municipios
