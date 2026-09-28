@@ -95,11 +95,11 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Madrid | ~52 % (Comunidad) | ~100 % (nueva descarga en curso) | 99 % | Ayuntamientos de Alcalá, Fuenlabrada, Móstoles, Leganés, Parla; universidades |
 | Murcia | ~45 % | **~85-90 %** (SMS 2019-2025 hecho: +594 mil líneas) | 85-100 % (personas físicas enmascaradas) | UPCT, 14 ayuntamientos |
 | País Vasco | ~11 % con importe y NIF | **~98 %** (API `/contracts` descargada: 643.462 menores 2014-2026; falta publicarla) | 100 % | Bilbao y Donostia (PDF), Barakaldo (nada desde 2021) |
-| La Rioja | ~4 % | **~100 % del Gobierno** (CSV 2018-2026, scraper en curso) | Sí | Universidad, empresas públicas, Parlamento, ~120 municipios |
+| La Rioja | ~4 % | **~100 % del Gobierno** (CSV 2018-2026: `scripts/ccaa_la_rioja.py`, 350.967 filas, verificado en vivo) | 91,9 % válido; 8,1 % personas físicas enmascaradas | Universidad, empresas públicas, Parlamento, ~120 municipios |
 | Extremadura | ~30 % | **~90 %** (Registro de Contratos 1T 2022-2T 2026: `scripts/ccaa_extremadura.py`, 207.702 filas, verificado en vivo) | 99,997 % | 2016-2021 (Intervención General, 404), UEx, 173 ayuntamientos |
 | Castilla-La Mancha | 50-65 % | ~85 % (UCLM, caja pagadora y ficheros de la JCCM, scraper en curso) | Sí salvo SESCAM | SESCAM (por factura, sin NIF), 469 ayuntamientos |
 | Aragón | ~30 % | = (2024-2025 del Gobierno recuperados) | Registro 99,96 %; Gobierno sin NIF | Ayuntamiento de Zaragoza y DPZ (bloqueados desde la nube), SALUD pequeños, UZ |
-| C. Valenciana | ~35 % | = | REGCON 93 % | Departamentos de salud, universidades (UV: 17 mil/año con NIF en XLSX), València, Elche, Diputación de Alicante |
+| C. Valenciana | ~35 % | ~50 % (`scripts/ccaa_valencia_menores.py`: UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV, verificado en vivo) | REGCON 93 %; UV 97,9 %; València 100 %; Diputación, UA y UPV sin NIF | Departamentos de salud, Elche, Castelló y Diputació de València (cortan la conexión desde la nube), UJI |
 | Canarias | ~30 % | = | — | **SCS: 89 mil/año sin fuente contrato a contrato** (solo totales; pedir por acceso a la información) |
 | Illes Balears | ~15 % | = | — | Govern e IB-Salut (la CAIB publica ~2 mil/año, copia de PLACSP), Palma (bloqueado), UIB (PDF) |
 | Cantabria | parcial | = | — | contratosdecantabria.es congelado en noviembre de 2023; cantabria.es bloqueado desde la nube |
@@ -578,7 +578,10 @@ Tres situaciones distintas:
     - CIF en el 100 %. `awardAmount` (con IVA) en el 99,94 %, 2.651,8 M€ en total. Sin IVA en el 82,3 % y CPV en el 27,8 %.
     - 183 menores tienen el año de adjudicación mal escrito en origen (8, 201, 1201, 2027-2031…). Se sirven tal cual.
 - **Navarra.** La LFCP 2/2018 (art. 102.3) solo obliga a publicar la menor cuantía **agregada por empresa y trimestre**. No existe fuente contrato a contrato.
-- **La Rioja.** El Gobierno publica un CSV anual con **todos** sus menores (NIF incluido) desde 2018, y no lo usamos.
+- **La Rioja.** El Gobierno publica un CSV anual con **todos** sus menores (NIF incluido) desde 2018. **Ya lo usamos**: `scripts/ccaa_la_rioja.py`, verificado en vivo el 2026-09-28.
+  - 350.967 filas (2018-2026) y 729,0 M€. El 65,4 % son del SERIS.
+  - 2024: 50.383 filas y 106,75 M€, sumando la columna tal cual con los negativos. No cuadra con las 50.343 filas y 96,3 M€ que dio el inventario.
+  - El CSV es ISO-8859-15. El portal cambia por `?` los caracteres que no caben en esa codificación (3-5 valores al año).
 
 | Fuente | URL / API | Formato | Periodo | Órganos | Masiva | Menores/año | ¿Usamos? | ¿En 1143? | Conf. |
 |---|---|---|---|---|---|---|---|---|---|
@@ -596,7 +599,7 @@ Tres situaciones distintas:
 | **Navarra** SICP "relaciones trimestrales de facturas / contratos menores" | `hacienda.navarra.es/sicpportal/mtoBuscadorFacturasTrimestrales.aspx` (POST ASP.NET por año) → `mtoGenerarDocumentoFacturaTrimestral.aspx?UID=` | 84 % PDF, 14 % XLSX, ODS, DOCX; por factura, contratista o contrato | 2018-2026 (documentos: 11 → 176 → 403 → 519 en 2018/19/21/24) | 150 entidades (2024): 12 departamentos (Salud con facturas del SNS-O), Pamplona, UPNA, Parlamento, 85 ayuntamientos o concejos | Semi (listado + UID) | 519 documentos (2024); Salud ~950-1.550 filas/trimestre (incluye facturas del HUN) | No | No | A |
 | Navarra CKAN Registro de Contratos | datosabiertos.navarra.es | CSV | 2007-2026 | Todas | Sí | 0: no incluye menor cuantía | No | No | A |
 | Navarra PLACSP 1143 | feed 1143 | ATOM | 2018-2026 | 13, todos del Estado o de la UNED (AENA, Guardia Civil…) | Sí | ~150-230 | Sí | Sí | A |
-| **La Rioja** dato abierto "Contratos menores {año}" | `ias1.larioja.org/opendata/download?r=` + base64(`cd=N\|cf=03`); cd: 367, 379, 406, 866, 910, 963, 979, 1151, 1175 (2018→2026); cf 01 = XLS, 02 = XML, 03 = CSV, 04 = JSON | CSV `;` latin-1: COD_CONTRATO, DEPARTAMENTO, TIPO_EXPEDIENTE, TERC_CIF, TERC_NOMBRE, CONCEPTO, FECHA, IMPORTE_EJERCICIO | 2018-2026 | Administración general + **SERIS** (71 %) + IER | Sí | 50.343 (2024; 96,3 M€) | No | No | A |
+| **La Rioja** dato abierto "Contratos menores {año}" | `ias1.larioja.org/opendata/download?r=` + base64(`cd=N\|cf=03`); cd: 367, 379, 406, 866, 910, 963, 979, 1151, 1175 (2018→2026); cf 01 = XLS, 02 = XML, 03 = CSV, 04 = JSON | CSV `;` latin-1: COD_CONTRATO, DEPARTAMENTO, TIPO_EXPEDIENTE, TERC_CIF, TERC_NOMBRE, CONCEPTO, FECHA, IMPORTE_EJERCICIO | 2018-2026 | Administración general + **SERIS** (71 %) + IER | Sí | 50.383 (2024; 106,75 M€) | **Sí**, `scripts/ccaa_la_rioja.py` | No | A |
 | La Rioja PLACSP 1143 | feed 1143 | ATOM | 2018-2026 | 52 ayuntamientos (Haro, Arnedo, Calahorra, Alfaro, Logroño…) + AGE | Sí | 2.328 (2024) | Sí | Sí | A |
 | La Rioja Ayto. Logroño | logrono.es/contratos-menores | XLS/PDF/CSV | 2017-2021 (950 filas); luego solo 1143 | Ayuntamiento | Sí | 96-170/año en el 1143 | No | Sí (2018+) | A |
 | La Rioja "Consulta menores" de la plataforma; UR; Parlamento | larioja.org; unirioja.es | Excel trimestral por órgano | — | — | — | — | No | No (UR tampoco) | M (Cloudflare 403; 429) |
@@ -611,7 +614,7 @@ Tres situaciones distintas:
 
 **Prioridades:**
 1. ~~Ejecutar el A1 de Euskadi~~: hecho el 2026-09-27 con la API completa (643.462 menores; +67-92 mil/año con importe). Falta publicarlo desde la máquina del propietario (`Euskadi/ccaa_euskadi.py` y `consolidacion_euskadi.py`). Deduplicar la UPV/EHU de 2025-2026 (1.492 y 4.051 en la API, frente a 12.063 y 187 en el 1143).
-2. `scripts/ccaa_la_rioja.py` con los 9 CSV (cd arriba): +32-50 mil/año.
+2. ~~`scripts/ccaa_la_rioja.py` con los 9 CSV~~: hecho (350.967 filas, +32-50 mil/año). Los años nuevos se descubren sondeando los códigos del servidor de descargas.
 3. Navarra SICP. Listado por año + descarga por UID + extracción, empezando por Salud (XLSX), Educación, Pamplona y la UPNA. Columna `_granularidad` (factura, contratista o contrato).
 4. Fuentes pequeñas: Bilbao (PDF), Donostia (PDF), Vitoria 2013-2017 (anterior a la API), Álava XML 2015-2022, Barakaldo 2011-2020.
 5. Verificar desde otra red OpenDataBizkaia, Gipuzkoa Irekia, la UR y "Consulta menores" de La Rioja.

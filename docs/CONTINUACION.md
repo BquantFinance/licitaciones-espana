@@ -80,7 +80,12 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - La serie 2016-2021 de la Intervención General da 404 en www.juntaex.es. Hay que verificar `instituciones.juntaex.es` desde otra red.
     - El solape con el 1143 está sin medir.
     - **Revisar `ccaa_murcia.py` y `ccaa_castilla_leon.py`**: usan el mismo bloque `_como_texto`. Con pandas 3, las columnas leídas del Parquet anterior son `str` y las del Excel `object`, así que cambian los metadatos sin que cambie ningún dato y se guarda una versión de más en `_historico/`. En Extremadura se corrigió escribiendo siempre `object`.
-  - **Scrapers nuevos**, hechos por agentes y sin revisar: Castilla-La Mancha, La Rioja, Valencia y municipios (`scripts/ccaa_castilla_la_mancha.py`, `ccaa_la_rioja.py`, `ccaa_valencia_menores.py` y `municipios_menores.py`, con sus tests).
+  - **La Rioja: cerrado** (`scripts/ccaa_la_rioja.py`, 29 tests en los dos pandas, 30 mutaciones detectadas, 350.967 filas en vivo).
+  - **Valencia, menores fuera del REGCON: cerrado** (`scripts/ccaa_valencia_menores.py`, 34 tests en los dos pandas, 21 mutaciones detectadas).
+    - En vivo, con las páginas en castellano: 1.425.763 filas de 6 fuentes. Hay otras 216.660 en las versiones que solo enlazan las páginas en valenciano (`*_va`), en su mayoría repetidas.
+    - La UV publica ficheros acumulados que repiten filas: son unos 39.300 contratos distintos en 2024.
+    - Pendiente: Elche, Castelló y la Diputació de València cortan la conexión desde la nube. Hay que verificarlo desde otra red.
+  - **Scrapers nuevos**, hechos por agentes y sin revisar: Castilla-La Mancha y municipios (`scripts/ccaa_castilla_la_mancha.py` y `municipios_menores.py`, con sus tests).
     - Si hay commits `WIP (copia de seguridad, sin revisar)`, están a medio hacer: revisar, pasar los tests en los dos pandas, verificar en vivo y cerrar con su propio commit.
 
 ## 2. Reglas innegociables

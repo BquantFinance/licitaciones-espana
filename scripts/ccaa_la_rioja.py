@@ -71,12 +71,12 @@ Verificado en vivo el 2026-09-27:
     leería como '¤'). Así se pierden 3-5 valores por año ('´', '¤', '¨', '¼',
     '½' en TERC_NOMBRE o CONCEPTO, 2021-2026); el resto del CSV coincide
     fila a fila con el JSON, que en 2018-2020 viene roto (cada registro
-    partido en 8 objetos de un campo). Separador ';', fin de línea CRLF, campos con ';' o
-    comillas entre comillas y con las comillas dobladas, sin saltos de línea
-    dentro de los campos. IMPORTE_EJERCICIO con coma decimal y sin separador
-    de miles (hay negativos); FECHA 'AAAA/MM/DD 00:00:00.000'; TERC_CIF
-    enmascarado en las personas físicas ('***6651**'). El fichero de un año
-    trae contratos de años anteriores con importe en ese ejercicio.
+    partido en 8 objetos de un campo). Separador ';', fin de línea CRLF,
+    campos con ';' o comillas entre comillas y con las comillas dobladas, sin
+    saltos de línea dentro de los campos. IMPORTE_EJERCICIO con coma decimal
+    y sin separador de miles (hay negativos); FECHA 'AAAA/MM/DD 00:00:00.000';
+    TERC_CIF enmascarado en las personas físicas ('***6651**'). El fichero de
+    un año trae contratos de años anteriores con importe en ese ejercicio.
 NO ACCESIBLE desde la nube (no se ha podido usar para descubrir los códigos):
   - El catálogo https://web.larioja.org/dato-abierto (conexión reiniciada) y
     www.larioja.org (reto de Cloudflare, 403).
