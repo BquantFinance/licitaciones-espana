@@ -45,6 +45,7 @@ try:
     import numpy as np
     import pandas as pd
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 except ImportError:
     print("pip install pandas pyarrow")
@@ -476,9 +477,11 @@ def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
 # parcial). Por eso:
 # - Parse incremental: solo se parsean las versiones de PDF que no constan en el
 #   registro de borme_parse_progress.json ("versiones": ruta relativa -> tamaño
-#   y fecha de modificación), es decir, las nuevas o cambiadas. --reprocesar
-#   vuelve a parsear todas las que hay en disco con el código actual (p.ej. tras
-#   corregir el parser).
+#   y fecha de modificación; "filas": empresas y cargos que dio), es decir, las
+#   nuevas o cambiadas. Solo cuenta como parseado lo que tiene filas en las
+#   tablas: si se borran o se sustituyen por una copia anterior, lo que falta se
+#   vuelve a parsear. --reprocesar vuelve a parsear todas las que hay en disco
+#   con el código actual (p.ej. tras corregir el parser).
 # - Las tablas se acumulan sobre la salida anterior con acumular(). Ámbito: los
 #   PDF parseados en esta ejecución con alguna fila; un parse vacío o fallido no
 #   retira nada. Las filas de los PDF que no se han vuelto a parsear (p.ej.
@@ -575,13 +578,39 @@ def _escribir_json(path: Path, datos: dict):
     os.replace(tmp, path)
 
 
+def _pdfs_en_salida(ruta: Path) -> set:
+    """Nombres de PDF con alguna fila en una tabla de salida."""
+    if not ruta.exists():
+        return set()
+    return set(pc.unique(pq.read_table(ruta, columns=["pdf_filename"]).column(0)).to_pylist())
+
+
+def _registro_en_salida(registro: dict, filas: dict, base_dir: Path, tablas: List[Path]) -> dict:
+    """Versiones del registro cuyas filas siguen en las tablas: su PDF tiene
+    filas en cada tabla en la que dio alguna ("filas"; sin ese dato, en la de
+    empresas). Si las tablas se han borrado o sustituido por una copia anterior,
+    las demás se vuelven a parsear (y si su PDF ya no está en disco, se avisa:
+    esas filas solo se pueden recuperar de una copia o con --semilla)."""
+    if not registro:
+        return registro
+    presentes = [_pdfs_en_salida(t) for t in tablas]
+    validas = {rel: firma for rel, firma in registro.items()
+               if all(not n or _nombre_pdf(Path(rel)) in p for n, p in zip(filas.get(rel, [1, 0]), presentes))}
+    if len(validas) < len(registro):
+        faltan = [rel for rel in registro if rel not in validas]
+        en_disco = sum((base_dir / rel).exists() for rel in faltan)
+        log.warning(f"   {len(faltan):,} PDFs registrados como parseados no tienen filas en la salida: "
+                    f"{en_disco:,} se vuelven a parsear y {len(faltan) - en_disco:,} ya no están en disco")
+    return validas
+
+
 def _pendientes(pdfs: Dict[Path, List[Path]], base_dir: Path, registro: dict,
                 reprocesar: bool) -> Tuple[Dict[Path, List[Path]], dict]:
     """Versiones que hay que acumular en esta ejecución: {PDF: [versiones]} desde
     la primera que no consta en el registro hasta la actual (si falta una antigua,
     las posteriores se vuelven a acumular detrás de ella para que la vigente siga
-    siendo la última; con reprocesar, todas), y {versión: firma} de las copias de
-    _historico/ que ya se parsearon cuando eran la actual."""
+    siendo la última; con reprocesar, todas), y {versión: (firma, PDF)} de las
+    copias de _historico/ que ya se parsearon cuando eran la actual."""
     pendientes, movidas = {}, {}
     for destino, lista in pdfs.items():
         inicio = 0 if reprocesar else len(lista)
@@ -593,7 +622,7 @@ def _pendientes(pdfs: Dict[Path, List[Path]], base_dir: Path, registro: dict,
                 # guardar_version pasa la copia anterior a _historico/ sin cambiar su
                 # fecha: si coincide con la registrada del PDF, ya se parseó como él
                 if v.parent.name == HISTORICO and registro.get(_relativa(destino, base_dir)) == firma:
-                    movidas[rel] = firma
+                    movidas[rel] = (firma, _relativa(destino, base_dir))
                     continue
                 inicio = i
                 break
@@ -735,7 +764,10 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
 
     progreso = _leer_json(progress_file)
     registro = dict(progreso.get("versiones") or {})
-    pendientes, movidas = _pendientes(pdfs, base_dir, {} if reprocesar else registro, reprocesar)
+    filas_registro = dict(progreso.get("filas") or {})
+    validas = {} if reprocesar else _registro_en_salida(
+        registro, filas_registro, base_dir, [empresas_parquet, cargos_parquet])
+    pendientes, movidas = _pendientes(pdfs, base_dir, validas, reprocesar)
     # Versiones que se acumulan en esta ejecución: ruta relativa -> (ronda, ruta,
     # firma). La ronda es su posición entre las pendientes de su PDF: la ronda 0
     # se acumula antes que la 1 (versiones de _historico/), etc.
@@ -807,8 +839,8 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
             for nombre, rows in zip(filas, resultados[p]):
                 filas[nombre][0].extend(rows)
                 filas[nombre][1].extend([rel] * len(rows))
-            lote[rel] = {"firma": plan[rel][2], "pdf": _nombre_pdf(p),
-                         "empresas": len(resultados[p][0]), "tag": tag}
+            lote[rel] = {"firma": plan[rel][2], "pdf": _nombre_pdf(p), "empresas": len(resultados[p][0]),
+                         "cargos": len(resultados[p][1]), "tag": tag}
         for nombre, (rows, vers) in filas.items():
             if rows:
                 df = pd.DataFrame(rows)
@@ -890,9 +922,15 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
 
     # Registro de lo acumulado, después de escribir las tablas: si se corta antes,
     # la siguiente ejecución lo vuelve a parsear y acumular (no se duplica nada)
-    registro.update(movidas)
-    registro.update({rel: info["firma"] for rel, (_, info) in acumuladas.items()})
-    _escribir_json(progress_file, {"done": sorted(registro), "errors": sorted(errores), "versiones": registro})
+    for rel, (firma, rel_pdf) in movidas.items():
+        registro[rel] = firma
+        if rel_pdf in filas_registro:
+            filas_registro[rel] = filas_registro[rel_pdf]
+    for rel, (_, info) in acumuladas.items():
+        registro[rel] = info["firma"]
+        filas_registro[rel] = [info["empresas"], info.get("cargos", 0)]
+    _escribir_json(progress_file, {"done": sorted(registro), "errors": sorted(errores),
+                                   "versiones": registro, "filas": filas_registro})
     # Las tablas ya contienen todas las filas: los parciales sobran
     shutil.rmtree(parts_dir, ignore_errors=True)
 

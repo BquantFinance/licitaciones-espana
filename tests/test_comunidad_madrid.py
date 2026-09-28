@@ -2197,10 +2197,18 @@ def test_ayto_a_withdrawn_resource_never_downloaded_is_a_warning(web, tmp_path):
         assert codigo == 0 and "se llegara a descargar ninguna copia" in log, log
 
 
-def test_ayto_a_corrupt_manifest_is_recovered_from_its_history(web, tmp_path):
+def test_ayto_a_corrupt_manifest_is_recovered_from_its_history(web, tmp_path, monkeypatch):
     _portal_con_fixtures(web)
     salida = tmp_path / "salida"
-    assert _ejecutar(salida)[0] == 0 and _ejecutar(salida)[0] == 0   # a previous manifest in _historico/
+    # ahora_iso() has second resolution: two runs within the same second would
+    # write the same manifest and leave no previous one in _historico/
+    ahora = ["2026-09-01T10:00:00Z"]
+    monkeypatch.setattr(ayto, "ahora_iso", lambda: ahora[0])
+    assert _ejecutar(salida)[0] == 0
+    ahora[0] = "2026-09-01T10:00:01Z"
+    assert _ejecutar(salida)[0] == 0                             # a previous manifest in _historico/
+    assert list((salida / "originales" / "_historico").glob("_manifiesto__*.json"))
+    ahora[0] = "2026-09-01T10:00:02Z"
     fiel_antes, uni_antes = _leer(salida)
     ruta = salida / "originales" / "_manifiesto.json"
     corrupto = ruta.read_bytes()[:500]
@@ -3259,7 +3267,7 @@ def test_cam_the_parquet_bytes_do_not_depend_on_how_pandas_chunks_a_column(cam_d
     # output must be the same file (or switching pandas would add a version
     # to _historico/). Enough distinct values to overflow Parquet's dictionary.
     import pyarrow as pa
-    valores = [f"EXP-{i:07d}-{i * 7919 % 100003:06d}" for i in range(120_000)]
+    valores = [hashlib.md5(str(i).encode()).hexdigest()[:14] for i in range(120_000)]
     columnas = ["Nº Expediente", "_en_ultima_descarga"]
     entera = pd.DataFrame({"Nº Expediente": pd.Series(valores, dtype=object), "_en_ultima_descarga": True})
     troceada = pd.DataFrame({"Nº Expediente": pd.Series(pd.arrays.ArrowStringArray(

@@ -932,6 +932,23 @@ class SesgoSupervivienteMenoresTests(_EjecucionMenores, unittest.TestCase):
         self.assertEqual(self._ficheros(), antes)
         self.assertEqual(self._historico(), historico)
 
+    def test_mismas_filas_en_otro_orden_no_crean_version(self):
+        # La API no ordena siempre igual las publicaciones con la misma fecha (en vivo, las
+        # de una misma relación agregada): el mismo contenido en otro orden no es un cambio
+        def empatadas(invertir):
+            registros = self._basicos()
+            fase_10 = [dict(r, _orden='0') for r in registros if r['_fase'] == 10]
+            resto = [r for r in registros if r['_fase'] != 10]
+            return (fase_10[::-1] if invertir else fase_10) + resto
+
+        for cleanup in (False, True):
+            with self.subTest(cleanup=cleanup):
+                self._ejecutar(APIFalsa(empatadas(False)), cleanup=cleanup)
+                antes, historico = self._ficheros(), self._historico()
+                self._ejecutar(APIFalsa(empatadas(True)), cleanup=cleanup)
+                self.assertEqual(self._ficheros(), antes)
+                self.assertEqual(self._historico(), historico)
+
     def test_publicacion_retirada_se_conserva_marcada(self):
         self._ejecutar(APIFalsa(self._basicos()))
         primera = self._salida()
@@ -1106,6 +1123,9 @@ class SesgoSupervivienteMenoresTests(_EjecucionMenores, unittest.TestCase):
         salida = self._salida()
         self.assertEqual(len(salida), 581)
         self.assertEqual(self._no_servidas(), {5000})
+        self.assertTrue(salida['_primera_descarga'].notna().all())
+        self.assertLess(salida.loc[salida['id'] == 5000, '_ultima_descarga'].iloc[0],
+                        salida.loc[salida['id'] == 1, '_ultima_descarga'].iloc[0])
         self.assertTrue(any(n.startswith('cm__') for n in self._historico()))
 
     def test_semilla_anade_solo_las_claves_que_faltan_y_quita_solo_sus_copias(self):
@@ -1149,6 +1169,14 @@ class SesgoSupervivienteMenoresTests(_EjecucionMenores, unittest.TestCase):
         salida = self._salida()
         self.assertEqual(sorted(salida.loc[salida['_origen'].notna(), 'id']), [5000, 905000])
         self.assertEqual(len(salida), 582)
+
+    def test_semilla_sin_nada_que_anadir_no_cambia_la_salida(self):
+        ruta = self.dir / "publicado.parquet"
+        _publicado(self._basicos()[:50]).to_parquet(ruta)
+        self._ejecutar(APIFalsa(self._basicos()), semillas=[ruta])
+        salida = self._salida()
+        self.assertEqual(list(salida.columns[-3:]), META)
+        self.assertNotIn('_origen', salida.columns)
 
     def test_semilla_inexistente_o_sin_clave_falla_antes_de_descargar(self):
         api = APIFalsa(self._basicos())

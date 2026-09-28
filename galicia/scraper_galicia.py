@@ -1656,6 +1656,30 @@ PARQUET_TEXT_COLUMNS = (
 )
 # Booleanas: en el CSV, 'True' / 'False'.
 PARQUET_BOOL_COLUMNS = ("_en_ultima_descarga",)
+# Textos que csv_to_parquet deja pasar a pd.to_numeric al decidir si una columna
+# es numérica: números normales (como los escribe repr) con 18 cifras como mucho
+# y un exponente de 3 como mucho. Cualquier otro texto hace la columna de texto
+# sin llamar a to_numeric, que habría dicho lo mismo: p. ej. un sha256 que parece
+# notación científica ('3e4224959973966b37...': 13 cifras de exponente) o un
+# entero de más de 18 cifras (to_numeric lo pasaba a float perdiendo cifras).
+PARQUET_NUMBER_RE = re.compile(
+    r"\s*[+-]?(?:(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]{1,3})?|inf(?:inity)?)\s*",
+    re.IGNORECASE,
+)
+PARQUET_NUMBER_MAX_DIGITS = 18
+
+
+def plain_numbers(values):
+    """Si todos los textos de `values` (sin nulos) son números normales
+    (PARQUET_NUMBER_RE, como mucho PARQUET_NUMBER_MAX_DIGITS cifras antes del
+    exponente)."""
+    text = pd.Series(values, dtype=object).dropna().astype(str)
+    if text.empty:
+        return True
+    if not text.str.fullmatch(PARQUET_NUMBER_RE).all():
+        return False
+    mantissa = text.str.replace(r"[eE][+-]?[0-9]+\s*$", "", regex=True)
+    return bool((mantissa.str.count(r"[0-9]") <= PARQUET_NUMBER_MAX_DIGITS).all())
 
 
 def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSIZE):
@@ -1699,6 +1723,9 @@ def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSI
             if not numeric[column]:
                 continue
             values = chunk[column]
+            if not plain_numbers(values):
+                numeric[column] = integer[column] = False
+                continue
             parsed = pd.to_numeric(values, errors="coerce")
             if (parsed.isna() & values.notna()).any():
                 numeric[column] = integer[column] = False

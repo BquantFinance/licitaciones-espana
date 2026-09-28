@@ -490,7 +490,7 @@ def scrape_day(
             continue
         if estado == "actualizado":
             log.warning(f"    ⚠️  {link['pdf_filename']} ha cambiado en boe.es: la versión anterior "
-                        f"queda en {day_dir.name}/_historico/")
+                        f"queda en {day_dir.relative_to(output_dir).as_posix()}/_historico/")
 
         sha256 = hashlib.sha256(content).hexdigest()
 

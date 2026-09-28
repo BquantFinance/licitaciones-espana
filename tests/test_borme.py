@@ -589,6 +589,38 @@ def test_reejecucion_sin_cambios_no_crea_version_nueva(fake_pdf, fechas, tmp_pat
     assert not (out / "_historico").exists() and len(fechas) == 1
 
 
+def test_salida_borrada_o_restaurada_de_una_copia_anterior_se_completa(fake_pdf, fechas, tmp_path):
+    # Solo cuenta como parseado lo que tiene filas en la salida (como antes con --resume)
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_NUEVO: [PAG1], PDF_ENERO: [PAG_ENERO]})
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    bparser.run_batch(base, out, workers=2)
+    copia = {n: (out / n).read_bytes() for n in ("borme_empresas.parquet", "borme_cargos.parquet")}
+    _pdf_file(base, dt.date(2024, 1, 5), PDF_NUEVO)
+    bparser.run_batch(base, out, workers=2)
+
+    for n, contenido in copia.items():  # se restaura la copia anterior (sin el PDF nuevo)
+        (out / n).write_bytes(contenido)
+    bparser.run_batch(base, out, workers=2)
+    emp, car = _tablas(out)
+    assert emp.groupby("pdf_filename").size().to_dict() == {PDF_MADRID: 6, PDF_NUEVO: 3}
+    assert set(car["pdf_filename"]) == {PDF_MADRID, PDF_NUEVO}
+
+    (out / "borme_cargos.parquet").unlink()  # tabla borrada
+    bparser.run_batch(base, out, workers=2)
+    emp, car = _tablas(out)
+    assert set(car["pdf_filename"]) == {PDF_MADRID, PDF_NUEVO} and car["_en_ultima_descarga"].all()
+    assert emp.groupby("pdf_filename").size().to_dict() == {PDF_MADRID: 6, PDF_NUEVO: 3}
+
+    # Un PDF con parse vacío no necesita filas en la salida: no se reparsea cada vez
+    fake_pdf[PDF_ENERO] = [PAG_ENERO.split("1 - ")[0]]
+    _pdf_file(base, dt.date(2024, 1, 2), PDF_ENERO)
+    bparser.run_batch(base, out, workers=2)
+    antes = _foto(out)
+    bparser.run_batch(base, out, workers=2)
+    assert _foto(out) == antes
+
+
 def test_salida_guardada_con_guardar_registros(fake_pdf, fechas, tmp_path):
     base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
     fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_NUEVO: [PAG1]})

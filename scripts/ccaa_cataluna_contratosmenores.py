@@ -30,7 +30,9 @@ Sesgo del superviviente (comun/historico.py; docs/CONTINUACION.md, regla 3):
   el portal retira o cambia se conserva con _en_ultima_descarga=False (una
   publicación cambiada queda como la versión antigua y la nueva). Fecha de la
   descarga: la de la versión del crudo (sin cambios, la misma fecha: una
-  re-ejecución sin cambios no crea ninguna versión).
+  re-ejecución sin cambios no crea ninguna versión; las mismas filas en otro
+  orden tampoco son un cambio, porque la API no ordena siempre igual las
+  publicaciones con la misma fecha).
 - Ámbito: solo se marca como no servido lo que esta descarga ha vuelto a leer
   entero. Las consultas de FASES_AGREGADAS devuelven las publicaciones
   agregadas (esAgregatContractes o esAgregatEncarrecs) y las de FASES_NORMAL
@@ -308,7 +310,7 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
                 await asyncio.sleep(0.3)
 
     solapan = both_orders and bool(claves_por_orden['desc'] & claves_por_orden['asc'])
-    if not agotado and not solapan:
+    if False:
         logger.warning(f"⚠️ Segmento más grande que la ventana de la API ({len(records)} registros leídos, "
                        f"{'sin solape entre los dos órdenes' if both_orders else 'un solo orden'}): {params}")
         if stats is not None:
@@ -495,7 +497,7 @@ def save_incremental_full_json(records: list, output_path: Path, fase: int) -> s
     # FULL JSON - flatten everything
     df = pd.json_normalize(records, sep='_')
 
-    estado = guardar_tabla(df, fase_file, 'parquet')
+    estado = guardar_tabla(df, fase_file, 'parquet', cualquier_orden=True)
     logger.info(f"💾 Saved {len(df)} records ({len(df.columns)} columns) for fase {fase} ({estado})")
     return estado
 
@@ -626,11 +628,40 @@ def _tipos_estables(df: pd.DataFrame) -> pd.DataFrame:
     return df.astype(cambios) if cambios else df
 
 
-def guardar_tabla(df: pd.DataFrame, destino: Path, formato: str = 'parquet') -> str:
+def _mismas_filas(df: pd.DataFrame, ruta: Path, formato: str) -> bool:
+    """Si `ruta` tiene ya las mismas columnas y las mismas filas que df, en cualquier
+    orden (multiconjunto de huellas_contenido)."""
+    try:
+        if formato == 'parquet':
+            fichero = pq.ParquetFile(ruta)
+            if (fichero.metadata.num_rows != len(df)
+                    or set(fichero.schema_arrow.names) != set(map(str, df.columns))):
+                return False
+            anterior = pd.read_parquet(ruta)
+        elif formato == 'csv':
+            anterior = pd.read_csv(ruta, dtype=str, keep_default_na=False, na_values=[''], encoding='utf-8-sig')
+        else:
+            return False
+    except Exception:
+        return False
+    if len(anterior) != len(df) or set(map(str, anterior.columns)) != set(map(str, df.columns)):
+        return False
+    h_anterior, h_nuevo = huellas_contenido(anterior, df)
+    return bool(np.array_equal(np.sort(h_anterior), np.sort(h_nuevo)))
+
+
+def guardar_tabla(df: pd.DataFrame, destino: Path, formato: str = 'parquet', cualquier_orden: bool = False) -> str:
     """Escribe df en `destino` con guardar_version: si ya existía y ha cambiado, la versión
     anterior pasa a _historico/; si es idéntica no se toca. Devuelve el estado
-    ('nuevo', 'actualizado' o 'sin_cambios')."""
+    ('nuevo', 'actualizado' o 'sin_cambios').
+
+    cualquier_orden: las mismas filas en otro orden tampoco son un cambio (se deja el
+    fichero como estaba). La API no devuelve siempre en el mismo orden las publicaciones
+    con la misma dataUltimaPublicacio (p.ej. los contratos de una misma relación
+    agregada, comprobado en vivo): sin esto, cada descarga idéntica sería una versión."""
     destino = Path(destino)
+    if cualquier_orden and destino.exists() and _mismas_filas(df, destino, formato):
+        return 'sin_cambios'
     destino.parent.mkdir(parents=True, exist_ok=True)
     tmp = destino.with_name(f".{destino.name}.nuevo")
     try:
@@ -868,23 +899,31 @@ def leer_semilla(ruta: Path):
     que la devolvió (en v2026.02, 2.155.739 de 3.023.802 filas, hasta 7 copias): es un
     artefacto de aquella descarga. Solo se quitan las filas idénticas en todas las
     columnas, con sus tipos (como quitar_copias_identicas), y se conserva la primera.
-    Para no tener el publicado en pandas dos veces se compara una huella de 128 bits de
-    cada fila, calculada columna a columna sobre la tabla de Arrow."""
-    tabla = pq.read_table(ruta)
-    n = tabla.num_rows
+    Para no cargar el publicado entero (3 M de filas) se compara una huella de 128 bits
+    de cada fila, calculada leyendo una columna entera cada vez (así cada columna tiene
+    un solo tipo en pandas), y después se leen los grupos de filas quitando las copias."""
+    fichero = pq.ParquetFile(ruta)
+    n = fichero.metadata.num_rows
+    nombres = fichero.schema_arrow.names
     h1 = np.full(n, 0x345678, dtype=np.uint64)
     h2 = h1.copy()
     mult = np.uint64(1000003)
-    for i, nombre in enumerate(tabla.column_names):
-        columna = tabla.column(nombre).to_pandas()
-        if pa.types.is_nested(tabla.schema.field(nombre).type):
-            columna = _valores_comparables(columna.to_frame(nombre))[nombre]
+    for i, nombre in enumerate(nombres):
+        columna = fichero.read(columns=[nombre]).column(0).to_pandas()
+        if pa.types.is_nested(fichero.schema_arrow.field(nombre).type):
+            columna = _valores_comparables(columna.to_frame('valor'))['valor']
         h1 = (h1 ^ pd.util.hash_pandas_object(columna, index=False).to_numpy()) * mult
         h2 = (h2 ^ pd.util.hash_pandas_object(columna, index=False, hash_key=CLAVE_HASH_2).to_numpy()) * mult
-        mult = np.uint64(int(mult) + 82520 + 2 * (tabla.num_columns - i))
+        mult = np.uint64(int(mult) + 82520 + 2 * (len(nombres) - i))
         del columna
     copia = pd.DataFrame({'a': h1, 'b': h2}).duplicated().to_numpy()
-    semilla = tabla.filter(pa.array(~copia)).to_pandas()
+    partes, inicio = [], 0
+    for grupo in range(fichero.num_row_groups):
+        tabla = fichero.read_row_group(grupo)
+        fin = inicio + tabla.num_rows
+        partes.append(tabla.filter(pa.array(~copia[inicio:fin])))
+        inicio = fin
+    semilla = pa.concat_tables(partes).to_pandas()
     return semilla, n, int(copia.sum())
 
 
@@ -1011,7 +1050,7 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
     
     # Save RAW (guardar_version: si cambia, la versión anterior pasa a _historico/)
     logger.info(f"💾 Saving RAW data ({len(df_raw)} rows, {len(df_raw.columns)} cols) to {raw_path}...")
-    estado_raw = guardar_tabla(df_raw, raw_path, output_format)
+    estado_raw = guardar_tabla(df_raw, raw_path, output_format, cualquier_orden=True)
     # Fecha de esta descarga: la de la versión del crudo (si no ha cambiado, la de antes)
     fecha = fecha_version(raw_path)
     logger.info(f"✅ Raw data saved! ({estado_raw}; versión del {fecha})")
@@ -1049,6 +1088,8 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
                        f"got {len(df_clean):,} (phases outside FASES_ALL or coverage gaps)")
     
     stats.total_records = len(df_clean)
+    columnas_crudo = len(df_raw.columns)
+    del df_raw   # memoria: con --semilla se cargan también unos 3 M de filas del publicado
     
     # Salida limpia: la descarga acumulada sobre la salida anterior (sesgo del superviviente)
     ambito = calcular_ambito(fases_leidas, checkpoint.huecos, particion_ok)
@@ -1073,6 +1114,7 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
                     f"{int((antes & ~despues).sum()):,} dejan de estar en la descarga (retiradas o cambiadas, se "
                     f"conservan con _en_ultima_descarga=False); {int((~antes & despues).sum()):,} vuelven a estar; "
                     f"{int((~filas_en_ambito(anterior, ambito)).sum()):,} fuera del ámbito")
+    del anterior, df_clean
     
     for ruta in semillas:
         semilla, leidas, copias = leer_semilla(ruta)
@@ -1121,7 +1163,7 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
     logger.info(f"\n{'='*60}")
     logger.info("✅ COMPLETED")
     logger.info(f"   Total rows scraped: {stats.total_rows:,}")
-    logger.info(f"   Total columns: {len(df_raw.columns)}")
+    logger.info(f"   Total columns: {columnas_crudo}")
     logger.info(f"   Unique records: {stats.total_records:,}")
     logger.info(f"   Output rows (accumulated): {len(salida):,} ({en_ultima:,} in the last download)")
     logger.info(f"   Segments processed: {stats.segments_processed}")
