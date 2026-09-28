@@ -167,8 +167,11 @@ CSV_MENORES = "licitaciones_menores.csv"
 CSV_TODO = "licitaciones_all.csv"
 # Metadatos del parquet con la fecha de la ultima version incorporada de cada alcance
 CLAVE_METADATOS = b"ccaa_andalucia"
-# Columna temporal con la que se pasa a acumular() el ambito de cada descarga
+# Columnas temporales con las que se pasa a acumular() el ambito de cada descarga y el orden
+# de las filas nuevas cuando se acumula por trozos de FILAS_POR_TROZO filas
 COLUMNA_AMBITO = "_ambito_descarga"
+COLUMNA_POSICION = "_posicion_descarga"
+FILAS_POR_TROZO = 200_000
 CLAVE_SEMILLA = ["id_expediente"]
 CONSULTAS = ("std", "menores")
 
@@ -1444,10 +1447,19 @@ class _Coincidencias:
         return filas
 
 
+def _trozos_por_expediente(ids, trozos):
+    """Trozo de cada fila por su id_expediente (como texto: 1 y '1' van al mismo)."""
+    return pd.util.hash_pandas_object(ids.astype(str), index=False).to_numpy() % trozos
+
+
 def _acumular_version(anterior, filas, fecha, cabecera):
     """acumular() de una version de la capa cruda sobre la tabla acumulada. Ambito: las
     filas cuya idExpediente vuelve (una version antigua de un expediente que el portal
-    sirve cambiado) y las que la descarga ha releido con certeza (_Coincidencias.ambito)."""
+    sirve cambiado) y las que la descarga ha releido con certeza (_Coincidencias.ambito).
+
+    Con tablas grandes se llama a acumular() por trozos de id_expediente (dos filas solo
+    son iguales si tienen el mismo) y se recompone el orden de una sola llamada: acumular
+    compara cada celda como texto y con ~800K filas por lado pasaba de 5 GB."""
     if anterior is None or not len(anterior):
         return acumular(None, filas, fecha)
     releidos = anterior["id_expediente"].astype(str).isin(set(filas["id_expediente"].astype(str))).to_numpy()
@@ -1455,14 +1467,32 @@ def _acumular_version(anterior, filas, fecha, cabecera):
     # Sin copias (las dos tablas son de esta ejecucion): con ~800K filas cada copia son GB
     anterior[COLUMNA_AMBITO] = np.where(en_ambito, "si", "no")
     filas[COLUMNA_AMBITO] = "si"
-    acumulada = acumular(
-        anterior,
-        filas,
-        fecha,
-        ambito=[COLUMNA_AMBITO],
-        ignorar=tuple(IGNORAR_POR_DEFECTO) + (COLUMNA_AMBITO,),
+    ignorar = tuple(IGNORAR_POR_DEFECTO) + (COLUMNA_AMBITO, COLUMNA_POSICION)
+
+    trozos = -(-max(len(anterior), len(filas)) // FILAS_POR_TROZO)
+    if trozos > 1:
+        trozo_anterior = _trozos_por_expediente(anterior["id_expediente"], trozos)
+        trozo_filas = _trozos_por_expediente(filas["id_expediente"], trozos)
+        if len(np.unique(trozo_filas)) < trozos:
+            trozos = 1  # un trozo sin filas nuevas no retiraria nada: una sola llamada
+    if trozos <= 1:
+        acumulada = acumular(anterior, filas, fecha, ambito=[COLUMNA_AMBITO], ignorar=ignorar)
+        return acumulada.drop(columns=COLUMNA_AMBITO)
+
+    filas[COLUMNA_POSICION] = np.arange(len(filas))
+    viejas, nuevas = [], []
+    for trozo in range(trozos):
+        posiciones = np.flatnonzero(trozo_anterior == trozo)
+        parte = acumular(anterior.iloc[posiciones], filas[trozo_filas == trozo], fecha,
+                         ambito=[COLUMNA_AMBITO], ignorar=ignorar)
+        # acumular devuelve primero las filas de `anterior` (en su orden) y despues las altas
+        viejas.append(parte.iloc[: len(posiciones)].set_axis(posiciones))
+        nuevas.append(parte.iloc[len(posiciones):])
+    acumulada = pd.concat(
+        [pd.concat(viejas).sort_index(), pd.concat(nuevas).sort_values(COLUMNA_POSICION, kind="stable")],
+        ignore_index=True,
     )
-    return acumulada.drop(columns=COLUMNA_AMBITO)
+    return acumulada.drop(columns=[COLUMNA_AMBITO, COLUMNA_POSICION])
 
 
 def _leer_salida_anterior(path):

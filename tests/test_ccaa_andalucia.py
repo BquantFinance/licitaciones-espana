@@ -825,6 +825,43 @@ class CoincidenciasTests(unittest.TestCase):
         self.assertEqual(sin_estado.seguro(alcance).tolist(), [False] * 5)
 
 
+class AcumularPorTrozosTests(unittest.TestCase):
+    def test_por_trozos_da_lo_mismo_que_una_sola_llamada(self):
+        def tabla(ids, sufijo):
+            return pd.DataFrame({
+                "id_expediente": ids,
+                "titulo": [f"T{i}{sufijo if i % 7 == 0 else ''}" for i in ids],
+                "importe_licitacion": [float(i) for i in ids],
+            })
+
+        # 1-300 (el 5 servido dos veces y el 11 retirado antes); ahora faltan 251-300, cambian
+        # los multiplos de 7, el 5 viene una vez, vuelve el 11 y hay 400 nuevos
+        primera = tabla(list(range(1, 301)) + [5], "")
+        anterior = ccaa_andalucia.acumular(None, primera, "d1")
+        anterior.loc[anterior["id_expediente"] == 11, "_en_ultima_descarga"] = False
+        filas = tabla(list(range(1, 251)) + list(range(1000, 1400)), " (cambiado)")
+        # 280 ya no esta, pero puede estar en una consulta incompleta: no se retira
+        cabecera = {"alcance": {}, "incompletos": [{"must": [mm("idExpediente", 280)]}]}
+
+        resultados = []
+        for filas_por_trozo in (10_000, 50):
+            with patch.object(ccaa_andalucia, "FILAS_POR_TROZO", filas_por_trozo), patch.object(
+                ccaa_andalucia, "acumular", wraps=ccaa_andalucia.acumular
+            ) as llamadas:
+                resultados.append(ccaa_andalucia._acumular_version(anterior.copy(), filas.copy(), "d2", cabecera))
+            self.assertEqual(llamadas.call_count, 1 if filas_por_trozo == 10_000 else 13)
+        una, trozos = resultados
+        pd.testing.assert_frame_equal(trozos, una)
+        self.assertEqual(list(una.columns), ["id_expediente", "titulo", "importe_licitacion"] + list(META))
+        vigencia = una.groupby("id_expediente")["_en_ultima_descarga"].apply(list)
+        self.assertEqual(vigencia[300], [False])
+        self.assertEqual(vigencia[7], [False, True])
+        self.assertEqual(vigencia[5], [True, False])
+        self.assertEqual(vigencia[11], [True])
+        self.assertEqual(vigencia[280], [True])
+        self.assertEqual(una["id_expediente"].tolist()[-400:], list(range(1000, 1400)))
+
+
 VENTANA = 100  # MAX_FROM=0: una sola pagina de 100 por consulta y ordenacion
 
 
@@ -1393,6 +1430,7 @@ class HistoricoAndaluciaTests(unittest.TestCase):
         antes = self.ficheros()
 
         self.assertEqual(self.ejecutar("procesar", "--semilla", str(salida)), 2)
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(salida), "--origen-semilla", "x"), 2)
         self.assertEqual(self.ejecutar("procesar", "--semilla", str(self.tmp / "no_existe.parquet")), 2)
         self.assertEqual(self.ejecutar("procesar", "--semilla", str(copia)), 2)  # sin --origen-semilla
         self.assertEqual(self.ficheros(), antes)
