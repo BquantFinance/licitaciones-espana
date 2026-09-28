@@ -59,6 +59,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Aragón | Gobierno (menores por año) + Registro (2023+) | 15.690 | 18.808 | 13.088 | 10.795 | 2.946 | 7.919 | 4.867 | 3.624 |
 | C. Valenciana | REGCON (adjudicación directa; aproximado) | 5.806 | 5.351 | 5.038 | 6.184 | 6.354 | 5.217 | 10.169 | 108 |
 | País Vasco | KontratazioA: **anuncios** de menores, sin importe ni adjudicatario | 4.728 | 59.854 | 63.172 | 59.144 | 91.149 | 99.620 | 92.883 | 86.809 |
+| País Vasco | KontratazioA API `/contracts` (A1), con importe y CIF: **descargada el 2026-09-27, sin publicar** | 31.627 | 69.025 | 68.585 | 66.597 | 87.371 | 92.348 | 84.814 | 83.905 |
 
 ### 0.1 Veredicto (2026-09-27, noche)
 
@@ -70,7 +71,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
   - Galicia: ~220 mil.
   - Junta de Andalucía: ~127 mil.
   - Murcia (CARM + SMS): ~120 mil.
-  - Euskadi: ~85 mil, al terminar su descarga.
+  - Euskadi: ~85 mil (84.814 en 2024 en la API `/contracts`, descargada entera el 2026-09-27 y sin publicar todavía).
   - Resto: Asturias, CyL, Aragón, Valencia y Ayuntamiento de Madrid.
 - **No hay un denominador oficial completo.**
   - La columna "Directo" del RCSP suma 1,16 M en 2024: 732 mil autonómicos, 233 mil locales, 174 mil de universidades y 18 mil de la AGE. Es solo una **cota inferior**: País Vasco, Navarra, La Rioja, Murcia, Ceuta y Melilla comunican 0 todos los años, y Madrid, Aragón y Cantabria casi 0.
@@ -93,7 +94,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Asturias | ~100 % del Principado hasta 2024 | = | 99,9 % combinando columnas | 2025-2026 bloqueado desde la nube; Gijón (64 mil con CIF desde 2018), Oviedo, Avilés |
 | Madrid | ~52 % (Comunidad) | ~100 % (nueva descarga en curso) | 99 % | Ayuntamientos de Alcalá, Fuenlabrada, Móstoles, Leganés, Parla; universidades |
 | Murcia | ~45 % | **~85-90 %** (SMS 2019-2025 hecho: +594 mil líneas) | 85-100 % (personas físicas enmascaradas) | UPCT, 14 ayuntamientos |
-| País Vasco | ~11 % con importe y NIF | **~98 %** (API `/contracts`, en curso) | 100 % | Bilbao y Donostia (PDF), Barakaldo (nada desde 2021) |
+| País Vasco | ~11 % con importe y NIF | **~98 %** (API `/contracts` descargada: 643.462 menores 2014-2026; falta publicarla) | 100 % | Bilbao y Donostia (PDF), Barakaldo (nada desde 2021) |
 | La Rioja | ~4 % | **~100 % del Gobierno** (CSV 2018-2026, scraper en curso) | Sí | Universidad, empresas públicas, Parlamento, ~120 municipios |
 | Extremadura | ~30 % | **~90 %** (Registro de Contratos, scraper en curso) | Sí | UEx, 173 ayuntamientos |
 | Castilla-La Mancha | 50-65 % | ~85 % (UCLM, caja pagadora y ficheros de la JCCM, scraper en curso) | Sí salvo SESCAM | SESCAM (por factura, sin NIF), 469 ayuntamientos |
@@ -568,13 +569,18 @@ Tres situaciones distintas:
 - **País Vasco.** La API de KontratazioA ya contiene los menores con importe, NIF y CPV: **643.463** contratos con `minorContract=true` (2014-2026) y el filtro `minor-contract=true`.
   - Serie anual: 69.025 (2019), 66.597 (2021), 92.348 (2023), 84.814 (2024), 83.905 (2025).
   - 2024, descargado entero por meses (84.814 ids = `totalItems`): 335,8 M€ con IVA. El NIF viene en el 100 %, el importe sin IVA solo en el 78 % y el CPV en el 34 %.
-  - Hoy solo tenemos los metadatos de anuncio del B1, sin importe. El A1 ya los descarga, pero la descarga completa sigue pendiente.
+  - Publicado hoy: solo los metadatos de anuncio del B1, sin importe.
+  - **Descarga completa del A1 hecha el 2026-09-27**, en el contenedor y sin publicar: 715.572 de los 715.574 registros de la API. Faltan 2 sin fecha que ninguna ventana devuelve.
+    - La API sirve 217 filas dos veces, idénticas; quedan 715.357 contratos distintos.
+    - **643.462 menores**, con el mismo recuento por año que el inventario `minor-contract=true`.
+    - CIF en el 100 %. `awardAmount` (con IVA) en el 99,94 %, 2.651,8 M€ en total. Sin IVA en el 82,3 % y CPV en el 27,8 %.
+    - 183 menores tienen el año de adjudicación mal escrito en origen (8, 201, 1201, 2027-2031…). Se sirven tal cual.
 - **Navarra.** La LFCP 2/2018 (art. 102.3) solo obliga a publicar la menor cuantía **agregada por empresa y trimestre**. No existe fuente contrato a contrato.
 - **La Rioja.** El Gobierno publica un CSV anual con **todos** sus menores (NIF incluido) desde 2018, y no lo usamos.
 
 | Fuente | URL / API | Formato | Periodo | Órganos | Masiva | Menores/año | ¿Usamos? | ¿En 1143? | Conf. |
 |---|---|---|---|---|---|---|---|---|---|
-| **PV** API KontratazioA | `api.euskadi.eus/procurements/contracts?minor-contract=true` (+`award-date.gt/.lt`, `contracting-authority-id`) | JSON, 50/pág. | 2014-2026 | 441 de 938 poderes con algún menor (GV, DDFF, IFAS, EITB, Osakidetza; en 2024, 119 entes locales) | Sí | 84.814 (2024; 335,8 M€ con IVA) | Código A1 listo; sin ejecutar | No | A |
+| **PV** API KontratazioA | `api.euskadi.eus/procurements/contracts?minor-contract=true` (+`award-date.gt/.lt`, `contracting-authority-id`) | JSON, 50/pág. | 2014-2026 | 441 de 938 poderes con algún menor (GV, DDFF, IFAS, EITB, Osakidetza; en 2024, 119 entes locales) | Sí | 84.814 (2024; 335,8 M€ con IVA) | A1 ejecutado el 2026-09-27 (643.462 menores); sin publicar | No | A |
 | PV XLSX B1 `contrataciones_admin_{año}/opendata/contratos.xlsx` | opendata.euskadi.eus | XLSX | 2011-2026 | Los mismos | Sí | ~93 mil anuncios (2024) | Sí, sin importe ni NIF | No | A |
 | PV REVASCON por poder (B4) `contratos_poder{ID}_{año}` | euskadi.eus | XLSX de 63 columnas | 2018-2026 | Por poder | Sí | Mismo código de contrato que la API; Bilbao sin menores | No (redundante) | No | A |
 | PV Gardena, indicadores 49.2 (lista) y 49.1 (agregado) | gardena.euskadi.eus | XLSX | 2014-2025 | GV + Lanbide | Sí | 3.916 (2024) | No (sirve de control) | No | A |
@@ -602,7 +608,7 @@ Tres situaciones distintas:
 - **La Rioja.** Tenemos ~4 % de lo publicado (2,3 de 52,7 mil); con el CSV autonómico, ~100 %. Quedan fuera la UR, las empresas y fundaciones públicas, el Parlamento y unos 120 de los 174 municipios, sin menores en el 1143.
 
 **Prioridades:**
-1. Ejecutar el A1 de Euskadi, con `minor-contract=true` o completo, y guardar `minorContract` y `contractProcedureType`: +67-92 mil/año con importe. Deduplicar la UPV/EHU de 2025-2026 (1.492 y 4.051 en la API, frente a 12.063 y 187 en el 1143).
+1. ~~Ejecutar el A1 de Euskadi~~: hecho el 2026-09-27 con la API completa (643.462 menores; +67-92 mil/año con importe). Falta publicarlo desde la máquina del propietario (`Euskadi/ccaa_euskadi.py` y `consolidacion_euskadi.py`). Deduplicar la UPV/EHU de 2025-2026 (1.492 y 4.051 en la API, frente a 12.063 y 187 en el 1143).
 2. `scripts/ccaa_la_rioja.py` con los 9 CSV (cd arriba): +32-50 mil/año.
 3. Navarra SICP. Listado por año + descarga por UID + extracción, empezando por Salud (XLSX), Educación, Pamplona y la UPNA. Columna `_granularidad` (factura, contratista o contrato).
 4. Fuentes pequeñas: Bilbao (PDF), Donostia (PDF), Vitoria 2013-2017 (anterior a la API), Álava XML 2015-2022, Barakaldo 2011-2020.

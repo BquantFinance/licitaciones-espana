@@ -68,8 +68,10 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
   - Su parche de TED ya está aplicado aquí (`9e945c2`), y sus dos observaciones sobre CONS-20, corregidas en `2b184a1`.
   - Propuesta al propietario, pendiente de su decisión: usar su entrega como contraste independiente de la nuestra (filas, importes e indicadores sobre el mismo inventario) y no fusionar su cadena de scripts paralela.
 - **En curso** (si la sesión se corta, se pierde el directorio temporal; los scripts para reanudarlo están en `herramientas/sesion_2026_09_27/`, con su README):
-  - **Euskadi `/contracts`**: 4 procesos por tramos de años (`euskadi/contratos_api_tramo.py`) y después `euskadi/terminar.sh`, que hace la ejecución normal (`_estado.json`), consolida fuera del LFS y mide los menores por año.
-    - Las ventanas completas no se vuelven a bajar: basta con relanzar los tramos.
+  - **Euskadi `/contracts`: hecho el 2026-09-27**, pero solo en el contenedor, sin publicar.
+    - 715.572 de 715.574 registros; faltan 2 sin fecha. La API sirve 217 filas dos veces; quedan 715.357 contratos.
+    - **643.462 menores 2014-2026**, con el mismo recuento por año que `minor-contract=true`, CIF en el 100 % y 2.651,8 M€ con IVA. Detalle en `docs/COBERTURA.md` §5.4.
+    - Para publicarlo, el propietario ejecuta `euskadi/contratos_api_tramo.py` por tramos y `euskadi/terminar.sh` (unas 2 h con 4 procesos). Las ventanas completas no se vuelven a bajar.
   - **PLACSP para Elicita** (§3.3): hecho en la sesión (`docs/REGENERACION_ISSUE_6.md`). Falta el release en borrador, que tiene que crear el propietario con `publicar_release.py`: desde la sesión da 403.
   - **Comunidad de Madrid**: los menores se vuelven a bajar con una copia de `descarga_contratacion_comunidad_madrid_v1.py` fuera del repo (`python <copia> menores`: 126 entidades, con subdivisión por importe al llegar a 50.000 filas).
     - La ruta `Entidad Adjudicadora` del publicado es la jerarquía completa (`Consejería de Sanidad··>SERMAS··>…>Hospital…`). Para comparar con las 125 entidades del desplegable hay que usar el primer nivel.
@@ -241,7 +243,7 @@ Inventario completo, veredicto por CCAA y referencias (RCSP, OIReScon) en `docs/
 1. **Comunidad de Madrid**:
    - El portal tiene 4.832.623 menores y el publicado 2,53 M. Volver a ejecutar `descarga_contratacion_comunidad_madrid_v1.py` sobre una **copia** del script fuera del repo, porque escribe en su propia carpeta, que es la de los datos LFS.
    - El filtro de fecha "desde" (`createddate`) funciona sin entidad y sirve para recuperar las entidades que ya no salen en el desplegable.
-2. **Euskadi `/contracts`**: terminar la descarga, consolidar (`consolidar_A1_api_contratos`) y medir los menores con importe y CIF.
+2. ~~**Euskadi `/contracts`**: terminar la descarga, consolidar y medir~~: hecho (643.462 menores con importe y CIF). Falta publicarlo.
 3. **Galicia**: volver a ejecutar, porque el portal tiene 1.775.090 menores y el publicado 1,64 M.
 4. **Extremadura** (Registro de Contratos, XLSX trimestrales 2022-2026, ~200K con NIF) y **Castilla-La Mancha** (UCLM, caja pagadora, ficheros de la JCCM): scrapers nuevos hechos por agentes; revisar, verificar y commitear.
 5. **Catalunya**:
