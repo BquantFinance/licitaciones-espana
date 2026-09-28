@@ -466,3 +466,26 @@ def test_carm_en_cp850_se_lee_bien(portal, tmp_path):
     df = pq.read_table(tmp_path / "contratos_carm.parquet").to_pandas()
     assert df.loc[df["_anio_fichero"] == "2019", "OBJETO"].tolist() == ["NEGOCIACIÓN SIN PUBLICIDAD - ÁREA IX"]
     assert set(df.loc[df["_anio_fichero"] != "2019", "OBJETO"]) == {"Señalización – 5 €"}   # cp1252, como antes
+
+
+def test_un_arreglo_de_lectura_llega_a_las_filas_ya_guardadas(portal, tmp_path, monkeypatch):
+    """Regla 3: el Parquet se construye con el código actual desde todas las versiones del crudo.
+    Antes solo se aplicaban las versiones posteriores al Parquet anterior y un arreglo de lectura
+    (p.ej. la codificación cp850 de los contratosOD 2014-2018) no llegaba a las filas guardadas."""
+    assert _ejecutar(tmp_path) == 0
+    antes = pq.read_table(tmp_path / "contratos_carm.parquet").to_pandas()
+    leer = M.leer_tabla
+
+    def lectura_arreglada(ruta, *a, **k):
+        df, avisos = leer(ruta, *a, **k)
+        if "OBJETO" in df.columns:
+            df = df.assign(OBJETO=df["OBJETO"].str.upper())
+        return df, avisos
+
+    monkeypatch.setattr(M, "leer_tabla", lectura_arreglada)
+    assert _ejecutar(tmp_path, "--solo-parquet") == 0
+    despues = pq.read_table(tmp_path / "contratos_carm.parquet").to_pandas()
+    assert len(despues) == len(antes)                                   # sin duplicar filas
+    assert set(despues["OBJETO"]) == {"SEÑALIZACIÓN – 5 €"}             # el arreglo llega a todas
+    assert despues["_en_ultima_descarga"].all()
+    assert despues["_primera_descarga"].tolist() == antes["_primera_descarga"].tolist()   # historia intacta

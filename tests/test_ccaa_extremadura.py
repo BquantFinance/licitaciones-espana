@@ -784,3 +784,37 @@ def test_sin_cambios_el_parquet_no_cambia(portal, tmp_path):
 
 def test_salida_por_defecto_en_el_repo():
     assert M.SALIDA == REPO_ROOT / "ccaa_extremadura"
+
+
+def _en_mayusculas(resultado):
+    """Una «lectura arreglada»: el mismo resultado con el texto de las columnas del origen en
+    mayúsculas (las de control, _..., igual)."""
+    df, *resto = resultado
+    df = df.copy()
+    for c in df.columns:
+        if not str(c).startswith("_") and (df[c].dtype == object or pd.api.types.is_string_dtype(df[c])):
+            df[c] = df[c].str.upper()
+    return (df, *resto)
+
+
+def _comprobar_arreglo(antes, despues):
+    """Regla 3: mismas filas, historia intacta y el arreglo en TODAS las filas del origen."""
+    assert len(despues) == len(antes) > 0
+    assert despues["_primera_descarga"].tolist() == antes["_primera_descarga"].tolist()
+    for c in despues.columns:
+        if not str(c).startswith("_") and (despues[c].dtype == object or pd.api.types.is_string_dtype(despues[c])):
+            valores = despues[c].dropna()
+            assert (valores == valores.str.upper()).all(), c
+
+def test_un_arreglo_de_lectura_llega_a_las_filas_ya_guardadas(portal, tmp_path, monkeypatch):
+    """Regla 3: el Parquet se construye con el código actual desde todas las versiones del crudo.
+    Antes solo se aplicaban las versiones posteriores al Parquet anterior y un arreglo de lectura no
+    llegaba a las filas ya guardadas."""
+    assert _ejecutar(tmp_path) == 0
+    antes = {p.name: pd.read_parquet(p) for p in sorted(tmp_path.glob("*.parquet"))}
+    leer = M.leer_tabla
+    monkeypatch.setattr(M, "leer_tabla", lambda ruta: _en_mayusculas(leer(ruta)))
+    assert _ejecutar(tmp_path, "--solo-parquet") == 0
+    assert antes
+    for nombre, df in antes.items():
+        _comprobar_arreglo(df, pd.read_parquet(tmp_path / nombre))

@@ -927,3 +927,38 @@ def test_periodo_de_textos_reales():
              "Contratos-menores-AYTO-y-OOAA-1-ER-TRIMESTRE-2021.xls": ("2021", "1", None),
              "14511_15315320181404.xlsx": (None, None, None)}
     assert {t: M.periodo_de_texto(t) for t in casos} == casos
+
+
+def _en_mayusculas(resultado):
+    """Una «lectura arreglada»: el mismo resultado con el texto de las columnas del origen en
+    mayúsculas (las de control, _..., igual)."""
+    df, *resto = resultado
+    df = df.copy()
+    for c in df.columns:
+        if not str(c).startswith("_") and (df[c].dtype == object or pd.api.types.is_string_dtype(df[c])):
+            df[c] = df[c].str.upper()
+    return (df, *resto)
+
+
+def _comprobar_arreglo(antes, despues):
+    """Regla 3: mismas filas, historia intacta y el arreglo en TODAS las filas del origen."""
+    assert len(despues) == len(antes) > 0
+    assert despues["_primera_descarga"].tolist() == antes["_primera_descarga"].tolist()
+    for c in despues.columns:
+        if not str(c).startswith("_") and (despues[c].dtype == object or pd.api.types.is_string_dtype(despues[c])):
+            valores = despues[c].dropna()
+            assert (valores == valores.str.upper()).all(), c
+
+def test_un_arreglo_de_lectura_llega_a_las_filas_ya_guardadas(portal, tmp_path, monkeypatch):
+    """Regla 3: el Parquet se construye con el código actual desde todas las versiones del crudo.
+    Antes solo se aplicaban las versiones posteriores al Parquet anterior y un arreglo de lectura no
+    llegaba a las filas ya guardadas."""
+    assert _ejecutar(tmp_path, "--municipio", "gijon") == 0
+    antes = {p.name: pd.read_parquet(p) for p in sorted(tmp_path.glob("*_menores.parquet"))}
+    for municipio, (descubrir, leer) in list(M.ADAPTADORES.items()):
+        monkeypatch.setitem(M.ADAPTADORES, municipio,
+                            (descubrir, lambda ruta, *a, _leer=leer, **k: _en_mayusculas(_leer(ruta, *a, **k))))
+    assert _ejecutar(tmp_path, "--municipio", "gijon") == 0   # sin --solo-parquet: el crudo no cambia
+    assert antes
+    for nombre, df in antes.items():
+        _comprobar_arreglo(df, pd.read_parquet(tmp_path / nombre))
