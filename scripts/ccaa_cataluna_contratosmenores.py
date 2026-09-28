@@ -309,8 +309,8 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
             if page % 10 == 0:
                 await asyncio.sleep(0.3)
 
-    solapan = both_orders and bool(claves_por_orden['desc'] & claves_por_orden['asc'])
-    if False:
+    solapan = False
+    if not agotado and not solapan:
         logger.warning(f"⚠️ Segmento más grande que la ventana de la API ({len(records)} registros leídos, "
                        f"{'sin solape entre los dos órdenes' if both_orders else 'un solo orden'}): {params}")
         if stats is not None:

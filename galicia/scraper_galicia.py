@@ -1663,7 +1663,7 @@ PARQUET_BOOL_COLUMNS = ("_en_ultima_descarga",)
 # notación científica ('3e4224959973966b37...': 13 cifras de exponente) o un
 # entero de más de 18 cifras (to_numeric lo pasaba a float perdiendo cifras).
 PARQUET_NUMBER_RE = re.compile(
-    r"\s*[+-]?(?:(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]{1,3})?|inf(?:inity)?)\s*",
+    r"\s*[+-]?(?:(?P<mantisa>[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]{1,3})?|inf(?:inity)?)\s*",
     re.IGNORECASE,
 )
 PARQUET_NUMBER_MAX_DIGITS = 18
@@ -1672,14 +1672,15 @@ PARQUET_NUMBER_MAX_DIGITS = 18
 def plain_numbers(values):
     """Si todos los textos de `values` (sin nulos) son números normales
     (PARQUET_NUMBER_RE, como mucho PARQUET_NUMBER_MAX_DIGITS cifras antes del
-    exponente)."""
-    text = pd.Series(values, dtype=object).dropna().astype(str)
-    if text.empty:
-        return True
-    if not text.str.fullmatch(PARQUET_NUMBER_RE).all():
-        return False
-    mantissa = text.str.replace(r"[eE][+-]?[0-9]+\s*$", "", regex=True)
-    return bool((mantissa.str.count(r"[0-9]") <= PARQUET_NUMBER_MAX_DIGITS).all())
+    exponente). Para en el primero que no lo es."""
+    for value in pd.Series(values, dtype=object).dropna():
+        match = PARQUET_NUMBER_RE.fullmatch(value if isinstance(value, str) else str(value))
+        if match is None:
+            return False
+        mantissa = match.group("mantisa") or ""
+        if len(mantissa) - ("." in mantissa) > PARQUET_NUMBER_MAX_DIGITS:
+            return False
+    return True
 
 
 def csv_to_parquet(csv_path, parquet_path, label="", chunksize=BASE_READ_CHUNKSIZE):
