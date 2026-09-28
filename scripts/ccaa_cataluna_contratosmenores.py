@@ -664,10 +664,10 @@ def leer_salida(ruta: Path, formato: str = 'parquet') -> Optional[pd.DataFrame]:
 
 
 def fecha_version(ruta: Path) -> str:
-    """Fecha (UTC, ISO) de la versión actual de un fichero: su fecha de modificación.
-    guardar_version no toca un fichero sin cambios: una descarga idéntica a la
-    anterior conserva su fecha."""
-    return datetime.fromtimestamp(Path(ruta).stat().st_mtime, timezone.utc).isoformat(timespec='seconds')
+    """Fecha (UTC, ISO, con microsegundos) de la versión actual de un fichero: su fecha
+    de modificación. guardar_version no toca un fichero sin cambios: una descarga
+    idéntica a la anterior conserva su fecha."""
+    return datetime.fromtimestamp(Path(ruta).stat().st_mtime, timezone.utc).isoformat(timespec='microseconds')
 
 
 def _filas_parquet(ruta: Path) -> int:
@@ -1082,10 +1082,12 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
         if faltan:
             raise ValueError(f"La descarga no tiene las columnas {faltan} de la clave {CLAVE_SEMILLA}: "
                              f"no se puede sembrar")
-        salida, informe = sembrar(salida, semilla, CLAVE_SEMILLA, en_ambito=filas_en_ambito(semilla, ambito))
+        sembrada, informe = sembrar(salida, semilla, CLAVE_SEMILLA, en_ambito=filas_en_ambito(semilla, ambito))
         informe['ruta'] = str(ruta)
         imprimir_informe_semilla(informe)
-        del semilla
+        if informe['anadidas']:   # sin nada que añadir la salida no cambia (ni sus columnas)
+            salida = sembrada
+        del semilla, sembrada
     
     # Save clean (guardar_version: la versión anterior pasa a _historico/)
     logger.info(f"💾 Saving CLEAN data to {clean_file}...")

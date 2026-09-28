@@ -516,10 +516,14 @@ class ConversorParquetTests(unittest.TestCase):
 NOMBRES_FASE = {10: 'ANUNCI_PREVI', 20: 'ADJUDICACIO', 800: 'FORMALITZACIO'}
 FILTROS = {'faseVigent': '_fase', 'ambit': '_ambit', 'tipusContracte': '_tipus',
            'procedimentAdjudicacio': '_proc', 'organ': '_organ'}
+# Fases agregadas de la API falsa (FASES_AGREGADAS en los tests): como en la real, solo
+# devuelven publicaciones con esAgregatContractes=True
+FASES_AGREGADAS_FALSAS = (800,)
 
 
-def _registros(n, fase, inicio, organs=(1,), proc=401, tipus=393):
+def _registros(n, fase, inicio, organs=(1,), proc=401, tipus=393, ambit=1500001):
     regs = []
+    agregada = fase in FASES_AGREGADAS_FALSAS
     for i in range(n):
         rid = inicio + i
         organ = organs[i % len(organs)]
@@ -527,23 +531,45 @@ def _registros(n, fase, inicio, organs=(1,), proc=401, tipus=393):
             'id': rid, 'titol': f'T{rid}', 'descripcio': f'Desc {rid}',
             'pressupostLicitacio': 100.0 + i, 'pressupostAdjudicacio': 90.0 + i,
             'organ': f'Organ {organ}', 'idOrgan': organ, 'codiExpedient': f'EXP-{rid}',
+            'expedientId': f'uuid-{rid};{rid}' if agregada else f'uuid-{rid}',
+            'esAgregatContractes': True if agregada else None,
             'fasesVigents': {NOMBRES_FASE[fase]: {
                 'lotsActius': 1, 'dataPublicacio': f'2024-01-{i % 28 + 1:02d}T10:00:00', 'idPublicacio': rid * 10}},
             # Atributos internos para filtrar/ordenar en la API falsa (no se devuelven)
-            '_fase': fase, '_ambit': 1500001, '_tipus': tipus, '_proc': proc, '_organ': organ,
+            '_fase': fase, '_ambit': ambit, '_tipus': tipus, '_proc': proc, '_organ': organ,
             '_orden': f'{i:08d}',
         })
     return regs
 
 
-class APIFalsa:
-    """Imita /cerca-avancada (filtros, orden, paginación, ventana de 10k) y /organs/noms"""
+def _publicado(registros):
+    """Filas como las del parquet publicado (json_normalize de lo que sirve la API)."""
+    return pd.json_normalize([{k: v for k, v in r.items() if not k.startswith('_')} for r in registros], sep='_')
 
-    def __init__(self, registros, organs=None, fallo=None):
+
+class APIFalsa:
+    """Imita /cerca-avancada (filtros, orden, paginación, ventana de 10k) y /organs/noms.
+
+    tope_total: como la API real, totalElements no pasa de ese valor (10.000 en la real)."""
+
+    def __init__(self, registros, organs=None, fallo=None, ventana=10000, tope_total=None):
         self.registros = registros
         self.organs = organs or {}
         self.fallo = fallo or (lambda query: None)
+        self.ventana = ventana
+        self.tope_total = tope_total
         self.peticiones = []
+        self._consultas = {}
+
+    def _filtrados(self, q):
+        clave = tuple((p, q[p]) for p in FILTROS if p in q) + (q.get('sortOrder'),)
+        if clave not in self._consultas:
+            regs = self.registros
+            for param, campo in FILTROS.items():
+                if param in q:
+                    regs = [r for r in regs if r[campo] == int(q[param])]
+            self._consultas[clave] = sorted(regs, key=lambda r: r['_orden'], reverse=q.get('sortOrder') == 'desc')
+        return self._consultas[clave]
 
     async def cerca(self, request):
         q = request.query
@@ -551,16 +577,13 @@ class APIFalsa:
         error = self.fallo(q)
         if error is not None:
             return error
-        regs = self.registros
-        for param, campo in FILTROS.items():
-            if param in q:
-                regs = [r for r in regs if r[campo] == int(q[param])]
-        regs = sorted(regs, key=lambda r: r['_orden'], reverse=q.get('sortOrder') == 'desc')
+        regs = self._filtrados(q)
         page, size = int(q['page']), int(q['size'])
-        if (page + 1) * size > 10000:
+        if (page + 1) * size > self.ventana:
             return web.json_response({'errorData': {'missatge': 'Result window is too large'}})
         contenido = [{k: v for k, v in r.items() if not k.startswith('_')} for r in regs[page * size:(page + 1) * size]]
-        return web.json_response({'content': contenido, 'totalElements': len(regs)})
+        total = len(regs) if self.tope_total is None else min(len(regs), self.tope_total)
+        return web.json_response({'content': contenido, 'totalElements': total})
 
     async def organs_noms(self, request):
         q = request.query
@@ -573,14 +596,16 @@ class APIFalsa:
         return web.json_response([{'id': o, 'nom': f'Organ {o}'} for o in ids[page * size:(page + 1) * size]])
 
 
-class ContratosMenoresTests(unittest.TestCase):
+class _EjecucionMenores:
+    """Ejecuta cat_menores.main() contra una APIFalsa servida en local."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         self.out = self.dir / "cm.parquet"
         self.addCleanup(self.tmp.cleanup)
 
-    def _ejecutar(self, api, **kwargs):
+    def _ejecutar(self, api, ventana=10000, **kwargs):
         sleep_real = asyncio.sleep
 
         async def sleep_rapido(*args, **kw):
@@ -598,9 +623,10 @@ class ContratosMenoresTests(unittest.TestCase):
             try:
                 with patch.object(cat_menores, 'BASE_URL', base), \
                         patch.object(cat_menores.asyncio, 'sleep', sleep_rapido), \
+                        patch.object(cat_menores, 'VENTANA_API', ventana), \
                         patch.object(cat_menores, 'FASES_NORMAL', [10, 20]), \
-                        patch.object(cat_menores, 'FASES_AGREGADAS', [800]), \
-                        patch.object(cat_menores, 'FASES_ALL', [10, 20, 800]):
+                        patch.object(cat_menores, 'FASES_AGREGADAS', list(FASES_AGREGADAS_FALSAS)), \
+                        patch.object(cat_menores, 'FASES_ALL', [10, 20, *FASES_AGREGADAS_FALSAS]):
                     await cat_menores.main(str(self.out), **kwargs)
             finally:
                 await runner.cleanup()
@@ -610,9 +636,22 @@ class ContratosMenoresTests(unittest.TestCase):
     def _checkpoint(self):
         return json.loads((self.dir / "cm_checkpoint.json").read_text())
 
+    def _analisis(self):
+        return json.loads((self.dir / "cm_duplicate_analysis.json").read_text(encoding="utf-8"))
+
+    def _historico(self):
+        carpeta = self.dir / "_historico"
+        return sorted(p.name for p in carpeta.iterdir()) if carpeta.is_dir() else []
+
+    def _salida(self):
+        return pd.read_parquet(self.out)
+
     @staticmethod
     def _basicos():
         return _registros(250, 10, 1) + _registros(300, 20, 100000) + _registros(30, 800, 900000)
+
+
+class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
 
     def test_main_segmenta_hasta_organo_y_ambos_ordenes_sin_perder_registros(self):
         # Fase 20: 10.060 registros -> ambit -> tipus -> procediment -> organ;
@@ -702,13 +741,26 @@ class ContratosMenoresTests(unittest.TestCase):
             self._ejecutar(APIFalsa(regs, organs={1500001: [7, 8]}, fallo=falla_organos))
         self.assertEqual(self._checkpoint()['completed_fases'], [10])
 
-    def test_fase_vacia_elimina_parquet_obsoleto_de_ejecucion_anterior(self):
+    def test_fase_vacia_no_se_une_ni_retira_nada_hasta_confirmarse(self):
         self._ejecutar(APIFalsa(self._basicos()))
         self.assertEqual(len(pd.read_parquet(self.out)), 580)
-        # Nueva ejecución completa (sin --resume): la fase 800 ya no tiene registros
-        self._ejecutar(APIFalsa(_registros(250, 10, 1) + _registros(300, 20, 100000)))
-        self.assertEqual(len(pd.read_parquet(self.out)), 550)
+        # Nueva ejecución completa (sin --resume): la fase 800 ya no tiene registros. Su
+        # fichero no se vuelve a unir (pasa a _historico/, no se borra) y, como la descarga
+        # anterior sí tenía filas, puede ser un fallo del portal: no se retira nada
+        sin_800 = _registros(250, 10, 1) + _registros(300, 20, 100000)
+        self._ejecutar(APIFalsa(sin_800))
         self.assertFalse((self.dir / "cm_fase_800.parquet").exists())
+        self.assertTrue(any(n.startswith("cm_fase_800__") for n in self._historico()))
+        self.assertEqual(len(pd.read_parquet(self.dir / "cm_raw.parquet")), 550)
+        salida = self._salida()
+        self.assertEqual(len(salida), 580)
+        self.assertTrue(salida['_en_ultima_descarga'].all())
+        self.assertIn('800', self._analisis()['fases_incompletas'])
+        # Sigue vacía en la siguiente (y la anterior ya lo estaba): ahora sí se marca
+        self._ejecutar(APIFalsa(sin_800))
+        salida = self._salida()
+        self.assertEqual(len(salida), 580)
+        self.assertEqual(set(salida.loc[~salida['_en_ultima_descarga'], 'id']), set(range(900000, 900030)))
 
     def test_formato_csv_usa_extension_csv(self):
         self._ejecutar(APIFalsa(self._basicos()), output_format='csv')
@@ -800,6 +852,378 @@ class ContratosMenoresTests(unittest.TestCase):
         cerca = [q for t, q in api.peticiones if t == 'cerca']
         self.assertTrue(cerca)
         self.assertTrue(all(q['inclourePublicacionsPlacsp'] == 'true' for q in cerca))
+
+
+META = ['_primera_descarga', '_ultima_descarga', '_en_ultima_descarga']
+ORGANOS_7_8 = {1500001: [7, 8]}
+
+
+def _datos_organos(n7, sin=()):
+    """Fase 20 con el órgano 7 (n7 registros) y el 8 (300), más las fases 10 y 800."""
+    regs = (_registros(250, 10, 1) + _registros(n7, 20, 100000, organs=(7,))
+            + _registros(300, 20, 200000, organs=(8,)) + _registros(30, 800, 900000))
+    return [r for r in regs if r['id'] not in set(sin)]
+
+
+class SesgoSupervivienteMenoresTests(_EjecucionMenores, unittest.TestCase):
+    """Re-ejecuciones sin sesgo del superviviente (comun/historico.py): lo que el portal
+    retira o cambia se conserva marcado, una ejecución parcial o fallida no retira lo que
+    no ha vuelto a leer entero y --semilla solo añade del publicado lo que falta."""
+
+    def _sin(self, *ids, registros=None):
+        return [r for r in (self._basicos() if registros is None else registros) if r['id'] not in set(ids)]
+
+    def _no_servidas(self):
+        salida = self._salida()
+        return set(salida.loc[~salida['_en_ultima_descarga'], 'id'])
+
+    def _ficheros(self):
+        return {p.name: p.read_bytes() for p in self.dir.iterdir()
+                if p.is_file() and p.name != 'cm_checkpoint.json'}
+
+    def _ejecutar_ventana_1000(self, registros, organs=None, fallo=None, **kwargs):
+        # Ventana de 1.000 y totales que no pasan de 1.000, como la API real con 10.000
+        api = APIFalsa(registros, organs=organs, fallo=fallo, ventana=1000, tope_total=1000)
+        self._ejecutar(api, ventana=1000, **kwargs)
+        return api
+
+    def _ida_y_vuelta(self, df):
+        """df escrito y leído en parquet (los nulos de texto vuelven como None)."""
+        ruta = self.dir / "esperado.parquet"
+        df.to_parquet(ruta, index=False)
+        try:
+            return pd.read_parquet(ruta)
+        finally:
+            ruta.unlink()
+
+    def test_una_sola_descarga_es_la_salida_de_siempre_mas_tres_columnas(self):
+        # Lo que escribía el código anterior: el crudo es la unión de las fases y la salida,
+        # el crudo sin copias idénticas
+        self._ejecutar(APIFalsa(self._basicos()))
+        fases = [pd.read_parquet(self.dir / f"cm_fase_{f}.parquet") for f in (10, 20, 800)]
+        crudo = pd.concat(fases, ignore_index=True, sort=False)
+        pd.testing.assert_frame_equal(pd.read_parquet(self.dir / "cm_raw.parquet"), self._ida_y_vuelta(crudo))
+        salida = self._salida()
+        self.assertEqual(list(salida.columns), list(crudo.columns) + META)
+        pd.testing.assert_frame_equal(salida[list(crudo.columns)],
+                                      self._ida_y_vuelta(cat_menores.quitar_copias_identicas(crudo)))
+        self.assertTrue(salida['_en_ultima_descarga'].all())
+        self.assertEqual(salida['_primera_descarga'].nunique(), 1)
+        self.assertTrue((salida['_primera_descarga'] == salida['_ultima_descarga']).all())
+        self.assertEqual(self._historico(), [])
+
+    def test_reejecucion_sin_cambios_no_crea_ninguna_version(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        antes = self._ficheros()
+        self._ejecutar(APIFalsa(self._basicos()))
+        self.assertEqual(self._ficheros(), antes)
+        self.assertEqual(self._historico(), [])
+        # Tras un cambio, repetir la misma descarga tampoco crea versiones
+        self._ejecutar(APIFalsa(self._sin(5)))
+        historico = self._historico()
+        antes = self._ficheros()
+        self._ejecutar(APIFalsa(self._sin(5)))
+        self.assertEqual(self._ficheros(), antes)
+        self.assertEqual(self._historico(), historico)
+        # Ni con --cleanup (los ficheros de fase se vuelven a crear idénticos y se borran)
+        self._ejecutar(APIFalsa(self._sin(5)), cleanup=True)
+        antes = self._ficheros()
+        self._ejecutar(APIFalsa(self._sin(5)), cleanup=True)
+        self.assertEqual(self._ficheros(), antes)
+        self.assertEqual(self._historico(), historico)
+
+    def test_publicacion_retirada_se_conserva_marcada(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        primera = self._salida()
+        retiradas = {5, 100007, 900003}   # dos normales y una agregada
+        self._ejecutar(APIFalsa(self._sin(*retiradas)))
+        salida = self._salida()
+        self.assertEqual(len(salida), 580)
+        self.assertEqual(self._no_servidas(), retiradas)
+        # Conservan sus datos y la fecha de la última descarga en la que salieron
+        datos = [c for c in primera.columns if not c.startswith('_')]
+        pd.testing.assert_frame_equal(salida[salida['id'].isin(retiradas)][datos].reset_index(drop=True),
+                                      primera[primera['id'].isin(retiradas)][datos].reset_index(drop=True))
+        por_id = salida.set_index('id')
+        self.assertEqual(por_id.loc[5, '_ultima_descarga'], primera.set_index('id').loc[5, '_ultima_descarga'])
+        self.assertGreater(por_id.loc[6, '_ultima_descarga'], por_id.loc[5, '_ultima_descarga'])
+        # La versión anterior de cada fichero, en _historico/
+        historico = self._historico()
+        for prefijo in ('cm__', 'cm_raw__', 'cm_fase_10__', 'cm_fase_20__', 'cm_fase_800__', 'cm_duplicate_analysis__'):
+            self.assertTrue(any(n.startswith(prefijo) for n in historico), (prefijo, historico))
+        anterior = next(n for n in historico if n.startswith('cm__'))
+        self.assertEqual(len(pd.read_parquet(self.dir / "_historico" / anterior)), 580)
+
+    def test_publicacion_cambiada_conserva_las_dos_versiones(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        registros = self._basicos()
+        registros[3]['pressupostAdjudicacio'] = 12345.0   # id 4
+        self._ejecutar(APIFalsa(registros))
+        salida = self._salida()
+        self.assertEqual(len(salida), 581)
+        versiones = salida[salida['id'] == 4].sort_values('_primera_descarga')
+        self.assertEqual(versiones['pressupostAdjudicacio'].tolist(), [93.0, 12345.0])
+        self.assertEqual(versiones['_en_ultima_descarga'].tolist(), [False, True])
+        self.assertEqual(self._no_servidas(), {4})
+
+    def test_cambio_de_tipo_entre_descargas_no_parece_un_cambio(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        sin_organo = _registros(1, 10, 7000)
+        sin_organo[0]['idOrgan'] = None   # con un nulo, idOrgan pasa de entero a decimal
+        self._ejecutar(APIFalsa(self._basicos() + sin_organo))
+        salida = self._salida()
+        self.assertEqual(len(salida), 581)
+        self.assertTrue(salida['_en_ultima_descarga'].all())
+
+    def test_formato_csv_acumula_igual(self):
+        self._ejecutar(APIFalsa(self._basicos()), output_format='csv')
+        csv = self.dir / "cm.csv"
+        antes = csv.read_bytes()
+        self._ejecutar(APIFalsa(self._basicos()), output_format='csv')
+        self.assertEqual(csv.read_bytes(), antes)
+        self._ejecutar(APIFalsa(self._sin(5)), output_format='csv')
+        limpio = pd.read_csv(csv, encoding='utf-8-sig')
+        self.assertEqual(len(limpio), 580)
+        self.assertEqual(set(limpio.loc[~limpio['_en_ultima_descarga'], 'id']), {5})
+        self.assertFalse(self.out.exists())
+
+    def test_sin_agregadas_no_retira_las_agregadas(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        api = APIFalsa(self._sin(5, 900003))
+        self._ejecutar(api, include_agregadas=False)
+        self.assertFalse(any(q.get('faseVigent') == '800' for _, q in api.peticiones))
+        salida = self._salida()
+        self.assertEqual(self._no_servidas(), {5})
+        agregadas = salida[salida['id'] >= 900000]
+        self.assertEqual(len(agregadas), 30)
+        ultima = salida.loc[salida['id'] == 6, '_ultima_descarga'].iloc[0]
+        self.assertTrue((agregadas['_ultima_descarga'] < ultima).all())
+        self.assertEqual(self._analisis()['ambito'], {'normales': {'organos_excluidos': []}, 'agregadas': 'fuera'})
+
+    def test_ejecucion_fallida_no_toca_nada_y_resume_de_un_subconjunto_solo_retira_lo_leido(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        salidas = ('cm.parquet', 'cm_raw.parquet', 'cm_duplicate_analysis.json')
+        antes = {n: b for n, b in self._ficheros().items() if n in salidas}
+        registros = self._sin(5, 900003)
+
+        def prohibido(q):
+            if q.get('faseVigent') == '800':
+                return web.Response(status=403)
+
+        with self.assertRaises(RuntimeError):
+            self._ejecutar(APIFalsa(registros, fallo=prohibido))
+        despues = self._ficheros()
+        self.assertEqual({n: despues[n] for n in salidas}, antes)
+        # --resume sin agregadas: une las fases 10 y 20 ya leídas sin repetirlas; la 800 no
+        # se ha vuelto a leer y sus publicaciones no se tocan
+        api = APIFalsa(registros)
+        self._ejecutar(api, resume=True, include_agregadas=False)
+        self.assertFalse(any('faseVigent' in q for t, q in api.peticiones if t == 'cerca'))
+        self.assertEqual(self._no_servidas(), {5})
+
+    def test_fase_que_devuelve_publicaciones_del_otro_grupo_no_retira_por_grupos(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        registros = self._sin(5)
+        registros.append(dict(_registros(1, 800, 950000)[0], _fase=10))   # una agregada en una fase normal
+        with self.assertLogs(cat_menores.logger, level=logging.WARNING) as logs:
+            self._ejecutar(APIFalsa(registros), include_agregadas=False)
+        self.assertTrue(any('no son de su grupo' in m for m in logs.output), logs.output)
+        # Los dos grupos cuentan como uno y las agregadas no se han leído: no se retira nada
+        self.assertEqual(self._no_servidas(), set())
+        self.assertFalse(self._analisis()['particion_por_grupo'])
+
+    def test_segmento_mas_grande_que_la_ventana_no_retira_nada_de_su_organo(self):
+        # El órgano 7 pasa de 1.500 a 2.500 registros: los dos órdenes ya no se solapan y los
+        # 500 del medio (leídos en la primera ejecución) no se leen: no se dan por retirados
+        self._ejecutar_ventana_1000(_datos_organos(1500), organs=ORGANOS_7_8)
+        self.assertEqual(len(self._salida()), 2080)
+        self.assertEqual(self._analisis()['fases_incompletas'], {})
+        with self.assertLogs(cat_menores.logger, level=logging.WARNING) as logs:
+            self._ejecutar_ventana_1000(_datos_organos(2500, sin={5, 200005}), organs=ORGANOS_7_8)
+        self.assertTrue(any('ventana de la API' in m for m in logs.output), logs.output)
+        salida = self._salida()
+        medio = set(range(101000, 101500))
+        self.assertTrue(medio <= set(salida.loc[salida['_en_ultima_descarga'], 'id']))
+        self.assertEqual(self._no_servidas(), {5, 200005})
+        self.assertEqual(len(salida), 3080)
+        self.assertEqual(self._analisis()['ambito']['normales'], {'organos_excluidos': ['7']})
+
+    def test_resume_conserva_los_huecos_de_las_fases_ya_leidas(self):
+        self._ejecutar_ventana_1000(_datos_organos(1500), organs=ORGANOS_7_8)
+        registros = _datos_organos(2500, sin={5, 200005})
+
+        def prohibido(q):
+            if q.get('faseVigent') == '800':
+                return web.Response(status=403)
+
+        with self.assertRaises(RuntimeError):
+            self._ejecutar_ventana_1000(registros, organs=ORGANOS_7_8, fallo=prohibido)
+        self.assertEqual([h['params'].get('organ') for h in self._checkpoint()['huecos']['20']], [7])
+        self._ejecutar_ventana_1000(registros, organs=ORGANOS_7_8, resume=True)
+        salida = self._salida()
+        self.assertEqual(self._no_servidas(), {5, 200005})
+        self.assertTrue(set(range(101000, 101500)) <= set(salida.loc[salida['_en_ultima_descarga'], 'id']))
+
+    def test_hueco_que_no_es_de_un_solo_organo_no_retira_nada_de_su_grupo(self):
+        # Registros de un ámbito que no está en AMBITS: solo salen al pedir la fase entera en
+        # los dos órdenes; con 2.500 no se llega al medio y el hueco no es de un órgano
+        def datos(n_fuera, sin=()):
+            regs = (_registros(250, 10, 1) + _registros(300, 20, 200000, organs=(8,))
+                    + _registros(n_fuera, 20, 300000, ambit=1599999) + _registros(30, 800, 900000))
+            return [r for r in regs if r['id'] not in set(sin)]
+
+        self._ejecutar_ventana_1000(datos(500))
+        self.assertEqual(len(self._salida()), 1080)
+        self._ejecutar_ventana_1000(datos(2500, sin={5, 900003}))
+        # Las normales quedan fuera del ámbito (ni la 5 se marca); las agregadas, dentro
+        self.assertEqual(self._no_servidas(), {900003})
+        self.assertEqual(self._analisis()['ambito']['normales'], 'fuera')
+
+    def test_segmento_que_devuelve_menos_de_lo_que_anuncia_no_retira_nada(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        registros = self._sin(5)
+        registros.append(dict(registros[0]))   # la fase 10 anuncia 250 y solo tiene 249 distintos
+        with self.assertLogs(cat_menores.logger, level=logging.WARNING) as logs:
+            self._ejecutar(APIFalsa(registros))
+        self.assertTrue(any('Coverage gap remains' in m for m in logs.output), logs.output)
+        self.assertEqual(self._no_servidas(), set())
+
+    def test_descarga_vacia_no_toca_ninguna_salida(self):
+        self._ejecutar(APIFalsa(self._basicos()))
+        salidas = ('cm.parquet', 'cm_raw.parquet', 'cm_duplicate_analysis.json')
+        antes = {n: b for n, b in self._ficheros().items() if n in salidas}
+        with self.assertLogs(cat_menores.logger, level=logging.WARNING) as logs:
+            self._ejecutar(APIFalsa([]))
+        self.assertTrue(any('No records found' in m for m in logs.output), logs.output)
+        despues = self._ficheros()
+        self.assertEqual({n: despues[n] for n in salidas}, antes)
+        self.assertFalse(any(n.startswith(('cm__', 'cm_raw__')) for n in self._historico()))
+
+    def test_salida_del_codigo_anterior_se_toma_como_primera_descarga(self):
+        antigua = _publicado(self._basicos() + _registros(1, 10, 5000))
+        pd.concat([antigua, antigua.iloc[:3]], ignore_index=True).to_parquet(self.out, index=False)
+        self._ejecutar(APIFalsa(self._basicos()))
+        salida = self._salida()
+        self.assertEqual(len(salida), 581)
+        self.assertEqual(self._no_servidas(), {5000})
+        self.assertTrue(any(n.startswith('cm__') for n in self._historico()))
+
+    def test_semilla_anade_solo_las_claves_que_faltan_y_quita_solo_sus_copias(self):
+        basicos = self._basicos()
+        retirada_normal = _registros(1, 10, 5000)[0]
+        retirada_agregada = _registros(1, 800, 905000)[0]
+        cambiada = dict(basicos[0], pressupostAdjudicacio=1.0)   # clave de la id 1: ya está
+        version_a = _registros(1, 20, 6000)[0]
+        version_b = dict(version_a, titol='T6000 (corregido)')    # misma clave, otra versión publicada
+        filas = _publicado(basicos[:100] + [retirada_normal, retirada_agregada, cambiada, version_a, version_b])
+        ruta = self.dir / "publicado.parquet"
+        pd.concat([filas, filas, filas.iloc[:60]], ignore_index=True).to_parquet(ruta, index=False)
+
+        self._ejecutar(APIFalsa(basicos), semillas=[ruta])
+        salida = self._salida()
+        sembradas = salida[salida['_origen'].notna()]
+        self.assertEqual(sorted(sembradas['id']), [5000, 6000, 6000, 905000])
+        self.assertEqual(sorted(sembradas.loc[sembradas['id'] == 6000, 'titol']), ['T6000', 'T6000 (corregido)'])
+        self.assertTrue((sembradas['_origen'] == 'release v2026.02').all())
+        self.assertFalse(sembradas['_en_ultima_descarga'].any())
+        # Las filas de la descarga no cambian
+        descarga = salida[salida['_origen'].isna()]
+        self.assertEqual(len(descarga), 580)
+        self.assertTrue(descarga['_en_ultima_descarga'].all())
+        self.assertEqual(salida.loc[salida['id'] == 1, 'pressupostAdjudicacio'].tolist(), [90.0])
+        # Sembrar otra vez no añade nada ni crea versiones; sin --semilla, lo sembrado se queda
+        antes = self._ficheros()
+        self._ejecutar(APIFalsa(basicos), semillas=[ruta])
+        self.assertEqual(self._ficheros(), antes)
+        self._ejecutar(APIFalsa(basicos))
+        self.assertEqual(self._ficheros(), antes)
+
+    def test_semilla_fuera_del_ambito_no_se_anade(self):
+        ruta = self.dir / "publicado.parquet"
+        _publicado(self._basicos() + _registros(1, 10, 5000) + _registros(1, 800, 905000)).to_parquet(ruta)
+        self._ejecutar(APIFalsa(self._basicos()), include_agregadas=False, semillas=[ruta])
+        # Sin las fases agregadas no se sabe si la agregada sigue publicada: no se añade
+        salida = self._salida()
+        self.assertEqual(sorted(salida.loc[salida['_origen'].notna(), 'id']), [5000])
+        self._ejecutar(APIFalsa(self._basicos()), semillas=[ruta])
+        salida = self._salida()
+        self.assertEqual(sorted(salida.loc[salida['_origen'].notna(), 'id']), [5000, 905000])
+        self.assertEqual(len(salida), 582)
+
+    def test_semilla_inexistente_o_sin_clave_falla_antes_de_descargar(self):
+        api = APIFalsa(self._basicos())
+        with self.assertRaises(FileNotFoundError):
+            self._ejecutar(api, semillas=[self.dir / "no_existe.parquet"])
+        ruta = self.dir / "sin_clave.parquet"
+        pd.DataFrame({'id': [1]}).to_parquet(ruta)
+        with self.assertRaises(ValueError):
+            self._ejecutar(api, semillas=[ruta])
+        self.assertEqual(api.peticiones, [])
+
+
+class HuellasYAmbitoMenoresTests(unittest.TestCase):
+    """Piezas de la acumulación de ccaa_cataluna_contratosmenores.py, sin API."""
+
+    def _huellas(self, a, b):
+        ha, hb = cat_menores.huellas_contenido(a, b)
+        return ha.tolist(), hb.tolist()
+
+    def test_huella_iguala_el_mismo_valor_con_otro_tipo(self):
+        a = pd.DataFrame({'idOrgan': [6242426, 7], 'importe': [100.0, 1.5], 'cp': ['08002', 'X'],
+                          'agregat': [True, None], '_ultima_descarga': ['2026', '2025']})
+        b = pd.DataFrame({'idOrgan': [6242426.0, 7.0], 'importe': ['100.0', '1.5'], 'cp': ['08002', 'X'],
+                          'agregat': ['True', None], 'nueva': [None, None]})
+        ha, hb = self._huellas(a, b)
+        self.assertEqual(ha, hb)
+        self.assertNotEqual(ha[0], ha[1])
+
+    def test_huella_distingue_valores_distintos(self):
+        base = pd.DataFrame({'cp': ['08002'], 'nom': [None], 'importe': ['1.50']})
+        for cambio in ({'cp': [8002]}, {'nom': ['None']}, {'importe': [1.5]}, {'nueva': ['x']}):
+            otra = base.assign(**cambio)
+            ha, hb = self._huellas(base, otra)
+            self.assertNotEqual(ha, hb, cambio)
+
+    def test_calcular_ambito(self):
+        with patch.object(cat_menores, 'FASES_NORMAL', [10, 20]), \
+                patch.object(cat_menores, 'FASES_AGREGADAS', [800]):
+            ambito = cat_menores.calcular_ambito
+            enteras = {'10': [], '20': [], '800': []}
+            organo_7 = {'params': {'faseVigent': 20, 'ambit': 1500001, 'organ': 7}}
+            fase_20 = {'params': {'faseVigent': 20}}
+            self.assertEqual(ambito([10, 20, 800], enteras), {'normales': set(), 'agregadas': set()})
+            self.assertEqual(ambito([10, 20, 800], {**enteras, '20': [organo_7]}),
+                             {'normales': {'7'}, 'agregadas': set()})
+            self.assertEqual(ambito([10, 20, 800], {**enteras, '20': [organo_7, fase_20]}),
+                             {'normales': None, 'agregadas': set()})
+            self.assertEqual(ambito([10, 20], enteras), {'normales': set(), 'agregadas': None})
+            self.assertEqual(ambito([10, 20, 800], {'10': [], '800': []}), {'normales': None, 'agregadas': set()})
+            self.assertEqual(ambito([10, 20, 800], {**enteras, '20': [organo_7]}, particion_ok=False),
+                             {'normales': {'7'}, 'agregadas': {'7'}})
+            self.assertEqual(ambito([10, 20], enteras, particion_ok=False), {'normales': None, 'agregadas': None})
+
+    def test_filas_en_ambito(self):
+        df = pd.DataFrame({'idOrgan': [7, 8, None, 7], 'esAgregatContractes': [None, None, None, True]})
+        en_ambito = cat_menores.filas_en_ambito
+        self.assertEqual(en_ambito(df, {'normales': {'7'}, 'agregadas': None}).tolist(), [False, True, False, False])
+        self.assertEqual(en_ambito(df, {'normales': set(), 'agregadas': set()}).tolist(), [True] * 4)
+        self.assertEqual(en_ambito(df, {'normales': None, 'agregadas': set()}).tolist(), [False, False, False, True])
+
+    def test_leer_semilla_quita_solo_las_copias_identicas(self):
+        df = pd.DataFrame({
+            'id': [1, 1, 1, 2, 2, 3, 3],
+            'expedientId': ['a', 'a', 'a', 'b', 'b', None, None],
+            'importe': [1.0, 1.0, float('nan'), 2.0, 2.0, 3.0, 3.0],
+            'agregat': [True, True, True, None, None, False, None],
+            'titol': ['x', 'x', 'x', 'y', 'y', 'z', 'z'],
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "publicado.parquet"
+            df.to_parquet(ruta, index=False, row_group_size=2)   # copias en grupos de filas distintos
+            semilla, leidas, copias = cat_menores.leer_semilla(ruta)
+            esperado = cat_menores.quitar_copias_identicas(pd.read_parquet(ruta))
+        self.assertEqual((leidas, copias), (7, 2))
+        pd.testing.assert_frame_equal(semilla.reset_index(drop=True), esperado)
 
 
 if __name__ == "__main__":

@@ -1319,6 +1319,13 @@ def escribir_salidas(partes, columnas):
 
     def a_parquet(tmp):
         esquema = pa.schema([(c, pa.bool_() if c == "_en_ultima_descarga" else pa.string()) for c in columnas])
+
+        def escribir(escritor, lote):
+            # combine_chunks: los mismos bytes con pandas 2 y 3 (con pandas 3
+            # las columnas llegan troceadas y el diccionario de Parquet se
+            # desbordaría en otra fila)
+            escritor.write_table(pa.concat_tables(lote).combine_chunks())
+
         with pq.ParquetWriter(tmp, esquema, compression="snappy") as escritor:
             lote, filas = [], 0
             for _, p in partes:
@@ -1328,10 +1335,10 @@ def escribir_salidas(partes, columnas):
                                       for c in columnas}, schema=esquema))
                 filas += len(p)
                 if filas >= FILAS_POR_GRUPO:
-                    escritor.write_table(pa.concat_tables(lote))
+                    escribir(escritor, lote)
                     lote, filas = [], 0
             if lote:
-                escritor.write_table(pa.concat_tables(lote))
+                escribir(escritor, lote)
 
     return {SALIDA_CSV: _escribir(OUTPUT_DIR / SALIDA_CSV, a_csv),
             SALIDA_PARQUET: _escribir(OUTPUT_DIR / SALIDA_PARQUET, a_parquet)}
