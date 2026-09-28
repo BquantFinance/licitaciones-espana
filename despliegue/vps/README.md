@@ -21,7 +21,7 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 | `runs/<commit>/` | Worktrees del repo, uno por commit revisado (no van en git) |
 | `produccion` | Enlace al worktree que usa producción. Cambiarlo es «promover» otro commit |
 | `bin/ejecutar_fuente.sh <fuente> [primera\|semanal\|prueba]` | Lanza una fuente. Códigos: 2 configuración, 3 disco < 100 GB, 4 ya en marcha, 5 cerrojo global ocupado, 6 preparación, 124 tiempo agotado, 11 semanal con avisos; otro, el del scraper |
-| `bin/cola_primera_descarga.sh [--hasta-vaciar] [--parar-a HH:MM] [--saltar f1,f2]` | Primera descarga de cada fuente en el orden de `cola_primera.txt`: sin opciones, una línea por ejecución (cron de las 00:30) |
+| `bin/cola_primera_descarga.sh [--hasta-vaciar] [--parar-a HH:MM] [--saltar f1,f2]` | Primera descarga de cada fuente en el orden de `cola_primera.txt`. Sin opciones, una línea por ejecución. El cron de las 00:30 usa `--hasta-vaciar`: sigue con la línea siguiente hasta vaciar la cola, o hasta la hora de `--parar-a` |
 | `fuentes/<fuente>.sh` | Comandos de cada fuente (`CMD_PRIMERA`, `CMD_SEMANAL`), límites y preparación (`PREPARAR_PRIMERA`, `PREPARAR_SEMANAL`) |
 | `bin/vigia_codigo.sh` | Cron diario (23:00). Si `main` avanza: `git pull` de la copia del repo, comprueba que ningún fichero de código tenga como último cambio un commit WIP, la tabla «Estado de los scrapers» y la suite de tests con la imagen que usará producción, y promueve (enlace, `despliegue/vps` e imagen). `vigia_codigo.sh comprobar <ref>` solo comprueba |
 
@@ -56,7 +56,7 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 
 ```
 0 23 * * *  /opt/apps/licitaciones-vps/bin/vigia_codigo.sh
-30 0 * * *  /opt/apps/licitaciones-vps/bin/cola_primera_descarga.sh >> /opt/data/licitaciones-historico/logs/cola.log 2>&1
+30 0 * * *  /opt/apps/licitaciones-vps/bin/cola_primera_descarga.sh --hasta-vaciar >> /opt/data/licitaciones-historico/logs/cola.log 2>&1
 ```
 
 Cuando termine la cola de primeras descargas, se sustituye por un cron semanal por fuente
