@@ -440,3 +440,29 @@ def test_comilla_literal_no_se_traga_registros(tmp_path):
     assert df["c0"].tolist() == ["1", "2", "3"]
     assert df["c1"].tolist() == ['"Obra A', "Obra B", 'Obra "C"']
     assert any("comillas literales" in a for a in avisos)
+
+
+@pytest.mark.parametrize("texto, codificacion, esperada", [
+    # contratosOD 2014-2018 de la CARM: cp850 ('Ó' = 0xE0); leído como cp1252 daba 'NEGOCIACIàN'
+    ("COD;PROCEDIMIENTO;ORGANO\n1;NEGOCIACIÓN SIN PUBLICIDAD;ÁREA DE SALUD IX\n2;ADJUDICACIÓN;CONSEJERÍA\n",
+     "cp850", "cp850"),
+    ("COD;OBJETO\n1;Señalización – 5 € de la Consejería\n", "cp1252", "cp1252"),
+    ("COD;OBJETO\n1;Póliza año\x81\n", "latin-1", "latin-1"),     # 0x81 no existe en cp1252
+    ("COD;OBJETO\n1;Señalización – 5 €\n", "utf-8", "utf-8"),
+    ("COD;OBJETO\n1;SIN ACENTOS\n", "cp1252", "utf-8"),              # ASCII: vale UTF-8
+])
+def test_detectar_codificacion(tmp_path, texto, codificacion, esperada):
+    ruta = tmp_path / "f.csv"
+    ruta.write_bytes(texto.encode(codificacion))
+    assert M._detectar_codificacion(ruta) == esperada
+    df, _ = M.leer_tabla(ruta)
+    assert df.iloc[0, 1] == texto.splitlines()[1].split(";")[1]      # el texto publicado, bien leído
+
+
+def test_carm_en_cp850_se_lee_bien(portal, tmp_path):
+    portal.urls[url_carm(2019)] = ("NUMERO;OBJETO;IMPORTE;CIF\n2019-0001;NEGOCIACIÓN SIN PUBLICIDAD - ÁREA IX;"
+                                   "1.000,00;B0012345\n").encode("cp850")
+    assert _ejecutar(tmp_path) == 0
+    df = pq.read_table(tmp_path / "contratos_carm.parquet").to_pandas()
+    assert df.loc[df["_anio_fichero"] == "2019", "OBJETO"].tolist() == ["NEGOCIACIÓN SIN PUBLICIDAD - ÁREA IX"]
+    assert set(df.loc[df["_anio_fichero"] != "2019", "OBJETO"]) == {"Señalización – 5 €"}   # cp1252, como antes

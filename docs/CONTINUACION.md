@@ -172,7 +172,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`) | `95815b3` | Sí (primera descarga del VPS, 2026-09-28) |
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
-| `scripts/ccaa_murcia.py` | Cerrado | `8791825` | Sí |
+| `scripts/ccaa_murcia.py` | Cerrado | `83e49b2` | Sí (codificación cp850 de contratosOD 2014-2018, con los ficheros del VPS) |
 | `scripts/ccaa_aragon.py` | Cerrado | `48e4d42` | Sí |
 | `scripts/ccaa_castilla_leon.py` | Cerrado | `0263faf` | Sí |
 | `scripts/ccaa_extremadura.py` | Cerrado | `4163d85` | Sí |

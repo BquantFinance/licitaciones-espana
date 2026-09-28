@@ -64,7 +64,7 @@ VERIFICAR EN VIVO (el sandbox donde se escribió no llega a los portales):
   - Mayúsculas/minúsculas de las rutas (odata/transparencia frente a
     odata/Transparencia) y si los ficheros inexistentes dan 404 o una página
     HTML con 200 (el script rechaza el HTML y lo trata como "no publicado").
-  - Codificación y separador de los CSV (se detectan: UTF-8/cp1252; ; , tab |).
+  - Codificación y separador de los CSV (se detectan: UTF-8/cp1252/latin-1/cp850; ; , tab |).
   - Que package_search devuelve result.count/result.results[].resources[].url.
 =============================================================================
 """
@@ -481,26 +481,38 @@ class Resumen:
 # Lectura de ficheros como texto (todas las filas y columnas, sin convertir nada)
 # ----------------------------------------------------------------------------
 
+# Letras del castellano que no son ASCII: deciden entre las codificaciones de un byte
+_LETRAS_ES = re.compile("[ÁÉÍÓÚÑÜáéíóúñü]")
+# De un byte, por preferencia a igualdad de letras: cp1252 antes que latin-1 (latin-1 dejaría
+# '€', '’'... como caracteres de control) y cp850 la última
+_UN_BYTE = ("cp1252", "latin-1", "cp850")
+
+
 def _detectar_codificacion(ruta):
-    """Primera codificación capaz de decodificar el fichero COMPLETO. cp1252 va
-    antes que latin-1 (latin-1 acepta cualquier byte y dejaría '€', '’'... como
-    caracteres de control)."""
+    """UTF-8 (o UTF-16) si decodifica el fichero COMPLETO. Si no, la codificación de un byte que da
+    más letras del castellano (á, Ñ...): cp1252, latin-1 y cp850 aceptan casi cualquier byte, y la
+    equivocada no falla, cambia las letras. Los contratosOD de 2014-2018 de la CARM vienen en cp850
+    (la 'Ó' es el byte 0xE0): leídos como cp1252 daban 'NEGOCIACIàN' y 'µREA'."""
     with open(ruta, "rb") as f:
         inicio = f.read(4)
     if inicio.startswith((b"\xff\xfe", b"\xfe\xff")):
         return "utf-16"
-    candidatas = ["utf-8-sig"] if inicio.startswith(b"\xef\xbb\xbf") else ["utf-8"]
-    for codificacion in candidatas + ["cp1252", "latin-1"]:
+    utf8 = "utf-8-sig" if inicio.startswith(b"\xef\xbb\xbf") else "utf-8"
+    letras = {}
+    for codificacion in (utf8,) + _UN_BYTE:
         decodificador = codecs.getincrementaldecoder(codificacion)()
+        n = 0
         try:
             with open(ruta, "rb") as f:
                 while bloque := f.read(1 << 20):
-                    decodificador.decode(bloque)
+                    n += len(_LETRAS_ES.findall(decodificador.decode(bloque)))
             decodificador.decode(b"", final=True)
-            return codificacion
         except UnicodeDecodeError:
             continue
-    return "latin-1"
+        if codificacion == utf8:
+            return utf8
+        letras[codificacion] = n
+    return max(letras, key=lambda c: (letras[c], -_UN_BYTE.index(c)))
 
 
 def _detectar_separador(ruta, codificacion):
