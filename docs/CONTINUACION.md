@@ -32,7 +32,7 @@ Desde el 2026-09-28 hay **una sola sesión de trabajo**: la de Claude Code en el
    - Andalucía y las fuentes bloqueadas desde la nube (§3.6.8) se verifican por primera vez desde el VPS.
 5. **`--salida` en Comunidad de Madrid y TED** (lo pide la PR #27).
 6. **Decisiones del propietario pendientes:**
-   - §3.2: cargos repetidos del BORME, retención de `_historico/`, organismos que Galicia retira, segmentación y semilla de la PSCP, huecos y avisos cancelados de TED.
+   - §3.2: cargos repetidos del BORME, retención de `_historico/`, organismos que Galicia retira, segmentación y semilla de la PSCP y huecos de TED (los avisos cancelados ya se conservan, `b8c6709`).
    - §3.1.4: identificadores truncados del Ayuntamiento de Madrid.
    - §1: los 4,8 M de menores que anuncia el portal de la Comunidad de Madrid frente a los 2,8 M descargados.
 
@@ -167,10 +167,10 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 |---|---|---|---|
 | `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `de70485` | Sí (regeneración del 2026-09-27) |
 | `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
-| `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `e3abbe7` | Sí |
+| `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `b8c6709` | Sí (y el lector nuevo del CSV, con los CSV reales de 2019 y 2021) |
 | `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | Sí |
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | — |
-| `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | Sí (API completa) |
+| `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
 | `scripts/ccaa_murcia.py` | Cerrado | `8791825` | Sí |
 | `scripts/ccaa_aragon.py` | Cerrado | `48e4d42` | Sí |
@@ -306,8 +306,14 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   - **Hueco de 2020-2023:** el CSV no trae los `can-modif` ni los `can-desg` (1.620 solo en 2020). Viene de `5827174`. Con `--semilla` se recuperan del publicado, pero no se vuelven a descargar. Decidir si se piden a la API.
   - El primer refresco real, con `--semilla` y el `ted_es_can.parquet` publicado.
   - **Coste:** cada ejecución acumula todas las versiones (unos 6 s por versión en un año de 125.000 filas). Para ejecuciones diarias haría falta un acumulado intermedio por año.
-  - `diagnostico_missing_ted.py`, `analisis_sector_salud.py` y `cross-validation_ted_placsp.py` leen el consolidado entero. Deben aplicar `ultima_version_por_aviso`.
-  - **Contra la regla 2 de §2:** el CSV se lee con `on_bad_lines='skip'` sin guardar lo descartado, y `_normalize_ted_data` elimina los avisos cancelados. Hay que conservarlos y marcarlos.
+  - ~~`diagnostico_missing_ted.py`, `analisis_sector_salud.py` y `cross-validation_ted_placsp.py` leen el consolidado entero~~: **hecho** (`c0230cb`). Usan `avisos_para_cruce`: la última versión de cada aviso y, después, sin los cancelados.
+  - ~~**Contra la regla 2 de §2:** el CSV se lee con `on_bad_lines='skip'` sin guardar lo descartado, y `_normalize_ted_data` elimina los avisos cancelados~~: **hecho** (`c0230cb` y `b8c6709`).
+    - El CSV se lee registro a registro con el módulo `csv`.
+    - Los registros irregulares van a `ted_can_<año>_registros_irregulares.csv`. Las filas que entran en la tabla desde uno de ellos llevan el motivo en `_registro_irregular`.
+    - Si el CSV de un año trae alguno, `download` guarda lo descargado y sale con 1. Es un aviso único: el CSV de un año cerrado solo se lee una vez.
+    - Los cancelados se conservan con `cancelled='1'`, y los cruces los excluyen después de quedarse con la última versión de cada aviso.
+    - Verificado con los CSV reales de 2019 y 2021 (566 y 749 MB): sale la misma tabla, salvo 4 celdas de 2021 (`N/A` ×3 y `NA` ×1) que ahora se conservan como texto. No hay ningún registro irregular.
+    - La web (`buscalicitaciones`, `etl/build_unified.py`) marcaba como cancelados los `'Y'`, pero TED usa `'1'`: lo corrige el ETL nuevo.
 - Andalucía quedó cubierta el 2026-09-28, sin verificar en vivo.
 - Asturias quedó cubierta el 2026-09-28, sin verificar en vivo porque su portal no responde desde la nube.
 

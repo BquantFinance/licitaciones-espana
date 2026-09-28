@@ -17,11 +17,17 @@ Outputs:
     - data/ted/crossval_stats.txt           (resumen estadístico)
 """
 
+import sys
+
 import pandas as pd
 import numpy as np
 import time
 from pathlib import Path
 from collections import defaultdict
+
+# Última versión de cada aviso y sin cancelados (ted_module.avisos_para_cruce), desde cualquier cwd
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ted_module import avisos_para_cruce  # noqa: E402
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CONFIG
@@ -121,6 +127,9 @@ def load_ted(path):
     print(f"\n📥 Cargando TED: {path}")
     df = pd.read_parquet(path)
     print(f"   Total registros: {len(df):,}")
+    # El consolidado conserva el histórico y los cancelados: cada aviso una vez, sin cancelados
+    df = avisos_para_cruce(df).reset_index(drop=True)
+    print(f"   Avisos para el cruce (última versión, sin cancelados): {len(df):,}")
     
     # Asegurar columnas numéricas
     for col in ['importe_ted', 'year', 'number_offers']:

@@ -280,13 +280,20 @@ def _clave_organo_expediente(df, exp_col):
     return clave.where(valido)
 
 
+# Textos que pandas lee como nulos por defecto: el consolidado de TED los conserva como texto
+# desde sept. 2026, pero en un NIF 'N/A' o '#N/A N/A' no son un NIF (igual que en ted_module)
+_TEXTOS_NULOS_PANDAS = ('', '#N/A', '#N/A N/A', '#NA', '-1.#IND', '-1.#QNAN', '-NaN', '-nan', '1.#IND',
+                        '1.#QNAN', '<NA>', 'N/A', 'NA', 'NULL', 'NaN', 'None', 'n/a', 'nan', 'null')
+_NIF_NULOS = frozenset(t.upper() for t in _TEXTOS_NULOS_PANDAS)
+
+
 def clean_nif(nif):
     """Limpia NIF: mayusculas, sin prefijo ES."""
     if pd.isna(nif) or not nif:
         return ''
     s = str(nif).strip().upper()
     s = re.sub(r'^ES[-\s]*', '', s)
-    return s if len(s) >= 5 else ''
+    return s if len(s) >= 5 and s not in _NIF_NULOS else ''
 
 
 def tol(imp, pct=MATCH_TOL_PCT, abs_val=MATCH_TOL_ABS):
@@ -551,6 +558,13 @@ def load_ted(path):
     df = ultima_version_por_aviso(df).reset_index(drop=True)
     if len(df) < n_total:
         print(f"  Filas de versiones anteriores de un aviso (fuera del cruce): {n_total - len(df):,}")
+    # Los avisos cancelados se conservan en el consolidado (ted_module); en el cruce no cuentan
+    if 'cancelled' in df.columns:
+        # Con tipos que admiten nulos (string, Int64) la comparación da <NA>: un nulo no es un cancelado
+        cancelados = pd.to_numeric(df['cancelled'], errors='coerce').eq(1).fillna(False).astype(bool)
+        if cancelados.any():
+            print(f"  Avisos cancelados (fuera del cruce): {int(cancelados.sum()):,}")
+            df = df[~cancelados].reset_index(drop=True)
 
     for col in ['year', 'number_offers']:
         if col in df.columns:
@@ -569,6 +583,7 @@ def load_ted(path):
     df['win_nif_clean'] = df.get('win_nationalid', pd.Series(dtype=str)) \
         .fillna('').astype(str).str.strip().str.upper()
     df['win_nif_clean'] = df['win_nif_clean'].str.replace(r'^ES[-\s]*', '', regex=True)
+    df.loc[df['win_nif_clean'].isin(_NIF_NULOS), 'win_nif_clean'] = ''
 
     valid = df['importe_ted'].notna() & (df['importe_ted'] > 0)
     has_nif = df['win_nif_clean'].str.len() >= 5
