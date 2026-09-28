@@ -144,10 +144,12 @@ class FakePortal:
     el total del organismo y recordsFiltered el de la ventana de fechas.
     fail_orgs: organismos cuya tabla responde 403 (salvo las sondas del
     descubrimiento); empty_orgs: responden 0 registros (p. ej. sin contexto de
-    sesión); windowless_orgs: declaran sus CM (recordsTotal) pero todas las
-    ventanas vuelven vacías; hidden_ids: filas que la paginación se salta
-    aunque cuentan en recordsFiltered; details: N de la ficha -> código HTTP de
-    error, 'vacia' o un texto que sustituye a la referencia (ficha cambiada).
+    sesión); empty_scan_orgs: lo mismo, pero solo al barrer (no en las sondas
+    del descubrimiento); windowless_orgs: declaran sus CM (recordsTotal) pero
+    todas las ventanas vuelven vacías; hidden_ids: filas que la paginación se
+    salta aunque cuentan en recordsFiltered; details: N de la ficha -> código
+    HTTP de error, 'vacia' o un texto que sustituye a la referencia (ficha
+    cambiada).
     """
 
     def __init__(self, lic=None, cm=None):
@@ -157,6 +159,7 @@ class FakePortal:
         self.lock = threading.Lock()
         self.fail_orgs = set()
         self.empty_orgs = set()
+        self.empty_scan_orgs = set()
         self.windowless_orgs = set()
         self.hidden_ids = set()
         self.details = {}
@@ -198,7 +201,7 @@ class FakePortal:
                 if org_id in self.windowless_orgs:
                     rows = []
             filtered = len(rows)
-            if org_id in self.empty_orgs:
+            if org_id in self.empty_orgs or (org_id in self.empty_scan_orgs and length != 1):
                 rows, total, filtered = [], 0, 0
             visible = [row for row in rows if row["id"] not in self.hidden_ids]
             response.json.return_value = {
@@ -1222,9 +1225,15 @@ FECHA_4 = "2026-04-01T00:00:00Z"
 META = ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]
 
 
+ISO_UTC = scraper_galicia.iso_utc
+
+
 def run_at(argv, portal, fecha):
-    """run_main con la fecha de la descarga (y de las marcas) fijada."""
-    with patch.object(scraper_galicia, "iso_utc", return_value=fecha):
+    """run_main con la fecha de ahora (la de la descarga y las marcas) fijada."""
+    def now_is(momento=None):
+        return fecha if momento is None else ISO_UTC(momento)
+
+    with patch.object(scraper_galicia, "iso_utc", side_effect=now_is):
         return run_main(argv, portal)
 
 
@@ -1371,7 +1380,14 @@ class GaliciaHistoricoTests(unittest.TestCase):
             portal.cm[48] = [r for r in portal.cm[48] if r["id"] != 500001]
             self.assertEqual(run_at(cli_args(out, "--organismo", "3"), portal, FECHA_2)[0], 0)
             final = read_final(out).set_index("id")
+            # Otra descarga parcial (solo el 2): la retirada del 3, fuera de su
+            # ámbito, sigue retirada
+            self.assertEqual(run_at(cli_args(out, "--organismo", "2"), portal, FECHA_3)[0], 0)
+            third = read_final(out).set_index("id")
 
+        self.assertEqual(third.loc["600001", "_en_ultima_descarga"], "False")
+        self.assertEqual(third.loc["700001", "_en_ultima_descarga"], "False")
+        self.assertEqual(third.loc["500001", "_en_ultima_descarga"], "True")
         self.assertEqual(len(final), 12)
         self.assertEqual(final.loc["600001", "_en_ultima_descarga"], "False")
         for rid in ("700001", "500001"):
@@ -1446,13 +1462,14 @@ class GaliciaHistoricoTests(unittest.TestCase):
         # Otro contrato en la ventana de 600003 (2021-04-04): al retirarse este, la
         # ventana sigue llegando completa y no vacía.
         cm.append(dict(cm[3], id=600004))
-        portal = FakePortal(cm={3: cm})
+        portal = FakePortal(cm={3: cm}, lic={3: fake_lic_records(3)})
         with tempfile.TemporaryDirectory() as tmpdir:
             out = Path(tmpdir)
             self.assertEqual(run_at(cli_args(out, "--organismo", "3"), portal, FECHA_1)[0], 0)
-            # La paginación se salta 600002, que el portal sigue contando (recordsFiltered);
-            # 600003 sí se ha retirado de verdad (su ventana llega completa).
-            portal.hidden_ids = {600002}
+            # La paginación se salta 600002 y la licitación 824001, que el portal sigue
+            # contando (recordsFiltered / recordsTotal); 600003 sí se ha retirado de
+            # verdad (su ventana llega completa).
+            portal.hidden_ids = {600002, 824001}
             portal.cm[3] = [r for r in portal.cm[3] if r["id"] != 600003]
             code, stdout = run_at(cli_args(out, "--organismo", "3"), portal, FECHA_2)
             self.assertEqual(code, 0)
@@ -1460,6 +1477,10 @@ class GaliciaHistoricoTests(unittest.TestCase):
             manifest = json.loads((out / scraper_galicia.BASE_PROGRESS_NAME).read_text(encoding="utf-8"))
 
         self.assertIn("ventana incompleta", stdout)
+        self.assertIn("Org 3 LIC: DESAJUSTE esperados=3 descargados=2", stdout)
+        self.assertEqual(final.loc["824001", "_en_ultima_descarga"], "True")
+        self.assertEqual(final.loc["824001", "_ultima_descarga"], FECHA_1)
+        self.assertFalse(manifest["ambito"]["3"]["LIC"])
         self.assertEqual(final.loc["600002", "_en_ultima_descarga"], "True")
         self.assertEqual(final.loc["600002", "_ultima_descarga"], FECHA_1)
         self.assertEqual(final.loc["600003", "_en_ultima_descarga"], "False")
@@ -1514,14 +1535,27 @@ class GaliciaHistoricoTests(unittest.TestCase):
                 {"True": 4, "False": 1},
             )
 
-            # Descubrimiento completo con el 3 vacío: no se barre ni se retira
+            # 4. El 2 (solo LIC) y el 3 (solo CM) aparecen en el descubrimiento pero
+            # al barrerlos responden 0 registros: no se retira nada suyo
             portal.windowless_orgs = set()
-            portal.empty_orgs = {3}
+            portal.empty_scan_orgs = {2, 3}
             code, _ = run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_4)
             self.assertEqual(code, 0)
             final = read_final(out)
+            manifest = json.loads((out / scraper_galicia.BASE_PROGRESS_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["ambito"]["2"]["LIC"], False)
+            self.assertEqual(manifest["ambito"]["3"]["CM"], [])
 
-            # 4. Un CSV base solo con la cabecera no cambia la tabla
+            # 5. Descubrimiento completo con el 3 vacío también en las sondas: no se barre
+            portal.empty_scan_orgs = set()
+            portal.empty_orgs = {3}
+            code, _ = run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_4)
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                read_final(out).loc[lambda df: df["_organismo_id"] == "3", "_ultima_descarga"].tolist(), [FECHA_1] * 4
+            )
+
+            # 6. Un CSV base solo con la cabecera no cambia la tabla
             final_bytes = (out / scraper_galicia.FINAL_CSV_NAME).read_bytes()
             (out / scraper_galicia.BASE_CSV_NAME).write_text(
                 ";".join(scraper_galicia.BASE_EXPORT_FIELDS) + "\n", encoding="utf-8-sig"
@@ -1531,13 +1565,16 @@ class GaliciaHistoricoTests(unittest.TestCase):
             self.assertIn("una descarga vacía no cambia la tabla final", stdout)
             self.assertEqual((out / scraper_galicia.FINAL_CSV_NAME).read_bytes(), final_bytes)
 
-        org3 = final[final["_organismo_id"] == "3"]
-        self.assertEqual(len(org3), 4)
-        self.assertEqual(set(org3["_en_ultima_descarga"]), {"True"})
-        self.assertEqual(set(org3["_ultima_descarga"]), {FECHA_1})
-        others = final[(final["_organismo_id"] != "3") & (final["_en_ultima_descarga"] == "True")]
-        self.assertEqual(len(others), 7)
-        self.assertEqual(set(others["_ultima_descarga"]), {FECHA_4})
+        # Tras el paso 4: el 2 y el 3 siguen como estaban (vistos por última vez en el
+        # paso 3 y en la primera descarga); el 48, al día
+        for org, n, last_seen in (("2", 3, FECHA_3), ("3", 4, FECHA_1)):
+            rows = final[final["_organismo_id"] == org]
+            self.assertEqual(len(rows), n)
+            self.assertEqual(set(rows["_en_ultima_descarga"]), {"True"})
+            self.assertEqual(set(rows["_ultima_descarga"]), {last_seen})
+        org48 = final[(final["_organismo_id"] == "48") & (final["_en_ultima_descarga"] == "True")]
+        self.assertEqual(len(org48), 4)
+        self.assertEqual(set(org48["_ultima_descarga"]), {FECHA_4})
 
     def test_detail_cache_never_loses_a_downloaded_detail(self):
         portal = FakePortal(lic={48: fake_lic_records(2)}, cm={48: fake_cm_records(2)})
@@ -1745,6 +1782,76 @@ class GaliciaHistoricoTests(unittest.TestCase):
         self.assertEqual(len(final), len(first_final))
         self.assertTrue(final.drop(columns="_ultima_descarga").equals(first_final.drop(columns="_ultima_descarga")))
         self.assertEqual(set(final["_ultima_descarga"]), {FECHA_2})
+
+    def test_final_table_of_the_previous_scraper_version_is_kept(self):
+        lic = fake_lic_records(3)
+        portal = FakePortal(lic={48: list(lic)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            # Tabla final como la escribía la versión anterior: sin columnas de control
+            legacy = read_final(out).drop(columns=META)
+            legacy.to_csv(out / scraper_galicia.FINAL_CSV_NAME, sep=";", index=False, encoding="utf-8-sig")
+            legacy_date = scraper_galicia.file_date_iso(out / scraper_galicia.FINAL_CSV_NAME)
+            portal.lic[48] = lic[:2]
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_2)[0], 0)
+            final = read_final(out).set_index("id")
+
+        self.assertEqual(len(final), 3)
+        self.assertEqual(final.loc["824002", "_en_ultima_descarga"], "False")
+        self.assertEqual(final.loc["824002", "_ultima_descarga"], legacy_date)
+        self.assertEqual(final.loc["824002", "detail_referencia"], "REF-824002")
+        self.assertEqual(set(final["_primera_descarga"]), {legacy_date})
+
+    def test_final_parquet_without_its_csv_is_not_replaced(self):
+        if not scraper_galicia.HAS_PYARROW:
+            self.skipTest("pyarrow no disponible")
+        portal = FakePortal(lic={48: fake_lic_records(2)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_1)[0], 0)
+            (out / scraper_galicia.FINAL_CSV_NAME).unlink()
+            parquet = (out / scraper_galicia.FINAL_PARQUET_NAME).read_bytes()
+            code, stdout = run_at(cli_args(out, "merge"), portal, FECHA_2)
+            self.assertEqual(code, 1)
+            self.assertIn("la tabla final se acumula desde su CSV", stdout)
+            self.assertEqual((out / scraper_galicia.FINAL_PARQUET_NAME).read_bytes(), parquet)
+            self.assertFalse((out / scraper_galicia.FINAL_CSV_NAME).exists())
+
+    def test_window_check_requires_exactly_the_declared_rows_inside_the_window(self):
+        def check(recs, filtrados):
+            informe = {
+                "filtrados": filtrados,
+                "filas": len(recs),
+                "unicos": len({r.get("id") for r in recs if r.get("id") not in (None, "")}),
+            }
+            return scraper_galicia.window_check(recs, "2026-01-01", "2026-03-31", informe)
+
+        ok = [{"id": 1, "publicado": "01-01-2026"}, {"id": 2, "publicado": "31-03-2026"}]
+        self.assertTrue(check(ok, 2)["completa"])
+        self.assertTrue(check([], 0)["completa"])  # vacía y coherente
+        self.assertFalse(check(ok, 3)["completa"])  # faltan filas
+        self.assertFalse(check(ok, None)["completa"])  # sin recordsFiltered no se sabe
+        self.assertFalse(check(ok + [dict(ok[0])], 3)["completa"])  # fila repetida
+        outside = check([ok[0], {"id": 3, "publicado": "01-04-2026"}], 2)
+        self.assertEqual((outside["fuera"], outside["completa"]), (1, False))
+        no_date = check([ok[0], {"id": 3, "publicado": None}], 2)
+        self.assertEqual((no_date["fuera"], no_date["completa"]), (1, False))
+        no_id = check([ok[0], {"id": None, "publicado": "02-01-2026"}], 2)
+        self.assertEqual((no_id["sin_id"], no_id["completa"]), (1, False))
+
+    def test_save_outputs_keeps_the_previous_version(self):
+        record = {"id": 1, "_tipo": "LIC", "_organismo_id": 48, "objeto": "Contrato", "importe": 100.0}
+        with tempfile.TemporaryDirectory() as tmpdir, patch("sys.stdout", new_callable=io.StringIO):
+            out = Path(tmpdir)
+            scraper_galicia.save_outputs([record], out)
+            scraper_galicia.save_outputs([record], out)
+            self.assertEqual(historico(out), [])
+            scraper_galicia.save_outputs([dict(record, objeto="Otro")], out)
+            hist = historico(out)
+        self.assertEqual(len([n for n in hist if n.endswith(".csv")]), 1)
+        if scraper_galicia.HAS_PYARROW:
+            self.assertEqual(len([n for n in hist if n.endswith(".parquet")]), 1)
 
     def test_listing_fingerprint_compares_values_as_in_parquet(self):
         rows = pd.DataFrame(
