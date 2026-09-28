@@ -20,12 +20,18 @@ Uso:
     python analisis_sector_salud.py
 """
 
+import sys
+
 import pandas as pd
 import numpy as np
 import re
 import time
 from pathlib import Path
 from collections import defaultdict, Counter
+
+# Última versión de cada aviso y sin cancelados (ted_module.avisos_para_cruce), desde cualquier cwd
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ted_module import avisos_para_cruce  # noqa: E402
 
 # ======================================================================
 #  CONFIG
@@ -170,7 +176,8 @@ for col in ['_ted_validated', '_ted_missing', '_es_sara']:
         df_sara[col] = df_sara[col].fillna(False).astype(bool)
 
 # TED
-df_ted = pd.read_parquet(TED_PATH)
+# El consolidado conserva el histórico y los cancelados: cada aviso una vez, sin cancelados
+df_ted = avisos_para_cruce(pd.read_parquet(TED_PATH)).reset_index(drop=True)
 for col in ['importe_ted', 'year', 'number_offers']:
     if col in df_ted.columns:
         df_ted[col] = pd.to_numeric(df_ted[col], errors='coerce')
