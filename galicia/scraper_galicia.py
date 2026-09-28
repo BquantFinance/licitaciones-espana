@@ -215,6 +215,7 @@ BASE_EXPORT_FIELDS = [
 # base escribe 4 o 4.0 según qué otras filas traiga el organismo.
 LISTING_NUMERIC_COLUMNS = ("id", "importe", "estado", "_organismo_id")
 LISTING_DATE_COLUMNS = ("publicado", "modificado")
+FINGERPRINT_CHUNK_ROWS = 200_000
 # Semilla publicada por el scraper antiguo: su importe inflado (ver arriba).
 SEED_AMOUNT_COLUMN = "importe_semilla"
 SEED_KEY = ["_tipo", "id"]
@@ -2466,24 +2467,30 @@ def listing_fingerprint(df):
     mismo valor; un texto que no es número o fecha cuenta tal cual. Dos filas con
     la misma huella son el mismo registro para acumular() (que también compara
     por un hash de 64 bits de las filas). Las columnas de la ficha, de control y
-    de la semilla no cuentan."""
-    canon = {}
-    for column in BASE_EXPORT_FIELDS:
-        if column in df.columns:
-            text = _as_text(df[column])
-        else:
-            text = pd.Series("", index=df.index, dtype=object)
-        if column in LISTING_NUMERIC_COLUMNS:
-            value = pd.to_numeric(text.where(text != ""), errors="coerce").astype("float64")
-            canon[column] = value
-            canon[f"{column}|texto"] = text.where(value.isna(), "")
-        elif column in LISTING_DATE_COLUMNS:
-            value = parse_datetime_series(text.where(text != ""))
-            canon[column] = value.to_numpy(dtype="datetime64[ns]").view("int64")
-            canon[f"{column}|texto"] = text.where(value.isna(), "")
-        else:
-            canon[column] = text
-    return pd.util.hash_pandas_object(pd.DataFrame(canon, index=df.index), index=False).to_numpy()
+    de la semilla no cuentan. Se calcula por trozos de filas (memoria acotada)."""
+    parts = [np.zeros(0, dtype="uint64")]
+    for start in range(0, len(df), FINGERPRINT_CHUNK_ROWS):
+        chunk = df.iloc[start : start + FINGERPRINT_CHUNK_ROWS]
+        canon = {}
+        for column in BASE_EXPORT_FIELDS:
+            if column in chunk.columns:
+                text = _as_text(chunk[column])
+            else:
+                text = pd.Series("", index=chunk.index, dtype=object)
+            if column in LISTING_NUMERIC_COLUMNS:
+                value = pd.to_numeric(text.where(text != ""), errors="coerce").astype("float64")
+                canon[column] = value
+                canon[f"{column}|texto"] = text.where(value.isna(), "")
+            elif column in LISTING_DATE_COLUMNS:
+                value = parse_datetime_series(text.where(text != ""))
+                canon[column] = value.to_numpy(dtype="datetime64[ns]").view("int64")
+                canon[f"{column}|texto"] = text.where(value.isna(), "")
+            else:
+                canon[column] = text
+        parts.append(
+            pd.util.hash_pandas_object(pd.DataFrame(canon, index=chunk.index), index=False).to_numpy()
+        )
+    return np.concatenate(parts)
 
 
 def effective_scope(manifest, new):
@@ -2789,6 +2796,8 @@ def _choose_detail(cached, previous):
 
 
 def _csv_value(value):
+    if isinstance(value, str):
+        return value
     return "" if _is_blank(value) else value
 
 
@@ -2805,6 +2814,7 @@ def write_final_csv(acumulado, tmp_path, conn, fieldnames, previous_csv, n_previ
             chunksize=chunksize,
         )
     total_rows = 0
+    listing_fields = [column for column in fieldnames if column not in set(DETAIL_EXPORT_FIELDS)]
     with tmp_path.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=";")
         writer.writeheader()
@@ -2827,8 +2837,7 @@ def write_final_csv(acumulado, tmp_path, conn, fieldnames, previous_csv, n_previ
                 else:
                     previous = seed_details.get(start + i)
                 detail = _choose_detail(detail_map.get(key) if key else None, previous)
-                row = {column: _csv_value(record.get(column)) for column in fieldnames
-                       if column not in DETAIL_EXPORT_FIELDS}
+                row = {column: _csv_value(record.get(column)) for column in listing_fields}
                 for column in DETAIL_EXPORT_FIELDS:
                     row[column] = detail.get(column)
                 if not row.get("detail_status"):

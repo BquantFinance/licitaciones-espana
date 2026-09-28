@@ -1168,12 +1168,16 @@ def acumular_fichero(nombre, lista):
 
 
 def _agregar(valores, grupos, funcion):
-    """min/max por grupo de fechas en texto (None si el grupo no tiene ninguna)."""
-    relleno = "￿" if funcion == "min" else ""
-    serie = pd.Series(valores, dtype=object).where(pd.notna(pd.Series(valores, dtype=object)), relleno)
-    resultado = serie.groupby(grupos, sort=False).transform(funcion).to_numpy(dtype=object)
-    resultado[resultado == relleno] = None
-    return resultado
+    """'min' o 'max' por grupo de fechas ISO en texto (None si el grupo no
+    tiene ninguna). Se agregan sus códigos ordenados: agrupar el texto
+    (object) iría grupo a grupo en Python."""
+    codigos, unicos = pd.factorize(pd.Series(valores, dtype=object), sort=True)
+    codigos = codigos.astype(np.int64)
+    if funcion == "min":
+        codigos[codigos < 0] = len(unicos)     # sin fecha: después de todas
+    resultado = pd.Series(codigos).groupby(grupos, sort=False).transform(funcion).to_numpy()
+    # len(unicos) (min) y -1 (max) son el None del final
+    return np.array(list(unicos) + [None], dtype=object)[resultado]
 
 
 def quitar_repetidos_entre_ficheros(df):
@@ -1221,12 +1225,16 @@ def quitar_repetidos_entre_ficheros(df):
     bloques['sobra'] = bloques.duplicated(['firma', 'n'])
     bloques = bloques.sort_values('orden', kind='stable')
     sobra = bloques['sobra'].to_numpy()[bid]
-    if all(c in df.columns for c in COLUMNAS_META):
-        grupos = [bloques['firma'].to_numpy(), bloques['n'].to_numpy()]
-        primera = _agregar(df['_primera_descarga'].to_numpy(dtype=object)[primeras], grupos, 'min')
-        ultima = _agregar(df['_ultima_descarga'].to_numpy(dtype=object)[primeras], grupos, 'max')
-        df['_primera_descarga'] = primera[bid]
-        df['_ultima_descarga'] = ultima[bid]
+    varias_copias = bloques.duplicated(['firma', 'n'], keep=False).to_numpy()
+    if varias_copias.any() and all(c in df.columns for c in COLUMNAS_META):
+        # Fechas de las copias que se juntan (solo las de bloques en varios CSV)
+        copias = bloques[varias_copias]
+        grupos = [copias['firma'].to_numpy(), copias['n'].to_numpy()]
+        filas = np.flatnonzero(varias_copias[bid])
+        for columna, funcion in (('_primera_descarga', 'min'), ('_ultima_descarga', 'max')):
+            valores = df[columna].to_numpy(dtype=object)[primeras[copias['orden'].to_numpy()]]
+            por_bloque = dict(zip(copias['orden'].to_numpy(), _agregar(valores, grupos, funcion)))
+            df.loc[filas, columna] = [por_bloque[b] for b in bid[filas]]
     return df.loc[~sobra].reset_index(drop=True), int(sobra.sum())
 
 

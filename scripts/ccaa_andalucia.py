@@ -174,6 +174,14 @@ COLUMNA_POSICION = "_posicion_descarga"
 FILAS_POR_TROZO = 200_000
 CLAVE_SEMILLA = ["id_expediente"]
 CONSULTAS = ("std", "menores")
+# Columnas con pocos valores distintos (se comparte cada cadena al construir la tabla)
+COLUMNAS_REPETIDAS = {
+    "tipo_contrato", "tipo_contrato_codigo", "organo_contratacion", "codigo_perfil", "codigo_dir3", "estado",
+    "estado_codigo", "fecha_publicacion", "fecha_limite_presentacion", "anuncio_primera_fecha",
+    "anuncio_ultima_fecha", "adjudicatario_nif", "codigo_procedimiento", "codigo_tramitacion", "codigo_normativa",
+    "forma_presentacion", "cofinanciado_ue", "subasta_electronica", "sistema_racionalizacion", "cpv",
+    "provincias_ejecucion", "medios_publicacion",
+}
 
 S = requests.Session()
 S.headers.update(
@@ -1320,15 +1328,30 @@ def _versiones_pendientes(incorporadas):
     return sorted(pendientes)
 
 
+def _compactar(tabla):
+    """La tabla con los tipos de _tipos_salida() tal como queda al escribirla en parquet y
+    volver a leerla (texto en Arrow con pandas 3; objetos deduplicados con pandas 2): los
+    mismos valores y la mitad de memoria que columnas de objetos de Python (con ~800K
+    filas, de 2,4 a ~1 GB)."""
+    return pa.Table.from_pandas(_tipos_salida(tabla), preserve_index=False).to_pandas()
+
+
 def _tabla_de_documentos(documentos):
     """Tabla de una version de la capa cruda con el codigo actual: flatten() de cada
     _source, las columnas en el orden de siempre y los tipos de _tipos_salida()."""
     columnas = {column: [] for column in CSV_COLS}
+    # json.loads crea una cadena por documento: las que se repiten (codigos, organos,
+    # fechas...) se comparten, o 700K documentos ocupan GB antes de ser tabla
+    compartidas = {}
     for documento in documentos:
         fila = flatten(documento)
         for column in CSV_COLS:
-            columnas[column].append(fila[column])
-    return _tipos_salida(pd.DataFrame(columnas, columns=CSV_COLS))
+            valor = fila[column]
+            if column in COLUMNAS_REPETIDAS and isinstance(valor, str):
+                valor = compartidas.setdefault(valor, valor)
+            columnas[column].append(valor)
+    del compartidas
+    return _compactar(pd.DataFrame(columnas, columns=CSV_COLS))
 
 
 def _texto_campo(valor):
@@ -1602,13 +1625,14 @@ def construir_salidas(semillas=(), origen_semilla=None):
         if not len(filas):
             log.warning("  %s: version sin expedientes; no se retira nada", version)
             continue
-        antes = 0 if anterior is None else len(anterior)
-        anterior = _acumular_version(anterior, filas, fecha, cabecera)
+        antes, expedientes = (0 if anterior is None else len(anterior)), len(filas)
+        anterior = _compactar(_acumular_version(anterior, filas, fecha, cabecera))
+        del filas
         log.info(
             "  Incorporada %s (%s): %s expedientes, %s filas nuevas; %s filas fuera de la ultima descarga",
             Path(version).name,
             fecha,
-            f"{len(filas):,}",
+            f"{expedientes:,}",
             f"{len(anterior) - antes:,}",
             f"{int((~anterior['_en_ultima_descarga'].astype(bool)).sum()):,}",
         )
