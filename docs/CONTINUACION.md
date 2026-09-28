@@ -106,6 +106,37 @@ Hay que llevar a la PR los commits de la primera rama cuando el propietario lo a
     - En Córdoba, 2021-2023 cuenta doble (CSV y XLS se solapan).
     - Si hay commits `WIP (copia de seguridad, sin revisar)`, están a medio hacer: revisar, pasar los tests en los dos pandas, verificar en vivo y cerrar con su propio commit.
 
+### Estado de los scrapers (para el VPS y producción)
+
+Solo se usan en producción los scrapers **cerrados**: revisados, con tests en pandas 3 y 2.2 y con el sesgo del superviviente cubierto. Para comprobar que no hay cambios sin revisar después del cierre, `git log --format='%h %s' <cierre>..HEAD -- <script>` no debe mostrar ningún commit `WIP`.
+
+| Script | Estado | Commit de cierre | Verificado en vivo |
+|---|---|---|---|
+| `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `de70485` | Sí (regeneración del 2026-09-27) |
+| `calidad/calidad_licitaciones.py` | Cerrado | `2b184a1` | Sí |
+| `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `e3abbe7` | Sí |
+| `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | Sí |
+| `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | — |
+| `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `aff1ba0` | Sí (API completa) |
+| `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
+| `scripts/ccaa_murcia.py` | Cerrado | `8791825` | Sí |
+| `scripts/ccaa_aragon.py` | Cerrado | `48e4d42` | Sí |
+| `scripts/ccaa_castilla_leon.py` | Cerrado | `0263faf` | Sí |
+| `scripts/ccaa_extremadura.py` | Cerrado | `4163d85` | Sí |
+| `scripts/ccaa_la_rioja.py`, `scripts/ccaa_valencia_menores.py` | Cerrado | `9190268` | Sí |
+| `scripts/ccaa_castilla_la_mancha.py` | Cerrado | `d015194` | Sí |
+| `scripts/municipios_menores.py` | Cerrado | `1361abd` | Sí |
+| `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | **No**: el portal no responde desde la nube |
+| `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
+| `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | **En curso** (sesgo del superviviente) | — | — |
+| `galicia/scraper_galicia.py` | **En curso** (sesgo del superviviente) | — | — |
+| `scripts/ccaa_cataluna_contratosmenores.py` | **En curso** (sesgo del superviviente) | — | — |
+| `borme/scripts/*.py` | **En curso** (sesgo del superviviente) | — | — |
+
+Avisos de la sesión del VPS (2026-09-28):
+- **Galicia:** segfault en pandas 2.2.3 dentro de `to_numeric` (`csv_to_parquet`). Aquí no se reproduce (pandas 2.2.3, numpy 2.4.6, pyarrow 25.0.1). Ese código es anterior a esta sesión. Faltan las versiones del VPS y el valor que lo dispara.
+- **`test_ayto_a_corrupt_manifest_is_recovered_from_its_history`:** intermitente si dos ejecuciones caen en el mismo segundo, porque el manifiesto sale idéntico. El código es correcto; el test se hace determinista.
+
 ## 2. Reglas innegociables
 
 1. **Servir exactamente lo que publica la administración.** No limpiar valores ni eliminar filas de origen, aunque estén duplicadas: se marcan con columnas `_...`. Solo se descartan los artefactos de nuestra propia descarga, como consultas solapadas, y siempre documentado. El objetivo del proyecto es enseñar cómo publica la administración.
