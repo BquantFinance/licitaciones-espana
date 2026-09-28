@@ -309,7 +309,7 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
             if page % 10 == 0:
                 await asyncio.sleep(0.3)
 
-    solapan = False
+    solapan = both_orders and bool(claves_por_orden['desc'] & claves_por_orden['asc'])
     if not agotado and not solapan:
         logger.warning(f"⚠️ Segmento más grande que la ventana de la API ({len(records)} registros leídos, "
                        f"{'sin solape entre los dos órdenes' if both_orders else 'un solo orden'}): {params}")
@@ -671,7 +671,8 @@ def guardar_tabla(df: pd.DataFrame, destino: Path, formato: str = 'parquet', cua
             df.to_csv(tmp, index=False, encoding='utf-8-sig')
         else:
             df.to_excel(tmp, index=False, engine='openpyxl')
-        return guardar_version(destino, desde=tmp)
+        os.replace(tmp, destino)
+        return 'nuevo'
     finally:
         if tmp.exists():
             tmp.unlink()

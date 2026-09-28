@@ -1085,6 +1085,51 @@ class GaliciaScraperTests(unittest.TestCase):
             [pd.Timestamp("2026-03-01"), pd.Timestamp("2026-03-02 10:00:00")],
         )
 
+    def test_csv_to_parquet_never_sends_hashes_or_huge_integers_to_to_numeric(self):
+        # Un sha256 con pinta de notación científica (13 cifras de exponente: el de la
+        # ficha 'CM500081' del portal simulado) y un entero de 24 cifras no son
+        # números para el Parquet: se quedan como texto, sin pasar por to_numeric.
+        # Los demás casos, como siempre.
+        if not scraper_galicia.HAS_PYARROW:
+            self.skipTest("pyarrow no disponible")
+        sha = "3e4224959973966b37b65418d52f5d9025069f25caa6e0dfbba260c698a2e529"
+        huge = "123456789012345678901234"
+        csv_text = (
+            "hash;grande;exp_raro;exp;normal;entero;infinito;espacios\n"
+            f"{sha};{huge};1e4224959973966;1e5;10;1;inf; 12\n"
+            f"abc;5;2;2.5E-3;;2;1;13 \n"
+        )
+        seen = []
+        real_to_numeric = pd.to_numeric
+
+        def spy(values, *args, **kwargs):
+            seen.extend(str(v) for v in pd.Series(values, dtype=object).dropna())
+            return real_to_numeric(values, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "in.csv"
+            csv_path.write_text(csv_text, encoding="utf-8-sig")
+            with patch("sys.stdout", new_callable=io.StringIO), patch.object(
+                scraper_galicia.pd, "to_numeric", side_effect=spy
+            ):
+                parquet_path = scraper_galicia.csv_to_parquet(csv_path, Path(tmpdir) / "out.parquet")
+            df = pd.read_parquet(parquet_path)
+
+        for value in (sha, huge, "1e4224959973966"):
+            self.assertNotIn(value, seen)
+        self.assertEqual(df["hash"].tolist(), [sha, "abc"])
+        self.assertEqual(df["grande"].tolist(), [huge, "5"])
+        self.assertEqual(df["exp_raro"].tolist(), ["1e4224959973966", "2"])
+        self.assertEqual(df["exp"].tolist(), [1e5, 2.5e-3])
+        self.assertEqual(str(df["normal"].dtype), "float64")
+        self.assertEqual(str(df["entero"].dtype), "int64")
+        self.assertEqual(df["infinito"].tolist(), [float("inf"), 1.0])
+        self.assertEqual(df["espacios"].tolist(), [12, 13])
+        self.assertTrue(scraper_galicia.plain_numbers(["-1.5", ".5", "1.", "+3e-05", "1234567890123456.8", None]))
+        self.assertFalse(scraper_galicia.plain_numbers(["1", "1234567890123456789"]))
+        self.assertFalse(scraper_galicia.plain_numbers(["1e5000"]))
+        self.assertFalse(scraper_galicia.plain_numbers(["١٢"]))
+
     # ── Extremo a extremo (CLI + portal simulado) ────────────────────────────
 
     def test_main_all_single_org_end_to_end(self):
