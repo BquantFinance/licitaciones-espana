@@ -49,10 +49,12 @@ columna "<columna> (enlace)" con la URL de la ficha. Un registro que el portal
 retira o modifica NO desaparece: sigue en el Parquet con _en_ultima_descarga=False
 (sesgo del superviviente). Si una fuente falla no se retira nada.
 
-Para contar contratos sin duplicados (ver FUENTES): _en_ultima_descarga=True y
-_tabla_dinamica distinto de "resumen"; en la UV de 2024 hay además ficheros
-acumulados y anuales que repiten los trimestrales; los Parquet *_va solo tienen
-las versiones en valenciano de ficheros que ya están en castellano.
+Para contar contratos sin duplicados (ver FUENTES): _en_ultima_descarga=True,
+_tabla_dinamica distinto de "resumen" y, además, deduplicar por el identificador
+del contrato: en la UV hay ficheros acumulados (2024: 1r-2n, 1r-2n-3er y anual;
+desde el 3T de 2025, los de gastos menores y otros gastos acumulan el año) y en
+València una misma fila puede salir en dos consultas (_num_contrato). Los Parquet
+*_va solo tienen las versiones en valenciano de ficheros que ya están en castellano.
 
 Qué se descarga y cuándo se vuelve a pedir:
 - Ficheros enlazados (UV, Diputación, UA, UMH): los que enlaza la página índice
@@ -89,8 +91,12 @@ FUENTES (verificado en vivo el 2026-09-27)
      un libro interno de la UV). Se leen las dos cosas: la hoja con
      _tabla_dinamica="resumen" y los registros con _tabla_dinamica="registros"
      (GM 1T-2026: 4.141 registros con NIF, fecha, objeto e importes).
-   - 2024: ficheros trimestrales y además acumulados (1r-2n, 1r-2n-3er) y anuales
-     ("Año 2024"): sus filas se repiten; se conservan todos tal cual.
+   - Ficheros acumulados: en 2024, además de los trimestrales, 1r-2n, 1r-2n-3er y
+     "Año 2024"; desde el 3T de 2025 los de gastos menores y otros gastos traen
+     todo el año hasta ese trimestre (gastos menores 2025: 6.533, 6.393, 17.588 y
+     24.341 registros por trimestre, 24.637 identificadores distintos). Se conservan
+     todos tal cual: para contar, deduplicar por "IDENTIFICADOR CONTRATO",
+     "Identificador" o "Núm. Expediente" (otros gastos).
    - Castellano y valenciano: hasta 2023 las dos páginas enlazan los mismos
      ficheros; en 2024-2026 cada una enlaza su versión (cabeceras traducidas y, a
      veces, valores revisados: "Contratos_menores1_2024 revisado.xlsx" frente a
@@ -102,16 +108,20 @@ FUENTES (verificado en vivo el 2026-09-27)
    https://www.valencia.es/cas/ayuntamiento/buscador-contratos-menores (portlet Liferay)
    - Se abre la página (cookie JSESSIONID y acción del formulario con p_auth) y se
      hace un POST multipart con el formulario: estado (ADJUDICADOS, MODIFICADOS o
-     RESUELTOS: no hay "todos" y son conjuntos disjuntos: un modificado no sale como
-     adjudicado), fechas desde/hasta y nº máximo de resultados (el formulario ofrece
-     hasta 500; el servidor acepta más, p.ej. 1000, pero no se usa).
-   - El filtro de fechas es [desde, hasta): la fecha "hasta" NO se incluye (marzo
-     de 2026: 01/03-31/03 da 157 filas y 01/03-01/04, 167). Por eso cada mes se pide
-     del día 1 al día 1 del mes siguiente.
+     RESUELTOS; no hay "todos": 77 de los 78 modificados salen también como
+     adjudicados, los resueltos no), fechas desde/hasta y nº máximo de resultados
+     (el formulario ofrece hasta 500; el servidor acepta más, p.ej. 1000, pero no
+     se usa).
+   - El filtro compara fecha y hora: "hasta" cuenta como ese día a las 00:00. Los
+     contratos de ese día grabados con hora quedan fuera (marzo de 2026: 01/03-31/03
+     da 157 filas y 01/03-01/04, 167) y los grabados a las 00:00 entran. Por eso cada
+     mes se pide del día 1 al día 1 del mes siguiente, y los de fecha día 1 a las
+     00:00 salen en dos meses seguidos (243 de 19.054 adjudicados en 2017-2026): son
+     la misma fila en dos respuestas; _num_contrato la identifica.
    - La página dice "desde el 1 de enero de 2018", pero hay 119 de 2017 (enero,
      octubre-diciembre) y ninguno anterior (se comprueba con una consulta
-     2000-2016). Unos 2.000 al año (enero de 2025: 72; octubre de 2025: 236);
-     MODIFICADOS: 77 y RESUELTOS: 72 en total (2018-2026).
+     2000-2016). 18.883 contratos distintos en 2017-2026, unos 2.000 al año;
+     MODIFICADOS: 78 y RESUELTOS: 72 filas en total.
    - Columnas: objeto, tipo, fecha, importe sin IVA, IVA, expediente, órgano,
      unidad tramitadora, nº de propuesta, nº de ofertas, adjudicatario, NIF
      (personas físicas enmascaradas: *****607X), estado, fechas de inicio, fin,
@@ -141,8 +151,9 @@ FUENTES (verificado en vivo el 2026-09-27)
 5. Universidad Miguel Hernández (UMH)
    https://seguimientocontratacion.umh.es/transparencia/ (sección "Contratos Menores")
    - XLSX trimestrales desde el 3T de 2021; 2018-2021 y 4T-2023 son documentos de la
-     PLACSP (docAccCmpnt, sin extensión: el formato se detecta al descargar) y hay
-     resúmenes anuales 2018-2020. Con NIF del proveedor. Los "Contratos basados en
+     PLACSP (docAccCmpnt, sin extensión: el formato se detecta al descargar; los de
+     2018-2019 tienen una hoja por departamento) y hay resúmenes anuales 2018-2020
+     que repiten esas relaciones. Con NIF del proveedor. Los "Contratos basados en
      acuerdos marco" (otra sección) no se descargan. Los menores de 2014-2018 están
      en otra página (https://sicgef.umh.es/contratos-menores-transparencia-sicgef/),
      no incorporada.
@@ -1583,7 +1594,9 @@ def leer_html_buscador(ruta):
 
 
 class Ventana:
-    """Periodo de una consulta: [desde, hasta) (el buscador no incluye 'hasta')."""
+    """Periodo de una consulta: de 'desde' a 'hasta' a las 00:00 (el buscador
+    compara fecha y hora: de 'hasta' solo entran los grabados a las 00:00, que
+    salen también en la ventana siguiente)."""
 
     def __init__(self, desde, hasta, nivel):
         self.desde, self.hasta, self.nivel = desde, hasta, nivel     # nivel: previas, anio, mes, dia

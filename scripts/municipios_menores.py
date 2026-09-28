@@ -766,6 +766,17 @@ def leer_csv(ruta, nombre=None):
     return (pd.DataFrame() if df is None else df), avisos
 
 
+_ESCAPE_OOXML = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def _celda_xlsx(valor):
+    """Como _celda_texto, deshaciendo el escape de OOXML de los caracteres de
+    control que openpyxl deja tal cual ('_x000D_' es un retorno de carro)."""
+    if isinstance(valor, str) and "_x" in valor:
+        valor = _ESCAPE_OOXML.sub(lambda m: chr(int(m.group(1), 16)), valor)
+    return _celda_texto(valor)
+
+
 def _leer_xlsx(ruta, nombre):
     import openpyxl
 
@@ -781,7 +792,7 @@ def _leer_xlsx(ruta, nombre):
     try:
         for hoja in libro.worksheets:
             hoja.reset_dimensions()   # no fiarse de la dimensión declarada en el fichero
-            filas = ([_celda_texto(v) for v in fila] for fila in hoja.iter_rows(values_only=True))
+            filas = ([_celda_xlsx(v) for v in fila] for fila in hoja.iter_rows(values_only=True))
             df = _tabla(filas, nombre, hoja.title, avisos)
             if df is not None:
                 partes.append((hoja.title, df))

@@ -13,13 +13,16 @@ Ejecutar:  python scripts/ccaa_castilla_la_mancha.py [--salida DIR] [--desde AÑ
 
 Conjuntos de datos (un Parquet cada uno; columna _unidad = qué es cada fila):
     menores_junta    Junta (gestor de expedientes PICOS): XLS/XLSX/ZIP trimestrales y
-                     anuales desde 2019. Una fila por contrato, con CIF, importe y fecha de
+                     anuales desde 2019. Una fila por contrato, con importe y fecha de
                      publicación en PLACE; los nombres de las columnas cambian de un año a
-                     otro ('CIF Adjudicatario(s)', 'C.I.F. Adjudicatario(s)'...) y se dejan
-                     como vienen. El fichero anual ("año COMPLETO") se solapa con los
-                     trimestrales pero no siempre es su suma (2023: 50.069 filas frente a
-                     36.451): se guardan todos y _periodo (1T..4T / anual) los distingue.
-                     Hasta 2023 incluyen la UCLM.
+                     otro ('CIF Adjudicatario(s)', 'CIFAdjudicatario(s)'...) y se dejan como
+                     vienen. El CIF va en su columna desde 2022, dentro del texto del
+                     adjudicatario en 2020-2021 ("03087154w-Marcelino...") y no está en los
+                     tres primeros trimestres de 2019. El fichero anual ("año COMPLETO") se
+                     solapa con los trimestrales pero no siempre es su suma (2023: 50.069
+                     filas frente a 36.451): se guardan todos y _periodo (1T..4T / anual)
+                     los distingue. Los de 2023 (2º-4º trimestre y anual) incluyen la UCLM:
+                     30.707 filas del anual, que también están en el conjunto uclm.
     caja_pagadora    Junta, menores pagados por caja pagadora: XLSX trimestral desde 2026.
                      Una fila por factura, con NIF.
     sector_publico   "Sector público regional" 2015-2018: ZIP trimestrales (o semestrales)
@@ -33,8 +36,10 @@ Conjuntos de datos (un Parquet cada uno; columna _unidad = qué es cada fila):
                      FACTURA (gerencia, artículo, proveedor y nº de factura), NO UN CONTRATO,
                      y no trae NIF. Del orden de 150.000 filas por trimestre.
     informe_menores  "Informe de Contratación Administrativa del Sector Público" (datos
-                     estadísticos, 2019-2022): relación de menores de todo el sector público
-                     regional (sin adjudicatario) y hojas de totales.
+                     estadísticos, 2019-2022): importes de los menores de todo el sector
+                     público regional por departamento y hojas de totales, sin
+                     adjudicatario. Solo la hoja "MODELO 2021" es una relación contrato a
+                     contrato (NRC, objeto, tipo, importes), y el fichero de 2022 la repite.
     uclm             Universidad de Castilla-La Mancha: tabla HTML de menores por ejercicio
                      (2017-) con NIF, proveedor, expediente, objeto, duración e importe; la
                      del año en curso trae además la unidad funcional.
@@ -1218,9 +1223,16 @@ def _origenes_previos(destino):
 
 
 def _filas_previas(destino, rel):
-    """Filas de un fichero crudo en el Parquet anterior (o None)."""
+    """Filas de un fichero crudo en el Parquet anterior (o None), sin las columnas
+    vacías en todas ellas: son de otros ficheros del conjunto (la unión de
+    esquemas las vuelve a poner al escribir) y pasarlas a pandas multiplicaría la
+    memoria (sector_publico tiene más de 400 columnas)."""
     tabla = pq.read_table(destino, filters=[("_archivo_origen", "==", rel)])
-    return tabla.to_pandas() if tabla.num_rows else None
+    if not tabla.num_rows:
+        return None
+    llenas = [c for c in tabla.column_names
+              if c in ORDEN_METADATOS or tabla.column(c).null_count < tabla.num_rows]
+    return tabla.select(llenas).to_pandas()
 
 
 def unir_partes(partes, destino):

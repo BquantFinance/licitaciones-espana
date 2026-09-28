@@ -2,7 +2,7 @@
 
 Las páginas índice, los ficheros, el CKAN de la UPV y el buscador de contratos
 menores del Ajuntament de València (portlet Liferay: cookie de sesión, p_auth,
-filtro de fechas [desde, hasta) y máximo de 500 filas) se simulan con un
+filtro por fecha y hora con 'hasta' a las 00:00 y máximo de 500 filas) se simulan con un
 ``requests.get`` y un ``requests.post`` falsos; los XLSX (también uno con la
 caché de una tabla dinámica, como los de gastos menores de la UV), XLS y CSV se
 generan en el propio test.
@@ -16,7 +16,7 @@ import runpy
 import sys
 import time
 import zipfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as hora, timedelta
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -359,14 +359,17 @@ ESTADO_FILA = {"ADJUDICADOS": "ADJUDICADO", "MODIFICADOS": "EJECUTADO", "RESUELT
 
 
 def contrato(num, fecha, estado="ADJUDICADOS", nif="B98316326"):
-    return {"num": num, "fecha": fecha, "estado": estado, "nif": nif,
+    """fecha: un día (se graba a las 10:00) o un datetime (p.ej. a las 00:00)."""
+    momento = fecha if isinstance(fecha, datetime) else datetime.combine(fecha, hora(10, 0))
+    return {"num": num, "fecha": momento, "estado": estado, "nif": nif,
             "objeto": f'SUMINISTRO "{num}" PARA EL SERVICIO DE BIBLIOTECAS MUNICIPALES'}
 
 
 class FakeBuscador:
     """Portlet del buscador: la acción del formulario lleva un p_auth y solo
-    vale con la cookie de la sesión que lo dio; el filtro de fechas es
-    [desde, hasta) y devuelve como mucho maxResultados filas."""
+    vale con la cookie de la sesión que lo dio; compara fecha y hora con
+    desde <= momento <= hasta a las 00:00 (como el real: de 'hasta' solo entran
+    los grabados a las 00:00) y devuelve como mucho maxResultados filas."""
 
     def __init__(self):
         self.contratos = []
@@ -408,11 +411,11 @@ var mostrarError = "{error}"; }});</script></body></html>""".encode("utf-8")
             return FakeResponse(status=self.fallo, body=b"<html>error</html>")
         campos = {nombre[len(ESPACIO):]: valor[1] for nombre, valor in files}
         estado = campos["selectEstado"]
-        desde = datetime.strptime(campos["fechaInicio"], "%d/%m/%Y").date()
-        hasta = datetime.strptime(campos["fechaFin"], "%d/%m/%Y").date()
-        filas = sorted((c for c in self.contratos if c["estado"] == estado and desde <= c["fecha"] < hasta),
+        desde = datetime.strptime(campos["fechaInicio"], "%d/%m/%Y")
+        hasta = datetime.strptime(campos["fechaFin"], "%d/%m/%Y")
+        filas = sorted((c for c in self.contratos if c["estado"] == estado and desde <= c["fecha"] <= hasta),
                        key=lambda c: (c["fecha"], c["num"]), reverse=True)[:int(campos["maxResultados"])]
-        self.consultas.append((estado, desde, hasta, len(filas)))
+        self.consultas.append((estado, desde.date(), hasta.date(), len(filas)))
         if self.fallo == "aviso":
             return FakeResponse(body=self.pagina(campos["fechaInicio"], campos["fechaFin"], estado, error="mostrar"))
         return FakeResponse(body=self.pagina(campos["fechaInicio"], campos["fechaFin"], estado, filas))
@@ -737,6 +740,7 @@ def test_valencia_consulta_por_meses_y_estados_con_la_fecha_final_excluida(porta
     b.contratos = [contrato("019042016000001", date(2016, 12, 29)),                 # anterior a --desde
                    contrato("014012017000001", date(2017, 1, 31)),                  # último día del mes
                    contrato("014012017000002", date(2017, 2, 1)),
+                   contrato("014012017000003", datetime(2017, 3, 1, 0, 0)),         # día 1 a las 00:00
                    contrato("023102017000204", date(2017, 5, 10), "MODIFICADOS", nif="*****607X"),
                    contrato("019052017000103", date(2017, 11, 3), "RESUELTOS")]
     assert _valencia(tmp_path, 2017) == 0
@@ -749,7 +753,10 @@ def test_valencia_consulta_por_meses_y_estados_con_la_fecha_final_excluida(porta
     assert b.sesiones == 1                          # una sesión (cookie + p_auth) para todas las consultas
 
     df = pd.read_parquet(tmp_path / "ajuntament_valencia.parquet")
-    assert sorted(df["_num_contrato"]) == sorted(c["num"] for c in b.contratos)
+    assert sorted(set(df["_num_contrato"])) == sorted(c["num"] for c in b.contratos)
+    # El del día 1 a las 00:00 lo devuelven las consultas de febrero y de marzo: dos filas
+    assert sorted(df.loc[df["_num_contrato"] == "014012017000003", "_mes"]) == ["02", "03"]
+    assert len(df) == len(b.contratos) + 1
     enero = df[df["_num_contrato"] == "014012017000001"].iloc[0]
     assert (enero["Fecha"], enero["_anio"], enero["_mes"], enero["_estado_consulta"]) == (
         "31/01/2017", "2017", "01", "ADJUDICADOS")
