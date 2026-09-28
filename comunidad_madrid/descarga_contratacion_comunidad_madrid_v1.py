@@ -165,9 +165,9 @@ import logging
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from comun.historico import (ANADIDA, COLUMNAS_META, HISTORICO, ORIGEN_SEMILLA, acumular,  # noqa: E402
-                             archivar, guardar_version, imprimir_informe_semilla, informe_semilla,
-                             seleccionar_semilla, versiones)
+from comun.historico import (ANADIDA, COLUMNAS_META, FUERA_AMBITO, HISTORICO, ORIGEN_SEMILLA,  # noqa: E402
+                             acumular, archivar, guardar_version, imprimir_informe_semilla,
+                             informe_semilla, seleccionar_semilla, versiones)
 from comun.lectura_csv import registros_csv  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -751,7 +751,7 @@ class DescargadorComunidadMadrid:
         log.info(f"\n{'='*65}")
         log.info("CONTRATOS MENORES — Por entidad adjudicadora")
         log.info(f"  Entidades: {total}")
-        log.info(f"  Subdivisión automática por rango de importe si >50K")
+        log.info("  Subdivisión automática por rango de importe si >50K")
         log.info(f"{'='*65}")
 
         self.vigentes = set()
@@ -1006,132 +1006,462 @@ class DescargadorComunidadMadrid:
 
 
 # ---------------------------------------------------------------------------
-# UNIFICACIÓN DE CSVs
+# UNIFICACIÓN DE CSVs: todas las versiones, sin perder nada (ver HISTÓRICO)
 # ---------------------------------------------------------------------------
-def filas_repetidas_entre_ficheros(df):
-    """Máscara de las filas cuyo registro ya ha salido en otro CSV.
+TIPO = "Tipo de Publicación"
+MENORES = "Contratos menores"
+ARCHIVO = "_archivo_fuente"
+# Firma del bloque de cada fila mientras se acumula (no sale en la tabla)
+BLOQUE = "_bloque"
+# Columnas del script: al final de la tabla y en este orden
+PROPIAS = (ARCHIVO, *COLUMNAS_META, "_origen")
+# <nombre>__<sello>[_N] de una versión en _historico/ (archivar() añade _N si
+# dos versiones tienen el mismo sello)
+PATRON_VERSION = re.compile(r"(?P<base>.+)__(?P<sello>\d{8}T\d{6}Z)(?:_\d+)?")
+# Clave estable de la semilla (ver Semilla en el docstring)
+CLAVE_SEMILLA = ["Referencia", "Entidad Adjudicadora"]
 
-    Los CSV se solapan: un menor con presupuesto justo en la frontera entre
-    dos rangos sale en los dos (y el rango "hasta 0" repite los de 0 €). Pero
-    no hay que quitar duplicados sin más:
-      · dentro de un mismo CSV, filas idénticas son lo que sirve el portal y
-        se conservan;
-      · un registro puede ocupar varias filas: las que vienen sin "Tipo de
-        Publicación" son la continuación del anterior (más lotes o
-        adjudicatarios, prórrogas, modificaciones) y suelen ser idénticas
-        entre contratos distintos ("...;0,00;0,00;0,00;0,00").
-    Así que se compara el bloque entero (registro + continuaciones) y de cada
-    bloque repetido en varios CSV se dejan tantas copias como tenga el CSV que
-    más tiene (el primero en orden de nombre).
-    """
-    cols = [c for c in df.columns if c != '_archivo_fuente']
-    fichero = df['_archivo_fuente']
-    if 'Tipo de Publicación' in df.columns:
-        cabecera = df['Tipo de Publicación'].fillna('').astype(str).str.strip() != ''
-    else:
-        cabecera = pd.Series(True, index=df.index)
+
+def fecha_version(ruta):
+    """Fecha (iso_utc) de una versión de un CSV crudo: la de su sello en
+    _historico/ o, la vigente, su fecha de modificación, que es la que tendrá
+    su sello cuando se archive (la fecha de una versión no cambia)."""
+    ruta = Path(ruta)
+    if ruta.parent.name == HISTORICO:
+        m = PATRON_VERSION.fullmatch(ruta.stem)
+        if m:
+            return datetime.strptime(m.group("sello"), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
+    return iso_utc(ruta.stat().st_mtime)
+
+
+def ficheros_crudos():
+    """{nombre: [(ruta, fecha, vigente)]} de cada CSV de csv_originales/, de su
+    versión más antigua a la vigente, en orden de nombre. Incluye los que ya
+    solo tienen versiones en _historico/ (sustituidos: ninguna vigente)."""
+    nombres = {p.name for p in CSV_DIR.glob("*.csv") if not p.name.startswith(".")}
+    carpeta = CSV_DIR / HISTORICO
+    if carpeta.is_dir():
+        for p in carpeta.glob("*.csv"):
+            m = PATRON_VERSION.fullmatch(p.stem)
+            if m:
+                nombres.add(m.group("base") + p.suffix)
+    salida = {}
+    for nombre in sorted(nombres):
+        destino = CSV_DIR / nombre
+        lista = []
+        for ruta in versiones(destino):
+            if ruta == destino:
+                lista.append((ruta, fecha_version(ruta), True))
+                continue
+            # el glob 'X__*' de versiones() casaría también con las de 'X__algo'
+            m = PATRON_VERSION.fullmatch(ruta.stem)
+            if m and m.group("base") == destino.stem:
+                lista.append((ruta, fecha_version(ruta), False))
+        if lista:
+            salida[nombre] = lista
+    return salida
+
+
+def _nombres_unicos(cabecera):
+    """Nombres de columna sin repetir, como los deja pandas ('X', 'X.1'...)."""
+    vistos, nombres = set(), []
+    for nombre in cabecera:
+        nuevo, k = nombre, 1
+        while nuevo in vistos:
+            nuevo = f"{nombre}.{k}"
+            k += 1
+        vistos.add(nuevo)
+        nombres.append(nuevo)
+    return nombres
+
+
+def leer_csv(ruta):
+    """CSV del portal como texto sin perder filas ni campos: dtype=str y
+    keep_default_na=False (un adjudicatario 'NA' o una referencia 'NULL' son
+    texto del portal, no valores vacíos). Si alguna fila trae más campos que
+    la cabecera, pandas fallaría o correría columnas: entonces se lee con
+    comun.lectura_csv y los campos de más van a columnas _columna_extra_N.
+    Devuelve (df, avisos)."""
+    ruta = Path(ruta)
+    try:
+        with warnings.catch_warnings():
+            # "Length of header or names does not match": se perderían campos
+            warnings.simplefilter("error", pd.errors.ParserWarning)
+            # index_col=False: si todas las filas traen un campo de más, pandas
+            # tomaría la primera columna como índice y correría las demás
+            df = pd.read_csv(ruta, sep=';', encoding='utf-8-sig', dtype=str,
+                             keep_default_na=False, index_col=False)
+        return df, []
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(), []
+    except (pd.errors.ParserError, pd.errors.ParserWarning):
+        pass
+    with open(ruta, encoding='utf-8-sig', newline='') as f:
+        filas, literales = registros_csv(f.read(), ';')
+    if not filas:
+        return pd.DataFrame(), []
+    ancho = max(len(fila) for fila in filas)
+    nombres = _nombres_unicos(filas[0])
+    nombres += [f"_columna_extra_{k}" for k in range(1, ancho - len(nombres) + 1)]
+    df = pd.DataFrame([fila + [None] * (ancho - len(fila)) for fila in filas[1:]],
+                      columns=nombres, dtype=object)
+    extra = [c for c in nombres if c.startswith("_columna_extra_")]
+    con_valor = df[extra].fillna("").ne("")
+    df = df.drop(columns=[c for c in extra if not con_valor[c].any()])
+    avisos = [f"{ruta.name}: {int(con_valor.any(axis=1).sum()):,} filas con más campos que la "
+              "cabecera; los campos de más se conservan en columnas _columna_extra_N"]
+    if literales:
+        avisos.append(f"{ruta.name}: {literales:,} comillas literales al principio de un campo "
+                      "(se conservan en el texto)")
+    return df, avisos
+
+
+def inicio_de_bloque(df):
+    """Filas que empiezan un bloque: las que traen Tipo de Publicación. Las
+    demás continúan el registro anterior (más lotes, adjudicatarios,
+    prórrogas, modificaciones)."""
+    if TIPO not in df.columns:
+        return pd.Series(True, index=df.index)
+    return df[TIPO].fillna('').astype(str).str.strip() != ''
+
+
+def firmas_de_bloque(df, columnas):
+    """Firma del bloque de cada fila para acumular(): '' en los bloques de una
+    sola fila y, en los de varias, el texto de todas sus filas en orden. Con
+    ella una fila de continuación solo casa con la misma fila de un bloque
+    idéntico, y un bloque que cambia en cualquier fila no casa entero."""
+    bloque = inicio_de_bloque(df).cumsum().to_numpy()
+    tam = np.bincount(bloque)[bloque]
+    firma = np.full(len(df), "", dtype=object)
+    varias = tam > 1
+    if varias.any():
+        valores = df.loc[varias, columnas].astype(object).to_numpy()
+        texto = pd.Series(["\x1f".join("\x00" if pd.isna(v) else str(v) for v in fila)
+                           for fila in valores])
+        firma[varias] = texto.groupby(bloque[varias]).transform(lambda s: "\x1e".join(s)).to_numpy()
+    return firma
+
+
+def acumular_fichero(nombre, lista):
+    """Filas de TODAS las versiones de un CSV crudo (`lista`, de
+    ficheros_crudos) en orden cronológico, con acumular() por bloques (ver
+    HISTÓRICO). Una versión vacía o ilegible se salta: no retira nada. Si el
+    CSV no tiene copia vigente, sus filas quedan con _en_ultima_descarga=False.
+    Devuelve None si ninguna versión tiene filas."""
+    acumulado = None
+    for ruta, fecha, _ in lista:
+        try:
+            df, avisos = leer_csv(ruta)
+        except Exception as e:  # noqa: BLE001 - se avisa y se sigue con las demás versiones
+            log.error(f"  {ruta.name}: no se puede leer ({type(e).__name__}: {e}); esta versión no "
+                      f"entra en la tabla ni retira nada")
+            continue
+        for aviso in avisos:
+            log.warning(f"  {aviso}")
+        if len(df) == 0:
+            log.warning(f"  {ruta.name}: sin filas; no se marca nada como retirado")
+            continue
+        contenido = list(df.columns)
+        df[ARCHIVO] = nombre
+        df[BLOQUE] = firmas_de_bloque(df, contenido)
+        acumulado = acumular(acumulado, df, fecha)
+    if acumulado is None:
+        return None
+    acumulado = acumulado.drop(columns=[BLOQUE])
+    if not lista[-1][2]:
+        # Sin copia vigente: sustituido por otras consultas (_archivar_sustituidos)
+        acumulado["_en_ultima_descarga"] = False
+    return acumulado
+
+
+def _agregar(valores, grupos, funcion):
+    """min/max por grupo de fechas en texto (None si el grupo no tiene ninguna)."""
+    relleno = "￿" if funcion == "min" else ""
+    serie = pd.Series(valores, dtype=object).where(pd.notna(pd.Series(valores, dtype=object)), relleno)
+    resultado = serie.groupby(grupos, sort=False).transform(funcion).to_numpy(dtype=object)
+    resultado[resultado == relleno] = None
+    return resultado
+
+
+def quitar_repetidos_entre_ficheros(df):
+    """Quita los bloques de un registro repetidos en otro CSV (consultas
+    solapadas: ver HISTÓRICO). No se quitan duplicados sin más:
+      · dentro de un mismo CSV, bloques idénticos son lo que sirve el portal
+        y se conservan;
+      · un registro puede ocupar varias filas (las de continuación), que
+        suelen ser idénticas entre contratos distintos: se compara el bloque
+        entero.
+    La n-ésima copia de un bloque en cada CSV (contando primero las presentes
+    en su última descarga) es la misma. De ella se queda la primera presente
+    por orden de los CSV (o la primera, si ninguna lo está), con
+    _en_ultima_descarga=True si alguna lo está, la _primera_descarga mínima y
+    la _ultima_descarga máxima. Devuelve (tabla, nº de filas quitadas)."""
+    if len(df) == 0:
+        return df, 0
+    df = df.reset_index(drop=True)
+    cols = [c for c in df.columns if c != ARCHIVO and c not in COLUMNAS_META]
+    fichero = df[ARCHIVO].to_numpy()
     # Identificador de fila: igual solo si todas las columnas son iguales
     fila = np.zeros(len(df), dtype=np.int64)
     for c in cols:
         codigos, valores = pd.factorize(df[c], use_na_sentinel=False)
         fila = pd.factorize(fila * (len(valores) + 1) + codigos)[0]
-    claves = pd.DataFrame({
-        'f': fichero,
-        'b': cabecera.astype(int).groupby(fichero, sort=False).cumsum(),
-        'firma': pd.Series(fila, index=df.index).astype(str),
-    })
-    grupos = ['f', 'b']
+    # Bloque de cada fila (los de cada CSV van seguidos y en orden)
+    n_bloque = inicio_de_bloque(df).astype(int).groupby(fichero, sort=False).cumsum().to_numpy()
+    bid = pd.DataFrame({'f': fichero, 'b': n_bloque}).groupby(['f', 'b'], sort=False).ngroup().to_numpy()
+    primeras = np.flatnonzero(np.r_[True, bid[1:] != bid[:-1]])
     # Firma del bloque: la de su única fila o la unión de las de todas
-    varias = claves.groupby(grupos, sort=False)['firma'].transform('size') > 1
+    firma = fila.copy()
+    varias = np.bincount(bid)[bid] > 1
     if varias.any():
-        claves.loc[varias, 'firma'] = claves[varias].groupby(
-            grupos, sort=False)['firma'].transform(lambda s: '|'.join(s))
-    inicio = ~claves.duplicated(grupos)
-    bloques = claves[inicio].copy()
-    # n-ésima aparición del bloque dentro de su CSV: la 2ª copia de un CSV solo
-    # sobra si otro CSV anterior ya tenía también dos
+        unidas = pd.Series(fila[varias].astype(str)).groupby(bid[varias]).transform(lambda s: '|'.join(s))
+        firma[varias] = pd.factorize(unidas)[0] + fila.max() + 1
+    en = (df['_en_ultima_descarga'].astype(bool).to_numpy() if '_en_ultima_descarga' in df.columns
+          else np.ones(len(df), dtype=bool))
+    bloques = pd.DataFrame({'f': fichero[primeras], 'firma': firma[primeras], 'en': en[primeras],
+                            'orden': np.arange(len(primeras))})
+    # n-ésima copia del bloque en su CSV, primero las presentes en su última
+    # descarga; de cada (firma, n) sobra todo salvo la primera presente
+    bloques = bloques.sort_values(['en', 'orden'], ascending=[False, True], kind='stable')
     bloques['n'] = bloques.groupby(['f', 'firma'], sort=False).cumcount()
-    claves['sobra'] = False
-    claves.loc[bloques.index, 'sobra'] = bloques.duplicated(['firma', 'n'])
-    return claves.groupby(grupos, sort=False)['sobra'].transform('first').astype(bool)
+    bloques['sobra'] = bloques.duplicated(['firma', 'n'])
+    bloques = bloques.sort_values('orden', kind='stable')
+    sobra = bloques['sobra'].to_numpy()[bid]
+    if all(c in df.columns for c in COLUMNAS_META):
+        grupos = [bloques['firma'].to_numpy(), bloques['n'].to_numpy()]
+        en_g = bloques.groupby(['firma', 'n'], sort=False)['en'].transform('max').to_numpy()
+        primera = _agregar(df['_primera_descarga'].to_numpy(dtype=object)[primeras], grupos, 'min')
+        ultima = _agregar(df['_ultima_descarga'].to_numpy(dtype=object)[primeras], grupos, 'max')
+        df['_en_ultima_descarga'] = en_g[bid]
+        df['_primera_descarga'] = primera[bid]
+        df['_ultima_descarga'] = ultima[bid]
+    return df.loc[~sobra].reset_index(drop=True), int(sobra.sum())
 
 
-def unificar_csvs():
-    """Une todos los CSVs descargados en un único archivo."""
+def ordenar_columnas(df):
+    """Columnas del portal (y _columna_extra_N) y después las del script, en el
+    orden de PROPIAS."""
+    propias = [c for c in PROPIAS if c in df.columns]
+    return df[[c for c in df.columns if c not in propias] + propias]
+
+
+def _escribir(destino, escribir):
+    """Escribe una salida en un temporal y la entrega a guardar_version."""
+    tmp = destino.with_name(f".{destino.name}.nuevo")
+    try:
+        escribir(tmp)
+        return guardar_version(destino, desde=tmp)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def escribir_salidas(df):
+    """Escribe la tabla en CSV (';', utf-8-sig, como siempre) y en Parquet
+    (texto; _en_ultima_descarga booleana), las dos con guardar_version: la
+    anterior pasa a _historico/ y, si no cambian, no se tocan. Devuelve
+    {nombre: estado}."""
+    def a_csv(tmp):
+        df.to_csv(tmp, index=False, sep=';', encoding='utf-8-sig')
+
+    def a_parquet(tmp):
+        columnas = {}
+        for c in df.columns:
+            if c == "_en_ultima_descarga":
+                columnas[c] = pa.array(df[c].astype(bool).to_numpy(), type=pa.bool_())
+            else:
+                columnas[c] = pa.array(df[c], type=pa.string(), from_pandas=True)
+        pq.write_table(pa.table(columnas), tmp, compression="snappy")
+
+    return {SALIDA_CSV: _escribir(OUTPUT_DIR / SALIDA_CSV, a_csv),
+            SALIDA_PARQUET: _escribir(OUTPUT_DIR / SALIDA_PARQUET, a_parquet)}
+
+
+# ---------------------------------------------------------------------------
+# SEMILLA: el parquet publicado como la instantánea más antigua
+# ---------------------------------------------------------------------------
+def _filas_parquet(pf, filas, columnas):
+    """Filas `filas` (posiciones) de las `columnas` de un Parquet, en ese
+    orden, leyéndolo por lotes (sin cargarlo entero)."""
+    unicas, inversa = np.unique(np.asarray(filas, dtype=np.int64), return_inverse=True)
+    partes, leidas = [], 0
+    for lote in pf.iter_batches(batch_size=250_000, columns=columnas):
+        i, j = np.searchsorted(unicas, [leidas, leidas + lote.num_rows])
+        if i < j:
+            partes.append(pa.Table.from_batches([lote]).take(pa.array(unicas[i:j] - leidas)))
+        leidas += lote.num_rows
+    if not partes:
+        return pd.DataFrame({c: pd.Series(dtype=object) for c in columnas})
+    return pa.concat_tables(partes).to_pandas().iloc[inversa.ravel()].reset_index(drop=True)
+
+
+def _clave(df):
+    """Columnas de CLAVE_SEMILLA con las celdas vacías como nulas: una fila
+    sin Referencia tiene la clave incompleta y se compara por contenido."""
+    salida = {}
+    for c in CLAVE_SEMILLA:
+        serie = df[c].astype(object)
+        salida[c] = serie.where(serie.notna() & (serie != ""), None)
+    return pd.DataFrame(salida).reset_index(drop=True)
+
+
+def sembrar_publicado(df, ruta, origen, consultas):
+    """Incorpora el parquet publicado `ruta` como la instantánea más antigua
+    (ver Semilla en el docstring). Añade al final, con _origen y
+    _en_ultima_descarga=False, sus filas del ámbito de la ejecución cuya clave
+    (CLAVE_SEMILLA) no está en `df`, la tabla con las semillas anteriores.
+    Las filas de `df` no se tocan. consultas: nombres de los CSV descargados
+    o comprobados. Devuelve (tabla, informe de comun.historico)."""
+    ruta = Path(ruta)
+    pf = pq.ParquetFile(ruta)
+    nombres = pf.schema_arrow.names
+    faltan = [c for c in CLAVE_SEMILLA + [TIPO] if c not in nombres]
+    if faltan:
+        raise ValueError(f"La semilla {ruta} no tiene las columnas {faltan}")
+    # El publicado v2026.02 (sin columnas de control) guarda las celdas vacías
+    # como el texto 'nan'
+    publicado = "_en_ultima_descarga" not in nombres
+    del_portal = [c for c in nombres if c not in PROPIAS]
+
+    def leer(columnas, filas=None, vaciadas=None):
+        """Columnas de la semilla (todas las filas o las `filas`), con las
+        celdas 'nan' del publicado vacías; cuenta las vaciadas si se pide."""
+        tabla = pf.read(columns=columnas).to_pandas() if filas is None else _filas_parquet(pf, filas, columnas)
+        if publicado:
+            for c in columnas:
+                if c in del_portal:
+                    nan = tabla[c] == "nan"
+                    if vaciadas is not None:
+                        vaciadas.append(int(nan.sum()))
+                    tabla[c] = tabla[c].mask(nan, "")
+        return tabla
+
+    tabla = df.reset_index(drop=True)
+    base = leer(CLAVE_SEMILLA + [TIPO] + ([ARCHIVO] if ARCHIVO in nombres else []))
+    claves_s, claves_n = _clave(base), _clave(tabla)
+    # Ámbito: un menor, si su entidad tiene menores en la tabla; lo demás, si
+    # su CSV (consulta por mes y tipo) se ha descargado o comprobado
+    entidades = set(tabla.loc[tabla[TIPO] == MENORES, "Entidad Adjudicadora"])
+    es_menor = (base[TIPO] == MENORES).to_numpy()
+    por_csv = (base[ARCHIVO].isin(consultas).to_numpy() if ARCHIVO in base.columns
+               else np.zeros(len(base), dtype=bool))
+    en_ambito = np.where(es_menor, base["Entidad Adjudicadora"].isin(entidades).to_numpy(), por_csv)
+    contenido = [c for c in del_portal if c in tabla.columns and c not in CLAVE_SEMILLA]
+
+    motivo = np.empty(len(base), dtype=object)
+    sin_clave = claves_s.isna().all(axis=1).to_numpy()
+    # Con alguna columna de la clave: frente a toda la tabla
+    con = np.flatnonzero(~sin_clave)
+    motivo[con] = seleccionar_semilla(
+        claves_n, claves_s.iloc[con].reset_index(drop=True),
+        lambda filas: tabla.loc[filas, contenido],
+        lambda filas: leer(contenido, con[filas]), en_ambito[con])
+    # Sin ninguna (filas de continuación): solo frente a las filas de la tabla
+    # que tampoco la tienen (con toda la tabla sería lentísimo)
+    sin = np.flatnonzero(sin_clave)
+    if len(sin):
+        sin_n = np.flatnonzero(claves_n.isna().all(axis=1).to_numpy())
+        motivo[sin] = seleccionar_semilla(
+            claves_n.iloc[sin_n].reset_index(drop=True), claves_s.iloc[sin].reset_index(drop=True),
+            lambda filas: tabla.loc[sin_n[filas], contenido],
+            lambda filas: leer(contenido, sin[filas]), en_ambito[sin])
+
+    informe = informe_semilla(motivo, origen, claves_s)
+    informe["ruta"] = str(ruta)
+    fuera = motivo == FUERA_AMBITO
+    informe["fuera_ambito_detalle"] = {
+        "menores de entidades sin menores en la tabla": int((fuera & es_menor).sum()),
+        "anuncios de CSV (mes y tipo) no descargados": int((fuera & ~es_menor).sum())}
+
+    anadir = np.flatnonzero(motivo == ANADIDA)
+    if len(anadir) == 0:
+        return tabla, informe
+    vaciadas = []
+    nuevas = leer(nombres, anadir, vaciadas)
+    informe["celdas_nan_vaciadas"] = sum(vaciadas)
+    for c in nuevas.columns:
+        # todo texto (como las columnas de la descarga), salvo la marca booleana
+        if c != "_en_ultima_descarga":
+            valores = nuevas[c].astype(object)
+            nuevas[c] = valores.where(valores.isna(), valores.astype(str))
+    propio = nuevas["_origen"] if "_origen" in nuevas.columns else pd.Series([None] * len(nuevas), dtype=object)
+    nuevas["_origen"] = propio.astype(object).where(propio.notna(), origen)
+    nuevas["_en_ultima_descarga"] = False
+    if "_origen" not in tabla.columns:
+        tabla["_origen"] = pd.Series([None] * len(tabla), dtype=object)
+    columnas = list(tabla.columns) + [c for c in nuevas.columns if c not in tabla.columns]
+    salida = pd.concat([tabla, nuevas], ignore_index=True, sort=False)[columnas]
+    salida["_en_ultima_descarga"] = salida["_en_ultima_descarga"].astype(bool)
+    return salida, informe
+
+
+def unificar_csvs(semillas=(), origen=ORIGEN_SEMILLA):
+    """Tabla consolidada desde TODAS las versiones de todos los CSV descargados
+    (ver HISTÓRICO), con las semillas (--semilla) si se dan, en su orden.
+    Escribe el CSV y el Parquet y devuelve la tabla (None si no hay nada que
+    unificar: entonces no se escribe nada)."""
     log.info("Unificando CSVs...")
-    csvs = sorted(CSV_DIR.glob("*.csv"))
-    if not csvs:
+    semillas = [Path(s) for s in semillas]
+    faltan = [str(s) for s in semillas if not s.is_file()]
+    if faltan:
+        log.error(f"No existen las semillas {faltan}: no se unifica nada")
+        return None
+    ficheros = ficheros_crudos()
+    if not ficheros:
         log.error("No hay CSVs para unificar")
-        return
+        return None
 
-    dfs = []
-    for csv_path in csvs:
-        try:
-            # keep_default_na=False: un adjudicatario "NA" o una referencia
-            # "NULL" son texto del portal, no valores vacíos
-            df = pd.read_csv(csv_path, sep=';', encoding='utf-8-sig',
-                             dtype=str, keep_default_na=False,
-                             on_bad_lines='skip')
-            if len(df) > 0:
-                df['_archivo_fuente'] = csv_path.name
-                dfs.append(df)
-                log.info(f"  {csv_path.name}: {len(df):,} filas")
-        except Exception as e:
-            log.error(f"  Error leyendo {csv_path.name}: {e}")
-
-    if not dfs:
+    partes = []
+    for nombre, lista in ficheros.items():
+        acumulado = acumular_fichero(nombre, lista)
+        if acumulado is None:
+            continue
+        retiradas = int((~acumulado["_en_ultima_descarga"].astype(bool)).sum())
+        detalle = ""
+        if len(lista) > 1 or retiradas:
+            detalle = (f" ({len(lista)} versiones; {retiradas:,} ya no están en la última"
+                       f"{'' if lista[-1][2] else ': CSV sustituido por otras consultas'})")
+        log.info(f"  {nombre}: {len(acumulado):,} filas{detalle}")
+        partes.append(acumulado)
+    if not partes:
         log.error("No se cargó ningún CSV")
-        return
-
-    df_total = pd.concat(dfs, ignore_index=True)
+        return None
+    df = pd.concat(partes, ignore_index=True, sort=False)
+    del partes
 
     # Solo sobra un registro repetido en dos CSV (frontera entre rangos de
-    # importe). No por Nº Expediente + Referencia + Entidad (colapsaba lotes y
-    # todas las filas de continuación) ni por filas idénticas (se perdían
-    # duplicados que sirve el portal y continuaciones de otros contratos).
-    sobran = filas_repetidas_entre_ficheros(df_total)
-    if sobran.any():
-        log.info(f"  Eliminadas {int(sobran.sum()):,} filas de registros "
-                 f"repetidos en dos CSV")
-        df_total = df_total[~sobran]
+    # importe, entidades que incluyen a sus dependientes, CSV sustituidos).
+    # No por Nº Expediente + Referencia + Entidad (colapsaba lotes y todas las
+    # filas de continuación) ni por filas idénticas (se perdían duplicados que
+    # sirve el portal y continuaciones de otros contratos).
+    df, quitadas = quitar_repetidos_entre_ficheros(df)
+    if quitadas:
+        log.info(f"  Eliminadas {quitadas:,} filas de registros repetidos en dos CSV")
 
-    salida = OUTPUT_DIR / "contratacion_comunidad_madrid_completo.csv"
-    df_total.to_csv(salida, index=False, sep=';', encoding='utf-8-sig')
-    size_mb = salida.stat().st_size / (1024 * 1024)
-    log.info(f"\n✓ {salida}")
-    log.info(f"  {len(df_total):,} filas, {size_mb:.1f} MB")
-    log.info(f"  Columnas: {list(df_total.columns)}")
+    if semillas:
+        consultas = set(ficheros) | {n for n, e in leer_comprobaciones().items() if e.get("comprobado")}
+        for ruta in semillas:
+            df, informe = sembrar_publicado(df, ruta, origen, consultas)
+            imprimir_informe_semilla(informe)
+            if informe.get("celdas_nan_vaciadas"):
+                log.info(f"   {informe['celdas_nan_vaciadas']:,} celdas 'nan' del publicado se dejan "
+                         f"vacías, como las sirve el portal")
+
+    df = ordenar_columnas(df)
+    estados = escribir_salidas(df)
+    for nombre, estado in estados.items():
+        salida = OUTPUT_DIR / nombre
+        log.info(f"\n✓ {salida} ({estado}, {salida.stat().st_size / (1024 * 1024):.1f} MB)")
+    retiradas = int((~df["_en_ultima_descarga"].astype(bool)).sum())
+    log.info(f"  {len(df):,} filas; {retiradas:,} ya no están en la última descarga")
+    log.info(f"  Columnas: {list(df.columns)}")
+    return df
 
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    modo = sys.argv[1] if len(sys.argv) > 1 else ""
-
-    if modo == "prueba":
-        DescargadorComunidadMadrid().descargar_prueba()
-
-    elif modo == "menores":
-        DescargadorComunidadMadrid().descargar_menores()
-
-    elif modo == "otros":
-        d = DescargadorComunidadMadrid()
-        a1 = int(sys.argv[2]) if len(sys.argv) > 2 else ANIO_INICIO
-        a2 = int(sys.argv[3]) if len(sys.argv) > 3 else datetime.now().year
-        d.descargar_otros(a1, a2)
-
-    elif modo == "todo":
-        d = DescargadorComunidadMadrid()
-        a1 = int(sys.argv[2]) if len(sys.argv) > 2 else ANIO_INICIO
-        a2 = int(sys.argv[3]) if len(sys.argv) > 3 else datetime.now().year
-        d.descargar_todo(a1, a2)
-
-    elif modo == "unificar":
-        unificar_csvs()
-
-    else:
-        print("""
+USO = """
 Descarga de Contratación Pública - Comunidad de Madrid v4
 ===========================================================
 
@@ -1142,11 +1472,48 @@ Uso:
                                       + lo publicado antes de 2017)
   python script.py otros 2020 2025  → Otros tipos, período parcial
   python script.py todo             → Todo: menores + otros
-  python script.py unificar         → Une CSVs en archivo único
+  python script.py unificar         → Une todas las versiones de los CSVs en la
+                                      tabla consolidada (CSV + Parquet)
+  python script.py unificar --semilla contratacion_comunidad_madrid_completo.parquet
+                                    → Además, lo que tenía el publicado (release
+                                      v2026.02) y ya no está (por Referencia +
+                                      Entidad Adjudicadora); repetible
 
 Estrategia:
-  Contratos menores: por entidad adjudicadora (125), sin fechas
+  Contratos menores: por entidad adjudicadora (126), sin fechas
   Otros tipos: por mes + tipo publicación, con fechas
 
-Directorio de salida: comunidad_madrid/csv_originales/
-        """)
+Directorio de salida: comunidad_madrid/csv_originales/ (versiones anteriores
+en csv_originales/_historico/)
+"""
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(usage=USO, add_help=False)
+    parser.add_argument("modo", nargs="?", default="")
+    parser.add_argument("anios", nargs="*", type=int)
+    parser.add_argument("--semilla", action="append", type=Path, default=[])
+    args = parser.parse_args()
+    if args.semilla and args.modo != "unificar":
+        parser.error("--semilla solo se usa con unificar")
+    a1 = args.anios[0] if len(args.anios) > 0 else ANIO_INICIO
+    a2 = args.anios[1] if len(args.anios) > 1 else datetime.now().year
+
+    if args.modo == "prueba":
+        DescargadorComunidadMadrid().descargar_prueba()
+
+    elif args.modo == "menores":
+        DescargadorComunidadMadrid().descargar_menores()
+
+    elif args.modo == "otros":
+        DescargadorComunidadMadrid().descargar_otros(a1, a2)
+
+    elif args.modo == "todo":
+        DescargadorComunidadMadrid().descargar_todo(a1, a2)
+
+    elif args.modo == "unificar":
+        if unificar_csvs(args.semilla) is None:
+            sys.exit(1)
+
+    else:
+        print(USO)

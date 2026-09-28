@@ -25,6 +25,7 @@ import os
 import runpy
 import shutil
 import sys
+import time
 import warnings
 from contextlib import contextmanager, redirect_stdout
 from datetime import date, datetime, timezone
@@ -2373,12 +2374,19 @@ class FakePortalCAM:
 
     COMPLETION = "/buscador-contratos/csv/completion"
 
-    def __init__(self, registros, tope):
+    def __init__(self, registros, tope, entidades=None):
         self.registros = registros
         self.tope = tope
+        # option value → (dropdown text, "Entidad Adjudicadora"); the portal
+        # renumbers its options when entities are added or removed
+        self.entidades = dict(ENTIDADES_CAM if entidades is None else entidades)
         self.busqueda = None
         self.busquedas = []
         self.fallar = lambda params: False
+        self.vaciar = lambda params: False     # answer with the header only
+        self.cortar_en = None                  # the process dies before serving the Nth CSV
+        self.servidos = 0
+        self.servidas = []                     # searches whose CSV was served
         self.n_captcha = 0
         self.respuesta = None
 
@@ -2417,7 +2425,7 @@ class FakePortalCAM:
 
     def _portada(self):
         opciones = '<option value="All">- Cualquiera -</option>' + "".join(
-            f'<option value="{v}">{texto}</option>' for v, (texto, _) in ENTIDADES_CAM.items())
+            f'<option value="{v}">{texto}</option>' for v, (texto, _) in self.entidades.items())
         ajustes = ('{"path": {"baseUrl": "/"}, "antibot": {"forms": {"views-exposed-form-'
                    'buscador-contratos-page-1": {"id": "views-exposed-form", "key": "'
                    + CLAVE_ANTIBOT + '"}}}}')
@@ -2444,7 +2452,12 @@ class FakePortalCAM:
                 return FakeResponse(status=400)
             if self.fallar(self.busqueda):
                 return FakeResponse(status=500)
-            return FakeResponse(content=self._csv(self._filtrar(self.busqueda)), headers={
+            if self.cortar_en is not None and self.servidos >= self.cortar_en:
+                raise _Corte()
+            self.servidos += 1
+            self.servidas.append(dict(self.busqueda))
+            filas = [] if self.vaciar(self.busqueda) else self._filtrar(self.busqueda)
+            return FakeResponse(content=self._csv(filas), headers={
                 "Content-Type": "text/csv; charset=utf-8",
                 "Content-Disposition": 'attachment; filename="contratos.csv"'})
         return FakeResponse(status=404)
@@ -2456,7 +2469,7 @@ class FakePortalCAM:
             if faceta and faceta.split(":", 1)[1].lower() != r["Tipo de Publicación"].lower():
                 continue
             ent = p.get("entidad_adjudicadora", "All")
-            if ent != "All" and ENTIDADES_CAM[ent][1] != r["Entidad Adjudicadora"]:
+            if ent != "All" and self.entidades[ent][1] != r["Entidad Adjudicadora"]:
                 continue
             desde, hasta = (p.get("presupuesto_base_licitacion_total"),
                             p.get("presupuesto_base_licitacion_total_1"))
@@ -2477,10 +2490,14 @@ class FakePortalCAM:
 
     @staticmethod
     def _csv(filas):
+        """Export of `filas`; a record's "_continuaciones" (more lots,
+        awardees, extensions) go right after it, as the portal does."""
         buf = io.StringIO()
         w = csv.writer(buf, delimiter=";", lineterminator="\n")
         w.writerow(COLUMNAS_CAM)
-        w.writerows([[r[c] for c in COLUMNAS_CAM] for r in filas])
+        for r in filas:
+            w.writerow([r[c] for c in COLUMNAS_CAM])
+            w.writerows([[c[k] for k in COLUMNAS_CAM] for c in r.get("_continuaciones", ())])
         return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
@@ -2488,11 +2505,24 @@ def _esperado(registros):
     return sorted(tuple(r[c] for c in COLUMNAS_CAM) for r in registros)
 
 
-def _leer_unificado(salida):
+META_CAM = ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]
+
+
+def _leer_unificado(salida, solo_presentes=True):
+    """Rows of the consolidated CSV. With a single download every row is in
+    the last download and has both download dates."""
     df = pd.read_csv(salida, sep=";", encoding="utf-8-sig", dtype=str,
                      keep_default_na=False)
-    assert list(df.columns) == COLUMNAS_CAM + ["_archivo_fuente"]
+    assert list(df.columns) == COLUMNAS_CAM + ["_archivo_fuente"] + META_CAM
+    if solo_presentes:
+        assert set(df["_en_ultima_descarga"]) <= {"True"}
+        assert (df["_primera_descarga"] != "").all() and (df["_ultima_descarga"] != "").all()
     return sorted(tuple(f) for f in df[COLUMNAS_CAM].itertuples(index=False))
+
+
+def _csvs(carpeta):
+    """Names of the CSV files in a folder (not the manifest nor _historico/)."""
+    return sorted(p.name for p in Path(carpeta).glob("*.csv"))
 
 
 def _menores(registros):
@@ -2545,7 +2575,7 @@ def test_cam_menores_split_by_amount_covers_every_record_once(cam_dirs, portal):
     d.descargar_menores()
     cam.unificar_csvs()
 
-    ficheros = sorted(p.name for p in (cam_dirs / "csv_originales").iterdir())
+    ficheros = _csvs(cam_dirs / "csv_originales")
     # the truncated whole-entity file was replaced by amount ranges
     assert cam.nombre_csv_entidad(38, ENTIDADES_CAM["38"][0]) not in ficheros
     rango = cam.nombre_csv_entidad_rango
@@ -2606,7 +2636,7 @@ def test_cam_otros_by_month_and_publication_type(cam_dirs, portal):
     assert {b["createddate_1"] for b in portal.busquedas if b["createddate"] == "01-02-2024"} \
         == {"29-02-2024"}
 
-    ficheros = sorted(p.name for p in (cam_dirs / "csv_originales").iterdir())
+    ficheros = _csvs(cam_dirs / "csv_originales")
     assert ficheros == sorted([
         cam.nombre_csv_mes(2024, 1, cam.TIPOS_NO_MENORES[0]),
         cam.nombre_csv_mes(2024, 2, cam.TIPOS_NO_MENORES[4]),
@@ -2701,7 +2731,7 @@ def test_cam_otros_includes_notices_published_before_2017(cam_dirs, portal):
 
     csv_dir = cam_dirs / "csv_originales"
     conv, sin_pub = cam.TIPOS_NO_MENORES[0], cam.TIPOS_NO_MENORES[1]
-    assert sorted(p.name for p in csv_dir.iterdir()) == sorted([
+    assert _csvs(csv_dir) == sorted([
         cam.nombre_csv_hasta(2016, conv), cam.nombre_csv_hasta(2016, sin_pub)])
     previas = [b for b in portal.busquedas if b["createddate"] == ""]
     assert {b["createddate_1"] for b in previas} == {"31-12-2016"}

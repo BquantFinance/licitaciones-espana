@@ -1293,16 +1293,26 @@ def _ficheros_crudos():
     return sorted(carpeta.glob("*.jsonl.gz")) if carpeta.is_dir() else []
 
 
+def _sha256_fichero(path):
+    resumen = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for trozo in iter(lambda: handle.read(1 << 20), b""):
+            resumen.update(trozo)
+    return resumen.hexdigest()
+
+
 def _versiones_pendientes(incorporadas):
     """Versiones de raw/ posteriores a la ultima incorporada de su alcance, en orden
-    (fecha; a la misma fecha, std antes que menores)."""
+    (fecha; a la misma fecha, std antes que menores). Con la misma fecha (dos descargas en
+    el mismo segundo) cuenta el sha256: solo es la incorporada si es el mismo fichero."""
     pendientes = []
     for actual in _ficheros_crudos():
-        desde = incorporadas.get(actual.name, "")
+        ultima = incorporadas.get(actual.name) or {}
+        desde = ultima.get("fecha", "")
         orden = 0 if actual.name.startswith("std") else 1
         for version in versiones(actual):
             fecha = fecha_version(version)
-            if fecha > desde:
+            if fecha > desde or (fecha == desde and _sha256_fichero(version) != ultima.get("sha256")):
                 pendientes.append((fecha, orden, actual.name, str(version)))
     return sorted(pendientes)
 
@@ -1437,8 +1447,9 @@ def _acumular_version(anterior, filas, fecha, cabecera):
         return acumular(None, filas, fecha)
     releidos = anterior["id_expediente"].astype(str).isin(set(filas["id_expediente"].astype(str))).to_numpy()
     en_ambito = releidos | _Coincidencias(anterior).ambito(cabecera)
-    anterior = anterior.assign(**{COLUMNA_AMBITO: np.where(en_ambito, "si", "no")})
-    filas = filas.assign(**{COLUMNA_AMBITO: "si"})
+    # Sin copias (las dos tablas son de esta ejecucion): con ~800K filas cada copia son GB
+    anterior[COLUMNA_AMBITO] = np.where(en_ambito, "si", "no")
+    filas[COLUMNA_AMBITO] = "si"
     acumulada = acumular(
         anterior,
         filas,
@@ -1552,7 +1563,7 @@ def construir_salidas(semillas=(), origen_semilla=None):
     for fecha, _, nombre, version in pendientes:
         cabecera = _cabecera_crudo(version)
         filas = _tabla_de_documentos(_documentos_crudo(version))
-        incorporadas[nombre] = fecha
+        incorporadas[nombre] = {"fecha": fecha, "sha256": _sha256_fichero(version)}
         if not len(filas):
             log.warning("  %s: version sin expedientes; no se retira nada", version)
             continue
@@ -1577,9 +1588,8 @@ def construir_salidas(semillas=(), origen_semilla=None):
     if anterior is None:
         log.info("Sin descargas en %s: no hay salidas que generar", _dir_crudo())
         return None
-    faltan_csv = not all((DATA_DIR / nombre).exists() for nombre in (CSV_TODO,))
     if not pendientes and not anadidas:
-        if faltan_csv:
+        if not (DATA_DIR / CSV_TODO).exists():
             _escribir_salidas(anterior, parquet=False)
         log.info("Salidas sin cambios: %s", DATA_DIR / PARQUET_SALIDA)
         return "sin_cambios"
@@ -1708,16 +1718,18 @@ def main(argv=None):
         print(error)
         return 2
 
+    descargas = []
     try:
         if command in ("scrape-std", "scrape"):
-            scrape_std(options.perfil, options.anio)
+            descargas.append(scrape_std(options.perfil, options.anio))
         if command in ("scrape-men", "scrape"):
-            scrape_menores(options.perfil, options.anio)
+            descargas.append(scrape_menores(options.perfil, options.anio))
         construir_salidas(options.semilla, options.origen_semilla)
     except ScraperError as exc:
         log.error("ERROR: %s", exc)
         return 1
-    return 0
+    # Una descarga vacia casi siempre es un fallo: no ha retirado nada, pero se avisa
+    return 1 if any(descarga["estado"] == "vacia" for descarga in descargas) else 0
 
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
+import copy
 import importlib.util
 import io
 import json
+import os
 import re
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -14,6 +16,11 @@ MODULE_PATH = REPO_ROOT / "scripts" / "ccaa_andalucia.py"
 SPEC = importlib.util.spec_from_file_location("ccaa_andalucia", MODULE_PATH)
 ccaa_andalucia = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ccaa_andalucia)
+pd = ccaa_andalucia.pd
+np = ccaa_andalucia.np
+
+# Columnas de comun/historico.py que se anaden a las de siempre
+META = ("_primera_descarga", "_ultima_descarga", "_en_ultima_descarga")
 
 
 class FakeResponse:
@@ -489,25 +496,23 @@ class AndaluciaScraperTests(unittest.TestCase):
         self.assertEqual(len(proc_exclusions), len([proc for proc in ccaa_andalucia.PROCS if proc != 9]))
 
     def test_scrape_std_adds_unknown_proc_branch(self):
-        counts = iter([100, 10, 5])
+        counts = iter([15, 10, 5])  # total, p2 y procedimiento desconocido
         scrape_calls = []
 
         def fake_cnt(*args, **kwargs):
             return next(counts)
 
-        def fake_scrape_recursive(must, must_not, label, all_records, seen, dim_idx=0, known_total=None):
+        def fake_scrape_recursive(must, must_not, label, all_records, seen, dim_idx=0, known_total=None, **kwargs):
             scrape_calls.append((label, must, must_not, known_total))
-            if label == "p2":
-                all_records.extend([{"id_expediente": 1}, {"id_expediente": 2}])
-                seen.update({1, 2})
-                return 2
-            if label == "p_unknown":
-                all_records.append({"id_expediente": 3})
-                seen.add(3)
-                return 1
-            return 0
+            ids = {"p2": [1, 2], "p_unknown": [3]}.get(label, [])
+            for expediente_id in ids:
+                all_records.append({"id_expediente": expediente_id, "_source": {"idExpediente": expediente_id}})
+                seen.add(expediente_id)
+            return len(ids)
 
-        with patch.object(ccaa_andalucia, "PROCS", [2, 9]), patch.object(
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            ccaa_andalucia, "DATA_DIR", Path(tmpdir)
+        ), patch.object(ccaa_andalucia, "PROCS", [2, 9]), patch.object(
             ccaa_andalucia,
             "init",
         ), patch.object(
@@ -518,16 +523,17 @@ class AndaluciaScraperTests(unittest.TestCase):
             ccaa_andalucia,
             "scrape_recursive",
             side_effect=fake_scrape_recursive,
-        ), patch.object(
-            ccaa_andalucia,
-            "save_csv",
-        ):
-            records = ccaa_andalucia.scrape_std()
+        ), patch("sys.stdout", new_callable=io.StringIO):
+            resumen = ccaa_andalucia.scrape_std()
+            crudo = Path(tmpdir) / "raw" / "std.jsonl.gz"
+            documentos = list(ccaa_andalucia._documentos_crudo(crudo))
+            self.assertFalse((Path(tmpdir) / "raw" / "_en_curso").exists())
 
-        self.assertEqual(len(records), 3)
+        self.assertEqual(resumen["documentos"], 3)
+        self.assertEqual([documento["idExpediente"] for documento in documentos], [1, 2, 3])
         labels = [call[0] for call in scrape_calls]
-        self.assertIn("p2", labels)
-        self.assertIn("p_unknown", labels)
+        self.assertEqual(labels, ["p2", "p_unknown"])
+        self.assertEqual(scrape_calls[1][3], 5)
 
     def test_flatten_tolerates_null_codigo_in_medios_publicacion(self):
         record = ccaa_andalucia.flatten(
@@ -647,7 +653,8 @@ class AndaluciaEndToEndTests(unittest.TestCase):
 
     def read_csv_ids(self, filename):
         frame = ccaa_andalucia.pd.read_csv(self.data_dir / filename, encoding="utf-8-sig")
-        self.assertEqual(list(frame.columns), ccaa_andalucia.CSV_COLS)
+        self.assertEqual(list(frame.columns), ccaa_andalucia.CSV_COLS + list(META))
+        self.assertTrue(frame["_en_ultima_descarga"].all())
         ids = frame["id_expediente"].tolist()
         self.assertEqual(len(ids), len(set(ids)), f"duplicados en {filename}")
         return set(ids)
@@ -657,7 +664,11 @@ class AndaluciaEndToEndTests(unittest.TestCase):
 
         self.assertIn(f"SCRAPE ESTANDAR: {len(self.std_ids):,}", output)
         self.assertEqual(self.read_csv_ids("licitaciones_std.csv"), self.std_ids)
-        self.assertTrue((self.data_dir / "licitaciones_std_progress.csv").exists())
+        # La capa cruda sustituye a licitaciones_std_progress.csv (y a la descarga a medias)
+        crudo = self.data_dir / "raw" / "std.jsonl.gz"
+        self.assertEqual({doc["idExpediente"] for doc in ccaa_andalucia._documentos_crudo(crudo)}, self.std_ids)
+        self.assertFalse((self.data_dir / "raw" / "_en_curso").exists())
+        self.assertFalse((self.data_dir / "licitaciones_std_progress.csv").exists())
 
     def test_cli_scrape_men_recovers_every_menor_record(self):
         output = self.run_cli("scrape-men")
@@ -680,7 +691,9 @@ class AndaluciaEndToEndTests(unittest.TestCase):
         self.assertEqual(self.read_csv_ids("licitaciones_all.csv"), all_ids)
 
         frame = ccaa_andalucia.pd.read_parquet(self.data_dir / "licitaciones_andalucia.parquet")
-        self.assertEqual(list(frame.columns), ccaa_andalucia.CSV_COLS)
+        self.assertEqual(list(frame.columns), ccaa_andalucia.CSV_COLS + list(META))
+        self.assertTrue(frame["_en_ultima_descarga"].all())
+        self.assertTrue((frame["_primera_descarga"] == frame["_ultima_descarga"]).all())
         self.assertEqual(len(frame), len(all_ids))
         self.assertEqual(set(frame["id_expediente"]), all_ids)
         for column in ccaa_andalucia.AMOUNT_COLS:
@@ -726,6 +739,593 @@ class AndaluciaEndToEndTests(unittest.TestCase):
         self.assertEqual(self.read_csv_ids("licitaciones_menores.csv"), self.men_ids)
         cached = json.loads((self.data_dir / "perfiles_cache.json").read_text(encoding="utf-8"))
         self.assertEqual(cached, ["CONS01", "CONS02", "HIDDEN01", "SYBS03", "UNIV01"])
+
+
+# ---------------------------------------------------------------------------
+# Sesgo del superviviente: ambito, capa cruda, acumulacion, semilla y reanudacion
+# ---------------------------------------------------------------------------
+
+mm = ccaa_andalucia.mm
+mn = ccaa_andalucia.mn
+
+
+class CoincidenciasTests(unittest.TestCase):
+    """_Coincidencias: si una fila cae SEGURO / POSIBLE dentro de una consulta 'match'."""
+
+    def setUp(self):
+        self.tabla = pd.DataFrame(
+            {
+                "codigo_procedimiento": pd.Series([9, "9", 19, 9.0, None], dtype=object),
+                "tipo_contrato_codigo": ["SUM", "sum", "CONSERV", "", "SUM"],
+                "provincias_ejecucion": ["29;41", "41", "", "04", "29"],
+                "numero_expediente": ["CONTR 2024 00001", "CONTR/2024/2", "SAS2024", "2023 2024", "CONTR 2024.5"],
+                "estado_codigo": ["RES", "RES", "RES", "BRR", "RES"],
+            }
+        )
+        self.ev = ccaa_andalucia._Coincidencias(self.tabla)
+
+    def comprobar(self, consulta, seguro, posible):
+        self.assertEqual(self.ev.seguro(consulta).tolist(), seguro)
+        self.assertEqual(self.ev.posible(consulta).tolist(), posible)
+
+    def test_codigos_numericos_sin_confundir_9_con_19(self):
+        self.comprobar({"must": [mm("codigoProcedimiento", 9)]}, [True, True, False, True, False],
+                       [True, True, False, True, False])
+
+    def test_codigo_exacto_es_seguro_y_la_misma_palabra_posible(self):
+        # 'sum' casaria si el campo es texto analizado, no si es keyword: posible, no seguro
+        self.comprobar({"must": [mm("tipoContrato.codigo", "SUM")]}, [True, False, False, False, True],
+                       [True, True, False, False, True])
+
+    def test_provincias_multivalor(self):
+        self.comprobar({"must": [mm("provinciasEjecucion", "41")]}, [True, True, False, False, False],
+                       [True, True, False, False, False])
+
+    def test_ano_del_numero_de_expediente(self):
+        # Seguro solo como palabra entre espacios; '2024.5' o 'CONTR/2024/2' pueden serlo
+        self.comprobar({"must": [mm("numeroExpediente", "2024")]}, [True, False, False, True, False],
+                       [True, True, False, True, True])
+
+    def test_rama_sin_valor(self):
+        consulta = {"must_not": [mn("tipoContrato.codigo", valor) for valor in ("SUM", "SERV")]}
+        self.comprobar(consulta, [False, False, True, True, False], [False, True, True, True, False])
+
+    def test_campo_o_clausula_desconocidos_nunca_son_seguros(self):
+        for consulta in ({"must": [mm("otroCampo", 1)]}, {"must_not": [{"range": {"a": {"gt": 1}}}]}):
+            self.comprobar(consulta, [False] * 5, [True] * 5)
+
+    def test_ambito_de_una_descarga_quita_lo_que_puede_estar_en_una_consulta_incompleta(self):
+        alcance = {"must": [mm("codigoProcedimiento", 9)], "must_not": [mn("estado.codigo", "BRR")]}
+        self.assertEqual(self.ev.seguro(alcance).tolist(), [True, True, False, False, False])
+        cabecera = {"alcance": alcance, "incompletos": [{"must": [mm("provinciasEjecucion", "29")], "must_not": []}]}
+        self.assertEqual(self.ev.ambito(cabecera).tolist(), [False, True, False, False, False])
+        # Sin la columna de un campo del alcance no se puede asegurar nada
+        sin_estado = ccaa_andalucia._Coincidencias(self.tabla.drop(columns="estado_codigo"))
+        self.assertEqual(sin_estado.seguro(alcance).tolist(), [False] * 5)
+
+
+VENTANA = 100  # MAX_FROM=0: una sola pagina de 100 por consulta y ordenacion
+
+
+def portal_compacto():
+    """~630 expedientes para una ventana de 100 resultados. std: p1 (60, perfil PA) y p2
+    (SERV 80 de PA y SUM 70 de PB). Menores: SERV 90 de PA (ano 2023) y en SUM/RES/O 60 de
+    PB y 250 de PC iguales en las 8 dimensiones y en todos los campos de ordenacion salvo
+    idExpediente: el multi-sort solo ve los 100 primeros y los 100 ultimos (tope). Los 10
+    BRR no se descargan nunca."""
+    docs, grupos = [], {}
+
+    def add(nombre, count, **fields):
+        grupos[nombre] = []
+        for _ in range(count):
+            doc_id = len(docs) + 1
+            docs.append(make_doc(doc_id, **fields))
+            grupos[nombre].append(doc_id)
+
+    add("std_p1", 60, proc="1", perfil="PA")
+    add("std_p2_serv", 80, proc="2", tipo="SERV", perfil="PA")
+    add("std_p2_sum", 70, proc="2", tipo="SUM", perfil="PB", awarded=True)
+    add("brr", 10, proc="1", estado="BRR", perfil="PA")
+    add("men_serv_2023", 90, proc="9", tipo="SERV", estado="RES", perfil="PA", anio="2023")
+    add("men_pb", 60, proc="9", tipo="SUM", estado="RES", perfil="PB", provs=("29",), fp="M", anio="2024")
+    add("men_pc", 250, proc="9", tipo="SUM", estado="RES", perfil="PC", provs=("29",), fp="M", anio="2024")
+    for doc_id in grupos["men_pc"]:
+        docs[doc_id - 1].update(
+            {
+                "numeroExpediente": "CONTR 2024 SAS",
+                "titulo": "Suministro",
+                "importeLicitacion": 10.0,
+                "fechaPublicacion": "2024-01-01T10:00:00+0100",
+                "fechaLimitePresentacion": "2024-01-15T23:59:59+0100",
+            }
+        )
+    return docs, grupos
+
+
+def _con(body, campo, valor):
+    return {"match": {campo: valor}} in body["query"]["bool"].get("must", [])
+
+
+class Portal(FakeElastic):
+    """FakeElastic con fallos: HTTP 503 en las consultas de documentos que cumplen
+    `fallar(body)` y el recuento que devuelva `recuento(body)` (si no es None)."""
+
+    def __init__(self, docs, fallar=None, recuento=None):
+        super().__init__(docs, max_window=VENTANA)
+        self.fallar = fallar
+        self.recuento = recuento
+
+    def post(self, url, json=None, timeout=None, **kwargs):
+        if json.get("size") and self.fallar is not None and self.fallar(json):
+            self.bodies.append(json)
+            return FakeResponse(503, {"error": "no disponible"})
+        if not json.get("size") and self.recuento is not None and self.recuento(json) is not None:
+            self.bodies.append(json)
+            return FakeResponse(200, {"hits": {"total": {"value": self.recuento(json), "relation": "eq"}, "hits": []}})
+        return super().post(url, json=json, timeout=timeout, **kwargs)
+
+
+def publicado_antiguo(docs):
+    """Parquet con el esquema y los errores del publicado v2026.02: sin las columnas JSON,
+    vacios de texto como 'nan', recuentos decimales vacios sin adjudicaciones ni anuncios,
+    importe_adjudicacion_iva vacio y codigo_procedimiento entero."""
+    filas = []
+    for doc in docs:
+        fila = ccaa_andalucia.flatten(doc)
+        for columna in ("adjudicaciones_json", "lotes_json", "anuncios_json", "campos_extra_json"):
+            del fila[columna]
+        fila["importe_adjudicacion_iva"] = None
+        for columna in ("num_adjudicaciones", "num_anuncios"):
+            fila[columna] = fila[columna] or None
+        for columna, valor in fila.items():
+            if valor == "":
+                fila[columna] = None if columna in ccaa_andalucia.AMOUNT_COLS else "nan"
+        filas.append(fila)
+    tabla = pd.DataFrame(filas)
+    tabla["codigo_procedimiento"] = tabla["codigo_procedimiento"].astype("int64")
+    for columna in ccaa_andalucia.AMOUNT_COLS + ["num_adjudicaciones", "num_anuncios"]:
+        tabla[columna] = tabla[columna].astype("float64")
+    return tabla
+
+
+class _Captura(ccaa_andalucia.logging.Handler):
+    def __init__(self):
+        super().__init__(ccaa_andalucia.logging.INFO)
+        self.mensajes = []
+
+    def emit(self, record):
+        self.mensajes.append((record.levelname, record.getMessage()))
+
+
+class HistoricoAndaluciaTests(unittest.TestCase):
+    """Re-ejecuciones contra un portal falso: una 'fecha' nueva por ejecucion (la version
+    cruda que escribe la ejecucion k tiene fecha 2026-01-01 + k dias)."""
+
+    def setUp(self):
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        self.tmp = Path(tmpdir.name)
+        self.salida = self.tmp / "salida"
+        self.salida.mkdir()
+        self.docs, self.grupos = portal_compacto()
+        self.ejecuciones = 0
+
+    def fecha(self, ejecucion):
+        return (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=ejecucion)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def ejecutar(self, *args, docs=None, portal=None):
+        self.ejecuciones += 1
+        self.portal = portal or Portal(copy.deepcopy(self.docs if docs is None else docs))
+        momento = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() + self.ejecuciones * 86400
+        escribir_crudo = ccaa_andalucia._escribir_crudo
+
+        def con_fecha(destino, cabecera, documentos):
+            estado = escribir_crudo(destino, cabecera, documentos)
+            if estado != "sin_cambios":
+                os.utime(destino, (momento, momento))
+            return estado
+
+        captura = _Captura()
+        nivel = ccaa_andalucia.log.level
+        patches = [
+            patch.object(ccaa_andalucia, "DATA_DIR", self.salida),
+            patch.object(ccaa_andalucia, "PERFILES_CACHE_PATH", self.salida / "perfiles_cache.json"),
+            patch.object(ccaa_andalucia, "_PERFILES", None),
+            patch.object(ccaa_andalucia, "MAX_FROM", 0),
+            patch.object(ccaa_andalucia, "DELAY", 0),
+            patch.object(ccaa_andalucia.time, "sleep"),
+            patch.object(ccaa_andalucia.S, "post", side_effect=self.portal.post),
+            patch.object(ccaa_andalucia.S, "get", side_effect=self.portal.get),
+            patch.object(ccaa_andalucia, "_escribir_crudo", side_effect=con_fecha),
+            patch("sys.stdout", new_callable=io.StringIO),
+        ]
+        for active in patches:
+            active.start()
+        ccaa_andalucia.log.addHandler(captura)
+        ccaa_andalucia.log.setLevel(ccaa_andalucia.logging.INFO)
+        try:
+            rc = ccaa_andalucia.main(list(args))
+            self.stdout = ccaa_andalucia.sys.stdout.getvalue()
+        finally:
+            ccaa_andalucia.log.removeHandler(captura)
+            ccaa_andalucia.log.setLevel(nivel)
+            for active in reversed(patches):
+                active.stop()
+        self.mensajes = captura.mensajes
+        return rc
+
+    def sin(self, *ids, docs=None):
+        quitar = set(ids)
+        return [doc for doc in copy.deepcopy(self.docs if docs is None else docs) if doc["idExpediente"] not in quitar]
+
+    def tabla(self):
+        return pd.read_parquet(self.salida / "licitaciones_andalucia.parquet")
+
+    def vigencia(self, tabla=None):
+        """{id_expediente: [_en_ultima_descarga de cada fila]}"""
+        tabla = self.tabla() if tabla is None else tabla
+        vigencia = {}
+        for expediente, vigente in zip(tabla["id_expediente"], tabla["_en_ultima_descarga"]):
+            vigencia.setdefault(int(expediente), []).append(bool(vigente))
+        return vigencia
+
+    def ficheros(self):
+        return {
+            str(path.relative_to(self.salida)): (path.stat().st_mtime_ns, path.read_bytes())
+            for path in sorted(self.salida.rglob("*"))
+            if path.is_file() and path.name != "scraper.log"
+        }
+
+    def avisos(self):
+        return [mensaje for nivel, mensaje in self.mensajes if nivel != "INFO"]
+
+    # -- una sola descarga ------------------------------------------------------
+
+    def test_una_descarga_es_la_tabla_de_siempre_mas_tres_columnas(self):
+        self.assertEqual(self.ejecutar("scrape"), 0)
+
+        tabla = self.tabla()
+        self.assertEqual(list(tabla.columns), ccaa_andalucia.CSV_COLS + list(META))
+        self.assertTrue(tabla["_en_ultima_descarga"].all())
+        self.assertEqual(set(tabla["_primera_descarga"]), {self.fecha(1)})
+        # Las mismas filas y valores que flatten() + los tipos de siempre sobre lo descargado
+        documentos = [
+            documento
+            for nombre in ("std.jsonl.gz", "menores.jsonl.gz")
+            for documento in ccaa_andalucia._documentos_crudo(self.salida / "raw" / nombre)
+        ]
+        esperado = ccaa_andalucia._tipos_salida(
+            ccaa_andalucia.records_to_dataframe([ccaa_andalucia.flatten(documento) for documento in documentos])
+        )
+        ccaa_andalucia._escribir_parquet(esperado, self.tmp / "esperado.parquet")
+        pd.testing.assert_frame_equal(
+            tabla[ccaa_andalucia.CSV_COLS], pd.read_parquet(self.tmp / "esperado.parquet")
+        )
+        # std y menores sin BRR; de los 250 iguales de PC, los 200 que alcanza el multi-sort
+        esperados = set().union(*(self.grupos[g] for g in ("std_p1", "std_p2_serv", "std_p2_sum",
+                                                             "men_serv_2023", "men_pb")))
+        esperados |= set(self.grupos["men_pc"][:100] + self.grupos["men_pc"][-100:])
+        self.assertEqual(set(tabla["id_expediente"]), esperados)
+        todos = pd.read_csv(self.salida / "licitaciones_all.csv", encoding="utf-8-sig")
+        menores = pd.read_csv(self.salida / "licitaciones_menores.csv", encoding="utf-8-sig")
+        self.assertEqual(len(todos), len(tabla))
+        self.assertEqual(set(menores["codigo_procedimiento"]), {9})
+
+    def test_la_capa_cruda_guarda_cada_source_tal_cual_con_su_cabecera(self):
+        self.ejecutar("scrape")
+
+        crudo = self.salida / "raw" / "menores.jsonl.gz"
+        por_id = {doc["idExpediente"]: doc for doc in self.docs}
+        for documento in ccaa_andalucia._documentos_crudo(crudo):
+            self.assertEqual(documento, por_id[documento["idExpediente"]])
+            self.assertEqual(list(documento), list(por_id[documento["idExpediente"]]))  # mismo orden de campos
+        cabecera = ccaa_andalucia._cabecera_crudo(crudo)
+        self.assertEqual(cabecera["formato"], ccaa_andalucia.FORMATO_CRUDO)
+        self.assertEqual((cabecera["total"], cabecera["documentos"]), (400, 350))
+        self.assertEqual(cabecera["alcance"]["must"], [mm("codigoProcedimiento", 9)])
+        self.assertEqual([i["etiqueta"] for i in cabecera["incompletos"]], ["men/SUM/RES/O/PC/29/M/2024"])
+        self.assertEqual(cabecera["incompletos"][0]["motivo"], "tope de 10.000 resultados")
+        # gzip sin fecha ni nombre: el mismo contenido da los mismos bytes
+        self.assertEqual(crudo.read_bytes()[4:8], b"\x00\x00\x00\x00")
+        self.assertFalse((self.salida / "raw" / "_en_curso").exists())
+
+    # -- re-ejecuciones ------------------------------------------------------
+
+    def test_sin_cambios_no_se_escribe_nada(self):
+        self.ejecutar("scrape")
+        antes = self.ficheros()
+
+        self.assertEqual(self.ejecutar("scrape"), 0)
+
+        self.assertEqual(self.ficheros(), antes)
+        self.assertFalse(list(self.salida.rglob(ccaa_andalucia.HISTORICO)))
+        self.assertIn("Salidas sin cambios", "\n".join(mensaje for _, mensaje in self.mensajes))
+
+    def test_registro_retirado_y_modificado_se_conservan(self):
+        self.ejecutar("scrape")
+        retirado_std, retirado_men = self.grupos["std_p1"][0], self.grupos["men_pb"][0]
+        cambiado = self.grupos["men_serv_2023"][5]
+        docs = self.sin(retirado_std, retirado_men)
+        next(doc for doc in docs if doc["idExpediente"] == cambiado)["titulo"] = "Titulo corregido"
+
+        self.assertEqual(self.ejecutar("scrape", docs=docs), 0)
+
+        tabla = self.tabla()
+        vigencia = self.vigencia(tabla)
+        self.assertEqual(vigencia[retirado_std], [False])
+        self.assertEqual(vigencia[retirado_men], [False])
+        filas = tabla[tabla["id_expediente"] == cambiado]
+        self.assertEqual(filas["titulo"].tolist(), [f"Contrato {cambiado:05d}", "Titulo corregido"])
+        self.assertEqual(filas["_en_ultima_descarga"].tolist(), [False, True])
+        self.assertEqual(filas["_ultima_descarga"].tolist(), [self.fecha(1), self.fecha(2)])
+        retirada = tabla[tabla["id_expediente"] == retirado_men].iloc[0]
+        self.assertEqual((retirada["_primera_descarga"], retirada["_ultima_descarga"]), (self.fecha(1), self.fecha(1)))
+        otros = {expediente: flags for expediente, flags in vigencia.items()
+                 if expediente not in (retirado_std, retirado_men, cambiado)}
+        self.assertTrue(all(flags == [True] for flags in otros.values()))
+        # La version anterior de cada descarga y de la salida, en _historico/
+        self.assertEqual(len(list((self.salida / "raw" / ccaa_andalucia.HISTORICO).iterdir())), 2)
+        self.assertEqual(len(list((self.salida / ccaa_andalucia.HISTORICO).glob("licitaciones_andalucia__*"))), 1)
+        menores = pd.read_csv(self.salida / "licitaciones_menores.csv", encoding="utf-8-sig")
+        self.assertFalse(menores.loc[menores["id_expediente"] == retirado_men, "_en_ultima_descarga"].item())
+
+    def test_registro_que_vuelve_se_reactiva_sin_duplicarse(self):
+        self.ejecutar("scrape")
+        vuelve = self.grupos["men_serv_2023"][0]
+        self.ejecutar("scrape", docs=self.sin(vuelve))
+        self.assertEqual(self.vigencia()[vuelve], [False])
+
+        self.ejecutar("scrape")
+
+        self.assertEqual(self.vigencia()[vuelve], [True])
+
+    def test_descarga_parcial_por_perfil_no_retira_fuera_de_su_alcance(self):
+        self.ejecutar("scrape")
+        de_pa, de_pb = self.grupos["men_serv_2023"][0], self.grupos["men_pb"][0]
+        licitacion_pb = self.grupos["std_p2_sum"][0]
+
+        self.assertEqual(self.ejecutar("scrape-men", "--perfil", "PB", docs=self.sin(de_pa, de_pb, licitacion_pb)), 0)
+
+        vigencia = self.vigencia()
+        self.assertEqual(vigencia[de_pb], [False])  # menor de PB: releido y ya no esta
+        self.assertEqual(vigencia[de_pa], [True])  # menor de otro perfil: fuera del alcance
+        self.assertEqual(vigencia[licitacion_pb], [True])  # licitacion de PB: no se ha descargado
+        self.assertTrue((self.salida / "raw" / "menores__perfil-PB.jsonl.gz").exists())
+        # El perfil fijo no se vuelve a partir
+        self.assertFalse(any("perfilContratante" in json.dumps(body.get("sort")) for body in self.portal.bodies))
+        paginas_de_otros = [body for body in self.portal.bodies
+                            if body.get("size") and body.get("sort") and not _con(body, "perfilContratante.codigo", "PB")]
+        self.assertEqual(paginas_de_otros, [])
+
+    def test_descarga_parcial_por_ano(self):
+        self.ejecutar("scrape")
+        de_2023, de_2024 = self.grupos["men_serv_2023"][0], self.grupos["men_pb"][0]
+
+        self.assertEqual(self.ejecutar("scrape-men", "--anio", "2023", docs=self.sin(de_2023, de_2024)), 0)
+
+        vigencia = self.vigencia()
+        self.assertEqual(vigencia[de_2023], [False])
+        self.assertEqual(vigencia[de_2024], [True])
+
+    def test_solo_licitaciones_no_toca_los_menores(self):
+        self.ejecutar("scrape")
+        licitacion, menor = self.grupos["std_p2_serv"][0], self.grupos["men_pb"][0]
+
+        self.assertEqual(self.ejecutar("scrape-std", docs=self.sin(licitacion, menor)), 0)
+
+        vigencia = self.vigencia()
+        self.assertEqual(vigencia[licitacion], [False])
+        self.assertEqual(vigencia[menor], [True])
+
+    def test_consulta_con_tope_no_retira_lo_que_puede_estar_en_ella(self):
+        self.ejecutar("scrape")
+        self.assertTrue(any("PARTIAL" in aviso for aviso in self.avisos()))
+        con_tope = self.grupos["men_pc"]
+        quitado, cambiado, de_pb = con_tope[0], con_tope[-1], self.grupos["men_pb"][0]
+        docs = self.sin(quitado, de_pb)
+        next(doc for doc in docs if doc["idExpediente"] == cambiado)["valorEstimado"] = 1.0
+
+        self.assertEqual(self.ejecutar("scrape-men", docs=docs), 0)
+
+        tabla = self.tabla()
+        vigencia = self.vigencia(tabla)
+        self.assertEqual(vigencia[quitado], [True])  # pudo quedar fuera por el tope: no se retira
+        self.assertEqual(vigencia[de_pb], [False])  # fuera de la consulta con tope si
+        # Un expediente que vuelve cambiado se retira aunque este en la consulta con tope
+        filas = tabla[tabla["id_expediente"] == cambiado]
+        self.assertEqual(filas["valor_estimado"].tolist(), [80000.0 + cambiado, 1.0])
+        self.assertEqual(filas["_en_ultima_descarga"].tolist(), [False, True])
+        # El que entra en la ventana al salir 'quitado' se anade; ninguno de PC se retira
+        self.assertEqual(vigencia[con_tope[100]], [True])
+        self.assertTrue(all(flags[-1] for expediente, flags in vigencia.items() if expediente in con_tope))
+
+    def test_descarga_que_falla_no_retira_ni_escribe_nada_y_se_reanuda(self):
+        self.ejecutar("scrape")
+        salida = self.salida / "licitaciones_andalucia.parquet"
+        antes = {nombre: contenido for nombre, contenido in self.ficheros().items()
+                 if nombre != "perfiles_cache.json"}
+        quitado = self.grupos["men_serv_2023"][0]
+        docs = self.sin(quitado)
+        falla = Portal(
+            copy.deepcopy(docs),
+            fallar=lambda body: _con(body, "codigoProcedimiento", 9) and _con(body, "tipoContrato.codigo", "SUM"),
+        )
+
+        self.assertEqual(self.ejecutar("scrape-men", portal=falla), 1)
+
+        despues = {nombre: contenido for nombre, contenido in self.ficheros().items()
+                   if not nombre.startswith("raw/_en_curso") and nombre != "perfiles_cache.json"}
+        self.assertEqual(despues, antes)
+        self.assertEqual(self.vigencia()[quitado], [True])
+        estado = json.loads((self.salida / "raw" / "_en_curso" / "menores" / "estado.json").read_text("utf-8"))
+        self.assertEqual([bloque["etiqueta"] for bloque in estado["bloques"]], ["men/SERV"])
+
+        # Se reanuda: men/SERV no se vuelve a pedir y el resultado es el de una descarga entera
+        self.assertEqual(self.ejecutar("scrape-men", docs=docs), 0)
+        paginas_serv = [body for body in self.portal.bodies if body.get("size")
+                        and _con(body, "codigoProcedimiento", 9) and _con(body, "tipoContrato.codigo", "SERV")]
+        self.assertEqual(paginas_serv, [])
+        self.assertIn("Reanudando menores", "\n".join(mensaje for _, mensaje in self.mensajes))
+        self.assertFalse((self.salida / "raw" / "_en_curso").exists())
+        self.assertEqual(self.vigencia()[quitado], [False])
+        self.assertTrue(salida.exists())
+
+    def test_recuentos_que_no_cubren_el_total_no_retiran_nada(self):
+        self.ejecutar("scrape")
+        quitado = self.grupos["men_serv_2023"][0]
+        docs = self.sin(quitado)
+        # El recuento del bloque men/SUM da 0 con HTTP 200
+        falla = Portal(
+            copy.deepcopy(docs),
+            recuento=lambda body: 0 if (_con(body, "tipoContrato.codigo", "SUM")
+                                        and len(body["query"]["bool"]["must"]) == 2) else None,
+        )
+
+        self.assertEqual(self.ejecutar("scrape-men", portal=falla), 0)
+
+        self.assertTrue(any("no cubren el total" in aviso for aviso in self.avisos()))
+        vigencia = self.vigencia()
+        self.assertEqual(vigencia[quitado], [True])
+        self.assertTrue(all(vigencia[expediente] == [True] for expediente in self.grupos["men_pb"]))
+
+    def test_descarga_vacia_no_retira_nada(self):
+        self.ejecutar("scrape")
+        antes = self.ficheros()
+
+        solo_brr = [doc for doc in self.docs if doc["estado"]["codigo"] == "BRR"]
+        self.assertEqual(self.ejecutar("scrape", docs=solo_brr), 1)
+
+        self.assertEqual(self.ficheros(), antes)
+        self.assertTrue(any("descarga vacia" in aviso for aviso in self.avisos()))
+
+    # -- salida anterior de otro codigo ---------------------------------------
+
+    def test_salida_del_codigo_anterior_no_se_casa_fila_a_fila_y_se_archiva(self):
+        salida = self.salida / "licitaciones_andalucia.parquet"
+        publicado_antiguo(self.docs).to_parquet(salida, index=False)
+        antiguo = salida.read_bytes()
+
+        self.assertEqual(self.ejecutar("scrape-men"), 0)
+
+        self.assertTrue(any("no tiene las columnas de historico" in aviso for aviso in self.avisos()))
+        tabla = self.tabla()
+        self.assertTrue(tabla["_en_ultima_descarga"].all())
+        self.assertEqual(len(tabla), 350)
+        archivados = list((self.salida / ccaa_andalucia.HISTORICO).glob("licitaciones_andalucia__*"))
+        self.assertEqual([path.read_bytes() for path in archivados], [antiguo])
+
+    def test_salida_ilegible_no_se_sobrescribe(self):
+        salida = self.salida / "licitaciones_andalucia.parquet"
+        puntero = b"version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 48856894\n"
+        salida.write_bytes(puntero)
+
+        self.assertEqual(self.ejecutar("scrape-men"), 1)
+
+        self.assertEqual(salida.read_bytes(), puntero)
+        self.assertTrue((self.salida / "raw" / "menores.jsonl.gz").exists())
+        salida.rename(self.tmp / "puntero")
+        self.assertEqual(self.ejecutar("procesar"), 0)
+        self.assertEqual(len(self.tabla()), 350)
+
+    # -- semilla ----------------------------------------------------------------
+
+    def test_semilla_anade_solo_las_claves_que_faltan_dentro_del_ambito(self):
+        antiguo = self.grupos["men_serv_2023"][3]
+        publicado = copy.deepcopy([doc for doc in self.docs if doc["estado"]["codigo"] != "BRR"])
+        next(doc for doc in publicado if doc["idExpediente"] == antiguo)["titulo"] = "Titulo de febrero"
+        retirado_pb = make_doc(9001, proc="9", tipo="SUM", estado="RES", perfil="PB", provs=("29",), fp="M",
+                               anio="2024")
+        retirado_pc = make_doc(9002, proc="9", tipo="SUM", estado="RES", perfil="PC", provs=("29",), fp="M",
+                               anio="2024")
+        retirado_pc["numeroExpediente"] = "CONTR 2024 SAS"
+        retirado_std = make_doc(9003, proc="2", tipo="SERV", perfil="PA")
+        ruta = self.tmp / "licitaciones_andalucia_v2026.02.parquet"
+        publicado_antiguo(publicado + [retirado_pb, retirado_pc, retirado_std]).to_parquet(ruta, index=False)
+
+        self.ejecutar("scrape-men")
+        descargada = self.tabla()
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(ruta)), 0)
+
+        tabla = self.tabla()
+        sembradas = tabla[tabla["_origen"].notna()]
+        # 9002 puede estar en la consulta con tope y de std no hay ninguna descarga
+        self.assertEqual(sembradas["id_expediente"].tolist(), [9001])
+        fila = sembradas.iloc[0]
+        self.assertEqual(fila["_origen"], "release v2026.02")
+        self.assertFalse(fila["_en_ultima_descarga"])
+        self.assertEqual(fila["todos_adjudicatarios_nif"], "")  # 'nan' del publicado
+        self.assertEqual(fila["num_adjudicaciones"], 0)
+        self.assertTrue(pd.isna(fila["adjudicaciones_json"]))
+        # Las filas descargadas no cambian (tampoco la del expediente con otro titulo en febrero)
+        pd.testing.assert_frame_equal(
+            tabla[tabla["_origen"].isna()].drop(columns="_origen").reset_index(drop=True), descargada
+        )
+        self.assertEqual(tabla.loc[tabla["id_expediente"] == antiguo, "titulo"].tolist(), [f"Contrato {antiguo:05d}"])
+        self.assertIn("fuera del ámbito", self.stdout)
+
+        # Con la descarga de std, la licitacion retirada tambien entra
+        self.ejecutar("scrape-std")
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(ruta)), 0)
+        tabla = self.tabla()
+        self.assertEqual(sorted(tabla.loc[tabla["_origen"].notna(), "id_expediente"]), [9001, 9003])
+        self.assertEqual(tabla["id_expediente"].duplicated().sum(), 0)
+
+        # Sembrar otra vez no anade ni escribe nada
+        antes = self.ficheros()
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(ruta)), 0)
+        self.assertEqual(self.ficheros(), antes)
+
+    def test_semilla_que_no_se_puede_usar(self):
+        self.ejecutar("scrape-men")
+        salida = self.salida / "licitaciones_andalucia.parquet"
+        copia = self.tmp / "salida_anterior.parquet"
+        copia.write_bytes(salida.read_bytes())
+        antes = self.ficheros()
+
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(salida)), 2)
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(self.tmp / "no_existe.parquet")), 2)
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(copia)), 2)  # sin --origen-semilla
+        self.assertEqual(self.ficheros(), antes)
+        self.assertEqual(self.ejecutar("procesar", "--semilla", str(copia), "--origen-semilla", "release v2026.09"), 0)
+        self.assertEqual(self.ficheros(), antes)  # todas sus claves ya estan
+
+    # -- CLI --------------------------------------------------------------------
+
+    def test_salida_por_opcion_sin_tocar_la_carpeta_por_defecto(self):
+        defecto = self.tmp / "defecto"
+        defecto.mkdir()
+        otra = self.tmp / "otra"
+        raiz = ccaa_andalucia.logging.getLogger()
+        handlers = list(raiz.handlers)
+        portal = Portal(copy.deepcopy(self.docs))
+        try:
+            with patch.object(ccaa_andalucia, "DATA_DIR", defecto), patch.object(
+                ccaa_andalucia, "PERFILES_CACHE_PATH", defecto / "perfiles_cache.json"
+            ), patch.object(ccaa_andalucia, "_PERFILES", None), patch.object(ccaa_andalucia, "MAX_FROM", 0), patch.object(
+                ccaa_andalucia, "DELAY", 0
+            ), patch.object(ccaa_andalucia.time, "sleep"), patch.object(
+                ccaa_andalucia.S, "post", side_effect=portal.post
+            ), patch.object(ccaa_andalucia.S, "get", side_effect=portal.get), patch(
+                "sys.stdout", new_callable=io.StringIO
+            ):
+                rc = ccaa_andalucia.main(["scrape-men", "--salida", str(otra)])
+        finally:
+            for handler in list(raiz.handlers):
+                if handler not in handlers:
+                    raiz.removeHandler(handler)
+                    handler.close()
+            for handler in handlers:
+                if handler not in raiz.handlers:
+                    raiz.addHandler(handler)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(list(defecto.iterdir()), [])
+        self.assertTrue((otra / "licitaciones_andalucia.parquet").exists())
+        self.assertTrue((otra / "raw" / "menores.jsonl.gz").exists())
+        self.assertTrue((otra / "perfiles_cache.json").exists())
+
+    def test_anio_invalido(self):
+        self.assertEqual(self.ejecutar("scrape-men", "--anio", "24"), 2)
 
 
 if __name__ == "__main__":

@@ -27,11 +27,12 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   los organismos completados para --resume): fecha_descarga (inicio de la
   descarga, en UTC; se conserva al reanudar) y el ámbito que se ha vuelto a
   leer COMPLETO, por organismo: LIC si su paginación trae exactamente
-  recordsTotal filas con id distinto, y cada ventana de CM que trae
+  recordsTotal filas con id distinto (y alguna), y cada ventana de CM que trae
   exactamente recordsFiltered filas (el portal da ahí el total de la ventana;
   recordsTotal es el del organismo) con id distinto y todas con 'publicado'
-  dentro de la ventana. Una ventana o un organismo vacíos (0 filas) no cuentan
-  como leídos: una respuesta vacía no retira nada.
+  dentro de la ventana; también una ventana vacía (0 y 0: ese trimestre ya no
+  tiene contratos), salvo que el organismo entero responda vacío (recordsTotal
+  0 o ninguna fila en ninguna ventana): una respuesta vacía no retira nada.
 - Caché de detalle (SQLite): nunca se borra. Una ficha ya descargada ('done')
   no se sustituye por un error ni por una ficha vacía (sin pares ni tablas);
   si el portal la cambia, la anterior pasa a la tabla detail_cache_historico.
@@ -1087,7 +1088,9 @@ def window_check(recs, date_start, date_end, informe):
     """Completa el informe de una ventana de CM (paginate_cm_window): 'fuera'
     (filas sin 'publicado' o con él fuera de la ventana), 'sin_id' y 'completa':
     exactamente recordsFiltered filas, con id distinto y todas dentro de la
-    ventana. Solo una ventana completa y no vacía cuenta como vuelta a leer."""
+    ventana (0 y 0 también: una ventana vacía coherente). paginate_cm_full solo
+    cuenta las ventanas completas como vueltas a leer, y ninguna si el
+    organismo entero responde vacío."""
     fechas = parse_datetime_series(pd.Series([r.get("publicado") for r in recs], dtype=object)).dt.normalize()
     dentro = fechas.between(pd.Timestamp(date_start), pd.Timestamp(date_end))
     informe["fuera"] = int((~dentro).sum())
@@ -1098,7 +1101,6 @@ def window_check(recs, date_start, date_end, informe):
         filtrados = None
     informe["completa"] = bool(
         filtrados is not None
-        and filtrados > 0
         and informe["filas"] == informe["unicos"] == filtrados
         and not informe["fuera"]
         and not informe["sin_id"]
@@ -1111,10 +1113,14 @@ def paginate_cm_full(session, org_id, informe=None):
     CM: barre TODAS las ventanas de CM_WINDOW_MONTHS desde hoy hasta DATE_ORIGIN.
     SIN parar antes — recorre todo el rango completo.
 
-    informe (dict, opcional): informe["CM"] recibe las ventanas completas y no
-    vacías ('ventanas': [[desde, hasta], ...], ver window_check), que son el
-    ámbito de la descarga en CM, y las incompletas (se avisan en el log: sus
-    contratos no se dan por retirados).
+    informe (dict, opcional): informe["CM"] recibe las ventanas completas
+    ('ventanas': [[desde, hasta], ...], ver window_check), que son el ámbito de
+    la descarga en CM, y las incompletas (se avisan en el log: sus contratos no
+    se dan por retirados). Una ventana vacía y coherente (recordsFiltered 0, sin
+    filas) cuenta: el portal dice que ese trimestre ya no tiene contratos. Pero
+    si el organismo entero responde vacío (recordsTotal 0 o ninguna fila en
+    ninguna ventana, p. ej. al perder el contexto de sesión), no cuenta ninguna:
+    una respuesta vacía no retira nada.
     """
     session.visit_org_page(org_id)
 
@@ -1200,6 +1206,10 @@ def paginate_cm_full(session, org_id, informe=None):
             f"[{DATE_ORIGIN} → {date_end}] devuelven {len(all_recs):,} únicos"
         )
     if informe is not None:
+        if not reported_total or not all_recs:
+            # Organismo sin ningún contrato menor en la respuesta: no se sabe si
+            # los ha retirado todos o si la respuesta ha fallado.
+            complete_windows = []
         informe["CM"] = {
             "declarados": reported_total,
             "ventanas": complete_windows,
@@ -1308,7 +1318,14 @@ def scope_from_report(informe):
         scope["LIC_informe"] = {k: lic[k] for k in ("declarados", "filas", "unicos")}
     cm = informe.get("CM")
     if cm is not None:
-        scope["CM"] = list(cm.get("ventanas") or [])
+        # Ventanas contiguas completas, juntas en un solo tramo de fechas.
+        ranges = []
+        for start, end in sorted(cm.get("ventanas") or []):
+            if ranges and pd.Timestamp(start) - pd.Timestamp(ranges[-1][1]) == pd.Timedelta(days=1):
+                ranges[-1][1] = end
+            else:
+                ranges.append([start, end])
+        scope["CM"] = ranges
         if cm.get("incompletas"):
             scope["CM_incompletas"] = [
                 {k: w.get(k) for k in ("desde", "hasta", "filtrados", "filas", "unicos", "fuera", "sin_id")}
@@ -2855,12 +2872,10 @@ def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=()
         seeded += len(acumulado) - before
         seed_details.update(details)
 
-    helper = set(BASE_EXPORT_FIELDS) | set(base_columns) | set(DETAIL_EXPORT_FIELDS) | set(COLUMNAS_META)
+    # Columnas: las del CSV base, las de la ficha, las 3 de control y después
+    # cualquier otra de la tabla (las de la semilla: _origen, importe_semilla...).
     fieldnames = list(dict.fromkeys(
-        base_columns
-        + DETAIL_EXPORT_FIELDS
-        + list(COLUMNAS_META)
-        + [column for column in acumulado.columns if column not in helper]
+        base_columns + DETAIL_EXPORT_FIELDS + list(COLUMNAS_META) + list(acumulado.columns)
     ))
     conn = init_detail_db(output_dir)
     # Se escribe a un temporal y se publica al terminar (guardar_version): un merge
