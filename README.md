@@ -85,6 +85,7 @@ ted/
 ├── ...
 ├── ted_can_2025_ES_api.parquet      # 2025 (API v3 eForms)
 ├── ted_can_2026_ES_api_en_curso.parquet  # año en curso: solo histórico, no se usa como caché
+├── ted_can_<año>_registros_irregulares.csv  # registros irregulares del CSV bulk (solo si los hay)
 ├── _historico/                      # versiones anteriores de las cachés y del consolidado
 └── ted_es_can.parquet               # Consolidado (591K, 31 MB)
 ```
@@ -94,7 +95,17 @@ ted/
 - `ted_es_can.parquet` se reconstruye desde todas las versiones de cada año con `acumular`. Los avisos que TED retira o cambia quedan con `_en_ultima_descarga=False`, y un año que la ejecución no pide no se toca.
 - La clave es el aviso normalizado a `número-año`: el CSV da `2020112` y la API `112-2020`, y son el mismo aviso.
 - `--semilla ted_es_can.parquet` (el publicado en v2026.02) añade los avisos que ya no se sirven. **Úsalo en el primer refresco**: las cachés antiguas de la API tienen otro formato y no se comparan fila a fila.
-- Para contar o cruzar, quédate con la última versión de cada aviso: `ultima_version_por_aviso()`. Ya lo hacen `cross_validate_ted` y `run_ted_crossvalidation.py`.
+- Para contar o cruzar, quédate con la última versión de cada aviso y sin los cancelados: `avisos_para_cruce()`. Ya lo hacen `cross_validate_ted`, `run_ted_crossvalidation.py` y los scripts de análisis.
+
+**Lo publicado, tal cual.**
+- Los avisos cancelados se conservan con `cancelled='1'` (TED usa `'0'`/`'1'`, no `'Y'`/`'N'`). Hasta septiembre de 2026 se eliminaban al descargar. Para contar adjudicaciones, exclúyelos **después** de quedarte con la última versión de cada aviso, como hace `avisos_para_cruce()`: si los quitas antes, un aviso cancelado en una descarga posterior vuelve con su versión anterior.
+- El CSV bulk se lee registro a registro con el módulo `csv`. Textos como `NA`, `N/A` o `NULL` se conservan como texto; antes pandas los convertía en nulos. En 2021 eran 4 celdas y en 2019, ninguna. En los NIF limpios (`win_nif_clean`, `cae_nif_clean`) sí cuentan como vacíos.
+- Los registros irregulares van a `ted_can_<año>_registros_irregulares.csv`, sean del país que sean. Se guardan con la línea en que empiezan, el motivo y todos sus campos, y con versiones en `_historico/`. Hay tres motivos:
+  - `campos_de_mas`: más campos que la cabecera. No entran en la tabla.
+  - `campos_de_menos`: menos campos. Si son de España, entran completados con vacíos, como con pandas.
+  - `salto_de_linea`: un campo en varias líneas; una comilla sin cerrar se traga los registros que siguen.
+  
+  Antes se perdían sin guardarse. En los CSV de 2019 y 2021 no hay ninguno. Si ocupan más del 1 % de las líneas de un año, `download` guarda lo descargado y sale con código 1.
 
 ### Campos principales (57 columnas)
 

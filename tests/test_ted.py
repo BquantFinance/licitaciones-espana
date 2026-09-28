@@ -11,6 +11,8 @@ de los scripts en un árbol temporal con la misma estructura que el repo
 import hashlib
 import importlib.util
 import io
+import csv
+import json
 import logging
 import os
 import re
@@ -18,6 +20,7 @@ import runpy
 import shutil
 import sys
 import urllib.error
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -152,15 +155,14 @@ TED_CSV_2019 = (
 )
 
 
-def _fake_read_csv(csv_by_year):
-    def fake(filepath_or_buffer, *args, **kwargs):
-        if isinstance(filepath_or_buffer, str) and filepath_or_buffer.startswith("http"):
-            m = re.search(r"notices%20(\d{4})\.csv$", filepath_or_buffer)
-            if m and m.group(1) in csv_by_year:
-                return _ORIG_READ_CSV(io.StringIO(csv_by_year[m.group(1)]), dtype=str,
-                                      chunksize=kwargs.get("chunksize"))
-            raise urllib.error.HTTPError(filepath_or_buffer, 404, "Not Found", None, None)
-        return _ORIG_READ_CSV(filepath_or_buffer, *args, **kwargs)
+def _csv_anual_fake(csv_by_year):
+    """tm._descargar simulado: sirve el CSV bulk de cada año en su URL «TED 2020» (cualquier otra, 404)."""
+    def fake(url, destino):
+        m = re.search(r"notices%20(\d{4})\.csv$", url)
+        if m and m.group(1) in csv_by_year:
+            Path(destino).write_text(csv_by_year[m.group(1)], encoding="utf-8")
+            return
+        raise requests.exceptions.HTTPError(f"HTTP 404 {url}")
     return fake
 
 
@@ -174,7 +176,7 @@ def ted_http(monkeypatch, no_sleep):
     """Red simulada: CSV bulk 2019 + API v3 2024."""
     api = FakeTedApi(_api_notices_2024())
     monkeypatch.setattr(requests, "post", api)
-    monkeypatch.setattr(pd, "read_csv", _fake_read_csv({"2019": TED_CSV_2019}))
+    monkeypatch.setattr(tm, "_descargar", _csv_anual_fake({"2019": TED_CSV_2019}))
     return api
 
 
@@ -274,6 +276,8 @@ def _make_repo(tmp_path, scripts=()):
     shutil.copy(REPO_DIR / "nacional" / "licitaciones.py", tmp_path / "nacional" / "licitaciones.py")
     for s in scripts:
         shutil.copy(TED_DIR / s, tmp_path / "ted" / s)
+    # Los scripts de análisis importan ted_module (avisos_para_cruce)
+    shutil.copy(TED_DIR / "ted_module.py", tmp_path / "ted" / "ted_module.py")
     return tmp_path
 
 
@@ -375,11 +379,12 @@ class TestApiPagination:
     def test_download_does_not_persist_incomplete_consolidated(self, monkeypatch, tmp_path, no_sleep, caplog):
         api = FakeTedApi(_many_notices(250), fail_pages={2})
         monkeypatch.setattr(requests, "post", api)
-        monkeypatch.setattr(pd, "read_csv", _fake_read_csv({}))
+        monkeypatch.setattr(tm, "_descargar", _csv_anual_fake({}))
         monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
         with caplog.at_level(logging.WARNING, logger="ted_module"):
             df = tm.download_ted_spain(years=[2024], force_redownload=True)
         assert df is not None and len(df) == 100
+        assert df.attrs.get("sin_guardar")   # main() sale con 1
         assert not (tmp_path / "ted_es_can.parquet").exists()
         assert "2024" in caplog.text
 
@@ -430,8 +435,11 @@ class TestTedModuleCli:
         assert (tmp_path / "ted_can_2019_ES.parquet").exists()
         assert (tmp_path / "ted_can_2024_ES_api.parquet").exists()
         df = pd.read_parquet(out)
-        # CSV: 4 filas -> 1 FR filtrada, 1 cancelada eliminada; API: 4 avisos -> 5 registros (lotes)
-        assert len(df) == 2 + 5
+        # CSV: 4 filas -> 1 FR filtrada; la cancelada se conserva (cancelled='1', regla 1 del repo);
+        # API: 4 avisos -> 5 registros (lotes)
+        assert len(df) == 3 + 5
+        cancelada = df[df["ted_notice_id"] == "2019/S 001-000003"]
+        assert len(cancelada) == 1 and cancelada["cancelled"].astype(str).tolist() == ["1"]
         assert sorted(df["source"].unique()) == ["api_v3", "csv_bulk"]
         csv = df[df["source"] == "csv_bulk"].set_index("ted_notice_id")
         assert csv.loc["2019/S 001-000001", "importe_ted"] == 400000
@@ -453,9 +461,9 @@ class TestTedModuleCli:
         monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
         with caplog.at_level(logging.WARNING, logger="ted_module"):
             df = tm.download_ted_spain(years=[2019, 2024])
-        assert len(df) == 7
+        assert len(df) == 8   # 3 de 2019 (la cancelada se conserva) + 5 de la API
         assert "Cache ilegible" in caplog.text
-        assert len(pd.read_parquet(tmp_path / "ted_es_can.parquet")) == 7
+        assert len(pd.read_parquet(tmp_path / "ted_es_can.parquet")) == 8
 
     def test_validate_creates_output_dir(self, monkeypatch, tmp_path, ted_http):
         monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path / "data")
@@ -951,17 +959,19 @@ EFORMS_CAN_NOTICE_TYPES = {"veat", "can-standard", "can-social", "can-desg",
 
 
 def _csv_hub_fake(csv_by_url):
-    """pd.read_csv simulado: solo sirve las URL dadas (cualquier otra, 404)."""
+    """tm._descargar simulado: solo sirve las URL dadas (cualquier otra, 404); las .zip, dentro de un ZIP."""
     llamadas = []
 
-    def fake(filepath_or_buffer, *args, **kwargs):
-        if isinstance(filepath_or_buffer, str) and filepath_or_buffer.startswith("http"):
-            llamadas.append((filepath_or_buffer, kwargs.get("compression")))
-            if filepath_or_buffer in csv_by_url:
-                return _ORIG_READ_CSV(io.StringIO(csv_by_url[filepath_or_buffer]), dtype=str,
-                                      chunksize=kwargs.get("chunksize"))
-            raise urllib.error.HTTPError(filepath_or_buffer, 404, "Not Found", None, None)
-        return _ORIG_READ_CSV(filepath_or_buffer, *args, **kwargs)
+    def fake(url, destino):
+        llamadas.append((url, "zip" if url.endswith(".zip") else None))
+        if url in csv_by_url:
+            if url.endswith(".zip"):
+                with zipfile.ZipFile(destino, "w") as z:
+                    z.writestr(url.rsplit("/", 1)[-1][:-len(".zip")] + ".csv", csv_by_url[url])
+            else:
+                Path(destino).write_text(csv_by_url[url], encoding="utf-8")
+            return
+        raise requests.exceptions.HTTPError(f"HTTP 404 {url}")
     fake.llamadas = llamadas
     return fake
 
@@ -1021,7 +1031,7 @@ class TestTedCompletitud:
         # para avisos anteriores a eForms no trae adjudicatario ni importe
         url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
         fake = _csv_hub_fake({url: TED_CSV_2021_HUB})
-        monkeypatch.setattr(pd, "read_csv", fake)
+        monkeypatch.setattr(tm, "_descargar", fake)
         monkeypatch.setattr(requests, "post", _api_prohibida)
         monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
         df = tm.download_ted_spain(years=[2021], force_redownload=True)
@@ -1038,7 +1048,7 @@ class TestTedCompletitud:
                    f"%20notices%202021.csv")
         url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
         fake = _csv_hub_fake({primera: "<html>\nportal</html>\n", url: TED_CSV_2021_HUB})
-        monkeypatch.setattr(pd, "read_csv", fake)
+        monkeypatch.setattr(tm, "_descargar", fake)
         monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
         df = tm._download_csv_year(2021, force=True)
         assert df is not None and df["ID_NOTICE_CAN"].tolist() == ["2021/S 010-000001"]
@@ -1139,7 +1149,8 @@ class TestTedCompletitud:
         assert tm._default_years() == list(range(2006, 2032))
         capturado = {}
         monkeypatch.setattr(tm, "download_ted_spain",
-                            lambda years, force_redownload, **kw: capturado.update(years=years, **kw))
+                            lambda years, force_redownload, **kw: capturado.update(years=years, **kw)
+                            or pd.DataFrame())   # guardado: main() no sale con 1
         monkeypatch.setattr(sys, "argv", ["ted_module.py", "download"])
         tm.main()
         # Antes: '2010-2025' fijo
@@ -1164,7 +1175,7 @@ class TestTedCompletitud:
                    + TED_CSV_2021_HUB.splitlines()[1]
                    + ",Servicio de limpieza,CT-7,ted.europa.eu/udl?uri=TED:NOTICE:1-2021,Y\n")
         url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
-        monkeypatch.setattr(pd, "read_csv", _csv_hub_fake({url: csv_txt}))
+        monkeypatch.setattr(tm, "_descargar", _csv_hub_fake({url: csv_txt}))
         monkeypatch.setattr(requests, "post", _api_prohibida)
         monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
         df = tm.download_ted_spain(years=[2021], force_redownload=True)
@@ -1219,7 +1230,7 @@ def ted_2024(monkeypatch, tmp_path, no_sleep):
     sin CSV, datos en tmp_path y 2026 como año en curso."""
     api = FakeTedApi([_aviso(1), _aviso(2), _aviso(3)])
     monkeypatch.setattr(requests, "post", api)
-    monkeypatch.setattr(pd, "read_csv", _fake_read_csv({}))
+    monkeypatch.setattr(tm, "_descargar", _csv_anual_fake({}))
     monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
     monkeypatch.setattr(tm, "_current_year", lambda: 2026)
     return api
@@ -1277,7 +1288,7 @@ class TestHistoricoTed:
         df = tm.download_ted_spain(years=[2024], force_redownload=True)
         # 2019 no se ha vuelto a descargar: sigue entero, vigente y con la fecha de su versión
         de_2019 = df[df["year"] == 2019]
-        assert len(de_2019) == 2 and de_2019["_en_ultima_descarga"].all()
+        assert len(de_2019) == 3 and de_2019["_en_ultima_descarga"].all()   # la cancelada se conserva
         assert set(de_2019["_ultima_descarga"]) == {"2020-01-10T00:00:00+00:00"}
         assert not any(n.startswith("ted_can_2019") for n in _historico(tmp_path))
         de_2024 = df[df["year"] == 2024]
@@ -1295,13 +1306,13 @@ class TestHistoricoTed:
         # 2. La API responde sin avisos: 2024 sigue como estaba
         monkeypatch.setattr(requests, "post", FakeTedApi([]))
         df = tm.download_ted_spain(years=[2019, 2024], force_redownload=True)
-        assert len(df) == 7 and df["_en_ultima_descarga"].all()
+        assert len(df) == 8 and df["_en_ultima_descarga"].all()
         assert _foto(tmp_path) == foto
         # 3. El CSV falla (404) con caché guardada: se sigue usando, sin ir a la API
-        monkeypatch.setattr(pd, "read_csv", _fake_read_csv({}))
+        monkeypatch.setattr(tm, "_descargar", _csv_anual_fake({}))
         monkeypatch.setattr(requests, "post", _api_prohibida)
         df = tm.download_ted_spain(years=[2019], force_redownload=True)
-        assert len(df) == 7 and df["_en_ultima_descarga"].all()
+        assert len(df) == 8 and df["_en_ultima_descarga"].all()
         assert _foto(tmp_path) == foto
 
     def test_anio_en_curso_no_se_cachea_pero_queda_en_el_historico(self, ted_2024, monkeypatch, tmp_path):
@@ -1330,7 +1341,7 @@ class TestHistoricoTed:
 
     def test_semilla_solo_anade_los_avisos_que_faltan(self, ted_2024, monkeypatch, tmp_path):
         url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
-        monkeypatch.setattr(pd, "read_csv", _csv_hub_fake({url: TED_CSV_2021_IDS}))
+        monkeypatch.setattr(tm, "_descargar", _csv_hub_fake({url: TED_CSV_2021_IDS}))
         ted_2024.notices = [_aviso(1), _aviso(2)]
         # Como el ted_es_can.parquet publicado, donde 2020-2023 venían de la API
         # (número-año) y ahora del CSV (año + número): 1001-2021 es 20211001.
@@ -1452,3 +1463,295 @@ def test_nullable_strings_from_rebuilt_parquet():
     assert rtc.classify_buyer(pd.NA) == (False, False)
     assert rtc.normalize_name(pd.NA) == ""
     assert rtc.clean_nif(pd.NA) == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Regla 2: registros irregulares, avisos cancelados y código de salida
+# ═══════════════════════════════════════════════════════════════════════════
+
+TED_CSV_2021_MAL = (
+    "ID_NOTICE_CAN,YEAR,ISO_COUNTRY_CODE,CAE_NAME,CAE_NATIONALID,TYPE_OF_CONTRACT,CPV,"
+    "VALUE_EURO_FIN_1,AWARD_VALUE_EURO_FIN_1,WIN_NAME,WIN_NATIONALID,NUMBER_OFFERS,DT_AWARD,CANCELLED\n"
+    "2021/S 010-000001,2021,ES,Ayuntamiento de Sevilla,ESP4109100J,S,79000000,400000,380000,"
+    "EMPRESA SL,ESB11111111,3,2021-01-10,0\n"
+    # una coma sin comillas en el nombre: un campo de más (antes se perdía sin guardarse)
+    "2021/S 010-000002,2021,ES,Ayuntamiento de Cádiz, Área de Hacienda,ESP1101200I,S,79000000,1,1,"
+    "X,ESB2,1,2021-01-11,0\n"
+    "2021/S 010-000003,2021,FR,Mairie,FR1,S,79000000,1,1,X,FR2,1,2021-01-10,0,EXTRA\n"
+    "2021/S 010-000004,2021,ES,Diputación,ESP1,S,79000000,5,5,NA,ESB4,1,2021-01-12,1\n"
+    "\n"
+    "2021/S 010-000005,2021,ES,Corto,ESP5,S\n"
+)
+
+_CAB_2021, _FILA_2021 = TED_CSV_2021_HUB.splitlines(keepends=True)[:2]
+
+
+def _csv_2021(monkeypatch, tmp_path, texto, **k):
+    """_download_csv_year(2021) con `texto` servido en la URL del hub (en ZIP) y datos en tmp_path."""
+    url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+    monkeypatch.setattr(tm, "_descargar", _csv_hub_fake({url: texto}))
+    monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+    return tm._download_csv_year(2021, force=True, **k)
+
+
+def _irregulares(carpeta, year=2021):
+    return _ORIG_READ_CSV(Path(carpeta) / f"ted_can_{year}_registros_irregulares.csv", dtype=str,
+                          keep_default_na=False)
+
+
+def _zip_fake(miembros):
+    """tm._descargar simulado: en la URL del hub de 2021, un ZIP con estos ficheros; el resto, 404."""
+    url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+
+    def fake(u, destino):
+        if u != url:
+            raise requests.exceptions.HTTPError(f"HTTP 404 {u}")
+        with zipfile.ZipFile(destino, "w") as z:
+            for nombre, texto in miembros.items():
+                z.writestr(nombre, texto)
+    return fake
+
+
+class TestTedRegla2:
+    def test_registros_irregulares_se_guardan_aparte(self, monkeypatch, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger="ted_module"):
+            df = _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_MAL)
+        # Los de España con sus campos; el corto, completado con vacíos; ninguno truncado
+        assert df["ID_NOTICE_CAN"].tolist() == ["2021/S 010-000001", "2021/S 010-000004", "2021/S 010-000005"]
+        filas = df.set_index("ID_NOTICE_CAN")
+        assert filas.loc["2021/S 010-000004", "WIN_NAME"] == "NA"   # texto publicado, no nulo
+        assert pd.isna(filas.loc["2021/S 010-000005", "CPV"])
+        irr = _irregulares(tmp_path)
+        # Línea en que empieza cada uno: la cabecera es la 1 y la línea en blanco cuenta
+        assert irr["linea"].tolist() == ["3", "4", "7"]
+        assert irr["motivo"].tolist() == ["campos_de_mas", "campos_de_mas", "campos_de_menos"]
+        assert irr["n_campos"].tolist() == ["15", "15", "6"] and set(irr["n_campos_cabecera"]) == {"14"}
+        assert set(irr["url"]) == {tm.TEDConfig.CSV_HUB_URL.format(year=2021)}
+        campos = [json.loads(c) for c in irr["campos_json"]]
+        assert campos[0][3:5] == ["Ayuntamiento de Cádiz", " Área de Hacienda"] and len(campos[0]) == 15
+        assert campos[1][-1] == "EXTRA"
+        assert campos[2] == ["2021/S 010-000005", "2021", "ES", "Corto", "ESP5", "S"]
+        assert "REGISTROS IRREGULARES" in caplog.text
+        assert not list(tmp_path.glob(".*"))   # ni el temporal de la descarga ni el de los irregulares
+
+    def test_umbral_de_registros_irregulares(self, monkeypatch, tmp_path):
+        anios = []
+        _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_MAL, irregulares=anios)
+        assert anios == [2021]   # 3 de sus 7 líneas
+        # Uno entre 201 líneas (0,5 %) no pasa del 1 %, pero se guarda igual
+        malo = "2021/S 010-000009,2021,FR,Mairie,FR1,S,1,1,1,X,FR2,1,2021-01-10,0,EXTRA\n"
+        anios = []
+        df = _csv_2021(monkeypatch, tmp_path, _CAB_2021 + _FILA_2021 * 199 + malo, irregulares=anios)
+        assert anios == [] and len(df) == 199
+        assert _irregulares(tmp_path)["linea"].tolist() == ["201"]
+
+    def test_comilla_sin_cerrar_se_guarda_y_la_descarga_sale_con_1(self, monkeypatch, tmp_path, no_sleep):
+        # Una comilla que no se cierra: el módulo csv se traga en ese campo todo lo que sigue, también
+        # un aviso de España (antes pandas rechazaba la URL entera: «EOF inside string»)
+        texto = (_CAB_2021 + _FILA_2021
+                 + '2021/S 010-000002,2021,ES,"Ayuntamiento de Jaén,ESP2,S,1,1,1,X,Y,1,2021-01-10,0\n'
+                 + "2021/S 010-000003,2021,ES,Diputación de Jaén,ESP3,S,2,2,2,X,Y,1,2021-01-11,0\n")
+        url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+        monkeypatch.setattr(tm, "_descargar", _csv_hub_fake({url: texto}))
+        monkeypatch.setattr(requests, "post", _api_prohibida)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(sys, "argv", ["ted_module.py", "download", "--years", "2021"])
+        with pytest.raises(SystemExit) as salida:
+            tm.main()
+        assert salida.value.code == 1
+        assert (tmp_path / "ted_es_can.parquet").exists()   # lo descargado sí se guarda
+        irr = _irregulares(tmp_path)
+        assert irr["linea"].tolist() == ["3"] and irr["motivo"].tolist() == ["campos_de_menos+salto_de_linea"]
+        assert "Diputación de Jaén" in json.loads(irr["campos_json"][0])[3]   # nada se pierde
+
+    def test_campo_en_varias_lineas(self, monkeypatch, tmp_path):
+        texto = (_CAB_2021 + '2021/S 010-000007,2021,ES,"Ayuntamiento\nde Jaén",ESP7,S,1,1,1,X,Y,1,2021-01-10,0\n'
+                 + _FILA_2021)
+        df = _csv_2021(monkeypatch, tmp_path, texto)
+        assert df["CAE_NAME"].tolist() == ["Ayuntamiento\nde Jaén", "Ayuntamiento de Sevilla"]
+        irr = _irregulares(tmp_path)
+        assert irr["linea"].tolist() == ["2"] and irr["motivo"].tolist() == ["salto_de_linea"]
+
+    def test_irregulares_se_guardan_aunque_no_quede_ninguna_fila_de_espana(self, monkeypatch, tmp_path):
+        texto = _CAB_2021 + "2021/S 010-000002,2021,ES,Ayto de Cádiz, Hacienda,ESP1,S,1,1,1,X,Y,1,2021-01-11,0\n"
+        assert _csv_2021(monkeypatch, tmp_path, texto) is None
+        assert _irregulares(tmp_path)["motivo"].tolist() == ["campos_de_mas"]
+
+    def test_una_descarga_sin_irregulares_archiva_los_de_la_anterior(self, monkeypatch, tmp_path):
+        ruta = tmp_path / "ted_can_2021_registros_irregulares.csv"
+
+        def en_historico():
+            return [n for n in _historico(tmp_path) if n.startswith("ted_can_2021_registros_irregulares")]
+
+        _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_MAL)
+        antes = ruta.read_bytes()
+        _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_HUB)
+        assert not ruta.exists()
+        assert len(en_historico()) == 1 and (tmp_path / "_historico" / en_historico()[0]).read_bytes() == antes
+        # La misma descarga dos veces: una sola versión nueva
+        _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_MAL)
+        _csv_2021(monkeypatch, tmp_path, TED_CSV_2021_MAL)
+        assert ruta.read_bytes() == antes and len(en_historico()) == 1
+
+    def test_zip_con_varios_csv_no_se_lee_a_medias(self, monkeypatch, tmp_path, caplog):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(tm, "_descargar", _zip_fake({"a.csv": TED_CSV_2021_HUB, "b.csv": TED_CSV_2021_HUB}))
+        with caplog.at_level(logging.WARNING, logger="ted_module"):
+            assert tm._download_csv_year(2021, force=True) is None
+        assert "se esperaba uno" in caplog.text
+        # Un CSV y otros ficheros que no son CSV: se lee el CSV
+        monkeypatch.setattr(tm, "_descargar", _zip_fake({"LEEME.txt": "hola", "export_CAN_2021.csv": TED_CSV_2021_HUB}))
+        assert tm._download_csv_year(2021, force=True)["ID_NOTICE_CAN"].tolist() == ["2021/S 010-000001"]
+
+    def test_el_zip_se_cierra(self, monkeypatch, tmp_path):
+        abiertos = []
+
+        class ZipEspia(zipfile.ZipFile):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                abiertos.append(self)
+
+        monkeypatch.setattr(tm.zipfile, "ZipFile", ZipEspia)
+        assert len(_csv_2021(monkeypatch, tmp_path, TED_CSV_2021_HUB)) == 1
+        # En Windows no se puede borrar el temporal con el ZIP abierto
+        assert len(abiertos) == 2 and all(z.fp is None for z in abiertos)
+
+    def test_campo_mayor_que_el_limite_del_modulo_csv(self, monkeypatch, tmp_path):
+        largo = "x" * 200_000
+        anterior = csv.field_size_limit(131_072)   # el de fábrica, fijado: otro test pudo cambiarlo
+        try:
+            df = _csv_2021(monkeypatch, tmp_path, _CAB_2021 + _FILA_2021.replace("EMPRESA SL", largo))
+            assert df["WIN_NAME"].tolist() == [largo]
+            assert csv.field_size_limit() == 131_072   # se restaura
+        finally:
+            csv.field_size_limit(anterior)
+
+    def test_lineas_en_blanco_antes_de_la_cabecera(self, monkeypatch, tmp_path):
+        df = _csv_2021(monkeypatch, tmp_path, "\n\r\n" + TED_CSV_2021_HUB)
+        assert df["ID_NOTICE_CAN"].tolist() == ["2021/S 010-000001"]
+
+    def test_cabecera_con_nombres_repetidos(self, monkeypatch, tmp_path):
+        texto = TED_CSV_2021_HUB.replace("TYPE_OF_CONTRACT,CPV,VALUE_EURO_FIN_1", "CPV,CPV,CPV.1", 1)
+        df = _csv_2021(monkeypatch, tmp_path, texto)
+        assert list(df.columns[5:8]) == ["CPV", "CPV.2", "CPV.1"]
+        assert (tmp_path / "ted_can_2021_ES.parquet").exists()   # antes, to_parquet fallaba con dos 'CPV.1'
+
+    def test_cancelados_se_conservan_y_el_cruce_los_excluye(self, monkeypatch, tmp_path, capsys):
+        url = tm.TEDConfig.CSV_HUB_URL.format(year=2021)
+        monkeypatch.setattr(tm, "_descargar", _csv_hub_fake({url: TED_CSV_2021_MAL}))
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        df = tm._normalize_ted_data(tm._renombrar_csv(tm._download_csv_year(2021, force=True)))
+        assert len(df) == 3 and (df["cancelled"].astype(str) == "1").sum() == 1
+        df.to_parquet(tmp_path / "ted_es_can.parquet")
+        cargado = rtc.load_ted(tmp_path / "ted_es_can.parquet")
+        assert len(cargado) == 2 and not (cargado["cancelled"].astype(str) == "1").any()
+        assert "Avisos cancelados (fuera del cruce): 1" in capsys.readouterr().out
+
+    def test_download_sale_con_1_si_no_guarda_o_si_el_csv_es_irregular(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["ted_module.py", "download", "--years", "2021"])
+        sin_guardar = pd.DataFrame({"a": [1]})
+        sin_guardar.attrs["sin_guardar"] = True
+        irregular = pd.DataFrame({"a": [1]})
+        irregular.attrs["csv_irregular"] = [2021]
+        for resultado in (None, sin_guardar, irregular):
+            monkeypatch.setattr(tm, "download_ted_spain", lambda **k: resultado)
+            with pytest.raises(SystemExit) as salida:
+                tm.main()
+            assert salida.value.code == 1
+        monkeypatch.setattr(tm, "download_ted_spain", lambda **k: pd.DataFrame({"a": [1]}))
+        tm.main()   # guardado: sin error
+        monkeypatch.setattr(sys, "argv", ["ted_module.py", "download", "--years", "2021", "--method", "sparql"])
+        monkeypatch.setattr(tm, "download_ted_spain_sparql", lambda **k: None)
+        with pytest.raises(SystemExit) as salida:
+            tm.main()
+        assert salida.value.code == 1
+
+
+@pytest.mark.parametrize("cabecera", [["X", "X", "X.1"], ["X", "X.1", "X"], ["A", "", "B", ""],
+                                      ["", "Unnamed: 0", ""], ["A", "A", "A", "A.1", "A.2"],
+                                      ["A.1", "A", "A"], ["Unnamed: 1", "", "X"], ["A", " A", "A "]])
+def test_nombres_de_columna_como_los_ponia_pandas(cabecera):
+    texto = ",".join(cabecera) + "\n" + ",".join(["v"] * len(cabecera)) + "\n"
+    trozo = next(iter(_ORIG_READ_CSV(io.StringIO(texto), dtype=str, low_memory=False, chunksize=50_000,
+                                     on_bad_lines="skip")))
+    assert tm._nombres_unicos(cabecera) == list(trozo.columns)
+
+
+def _ted_cancelado_despues():
+    """Consolidado: el aviso A publicado (versión vieja) y cancelado en la última descarga; B vigente."""
+    return pd.DataFrame({
+        "ted_notice_id": ["A", "A", "B"],
+        "cancelled": ["0", "1", "0"],
+        "importe_ted": [300_000.0, 300_000.0, 500_000.0],
+        "win_nationalid": ["B11111111", "B11111111", "B22222222"],
+        "win_nif_clean": ["B11111111", "B11111111", "B22222222"],
+        "cae_name": ["Ayuntamiento de Alfa"] * 3,
+        "cae_nationalid": ["P0000001A"] * 3,
+        "year": [2024, 2024, 2024],
+        "_ultima_descarga": ["2025-01-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00",
+                             "2025-02-01T00:00:00+00:00"],
+        "_en_ultima_descarga": [False, True, True],
+    })
+
+
+def test_el_cruce_deja_fuera_el_aviso_cancelado_en_una_descarga_posterior(tmp_path):
+    ted = _ted_cancelado_despues()
+    assert tm.avisos_para_cruce(ted)["ted_notice_id"].tolist() == ["B"]
+    # Quitando antes los cancelados, A volvería con su versión vieja
+    assert tm.ultima_version_por_aviso(ted[ted["cancelled"] != "1"])["ted_notice_id"].tolist() == ["A", "B"]
+    pipe = pd.DataFrame({"_nif": ["B11111111", "B22222222"], "_imp_adj": [300_000.0, 500_000.0],
+                         "_año": [2024.0] * 2, "_fecha_adj": ["2024-03-01"] * 2, "_es_menor": [False] * 2,
+                         "_organ": ["Ayuntamiento de Alfa"] * 2, "_adj": ["EMP A", "EMP B"],
+                         "_expediente": [None, None], "_cpv": ["79000000"] * 2})
+    res, _ = tm.cross_validate_ted(pipe, ted, "NAC")
+    assert res["_ted_validated"].tolist() == [False, True]
+    ted.to_parquet(tmp_path / "ted_es_can.parquet", index=False)
+    assert rtc.load_ted(tmp_path / "ted_es_can.parquet")["ted_notice_id"].tolist() == ["B"]
+    assert cvp.load_ted(tmp_path / "ted_es_can.parquet")["ted_notice_id"].tolist() == ["B"]
+    # Con cancelled numérico igual (float con nulos, p.ej. filas de la API sin el campo: '1.0' como texto)
+    ted.assign(cancelled=[0.0, 1.0, np.nan]).to_parquet(tmp_path / "ted_es_can.parquet", index=False)
+    assert tm.avisos_para_cruce(pd.read_parquet(tmp_path / "ted_es_can.parquet"))["ted_notice_id"].tolist() == ["B"]
+    assert rtc.load_ted(tmp_path / "ted_es_can.parquet")["ted_notice_id"].tolist() == ["B"]
+
+
+def test_scripts_de_analisis_cuentan_cada_aviso_una_vez_y_sin_cancelados(tmp_path, monkeypatch, capsys):
+    repo = _make_repo(tmp_path, ["diagnostico_missing_ted.py", "analisis_sector_salud.py"])
+    ted = repo / "ted"
+    miss = pd.DataFrame({
+        "organo_contratante": ["Ayuntamiento de Alfa"], "nif_organo": ["P0000001A"],
+        "nif_adjudicatario": ["B1"], "expediente": ["A-1"],
+        "importe_adjudicacion": [300_000.0], "ano": [2024.0],
+    })
+    miss.to_parquet(ted / "crossval_missing.parquet", index=False)
+    miss.to_parquet(ted / "crossval_sara.parquet", index=False)
+    miss.iloc[:0].to_parquet(ted / "crossval_matched.parquet", index=False)
+    _ted_cancelado_despues().to_parquet(ted / "ted_es_can.parquet", index=False)
+    _run_script(repo, "diagnostico_missing_ted.py", monkeypatch)
+    assert "TED total: 1\n" in capsys.readouterr().out
+    _sara_salud([dict(organo_contratante="Hospital de Alfa", expediente="S-1", importe_adjudicacion=300_000.0)]) \
+        .to_parquet(ted / "crossval_sara.parquet", index=False)
+    _run_script(repo, "analisis_sector_salud.py", monkeypatch)
+    assert "TED cargado: 1\n" in capsys.readouterr().out
+
+
+def test_nif_con_los_textos_que_pandas_leia_como_nulos(tmp_path):
+    df = tm._normalize_ted_data(pd.DataFrame({
+        "win_nationalid": ["#N/A N/A", "1.#QNAN", "ESB12345678"],
+        "cae_nationalid": ["NULL", "n/a", "ESP4109100J"],
+    }))
+    assert df["win_nif_clean"].tolist() == ["", "", "B12345678"]
+    assert df["cae_nif_clean"].tolist() == ["", "", "P4109100J"]
+    assert rtc.clean_nif("-1.#IND ") == "" and rtc.clean_nif("ESB12345678") == "B12345678"
+    assert rtc._NIF_NULOS == tm._NIF_NULOS
+    pd.DataFrame({"win_nationalid": ["#N/A N/A", "ESB12345678"], "importe_ted": [1.0, 2.0]}) \
+        .to_parquet(tmp_path / "ted_es_can.parquet", index=False)
+    assert rtc.load_ted(tmp_path / "ted_es_can.parquet")["win_nif_clean"].tolist() == ["", "B12345678"]
+    # Son los textos que pandas lee como nulos con las opciones por defecto
+    textos = [x for x in tm._TEXTOS_NULOS_PANDAS if x]
+    leido = _ORIG_READ_CSV(io.StringIO("x\n" + "\n".join(textos) + "\n"), dtype=str)
+    assert len(leido) == len(textos) and leido["x"].isna().all()
+    try:
+        from pandas._libs.parsers import STR_NA_VALUES
+    except ImportError:   # API interna de pandas: si cambia de sitio, basta con lo anterior
+        return
+    assert set(STR_NA_VALUES) == set(tm._TEXTOS_NULOS_PANDAS)
