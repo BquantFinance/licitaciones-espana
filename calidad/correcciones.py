@@ -126,7 +126,7 @@ def corregir_importes(df, registro=None):
             m = salto & sin_iva & (lic < PRESUPUESTO_COMPARABLE)
             corregido[m] = np.nan; motivo[m] = "no_comparable"
         if lic is not None and campo == "importe_adjudicacion":
-            m = salto & ~(sin_iva & (lic < PRESUPUESTO_COMPARABLE))
+            m = salto & ~(sin_iva & (lic < PRESUPUESTO_COMPARABLE)) & ~np.isnan(corregido)
             corregido[m] = np.nan; motivo[m] = "inverosimil"
             for k in EXPONENTES:
                 with np.errstate(invalid="ignore", divide="ignore"):

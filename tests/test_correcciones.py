@@ -93,10 +93,12 @@ def test_sin_par_no_hay_correccion():
 def test_salto_por_el_par_con_iva_no_se_corrige_por_escala():
     # sin presupuesto sin IVA: el salto se mide con IVA y la adjudicación sin IVA
     # no se reescala con un cociente de otra base
-    df = _importes([np.nan], [1000000.0], importe_con_iva=[1210.0], importe_adj_con_iva=[1210000.0])
+    df = _importes([np.nan, np.nan], [1000000.0, np.nan],
+                   importe_con_iva=[1210.0, 1210.0], importe_adj_con_iva=[1210000.0, 1210000.0])
     c = correcciones.corregir_importes(df)
-    assert c["correccion_importe_adjudicacion"].iloc[0] == "inverosimil"
-    assert np.isnan(c["importe_adjudicacion_corregido"].iloc[0])
+    # sin adjudicación sin IVA publicada no hay nada que marcar
+    assert _lista(c["correccion_importe_adjudicacion"]) == ["inverosimil", None]
+    assert np.isnan(c["importe_adjudicacion_corregido"]).all()
 
 
 def test_registro_sin_valor_probable_deja_el_campo_vacio(tmp_path):
