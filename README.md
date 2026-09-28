@@ -84,8 +84,17 @@ ted/
 ├── ted_can_2020_ES_api.parquet      # 2020 (API v3 eForms)
 ├── ...
 ├── ted_can_2025_ES_api.parquet      # 2025 (API v3 eForms)
+├── ted_can_2026_ES_api_en_curso.parquet  # año en curso: solo histórico, no se usa como caché
+├── _historico/                      # versiones anteriores de las cachés y del consolidado
 └── ted_es_can.parquet               # Consolidado (591K, 31 MB)
 ```
+
+**Sin sesgo del superviviente.**
+- Las cachés por año y el consolidado se guardan con `guardar_version`: si TED cambia algo, la versión anterior pasa a `_historico/`.
+- `ted_es_can.parquet` se reconstruye desde todas las versiones de cada año con `acumular`. Los avisos que TED retira o cambia quedan con `_en_ultima_descarga=False`, y un año que la ejecución no pide no se toca.
+- La clave es el aviso normalizado a `número-año`: el CSV da `2020112` y la API `112-2020`, y son el mismo aviso.
+- `--semilla ted_es_can.parquet` (el publicado en v2026.02) añade los avisos que ya no se sirven. **Úsalo en el primer refresco**: las cachés antiguas de la API tienen otro formato y no se comparan fila a fila.
+- Para contar o cruzar, quédate con la última versión de cada aviso: `ultima_version_por_aviso()`. Ya lo hacen `cross_validate_ted` y `run_ted_crossvalidation.py`.
 
 ### Campos principales (57 columnas)
 

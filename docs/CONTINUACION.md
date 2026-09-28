@@ -196,14 +196,19 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   1. Comunidad de Madrid (~385 mil/año).
   2. Galicia (~220 mil/año).
   3. Menores de la PSCP de Catalunya.
-  4. TED.
-  5. BORME.
+  4. BORME.
+- TED quedó cubierto el 2026-09-28. Pendientes que dejó su revisión:
+  - **Hueco de 2020-2023:** el CSV no trae los `can-modif` ni los `can-desg` (1.620 solo en 2020). Viene de `5827174`. Con `--semilla` se recuperan del publicado, pero no se vuelven a descargar. Decidir si se piden a la API.
+  - El primer refresco real, con `--semilla` y el `ted_es_can.parquet` publicado.
+  - **Coste:** cada ejecución acumula todas las versiones (unos 6 s por versión en un año de 125.000 filas). Para ejecuciones diarias haría falta un acumulado intermedio por año.
+  - `diagnostico_missing_ted.py`, `analisis_sector_salud.py` y `cross-validation_ted_placsp.py` leen el consolidado entero. Deben aplicar `ultima_version_por_aviso`.
+  - **Contra la regla 2 de §2:** el CSV se lee con `on_bad_lines='skip'` sin guardar lo descartado, y `_normalize_ted_data` elimina los avisos cancelados. Hay que conservarlos y marcarlos.
 - Andalucía quedó cubierta el 2026-09-28, sin verificar en vivo.
 - Asturias quedó cubierta el 2026-09-28, sin verificar en vivo porque su portal no responde desde la nube.
 
 | Scraper | Qué hay que cambiar |
 |---|---|
-| `ted/ted_module.py` | Cachés por año y refresco del año en curso |
+| ~~`ted/ted_module.py`~~ | **Hecho** (2026-09-28): cachés y consolidado con `guardar_version`, `acumular` por año con la clave del aviso normalizada (`número-año`), el año en curso guardado aparte, `--semilla` y `ultima_version_por_aviso` en el cruce. Verificado en vivo. Pendiente: ver la lista de TED más abajo |
 | `borme/scripts/borme_scraper.py`, `borme_batch_parser.py` | Los PDF son inmutables. El parse completo no debe perder lo ya parseado si faltan PDF en disco |
 | ~~`scripts/ccaa_valencia.py`, `ccaa_valencia_parquet.py`~~ | **Hecho** (`31db07f`). Sin semilla: no hay clave estable y el release es incompatible |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | `VIGENCIA_HORAS` sobrescribe los CSV. Las versiones de un mismo CSV no son "consultas solapadas". Respetar las filas de continuación |

@@ -1333,18 +1333,21 @@ class TestHistoricoTed:
         monkeypatch.setattr(pd, "read_csv", _csv_hub_fake({url: TED_CSV_2021_IDS}))
         ted_2024.notices = [_aviso(1), _aviso(2)]
         # Como el ted_es_can.parquet publicado, donde 2020-2023 venían de la API
-        # (número-año) y ahora del CSV (año + número): 1001-2021 es 20211001
+        # (número-año) y ahora del CSV (año + número): 1001-2021 es 20211001.
+        # 20211002 (formato CSV, como 2010-2019 en el publicado) también está
         publicado = pd.DataFrame({
-            "ted_notice_id": ["1001-2021", "1003-2021", "1-2024", "9-2024", "9-2024", "5-2018"],
-            "year": [2021, 2021, 2024, 2024, 2024, 2018],
-            "source": ["api_v3"] * 6,
-            "lot_index": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            "importe_ted": [380000.0, 1.0, 100000.0, 2.0, 3.0, 4.0],
+            "ted_notice_id": ["1001-2021", "20211002", "1003-2021", "1-2024", "9-2024", "9-2024", "5-2018"],
+            "year": [2021, 2021, 2021, 2024, 2024, 2024, 2018],
+            "source": ["api_v3", "csv_bulk"] + ["api_v3"] * 5,
+            "lot_index": [0.0, np.nan, 0.0, 0.0, 0.0, 1.0, 0.0],
+            "importe_ted": [380000.0, 500000.0, 1.0, 100000.0, 2.0, 3.0, 4.0],
         })
         semilla = tmp_path / "release" / "ted_es_can.parquet"
         semilla.parent.mkdir()
         publicado.to_parquet(semilla, index=False)
-        df = tm.download_ted_spain(years=[2021, 2024], force_redownload=True, semillas=[semilla])
+        tm.download_ted_spain(years=[2021, 2024], force_redownload=True)
+        # Con --semilla no vale el consolidado ya guardado (años cerrados): se reconstruye
+        df = tm.download_ted_spain(years=[2021, 2024], semillas=[semilla])
         sembradas = df[df["_origen"].notna()]
         # Solo los avisos que faltan (con todas sus filas); 2018 no se ha descargado
         assert sorted(sembradas["ted_notice_id"]) == ["1003-2021", "9-2024", "9-2024"]

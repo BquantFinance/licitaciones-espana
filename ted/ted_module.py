@@ -253,7 +253,7 @@ def download_ted_spain(
 ):
     """
     Descarga y combina datos TED de España.
-
+    
     Estrategia dual:
       - 2006-2023: CSV bulk (legacy format, columnas tipo WIN_NAME, CAE_NATIONALID)
       - 2024+: TED Search API v3 (eForms, campos tipo winner-identifier)
@@ -266,16 +266,16 @@ def download_ted_spain(
 
     semillas: parquets publicados (p.ej. el ted_es_can.parquet de v2026.02)
     de los que se añaden, por aviso, los que no están en la descarga (_origen).
-
+    
     Returns:
         pd.DataFrame con todos los CAN de España
     """
     if not HAS_REQUESTS:
         log.error("Necesitas: pip install requests")
         return None
-
+    
     TEDConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
-
+    
     if output_path is None:
         output_path = TEDConfig.DATA_DIR / "ted_es_can.parquet"
     output_path = Path(output_path)
@@ -302,14 +302,14 @@ def download_ted_spain(
     descargas = []         # Lo obtenido en esta ejecución (solo se usa si queda incompleta)
     fuentes = {}           # Año → caché de la que sale en esta ejecución ('csv' o 'api')
     incomplete_years = []  # Años con descarga API cortada por errores/límite
-
+    
     # ── CSV bulk para años disponibles, API para el resto ──
     csv_years = [y for y in years if y in TEDConfig.CSV_YEARS_AVAILABLE]
     api_years = [y for y in years if y not in TEDConfig.CSV_YEARS_AVAILABLE]
-
+    
     # Años que fallan en CSV se reintentan por API
     csv_failed_years = []
-
+    
     if csv_years:
         log.info(f"📥 Descargando CSV bulk para {csv_years[0]}-{csv_years[-1]}...")
         for year in csv_years:
@@ -319,10 +319,10 @@ def download_ted_spain(
                 fuentes[year] = 'csv'
             else:
                 csv_failed_years.append(year)
-
+    
     # Años que no tienen CSV + años que fallaron en CSV → API
     api_years = sorted(set(api_years + csv_failed_years))
-
+    
     if api_years:
         log.info(f"🌐 Consultando TED API para {api_years}...")
         for year in api_years:
@@ -332,11 +332,11 @@ def download_ted_spain(
             if df_year is not None and len(df_year) > 0:
                 descargas.append(df_year)
                 fuentes[year] = 'api'
-
+    
     if not descargas:
         log.error("No se obtuvieron datos de ninguna fuente")
         return None
-
+    
     if incomplete_years:
         # No se guarda nada: un consolidado truncado se reutilizaría como cache y
         # generaría falsos "missing in TED", y una descarga cortada no debe
@@ -356,9 +356,9 @@ def download_ted_spain(
         return None
     estado = guardar_registros(df, output_path)   # la versión anterior queda en _historico/
     log.info(f"✅ Guardado ({estado}): {output_path} ({len(df):,} registros)")
-
+    
     _print_ted_summary(df)
-
+    
     return df
 
 
@@ -1770,7 +1770,7 @@ def cross_validate_ted(df_pipeline, df_ted, src, R=None):
     
     # Histórico de ted_es_can.parquet: cada aviso una vez (su última versión)
     df_ted = ultima_version_por_aviso(df_ted)
-
+    
     # ── 1. Preparar lookup de TED ──
     ted_valid = df_ted[
         (df_ted['importe_ted'].notna()) & 
