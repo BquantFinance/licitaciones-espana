@@ -907,3 +907,35 @@ def test_quote_de_espacios_en_rutas_publicadas():
     # Las rutas locales conservan el nombre publicado (con espacios y º)
     url = M.normalizar_url(UV + quote("2024/4º_trimestre_24/Año 2024CM cas.xlsx"))
     assert M.ruta_local(url, M.SERIES_PAGINA["universitat_valencia"]["base"]) == "2024/4º_trimestre_24/Año 2024CM cas.xlsx"
+
+
+def _en_mayusculas(resultado):
+    """Una «lectura arreglada»: el mismo resultado con el texto de las columnas del origen en
+    mayúsculas (las de control, _..., igual)."""
+    df, *resto = resultado
+    df = df.copy()
+    for c in df.columns:
+        if not str(c).startswith("_") and (df[c].dtype == object or pd.api.types.is_string_dtype(df[c])):
+            df[c] = df[c].str.upper()
+    return (df, *resto)
+
+
+def test_un_arreglo_de_lectura_llega_a_las_filas_ya_guardadas(portal, tmp_path, monkeypatch):
+    """Regla 3: el Parquet se construye con el código actual desde todas las versiones del crudo.
+    Antes solo se aplicaban las versiones posteriores al Parquet anterior y un arreglo de lectura no
+    llegaba a las filas ya guardadas."""
+    publicar_uv(portal)
+    assert _ejecutar(tmp_path, "uv") == 0
+    antes = {p.name: pd.read_parquet(p) for p in sorted(tmp_path.glob("*.parquet"))}
+    leer = M.leer_tabla
+    monkeypatch.setattr(M, "leer_tabla", lambda ruta: _en_mayusculas(leer(ruta)))
+    assert _ejecutar(tmp_path, "uv", "--solo-parquet") == 0
+    assert antes
+    for nombre, df in antes.items():
+        despues = pd.read_parquet(tmp_path / nombre)
+        assert len(despues) == len(df) > 0
+        assert despues["_primera_descarga"].tolist() == df["_primera_descarga"].tolist()
+        for c in despues.columns:
+            if not str(c).startswith("_") and (despues[c].dtype == object or pd.api.types.is_string_dtype(despues[c])):
+                valores = despues[c].dropna()
+                assert (valores == valores.str.upper()).all(), (nombre, c)

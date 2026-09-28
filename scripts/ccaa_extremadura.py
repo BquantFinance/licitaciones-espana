@@ -1009,7 +1009,8 @@ def acumular_fichero(actual, rel, anterior, metadatos, manifiesto, resumen):
 
 def construir_parquet(destino, ficheros, raw, manifiesto, resumen, derivar=None):
     """Genera `destino` con los registros acumulados de `ficheros`
-    (lista de (ruta_actual, rel, metadatos)) partiendo del Parquet anterior.
+    (lista de (ruta_actual, rel, metadatos)), cada uno desde todas sus versiones en
+    raw/ con el código actual.
 
     Las filas de ficheros que ya no se procesan (retirados, otro formato...) se
     conservan: si el fichero sigue en raw/ se vuelve a procesar con sus
@@ -1036,7 +1037,11 @@ def construir_parquet(destino, ficheros, raw, manifiesto, resumen, derivar=None)
             procesados.add(rel)
     partes = []
     for actual, rel, metadatos in ficheros:
-        registros = acumular_fichero(actual, rel, por_fichero.pop(rel, None), metadatos, manifiesto, resumen)
+        # Con el código actual desde todas las versiones del crudo (regla 3): si solo se aplicaran
+        # las versiones posteriores al Parquet anterior, un arreglo de lectura no llegaría nunca a
+        # las filas ya guardadas
+        por_fichero.pop(rel, None)
+        registros = acumular_fichero(actual, rel, None, metadatos, manifiesto, resumen)
         if registros is not None and len(registros):
             partes.append(registros)
     for rel, grupo in por_fichero.items():

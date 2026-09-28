@@ -675,21 +675,27 @@ def test_fichero_modificado_conserva_las_filas_anteriores(portal, tmp_path):
     assert len(M.versiones(raw)) == 2
 
 
-def test_segunda_ejecucion_solo_lee_lo_que_se_ha_vuelto_a_comprobar(portal, tmp_path, monkeypatch):
+def test_segunda_ejecucion_relee_todo_el_crudo_con_el_codigo_actual(portal, tmp_path, monkeypatch):
+    """Regla 3: el Parquet se construye con el código actual desde todas las versiones del crudo.
+    Antes los ficheros de años cerrados no se volvían a leer (sus filas salían del Parquet
+    anterior) y un arreglo de lectura no les llegaba nunca. Siguen sin volver a pedirse."""
     assert _ejecutar(tmp_path) == 0
+    antes = {n: _parquet(tmp_path, n) for n in ("sescam", "menores_junta")}
     SLEEP_REAL(1.1)
-    leidos = []
+    leidos, pedidos = [], len(portal.llamadas)
     leer = M.leer_tabla
     monkeypatch.setattr(M, "leer_tabla", lambda ruta: leidos.append(Path(ruta).name) or leer(ruta))
     assert _ejecutar(tmp_path) == 0
-    # Los ficheros de años cerrados no se vuelven a pedir ni a leer (millones de
-    # filas del SESCAM): sus filas salen del Parquet anterior
-    assert sorted(leidos) == sorted([f"Contratos_menores_primer_trimestre_{ANIO}_JCCM.xlsx",
-                                     "Contratos_menores_primer_trimestre_caja_pagadora.XLSX",
-                                     f"contratosMenoresAnteriores_{ANIO - 1}.html",
-                                     f"contratosMenoresActuales_{ANIO}.html"])
-    sescam = _parquet(tmp_path, "sescam")
-    assert len(sescam) == 2 and sescam["_en_ultima_descarga"].all()
+    assert {f"Contratos_menores_primer_trimestre_{ANIO}_JCCM.xlsx",
+            "Contratos_menores_primer_trimestre_caja_pagadora.XLSX",
+            f"contratosMenoresAnteriores_{ANIO - 1}.html",
+            f"contratosMenoresActuales_{ANIO}.html"} < set(leidos)               # y los de años cerrados
+    assert [u for u, _ in portal.llamadas[:pedidos] if "SESCAM" in u]              # la 1.ª sí los pidió
+    assert not [u for u, _ in portal.llamadas[pedidos:] if "SESCAM" in u]         # no se vuelven a pedir
+    for nombre, df in antes.items():
+        despues = _parquet(tmp_path, nombre)
+        assert len(despues) == len(df) and despues["_en_ultima_descarga"].all()
+        assert despues["_primera_descarga"].tolist() == df["_primera_descarga"].tolist()
 
 
 def test_regenerar_sin_cambios_no_crea_versiones_ni_pierde_columnas_vacias(portal, tmp_path):
