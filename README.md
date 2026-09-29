@@ -912,7 +912,7 @@ galicia/
 ├── contratos_galicia_base.csv            # Dataset base de tabla (12 columnas)
 ├── contratos_galicia_base.parquet        # Base en parquet
 ├── contratos_galicia_detail.sqlite3      # Caché incremental del detalle HTML
-├── contratos_galicia.csv                 # Dataset final mergeado (62 columnas + 3 de control)
+├── contratos_galicia.csv                 # Dataset final mergeado (62 columnas + nombre del organismo + 3 de control)
 ├── contratos_galicia.parquet             # Dataset final en parquet
 ├── _historico/                           # versiones anteriores de base y final
 ├── contratos_galicia_base_progress.json  # Checkpoint y ámbito leído de cada organismo
@@ -922,6 +922,8 @@ galicia/
 ### Campos principales
 
 **Base (12 columnas)**: `id`, `objeto`, `importe`, `estado`, `estadoDesc`, `publicado`, `modificado`, `_organismo_id`, `_tipo`, `nif`, `adjudicatario`, `duracion`
+
+**Nombre del organismo**: `_organismo_nombre`, en la tabla final detrás de las 12 columnas base. Es el de la página del organismo (`consultaOrganismo.jsp`), que el scraper visita para la sesión: el nombre actual, en todas las filas del organismo (también las retiradas). Los de cada descarga quedan en el manifiesto (`nombres`); si una descarga no lee un organismo, se conserva el de la tabla anterior.
 
 **Detalle HTML enriquecido**: el dataset final añade >50 columnas derivadas de la ficha del portal, entre ellas:
 
@@ -952,6 +954,8 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
 **Discovery automático**: El scraper prueba IDs de organismo 1–2000 contra ambos endpoints (licitaciones en paralelo, CM secuencial por la restricción del `Referer`) para descubrir los organismos activos.
 
 **Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01. El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
+
+**Orden de las páginas**: por `id`, único en cada listado. Ordenadas por `publicado` (el orden del navegador), los empates salían en otro orden en cada página: la primera descarga del VPS (29-sep-2026) dejó 45 ventanas de CM incompletas y 989 menores sin descargar. Con el orden por `id` las 45 llegan completas (19.364 de 19.364, medido en vivo). Una ventana o un listado de LIC que no llega completo se repite hasta dos veces antes de darlo por incompleto.
 
 **Detalle HTML real**: El portal no expone un endpoint JSON útil para la ficha; los campos adicionales salen de `POST /licitacion`. El scraper hace un segundo paso de enriquecimiento HTML para `LIC` y `CM`.
 

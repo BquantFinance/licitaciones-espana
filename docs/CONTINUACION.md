@@ -234,7 +234,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
 | `scripts/ccaa_andalucia_menores.py` | Cerrado | `6f2f73c` | Sí, desde el VPS (2026-09-29): 9 CSV del CKAN de la Junta (2018-2026), 768.647 registros, 544.898 del SAS; la salida es idéntica al original celda a celda |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | Cerrado | `699bf16` | Sí (descarga completa del 2026-09-28) |
-| `galicia/scraper_galicia.py` | Cerrado | `699bf16` | Sí (4 organismos) |
+| `galicia/scraper_galicia.py` | Cerrado (listados por id, ventanas repetidas, `_organismo_nombre`; sin la fase `detail` en el VPS) | `c8d7806` | Sí, desde el VPS: primera descarga del 2026-09-29 (420 organismos) y, con este cierre, las 45 ventanas de CM que quedaron incompletas llegan completas (19.364 de 19.364, en vivo) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Cerrado (sin segmentación por fecha: los órganos grandes quedan fuera del ámbito) | `1fa7f01` | Sí (dos fases) |
 | `borme/scripts/*.py` | Cerrado | `38e72aa` | Sí (boe.es) |
 
@@ -397,7 +397,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
 | ~~`comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py`~~ | **Hecho** (2026-09-28): CSV con `guardar_version` y `_comprobaciones.json`, consolidación con `acumular` por bloque (registro + continuaciones), `--semilla` por `Referencia` + `Entidad Adjudicadora` y archivado de las consultas de entidades renumeradas. Verificado con los 773 CSV reales, sin pérdida de filas ni celdas |
 | ~~`comunidad_madrid/ccaa_madrid_ayuntamiento.py`~~ | **Hecho** (§3.1.4, `73d6e80`): `guardar_version` y `acumular` |
 | ~~`scripts/ccaa_asturias.py`~~ | **Hecho** (2026-09-28): CSV anuales en `raw/` con `guardar_version`, Parquet desde todas las versiones con `acumular` (comparando el texto publicado) y `--semilla` por (`year`, `Nº INSCRIPCION`). El portal no responde desde la nube: falta verificarlo en vivo (VPS) |
-| ~~`galicia/scraper_galicia.py`~~ | **Hecho** (2026-09-28): base y final con `guardar_version`, caché SQLite que nunca se borra (`detail_cache_historico`), `acumular` con ámbito por organismo y ventana leídos completos, y `--semilla` por (`_tipo`, `id`). Verificado en vivo (organismos 190, 305, 47 y 441) y a escala con 1,69 M filas |
+| ~~`galicia/scraper_galicia.py`~~ | **Hecho** (2026-09-28): base y final con `guardar_version`, caché SQLite que nunca se borra (`detail_cache_historico`), `acumular` con ámbito por organismo y ventana leídos completos, y `--semilla` por (`_tipo`, `id`). Verificado en vivo (organismos 190, 305, 47 y 441) y a escala con 1,69 M filas. Desde `c8d7806`: listados ordenados por id (por `publicado`, con empates, se perdían 989 menores en 45 ventanas), ventanas y listados incompletos repetidos, y nombre del organismo en `_organismo_nombre`. La fase `detail` (adjudicatario e importe adjudicado de las 52.133 licitaciones) sigue sin ejecutarse en el VPS: propuesta en la PR |
 | ~~`scripts/ccaa_andalucia.py`~~ | **Hecho** (2026-09-28): `raw/` con `guardar_version`, `acumular` con ámbito (no se retira nada de consultas con el tope o incompletas), `--semilla` por `id_expediente`, reanudación y `procesar` sin red. Probado sin red con las 808.441 filas del publicado. El portal corta desde la nube: falta la prueba en vivo y la partición por mes del SAS |
 | ~~`scripts/ccaa_cataluna_contratosmenores.py`~~ | **Hecho** (2026-09-28): fases, crudo y salida con `guardar_version`; `acumular` con ámbito por grupo (normales o agregadas) leído entero; `--semilla` por (`id`, `expedientId`), quitando solo las 2,16 M copias idénticas del publicado. Verificado en vivo (fases 500 y 1100). Pendiente: ver la lista de la PSCP más abajo |
 | `scripts/ccaa_cataluna.py`, `ccaa_cataluna_parquet.py` | Re-descarga por `rowsUpdatedAt` / `last_modified`. El RPC y `qjue-2pk9` son ventanas móviles de 5 años: lo que sale de la ventana debe conservarse. **Hecho**: capa cruda (`78d4f39`, `guardar_version`) y Parquet con todas las versiones (`1e28560`, `acumular`) |
@@ -450,7 +450,7 @@ Desde la nube de Claude Code los portales oficiales devolvían 403 del proxy. En
 - **Andalucía.** ~~CSV oficial de menores de la Junta (CKAN, separador `|`, con NIF y nombre del adjudicatario)~~: **hecho** (`scripts/ccaa_andalucia_menores.py`, 2026-09-29; `docs/COBERTURA.md` §5.2). Queda "Licitaciones publicadas {año}".
 - **Asturias.** Menores 2016-2018 (datos.gob.es) y relaciones trimestrales de menores 2024-2025.
 - **Madrid.** Menores de entidades históricas que ya no salen en el desplegable.
-- **Galicia.** Paginar por id y publicar el detalle.
+- **Galicia.** ~~Paginar por id~~: **hecho** (`c8d7806`). Queda publicar el detalle: la fase `detail` no se ejecuta en el VPS (propuesta de ritmo en la PR).
 
 ### 3.5 CCAA nuevas pendientes (detalle y URLs en `docs/COBERTURA.md` §3)
 1. Navarra: CKAN Registro de Contratos 2007+ e instantáneas del año en curso.
