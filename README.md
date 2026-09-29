@@ -704,7 +704,7 @@ Conteos observados en torno al 2026-03-23 consultando la API pública del portal
 | Contratos menores (sin BRR) | ~775.7K | Operativa |
 | **Total (sin BRR)** | **~856.7K** | **Operativa** |
 
-> ⚠️ El fichero publicado tiene 808.441 filas (hasta 2026-02-11): faltan unos 41K contratos menores. 15 segmentos del SAS superan el límite de 10.000 resultados tras las 8 dimensiones de subdivisión (273K registros); la solución prevista es partir por mes de publicación (pendiente de verificar en vivo). El script ahora incluye los códigos de estado/tipo/provincia presentes en los datos, años calculados en ejecución, descubrimiento completo de perfiles y 4 columnas JSON con todas las adjudicaciones, lotes, anuncios y campos no mapeados (19.765 expedientes con varias adjudicaciones perdían las siguientes).
+> ⚠️ El fichero publicado tiene 808.441 filas (hasta 2026-02-11): faltan unos 41K contratos menores (los del SAS están en el CKAN de la Junta: `scripts/ccaa_andalucia_menores.py`, 41.022 en 2019-2025). 15 segmentos del SAS superan el límite de 10.000 resultados tras las 8 dimensiones de subdivisión (273K registros); la solución prevista es partir por mes de publicación (pendiente de verificar en vivo). El script ahora incluye los códigos de estado/tipo/provincia presentes en los datos, años calculados en ejecución, descubrimiento completo de perfiles y 4 columnas JSON con todas las adjudicaciones, lotes, anuncios y campos no mapeados (19.765 expedientes con varias adjudicaciones perdían las siguientes).
 
 ### Archivos
 
@@ -1182,6 +1182,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `nacional/licitaciones.py` | PLACSP | Extrae datos nacionales de ATOM/XML (todas las entradas publicadas, marcadas con `es_ultima_version`, + tabla de resultados por lote) |
 | `nacional/normalizar_placsp.py` | — | Corrige parquets PLACSP ya generados sin eliminar filas: marca versiones, semántica de importes, etiquetas y CPV |
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x + salida reproducible |
+| `scripts/ccaa_andalucia_menores.py` | CKAN de datos abiertos de la Junta de Andalucía | Contratos menores «Contratación Menor en {año}» (2018-), con el SAS entero; CSV tal cual con versiones y Parquet acumulado |
 | `Euskadi/ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4 (solo descarga): API REST + XLSX anuales + portales municipales |
 | `Euskadi/consolidacion_euskadi.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
@@ -1278,6 +1279,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 - [x] La Rioja: `scripts/ccaa_la_rioja.py`, el CSV anual de menores del Gobierno (2018-2026, 350.967 filas, con NIF salvo personas físicas enmascaradas), verificado en vivo el 2026-09-28
 - [x] Menores valencianos fuera del REGCON: `scripts/ccaa_valencia_menores.py` (Universitat de València, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV; 1,43 M filas 2015-2026), verificado en vivo el 2026-09-28
 - [x] Menores de 8 ayuntamientos grandes con poco o nada en el 1143: `scripts/municipios_menores.py` (Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife; 289.401 filas 2015-2026), verificado en vivo el 2026-09-28
+- [x] Andalucía, menores de la Junta con el SAS entero: `scripts/ccaa_andalucia_menores.py`, los CSV «Contratación Menor en {año}» del CKAN de la Junta (2018-2026, 768.647 registros, 544.898 del SAS, NIF válido en el 98,4 %), verificado desde el VPS el 2026-09-29. Cubre los ~41K menores del SAS que el buscador no alcanza; las dos fuentes se complementan (docs/COBERTURA.md §5.2)
 - [x] Castilla-La Mancha: `scripts/ccaa_castilla_la_mancha.py`, los ficheros de transparencia de la Junta (menores, caja pagadora, SESCAM por línea de factura, sector público 2015-2018) y la UCLM 2017-2026, verificado en vivo el 2026-09-28. Los RAR necesitan `rarfile` con `unrar` o `libarchive-c` (Universitat de València, Ajuntament de València, Diputación de Alicante): scrapers en desarrollo
 - [ ] Canarias, Cantabria, Illes Balears, Ceuta y Melilla
 - Navarra: su ley foral de contratos (art. 102.3) solo obliga a publicar la menor cuantía agregada por empresa y trimestre; no hay fuente contrato a contrato
