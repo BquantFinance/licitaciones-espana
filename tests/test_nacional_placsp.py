@@ -1866,3 +1866,143 @@ class TestSegundaRevision:
         assert lic.fecha_publicacion_licitacion(status) == "2024-07-03"
         status = _status_con_anuncios([("DOC_CN", ["0202-07-03+01:00"])])
         assert lic.fecha_publicacion_licitacion(status) == "0202-07-03+01:00"
+
+
+class TestNombreFijo:
+    """Con el rango completo la salida tiene un nombre fijo (licitaciones_completo...). Antes llevaba el
+    año en curso (licitaciones_completo_2012_2026): en enero se escribían ficheros nuevos, la cadena de
+    versiones de _historico/ se cortaba, la salida del año anterior se quedaba congelada en la carpeta y
+    el ETL de la web, que la lee por su nombre, seguía con ella. El nombre con años queda como enlace."""
+    P = "licitacionesPerfilesContratanteCompleto3_"
+    L1 = _xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB", lotes=1)
+    L2 = _xml("urn:L2", "2024-03-01T00:00:00Z", "PUB", lotes=1)
+    L3 = _xml("urn:L3", "2024-04-01T00:00:00Z", "PUB", lotes=1)
+
+    @pytest.fixture
+    def base(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        monkeypatch.setattr(lic, "OUTPUT_DIR", tmp_path / "salida")
+        monkeypatch.setattr(lic.time, "sleep", lambda s: None)
+        return tmp_path
+
+    def _zip(self, base, entradas):
+        _escribir_zip(base / "zips" / "licitaciones" / f"{self.P}2024.zip", {"a.atom": _atom(entradas)})
+
+    def _exportar(self, base, nombre, alias=None, csv=False):
+        copias = [("licitaciones", c, o) for c, o in lic.copias_conjunto("licitaciones", 2024, 2024)]
+        with lic.ExportacionPlacsp(nombre, base / "salida", lote=2, csv=csv, alias=alias) as exportacion:
+            lic.procesar_copias(copias, exportacion)
+            return exportacion.cerrar()
+
+    @staticmethod
+    def _ids(ruta):
+        return pd.read_parquet(ruta)["id"].tolist()
+
+    def test_nombres_salida(self):
+        assert lic.nombres_salida(2012, 2026, 2026) == ("licitaciones_completo", "licitaciones_completo_2012_2026")
+        assert lic.nombres_salida(2012, 2027, 2027) == ("licitaciones_completo", "licitaciones_completo_2012_2027")
+        assert lic.nombres_salida(2010, 2026, 2026) == ("licitaciones_completo", "licitaciones_completo_2010_2026")
+        # Rangos parciales: el nombre con años de siempre (no se mueve), sin enlace
+        assert lic.nombres_salida(2024, 2024, 2026) == ("licitaciones_completo_2024_2024", None)
+        assert lic.nombres_salida(2012, 2025, 2026) == ("licitaciones_completo_2012_2025", None)
+        assert lic.nombres_salida(2013, 2026, 2026) == ("licitaciones_completo_2013_2026", None)
+
+    def test_la_salida_con_anos_pasa_al_nombre_fijo_y_la_cadena_de_versiones_sigue(self, base):
+        salida = base / "salida"
+        # La salida de antes: ficheros reales con el nombre con años (la del VPS del 29-sep-2026)
+        self._zip(base, [self.L1])
+        self._exportar(base, "licitaciones_completo_2012_2026", csv=True)
+        antes = pd.read_parquet(salida / "licitaciones_completo_2012_2026.parquet")
+        # La semana siguiente, con el nombre fijo: L2 es nueva
+        self._zip(base, [self.L1, self.L2])
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026", csv=True)
+        for tabla in ("", "_lotes"):
+            for sufijo in (".parquet", ".csv"):
+                fijo = salida / f"licitaciones_completo{tabla}{sufijo}"
+                enlace = salida / f"licitaciones_completo_2012_2026{tabla}{sufijo}"
+                assert fijo.is_file() and not fijo.is_symlink(), fijo.name
+                assert enlace.is_symlink() and os.readlink(enlace) == fijo.name, enlace.name
+        assert self._ids(salida / "licitaciones_completo_2012_2026.parquet") == ["urn:L1", "urn:L2"]
+        # La salida anterior es la versión anterior del nombre fijo (no se copia ni se pierde)
+        versiones = historico.versiones(salida / "licitaciones_completo.parquet")
+        assert len(versiones) == 2 and pd.read_parquet(versiones[0]).equals(antes)
+        # Enero de 2027: el mismo fichero (su versión anterior, a _historico/) y los dos nombres con años lo leen
+        self._zip(base, [self.L1, self.L2, self.L3])
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2027", csv=True)
+        assert len(historico.versiones(salida / "licitaciones_completo.parquet")) == 3
+        for anos in ("2012_2026", "2012_2027"):
+            assert self._ids(salida / f"licitaciones_completo_{anos}.parquet") == ["urn:L1", "urn:L2", "urn:L3"]
+            assert self._ids(salida / f"licitaciones_completo_{anos}_lotes.parquet") == ["urn:L1", "urn:L2", "urn:L3"]
+        # Ningún fichero real con años: nada se queda congelado
+        assert not [f.name for f in salida.glob("licitaciones_completo_2*") if not f.is_symlink()]
+
+    def test_sin_cambios_no_crea_version_y_un_fichero_real_con_anos_no_se_pierde(self, base):
+        salida = base / "salida"
+        self._zip(base, [self.L1])
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026")
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026")
+        assert len(historico.versiones(salida / "licitaciones_completo.parquet")) == 1   # guardar_version: sin cambios
+        # Un fichero real con el nombre con años junto al fijo (p.ej. de una ejecución con el código
+        # anterior): pasa a _historico/ y en su lugar queda el enlace
+        (salida / "licitaciones_completo_2012_2026.parquet").unlink()
+        pq.write_table(pa.table({"id": ["urn:VIEJA"]}), salida / "licitaciones_completo_2012_2026.parquet")
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026")
+        assert (salida / "licitaciones_completo_2012_2026.parquet").is_symlink()
+        archivado = list((salida / "_historico").glob("licitaciones_completo_2012_2026__*.parquet"))
+        assert len(archivado) == 1 and self._ids(archivado[0]) == ["urn:VIEJA"]
+
+    def test_enlaces_sin_destino_se_quitan_y_un_rango_parcial_no_enlaza(self, base):
+        salida = base / "salida"
+        salida.mkdir(parents=True)
+        # Enlaces de tablas que esta ejecución no produce (su fichero fijo pasó a _historico/)
+        os.symlink("licitaciones_completo_modificaciones.parquet", salida / "licitaciones_completo_2012_2026_modificaciones.parquet")
+        os.symlink("licitaciones_completo_criterios.parquet", salida / "licitaciones_completo_2012_2025_criterios.parquet")
+        self._zip(base, [self.L1])
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026")
+        enlaces = sorted(f.name for f in salida.iterdir() if f.is_symlink())
+        assert enlaces == ["licitaciones_completo_2012_2026.parquet", "licitaciones_completo_2012_2026_lotes.parquet"]
+        # Rango parcial: nombre con años, ficheros reales y ningún enlace nuevo
+        self._exportar(base, "licitaciones_completo_2024_2024")
+        assert (salida / "licitaciones_completo_2024_2024.parquet").is_file()
+        assert not (salida / "licitaciones_completo_2024_2024.parquet").is_symlink()
+        assert sorted(f.name for f in salida.iterdir() if f.is_symlink()) == enlaces
+
+    def test_sin_permiso_para_enlaces_la_salida_sigue_con_el_nombre_fijo(self, base, monkeypatch, capsys):
+        def sin_permiso(*a, **k):
+            raise OSError(1314, "El cliente no dispone de un privilegio requerido")   # Windows sin modo desarrollador
+        monkeypatch.setattr(lic.os, "symlink", sin_permiso)
+        self._zip(base, [self.L1])
+        resumen = self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026")
+        salida = base / "salida"
+        assert resumen["filas"] == 1 and self._ids(salida / "licitaciones_completo.parquet") == ["urn:L1"]
+        assert not (salida / "licitaciones_completo_2012_2026.parquet").exists()
+        assert not list(salida.glob(".*.enlace"))
+        assert "No se pudo enlazar licitaciones_completo_2012_2026.parquet" in capsys.readouterr().out
+
+    def test_main_rango_completo_nombre_fijo_y_semilla_que_es_la_salida(self, base, monkeypatch, capsys):
+        ano = datetime.now().year
+        self._zip(base, [self.L1])
+        argv = ["licitaciones.py", "--solo-procesar", "--conjunto", "licitaciones", "--data-dir", str(base / "zips"),
+                "--output-dir", str(base / "salida"), "--sin-csv"]
+        monkeypatch.setattr(sys, "argv", argv)
+        lic.main()
+        salida = base / "salida"
+        assert f"Salida: licitaciones_completo (y licitaciones_completo_2012_{ano}, como enlace)" in capsys.readouterr().out
+        assert self._ids(salida / "licitaciones_completo.parquet") == ["urn:L1"]
+        assert (salida / f"licitaciones_completo_2012_{ano}.parquet").is_symlink()
+        # Una semilla que es una tabla de salida se rechaza con los dos nombres (el publicado es la única copia).
+        # Con --origen-semilla: si no, la rechazaría ya el otro control (la salida tiene _en_ultima_descarga)
+        argv += ["--origen-semilla", "prueba"]
+        for nombre in ("licitaciones_completo.parquet", f"licitaciones_completo_2012_{ano}.parquet",
+                       f"licitaciones_completo_2012_{ano}_lotes.parquet"):
+            monkeypatch.setattr(sys, "argv", argv + ["--semilla", str(salida / nombre)])
+            with pytest.raises(SystemExit) as error:
+                lic.main()
+            assert error.value.code == 2, nombre
+        # También el fichero real con años de antes de la migración
+        (salida / f"licitaciones_completo_2012_{ano}.parquet").unlink()
+        shutil.copy(salida / "licitaciones_completo.parquet", salida / f"licitaciones_completo_2012_{ano}.parquet")
+        monkeypatch.setattr(sys, "argv", argv + ["--semilla", str(salida / f"licitaciones_completo_2012_{ano}.parquet")])
+        with pytest.raises(SystemExit) as error:
+            lic.main()
+        assert error.value.code == 2

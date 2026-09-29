@@ -46,9 +46,11 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
   menos de 100 GB libres (se mira después de conseguir el cerrojo).
 - Comunidad de Madrid y TED escriben junto a su script: se ejecuta una copia byte a byte idéntica
   dentro de su carpeta de datos (el log guarda el sha256 de las dos).
-- PLACSP: la salida se llama `licitaciones_completo_2012_<año>`; al cambiar de año se escribe un
-  fichero con otro nombre. Quien lea la salida tiene que buscarla por patrón y quedarse con la más
-  reciente.
+- PLACSP: la salida se llama `licitaciones_completo` (`.parquet`, `_resultados.parquet`...): nombre
+  fijo, así que al cambiar de año la cadena de versiones de `_historico/` sigue y no queda ninguna salida
+  congelada. El nombre con años de cada ejecución (`licitaciones_completo_2012_<año>...`, el de antes)
+  es un enlace simbólico a la vigente: lo que aún lo lee (el ETL de la web) sigue funcionando. Quien
+  lea la salida, mejor por el nombre fijo.
 - El parse privado del BORME (`borme/parse/`) contiene nombres de personas: no se publica. Solo
   `borme/pub/`.
 

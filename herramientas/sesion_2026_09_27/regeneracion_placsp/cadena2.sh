@@ -8,7 +8,10 @@ R=$TRABAJO/regen
 MED=$REPO/herramientas/sesion_2026_09_27/regeneracion_placsp/medir.py
 H=$REPO/herramientas/sesion_2026_09_27/regeneracion_placsp
 cd "$REPO"
+# Nombre con años: desde el nombre fijo es un enlace (nacional/licitaciones.py, nombres_salida); sin
+# enlaces (p.ej. Windows sin el modo de desarrollador), el nombre fijo
 P=$R/salida/licitaciones_completo_2012_2026.parquet
+[ -e "$P" ] || P=$R/salida/licitaciones_completo.parquet
 E=$R/entrega; mkdir -p $E
 CODIGOS=tipo_contrato_code,procedimiento_code,estado_code,subtipo_code
 TED=id,expediente,organo_contratante,nif_organo,dependencia,tipo_contrato,procedimiento,estado,importe_sin_iva,importe_adjudicacion,adjudicatario,nif_adjudicatario,cpv_principal,fecha_adjudicacion,fecha_updated,conjunto,ano,tipo_registro,valor_estimado_contrato,$CODIGOS

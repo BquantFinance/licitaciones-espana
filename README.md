@@ -468,7 +468,7 @@ nacional/
 └── licitaciones_completo_2012_2026.parquet  # v2026.02: 4,7M filas, una por licitación, no siempre la más reciente (762 MB)
 ```
 
-El scraper escribe `licitaciones_completo_{inicio}_{fin}.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_{inicio}_{fin}_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**. Además escribe `_adjudicatarios` (cada `WinningParty`), `_lotes`, `_criterios`, `_modificaciones`, `_borrados` (entradas `at:deleted-entry`) y, con `--semilla`, `_semilla_contenido`: se cruzan con la principal por `id` + `fecha_updated`.
+El scraper escribe `licitaciones_completo.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**. Además escribe `_adjudicatarios` (cada `WinningParty`), `_lotes`, `_criterios`, `_modificaciones`, `_borrados` (entradas `at:deleted-entry`) y, con `--semilla`, `_semilla_contenido`: se cruzan con la principal por `id` + `fecha_updated`. Con el rango completo (`--anos` del 2012 al año en curso, el de por defecto) el nombre es fijo; el nombre con años de cada ejecución (`licitaciones_completo_2012_<año>...`, el de antes) queda como enlace simbólico a cada tabla. Con un rango parcial, `licitaciones_completo_{inicio}_{fin}`.
 
 ### Campos principales
 
