@@ -367,6 +367,32 @@ def test_xls_html_celdas_sueltas_forman_filas_en_su_orden(tmp_path):
     assert df["_fila_origen"].tolist() == ["2", "3", "4"]
 
 
+def test_xls_html_celdas_dentro_de_un_tr_que_no_son_hijas_directas(tmp_path):
+    """Exportadores de HTML antiguos meten etiquetas de formato entre <TR> y <TD> ('<TR><FONT>'), y
+    html.parser no las recoloca: las celdas son hijas del <FONT>. Siguen siendo de su fila (se buscan
+    en todo el <tr>) y no son celdas sueltas: no se pierden ni se duplican. Los 17 .xls del Gobierno no
+    lo traen (sept. 2026)."""
+    ruta = tmp_path / "font.xls"
+    ruta.write_bytes(b'<HTML><BODY><TABLE BORDER="1">\n<TH>Obj</TH><TH>Importe</TH>\n'
+                     b'<TR><FONT SIZE="2"><TD>Obra A</TD><TD>1.000,00 \xa4</TD></FONT></TR>\n'
+                     b"<TR><TD>Obra B</TD><TD>2.000,00</TD></TR>\n</TABLE></BODY></HTML>\n")
+    assert A.filas_html(ruta) == [("tabla1", [["Obj", "Importe"], ["Obra A", "1.000,00 €"], ["Obra B", "2.000,00"]])]
+
+
+def test_xls_html_cabecera_suelta_de_una_tabla_anidada_no_es_de_la_exterior(tmp_path):
+    """Las <TH> sueltas de una tabla dentro de una celda son la cabecera de esa tabla (que se lee
+    aparte), no una fila de la de fuera."""
+    ruta = tmp_path / "anidada.xls"
+    ruta.write_bytes(b"<HTML><BODY><TABLE>\n<TH>Obj</TH><TH>Lotes</TH>\n"
+                     b"<TR><TD>Obra A</TD><TD><TABLE><TH>Lote</TH><TH>Importe</TH>"
+                     b"<TR><TD>1</TD><TD>500,00</TD></TR></TABLE></TD></TR>\n"
+                     b"<TR><TD>Obra B</TD><TD>-</TD></TR>\n</TABLE></BODY></HTML>\n")
+    (_, exterior), (_, anidada) = A.filas_html(ruta)
+    assert ["Lote", "Importe"] not in exterior
+    assert exterior[0] == ["Obj", "Lotes"] and exterior[-1] == ["Obra B", "-"]
+    assert anidada == [["Lote", "Importe"], ["1", "500,00"]]
+
+
 def test_xls_html_codificacion_euro_0xa4_y_cp1252(tmp_path):
     """0xA4 es '€' (el Gobierno escribe el euro como en ISO-8859-15) y los bytes de cp1252 (0x80 '€',
     0x93 '“') también, aunque el fichero traiga uno que cp1252 no define (0x8D, de un 'Í' en UTF-8
@@ -386,9 +412,10 @@ def test_xls_html_codificacion_euro_0xa4_y_cp1252(tmp_path):
 
 
 def test_registro_marca_la_razon_social_que_es_un_codigo_de_pais(tmp_path):
-    """El Registro publica en razon_social_adjudicatario el código de país en vez del nombre (50 filas de
-    mayores y menores en sept. 2026, igual en su JSON): no hay lectura que lo arregle; se marca la fila
-    (_razon_social_es_pais) sin tocar ningún valor. 'AST' y 'MAZ' son nombres (siglas), no países."""
+    """El Registro publica en razon_social_adjudicatario el código de país en vez del nombre (11 filas de
+    mayores, 40 de menores y 19 de encargos en sept. 2026, igual en su JSON): no hay lectura que lo
+    arregle; se marca la fila (_razon_social_es_pais) sin tocar ningún valor. 'AST' y 'MAZ' son nombres
+    (siglas), no países."""
     df = pd.DataFrame({
         "numero_de_expediente": ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"],
         "razon_social_adjudicatario": ["ES", " AT ", "ATU", "AST", "MAZ", "CR CONFECCIONES RAMOS SL", None,
@@ -401,6 +428,36 @@ def test_registro_marca_la_razon_social_que_es_un_codigo_de_pais(tmp_path):
     assert marcado.drop(columns="_razon_social_es_pais").equals(df)          # ningún valor cambia
     otra = pd.DataFrame({"razon_social_cesionario": ["ES"]})
     assert list(A.marcar_razon_social_pais(otra).columns) == ["razon_social_cesionario"]
+
+
+@pytest.mark.parametrize("nombre, nif", [
+    ("EY", "B00000001"),            # siglas de empresa de dos letras que no son un código de país
+    ("BP", "A00000002"),
+    ("AST", "AST"),                 # un NIF que es solo las siglas no es un NIF-IVA con prefijo de país
+])
+def test_registro_siglas_que_no_son_un_pais_no_se_marcan(nombre, nif):
+    """Solo se marcan los códigos ISO 3166-1 alfa-2 y el prefijo de país de un NIF-IVA que sigue ('ATU'
+    con 'ATU65728938'). En sept. 2026 todas las razones sociales de dos letras del Registro son países,
+    pero unas siglas como 'EY' o 'BP' son un nombre."""
+    df = pd.DataFrame({"razon_social_adjudicatario": [nombre], "nif_adjudicatario": [nif]}, dtype=object)
+    assert A.marcar_razon_social_pais(df)["_razon_social_es_pais"].tolist() == [False]
+
+
+def test_registro_la_marca_es_false_en_un_fichero_sin_razon_social(web, tmp_path):
+    """Una serie del Registro con un fichero que no trae razon_social_adjudicatario (otro año con otro
+    esquema): sus filas llevan la marca a False, no nula, y la columna sigue siendo booleana."""
+    _web_basica(web)
+    web.paquete("registro-de-contratos-de-la-comunidad-autonoma-de-aragon-desde-2023", [
+        _recurso("r-reg-2023", "Registro de contratos 2023", "CSV", f"{F}/registro2023.csv"),
+        _recurso("r-reg-2024", "Registro de contratos 2024", "CSV", f"{F}/registro2024.csv")])
+    web.poner(f"{F}/registro2023.csv", b"numero_de_expediente,adjudicatario,nif\r\nE-2023-1,EMPRESA SL,B00000001\r\n")
+    web.poner(f"{F}/registro2024.csv", (b"numero_de_expediente,razon_social_adjudicatario,nif_adjudicatario\r\n"
+                                        b"ECU_SGT_2024_51,ES,A28122125\r\nHAP_SGT_2024_EMP5,AST,Q5000455E\r\n"))
+    assert A.main(["--salida", str(tmp_path), "--sin-zaragoza"]) == 0
+    registro = pd.read_parquet(tmp_path / "registro_contratos__registro_de_contratos.parquet")
+    assert registro["numero_de_expediente"].tolist() == ["E-2023-1", "ECU_SGT_2024_51", "HAP_SGT_2024_EMP5"]
+    assert registro["_razon_social_es_pais"].tolist() == [False, True, False]
+    assert registro["_razon_social_es_pais"].dtype == bool
 
 
 def test_main_gobierno_html_y_registro_con_la_marca(web, tmp_path):

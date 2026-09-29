@@ -860,11 +860,12 @@ VG VI VN VU WF WS YE YT ZA ZM ZW""".split())
 def marcar_razon_social_pais(df):
     """Registro de Contratos: _razon_social_es_pais=True en las filas cuya razon_social_adjudicatario
     es un código de país ('ES', 'AT', 'NL'...) o el prefijo de país del NIF-IVA del propio adjudicatario
-    ('ATU' con 'ATU65728938'), y no el nombre. Así lo publica el portal: 50 filas de mayores y menores y
-    19 de encargos en sept. 2026, igual en el CSV que en el JSON del mismo recurso y con el CSV bien
-    formado (ningún registro con campos de más o de menos); a veces el nombre va en nif_adjudicatario
-    ('ANDREAGUARIDORAMO') o el país en su lugar ('ESPAÑA'). No hay lectura que recupere el nombre:
-    se marca la fila y no se toca ningún valor. Sin esa columna (otras tablas) no se añade nada."""
+    ('ATU' con 'ATU65728938'), y no el nombre. Así lo publica el portal: 11 filas de mayores, 40 de
+    menores y 19 de encargos en sept. 2026, igual en el CSV que en el JSON del mismo recurso y con el
+    CSV bien formado (ningún registro con campos de más o de menos); a veces el nombre va en
+    nif_adjudicatario ('ANDREAGUARIDORAMO') o el país en su lugar ('ESPAÑA'). No hay lectura que
+    recupere el nombre: se marca la fila y no se toca ningún valor. Sin esa columna (otras tablas) no
+    se añade nada."""
     if "razon_social_adjudicatario" not in df.columns:
         return df
     nif = df["nif_adjudicatario"] if "nif_adjudicatario" in df.columns else pd.Series(None, index=df.index)
