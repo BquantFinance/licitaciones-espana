@@ -7,8 +7,10 @@
 # cambie (guardar_version no lo toca si el contenido es idéntico).
 # Las filas de la API salen del XML eForms de cada aviso (ted/xml/<año>/): la primera ejecución con
 # ese parser pide unos 100.000 XML (2023-2026, ~6 h a 5/s); las siguientes, solo los avisos nuevos.
-# Si se corta, lo descargado queda en disco y la siguiente sigue.
-LIMITE=14h
+# ted_module.py deja de pedir XML a las 9,5 h (TEDConfig.XML_PRESUPUESTO_S) y la siguiente ejecución
+# sigue: con el listado y el consolidado no pasa de ~10,5 h. LIMITE < 12 h, lo que espera como mucho
+# el cerrojo global de ejecutar_fuente.sh (flock -w 43200): quien espere detrás no se queda sin turno.
+LIMITE=11h
 read -r -d '' CMD_PRIMERA <<'CMD'
 set -e
 cp /repo/ted/ted_module.py /datos/ted_module.py && sha256sum /repo/ted/ted_module.py /datos/ted_module.py

@@ -21,6 +21,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -46,6 +47,7 @@ rtc = _load("run_ted_crossvalidation_t", "run_ted_crossvalidation.py")
 cvp = _load("cross_validation_ted_placsp_t", "cross-validation_ted_placsp.py")
 
 _ORIG_READ_CSV = pd.read_csv
+ORIG_DESCARGAR_XML = tm._descargar_xml   # la real (el fixture ted_xml la sustituye en cada test)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -208,9 +210,9 @@ def _lote(lote, titulo=None, estimado=None):
 
 
 def _xml_de_aviso(n):
-    """XML eForms de un aviso simulado (_notice): un lote, una oferta y un contrato por posición de
-    sus listas (ganador, importe, fecha), que es lo que describían estos avisos de prueba; sin
-    ninguna, un resultado de lote sin oferta."""
+    """XML eForms de un aviso simulado (_notice): un lote, una oferta ganadora (la cita su contrato)
+    y un contrato por posición de sus listas (ganador, importe, fecha), que es lo que describían
+    estos avisos de prueba; sin ninguna, un resultado de lote sin oferta."""
     ganadores = list(n.get("winner-identifier", []))
     nombres = list((n.get("winner-name") or {}).get("spa", []))
     valores = list(n.get("tender-value", []))
@@ -470,7 +472,8 @@ class TestParseApiNotice:
         xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"], estadisticas=[("t-sme", 1), ("tenders", 7)]),
                        _resultado("RES-0002", "LOT-0002", ["TEN-0002"], estadisticas=[("tenders", 2)])],
                       [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 10), _oferta("TEN-0002", "TPA-0001", "LOT-0002", 20)],
-                      [], [_parte("TPA-0001", ["ORG-0002"])], [_organizacion("ORG-0002", "EMP", "B11111111")])
+                      [_contrato("CON-0001", ["TEN-0001"]), _contrato("CON-0002", ["TEN-0002"])],
+                      [_parte("TPA-0001", ["ORG-0002"])], [_organizacion("ORG-0002", "EMP", "B11111111")])
         assert [r["number_offers"] for r in tm._parse_api_notice(_notice("1-2024"), xml)] == ["7", "2"]
 
     def test_sin_xml_una_fila_con_los_datos_del_aviso(self):
@@ -2056,8 +2059,9 @@ def test_nif_con_los_textos_que_pandas_leia_como_nulos(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  XML eForms: una fila por resultado de lote → oferta → ganador
-#  (fallos medidos por el ETL de la web, docs/etl_v2/grupo4.md del repo de la web)
+#  XML eForms: una fila por oferta ganadora de cada resultado de lote
+#  (fallos medidos por el ETL de la web, docs/etl_v2/grupo4.md del repo de la web,
+#  y revisión de la PR #45)
 # ═══════════════════════════════════════════════════════════════════════════
 
 FIX_EFORMS = REPO_DIR / "tests" / "fixtures" / "ted_eforms"
@@ -2078,6 +2082,10 @@ def _org_simple():
     return [_parte("TPA-0001", ["ORG-0002"])], [_organizacion("ORG-0002", "EMP", "B11111111")]
 
 
+def _ganadoras(filas):
+    return [f for f in filas if f["tender_id"]]
+
+
 class TestTedEforms:
     def test_646040_2026_una_fila_por_adjudicacion_y_no_por_posicion(self):
         # La API da winner-name 3 veces (9 nombres), 3 importes y 1 fecha (deduplicada): el parser
@@ -2090,11 +2098,13 @@ class TestTedEforms:
         assert got == [("LOT-0002", "SOLRED S.A.", "A79707345", "15119.62", "1"),
                        ("LOT-0004", "ESTRUCTURAS MECANIZADAS DE ASTURIAS S.L.", "B74281171", "62685", "1"),
                        ("LOT-0005", "GASOLEOS VIVEIRO S.L.", "B27200104", "11040.1", "2")]
-        # Las tres ofertas suman el valor del aviso (BT-161)
+        # Las tres ofertas ganadoras (las cita el contrato 852/2026) suman el valor del aviso (BT-161)
         assert sum(float(f["tender_value"]) for f in filas) == pytest.approx(88844.72)
-        assert {f["notice_value"] for f in filas} == {"88844.72"}
+        assert {(f["notice_value"], f["notice_value_cur"]) for f in filas} == {("88844.72", "EUR")}
         assert {f["dt_award"] for f in filas} == {"2026-08-12+02:00"}
         assert {f["contract_id"] for f in filas} == {"852/2026"}
+        assert {f["ganadora_por"] for f in filas} == {"contrato"}
+        assert [f["n_ofertas_descritas"] for f in filas] == ["1", "1", "1"]
         assert [f["estimated_value_lot"] for f in filas] == ["45296.37", "138600", "26116.35"]
         assert [f["internal_id_lot"] for f in filas] == ["2", "4", "5"]
         assert filas[0]["title_lot"].startswith("Lote 2.- Suministro destinado a vehículos")
@@ -2105,14 +2115,76 @@ class TestTedEforms:
         assert [f["lot_index"] for f in filas] == [0, 1, 2]
         assert "value_euro" not in filas[0] and "currency" not in filas[0]
 
-    def test_acuerdo_marco_varios_ganadores_por_lote(self):
+    def test_266280_2024_acuerdo_marco_solo_las_ofertas_con_contrato(self):
+        # Cada resultado describe 2-3 ofertas (las recibidas) y el contrato cita una: las ganadoras
+        # son ESAOTE, GENERAL ELECTRIC (dos lotes) y FUJIFILM, las mismas que da la API (winner-name)
         filas = tm._parse_api_notice(_api_real("266280-2024"), _xml_real("266280-2024"))
-        assert pd.Series([f["lot_id"] for f in filas]).value_counts().to_dict() == {
-            "LOT-0003": 3, "LOT-0005": 3, "LOT-0004": 2, "LOT-0009": 2}
-        lote3 = [f for f in filas if f["lot_id"] == "LOT-0003"]
-        assert [f["win_nationalid"] for f in lote3] == ["A60785573", "A28061737", "A39038963"]
-        assert {f["framework_max_lot"] for f in lote3} == {"396000"}   # BT-709, en su columna
-        assert len({(f["lot_result_id"], f["tender_id"]) for f in filas}) == len(filas)
+        got = [(f["lot_id"], f["win_nationalid"], f["tender_value"], f["n_ofertas_descritas"]) for f in filas]
+        assert got == [("LOT-0003", "A60785573", "132000", "3"), ("LOT-0004", "A28061737", "195000", "2"),
+                       ("LOT-0005", "A28061737", "188000", "3"), ("LOT-0009", "B82097940", "140000", "2")]
+        assert {f["win_name"].split(" ")[0] for f in filas} == {"ESAOTE", "GENERAL", "FUJIFILM"}
+        # SAKURA, SIEMENS y PHILIPS ofertaron y no ganaron: no son adjudicatarias
+        assert not any(n in f["win_name"] for f in filas for n in ("SAKURA", "SIEMENS", "PHILIPS"))
+        assert filas[0]["framework_max_lot"] == "396000" and filas[0]["framework_max_lot_cur"] == "EUR"
+
+    def test_perdedora_nunca_es_adjudicataria(self):
+        # efac:LotResult/efac:LotTender son las ofertas recibidas (OPT-320); la ganadora es la que
+        # cita un contrato (BT-3202). En un lote sin adjudicar (clos-nw, open-nw) no hay ninguna,
+        # aunque un contrato cite una de sus ofertas
+        xml = _eforms(
+            [_resultado("RES-0001", "LOT-0001", ["TEN-0001", "TEN-0002", "TEN-0003"], ["CON-0001"],
+                        estadisticas=[("tenders", 3)]),
+             _resultado("RES-0002", "LOT-0002", ["TEN-0004", "TEN-0005"], estado="clos-nw", motivo="no-signed"),
+             _resultado("RES-0003", "LOT-0003", ["TEN-0006"], estado="open-nw")],
+            [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 90), _oferta("TEN-0002", "TPA-0002", "LOT-0001", 80),
+             _oferta("TEN-0003", "TPA-0003", "LOT-0001", 0), _oferta("TEN-0004", "TPA-0001", "LOT-0002", 5),
+             _oferta("TEN-0005", "TPA-0002", "LOT-0002", 6), _oferta("TEN-0006", "TPA-0003", "LOT-0003", 7)],
+            [_contrato("CON-0001", ["TEN-0002"], "2026-01-02+01:00", "C1"), _contrato("CON-0002", ["TEN-0004"])],
+            [_parte("TPA-0001", ["ORG-0002"]), _parte("TPA-0002", ["ORG-0003"]), _parte("TPA-0003", ["ORG-0004"])],
+            [_organizacion("ORG-0002", "PERDEDORA UNO", "B11111111"),
+             _organizacion("ORG-0003", "GANADORA", "B22222222"),
+             _organizacion("ORG-0004", "PERDEDORA DOS", "B33333333")])
+        filas = tm._parse_api_notice(_notice("20-2024"), xml)
+        assert [(f["lot_id"], f["tender_id"], f["win_name"], f["n_ofertas_descritas"]) for f in filas] == [
+            ("LOT-0001", "TEN-0002", "GANADORA", "3"), ("LOT-0002", "", "", "2"), ("LOT-0003", "", "", "1")]
+        assert (filas[0]["tender_value"], filas[0]["contract_id"], filas[0]["dt_award"]) == ("80", "C1", "2026-01-02+01:00")
+        # Las filas sin adjudicataria no llevan nada de ninguna oferta
+        for f in filas[1:]:
+            assert all(f[c] == "" for c in ("win_name", "win_nationalid", "tender_value", "contract_id", "ganadora_por"))
+        df = tm._normalize_ted_data(pd.DataFrame(filas))
+        assert df["importe_ted"].tolist()[0] == 80.0 and df["importe_ted"].iloc[1:].isna().all()
+
+    def test_ganadora_por_el_contrato_de_su_resultado(self):
+        # 536696-2026: el contrato del lote 8 (CON-0002) cita la oferta del lote 5 (TEN-0001) de la
+        # misma empresa y ningún contrato cita la del lote 8 (TEN-0002). El resultado del lote 8 es
+        # selec-w, describe una sola oferta y cita su contrato: esa oferta es la ganadora
+        def aviso(empresa_lote8):
+            return _eforms(
+                [_resultado("RES-0001", "LOT-0005", ["TEN-0001"], ["CON-0001"]),
+                 _resultado("RES-0002", "LOT-0008", ["TEN-0002"], ["CON-0002"])],
+                [_oferta("TEN-0001", "TPA-0001", "LOT-0005", 39174.8),
+                 _oferta("TEN-0002", empresa_lote8, "LOT-0008", 15881)],
+                [_contrato("CON-0001", ["TEN-0001"], "2025-11-27+01:00", "LOTE 5"),
+                 _contrato("CON-0002", ["TEN-0001"], "2025-11-24+01:00", "LOTE 8")],
+                [_parte("TPA-0001", ["ORG-0002"]), _parte("TPA-0002", ["ORG-0003"])],
+                [_organizacion("ORG-0002", "PLATAFORMA FEMAR S.L.", "B91016238"),
+                 _organizacion("ORG-0003", "OTRA SL", "B44444444")])
+        filas = tm._parse_api_notice(_notice("21-2024"), aviso("TPA-0001"))
+        assert [(f["lot_id"], f["tender_id"], f["ganadora_por"], f["contract_id"], f["dt_award"]) for f in filas] == [
+            ("LOT-0005", "TEN-0001", "contrato", "LOTE 5", "2025-11-27+01:00"),
+            ("LOT-0008", "TEN-0002", "contrato del resultado", "LOTE 8", "2025-11-24+01:00")]
+        # Si la oferta del lote 8 es de otra empresa, no hay pruebas de que ganara
+        filas = tm._parse_api_notice(_notice("21-2024"), aviso("TPA-0002"))
+        assert [(f["lot_id"], f["tender_id"], f["win_name"]) for f in filas] == [
+            ("LOT-0005", "TEN-0001", "PLATAFORMA FEMAR S.L."), ("LOT-0008", "", "")]
+
+    def test_ofertas_repetidas_en_el_resultado_una_fila(self):
+        partes, orgs = _org_simple()
+        xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001", "TEN-0001"], ["CON-0001", "CON-0001"])],
+                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 10)],
+                      [_contrato("CON-0001", ["TEN-0001", "TEN-0001"], referencia="C1")], partes, orgs)
+        filas = tm._parse_api_notice(_notice("22-2024"), xml)
+        assert [(f["tender_id"], f["contract_id"], f["n_ofertas_descritas"]) for f in filas] == [("TEN-0001", "C1", "1")]
 
     def test_lote_sin_adjudicar_con_su_motivo(self):
         filas = tm._parse_api_notice(_api_real("515290-2026"), _xml_real("515290-2026"))
@@ -2135,7 +2207,7 @@ class TestTedEforms:
 
     def test_grupo_de_empresas_en_una_fila_con_el_lider_primero(self):
         xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"])],
-                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 1000)], [],
+                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 1000)], [_contrato("CON-0001", ["TEN-0001"])],
                       [_parte("TPA-0001", ["ORG-0002", "ORG-0003"], lider="ORG-0003")],
                       [_organizacion("ORG-0002", "SOCIA SL", "B22222222", "sme"),
                        _organizacion("ORG-0003", "LIDER SA", "A33333333", "large")])
@@ -2157,6 +2229,20 @@ class TestTedEforms:
         assert [(f["contract_id"], f["dt_award"], f["contract_award_dates"]) for f in filas] == [
             ("C1", "2025-11-27+01:00", ""), ("C2", "2025-11-24+01:00", "")]
 
+    def test_contratos_cruzados_se_toma_el_que_cita_la_oferta(self):
+        # 539513-2026: el resultado del lote 1 cita CON-0001, que cita la oferta del lote 3, y CON-0003
+        # cita la del lote 1: cada oferta va con el contrato que la cita (BT-3202), no con el del resultado
+        partes, orgs = _org_simple()
+        xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"], ["CON-0001"]),
+                       _resultado("RES-0003", "LOT-0003", ["TEN-0003"], ["CON-0003"])],
+                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 25914.04),
+                       _oferta("TEN-0003", "TPA-0001", "LOT-0003", 45641.07)],
+                      [_contrato("CON-0001", ["TEN-0003"], "2024-06-01+02:00", "1"),
+                       _contrato("CON-0003", ["TEN-0001"], "2024-06-03+02:00", "3")], partes, orgs)
+        filas = tm._parse_api_notice(_notice("24-2024"), xml)
+        assert [(f["lot_id"], f["contract_id"], f["dt_award"], f["ganadora_por"]) for f in filas] == [
+            ("LOT-0001", "3", "2024-06-03+02:00", "contrato"), ("LOT-0003", "1", "2024-06-01+02:00", "contrato")]
+
     def test_varias_fechas_de_adjudicacion_de_una_oferta(self):
         partes, orgs = _org_simple()
         xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"])],
@@ -2174,22 +2260,46 @@ class TestTedEforms:
         xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"]),
                        _resultado("RES-0002", "LOT-0002", ["TEN-0002"]), _resultado("RES-0003", "LOT-0003")],
                       [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 1000),
-                       _oferta("TEN-0002", "TPA-0001", "LOT-0002", 900, "GBP")], [], partes, orgs,
+                       _oferta("TEN-0002", "TPA-0001", "LOT-0002", 900, "GBP")],
+                      [_contrato("CON-0001", ["TEN-0001", "TEN-0002"])], partes, orgs,
                       [_lote("LOT-0001", estimado=1200), _lote("LOT-0002", estimado=990),
                        _lote("LOT-0003", estimado=50)], total=5000)
         df = tm._normalize_ted_data(pd.DataFrame(tm._parse_api_notice(_notice("11-2024"), xml)))
         assert df["tender_value"].tolist()[:2] == [1000.0, 900.0] and pd.isna(df.loc[2, "tender_value"])
         assert df["tender_value_cur"].tolist() == ["EUR", "GBP", ""]
         assert df["estimated_value_lot"].tolist() == [1200.0, 990.0, 50.0]
+        assert df["estimated_value_lot_cur"].tolist() == ["EUR"] * 3
         assert df["notice_value"].tolist() == [5000.0] * 3
         # importe_ted: la oferta en euros; nunca el total del aviso en cada fila ni el estimado
         assert df.loc[0, "importe_ted"] == 1000.0
         assert df["importe_ted"].iloc[1:].isna().all()
-        # Aviso de una sola fila sin importe de oferta: el valor del aviso
+        # Aviso de una sola fila sin importe de oferta: el valor del aviso, si está en euros
         uno = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"])],
-                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001")], [], partes, orgs, total=777)
+                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001")], [_contrato("CON-0001", ["TEN-0001"])],
+                      partes, orgs, total=777)
         df = tm._normalize_ted_data(pd.DataFrame(tm._parse_api_notice(_notice("12-2024"), uno)))
         assert df["importe_ted"].tolist() == [777.0]
+
+    def test_valor_del_aviso_en_otra_moneda_no_va_a_importe_ted(self):
+        partes, orgs = _org_simple()
+        xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"])],
+                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001")], [_contrato("CON-0001", ["TEN-0001"])],
+                      partes, orgs, total=777).replace(b'<cbc:TotalAmount currencyID="EUR">',
+                                                       b'<cbc:TotalAmount currencyID="GBP">')
+        filas = tm._parse_api_notice(_notice("23-2024"), xml)
+        assert (filas[0]["notice_value"], filas[0]["notice_value_cur"]) == ("777", "GBP")
+        assert tm._normalize_ted_data(pd.DataFrame(filas))["importe_ted"].isna().all()
+
+    def test_sin_xml_eforms_conserva_el_importe_de_la_api(self):
+        # Avisos del esquema anterior (1.523 de 2024) o sin XML: su importe_ted sigue saliendo del
+        # total-value de la API, como antes (974 de esos avisos tienen importe: 5.290,1 M€)
+        api = dict(_api_real("20-2024"), **{"total-value": ["1234567.89"], "total-value-cur": ["EUR"]})
+        for filas in (tm._parse_api_notice(api, _xml_real("20-2024")),
+                      tm._filas_aviso(tm._aviso_api(api), None, "no_disponible"),
+                      tm._filas_aviso(tm._aviso_api(api), None, "error", "HTTP 503")):
+            df = tm._normalize_ted_data(pd.DataFrame(filas))
+            assert df["_xml_eforms"].iloc[0] != "" and df["importe_ted"].tolist() == [1234567.89]
+        assert tm._filas_aviso(tm._aviso_api(api), None, "error", "HTTP 503")[0]["_xml_eforms"] == "sin XML: HTTP 503"
 
     def test_bt758_y_version_del_aviso(self):
         n = _notice("536696-2026")
@@ -2225,6 +2335,19 @@ class TestTedEforms:
         assert len(ted_xml.calls) == 4
         assert not (tmp_path / "xml" / "2024" / "_historico").exists()
 
+    def test_respuesta_que_no_es_un_aviso_no_se_guarda(self, ted_2024, ted_xml, tmp_path):
+        # Una página HTML servida con 200 (o un XML de error) no es el XML de un aviso: no se guarda
+        # para siempre como si lo fuera; se reintenta y el aviso va sin XML
+        ted_xml.fijos["2-2024"] = b"<html><body>Mantenimiento</body></html>"
+        df = tm.download_ted_spain(years=[2024])
+        assert ted_xml.calls.count("2-2024") == tm.TEDConfig.XML_REINTENTOS
+        assert not (tmp_path / "xml" / "2024" / "2-2024.xml.gz").exists()
+        dos = df[df["ted_notice_id"] == "2-2024"]
+        assert dos["_xml_eforms"].tolist() == ["sin XML: HTTP 200 sin el XML de un aviso"]
+        # El XML del esquema anterior sí es un aviso
+        assert tm._es_xml_de_aviso(_xml_real("20-2024")) and not tm._es_xml_de_aviso(b"<html></html>")
+        assert not tm._es_xml_de_aviso(_xml_real("646040-2026")[:500])   # cortado
+
     def test_xml_no_disponible_se_marca_y_el_anio_se_guarda(self, ted_2024, ted_xml, tmp_path):
         ted_xml.codigos["2-2024"] = 404
         df = tm.download_ted_spain(years=[2024])
@@ -2233,17 +2356,120 @@ class TestTedEforms:
         assert dos["_xml_eforms"].tolist() == ["sin XML: TED responde 404"] and dos["win_name"].tolist() == [""]
         assert ted_xml.calls.count("2-2024") == 2
 
-    def test_xml_con_error_deja_el_anio_sin_guardar_y_continua_despues(self, ted_2024, ted_xml, tmp_path):
+    def test_un_aviso_sin_xml_no_bloquea_el_anio_y_se_reintenta(self, ted_2024, ted_xml, tmp_path):
+        # Un error persistente (distinto de 404) en un aviso: el año se guarda con ese aviso sin XML
+        # (marcado) y la ejecución no sale con 1; la siguiente lo vuelve a pedir, también con el año
+        # cerrado y su caché ya guardada
+        ted_xml.codigos["3-2024"] = 503
+        df = tm.download_ted_spain(years=[2024])
+        assert not df.attrs.get("sin_guardar") and (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+        assert ted_xml.calls.count("3-2024") == tm.TEDConfig.XML_REINTENTOS
+        tres = df[df["ted_notice_id"] == "3-2024"]
+        assert tres["_xml_eforms"].tolist() == ["sin XML: HTTP 503"] and tres["win_name"].tolist() == [""]
+        del ted_xml.codigos["3-2024"]
+        ted_xml.calls.clear()
+        _fijar_fecha(tmp_path / "ted_can_2024_ES_api.parquet", "2025-01-10")   # la caché cerrada se reutiliza
+        _fijar_fecha(tmp_path / "ted_es_can.parquet", "2024-06-01")   # sin el atajo del consolidado cerrado
+        df = tm.download_ted_spain(years=[2024])
+        assert ted_xml.calls == ["3-2024"]
+        tres = df[(df["ted_notice_id"] == "3-2024") & df["_en_ultima_descarga"]]
+        assert tres["_xml_eforms"].tolist() == [""] and tres["win_name"].tolist() == ["EMP 3"]
+        assert "ted_can_2024_ES_api__20250110T000000Z.parquet" in _historico(tmp_path)
+        # El que ya tiene XML no se vuelve a pedir
+        ted_xml.calls.clear()
+        _fijar_fecha(tmp_path / "ted_es_can.parquet", "2024-06-01")
+        tm.download_ted_spain(years=[2024])
+        assert ted_xml.calls == []
+
+    def test_muchos_avisos_sin_xml_dejan_el_anio_sin_guardar(self, ted_2024, ted_xml, tmp_path, monkeypatch):
+        # TED caído o una URL que ha cambiado: guardar todo sin XML sería peor que esperar
+        monkeypatch.setattr(tm.TEDConfig, "XML_FALLOS_TOLERADOS", 0)
+        monkeypatch.setattr(tm.TEDConfig, "XML_FALLOS_FRACCION", 0.0)
         ted_xml.codigos["3-2024"] = 503
         df = tm.download_ted_spain(years=[2024])
         assert df.attrs.get("sin_guardar") and not (tmp_path / "ted_can_2024_ES_api.parquet").exists()
-        assert ted_xml.calls.count("3-2024") == tm.TEDConfig.XML_REINTENTOS
-        # Los XML ya descargados quedan en disco: la siguiente ejecución solo pide el que falta
+        # Los XML descargados quedan en disco: la siguiente ejecución solo pide el que falta
         del ted_xml.codigos["3-2024"]
         ted_xml.calls.clear()
         df = tm.download_ted_spain(years=[2024])
         assert ted_xml.calls == ["3-2024"] and not df.attrs.get("sin_guardar")
-        assert (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+
+    def test_xml_danado_en_disco_se_vuelve_a_pedir(self, ted_2024, ted_xml, tmp_path):
+        danado = tmp_path / "xml" / "2024" / "1-2024.xml.gz"
+        danado.parent.mkdir(parents=True)
+        danado.write_bytes(b"no es gzip")
+        df = tm.download_ted_spain(years=[2024])
+        assert ted_xml.calls.count("1-2024") == 1 and not df.attrs.get("sin_guardar")
+        assert df.loc[df["ted_notice_id"] == "1-2024", "win_name"].tolist() == ["EMP 1"]
+        assert [p.read_bytes() for p in (danado.parent / "_historico").iterdir()] == [b"no es gzip"]
+
+    def test_xml_danado_que_no_se_puede_volver_a_pedir_cuenta_como_fallo(self, ted_2024, ted_xml, tmp_path,
+                                                                         monkeypatch):
+        danado = tmp_path / "xml" / "2024" / "1-2024.xml.gz"
+        danado.parent.mkdir(parents=True)
+        danado.write_bytes(b"no es gzip")
+        ted_xml.codigos["1-2024"] = 503
+        monkeypatch.setattr(tm.TEDConfig, "XML_FALLOS_TOLERADOS", 0)
+        monkeypatch.setattr(tm.TEDConfig, "XML_FALLOS_FRACCION", 0.0)
+        df = tm.download_ted_spain(years=[2024])
+        assert df.attrs.get("sin_guardar") and not (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+        assert danado.read_bytes() == b"no es gzip"   # no se ha tocado: solo se sustituye por un XML bueno
+
+    def test_presupuesto_de_tiempo(self, ted_2024, ted_xml, tmp_path, monkeypatch):
+        # Al agotarse el presupuesto se deja de pedir XML: el año no se guarda y lo descargado queda
+        monkeypatch.setattr(tm.TEDConfig, "XML_WORKERS", 1)
+        llamadas = []
+
+        def agotado():
+            llamadas.append(1)
+            return len(llamadas) > 2   # el control del año y el primer XML, dentro del presupuesto
+        monkeypatch.setattr(tm, "_presupuesto_agotado", agotado)
+        df = tm.download_ted_spain(years=[2024])
+        assert df.attrs.get("sin_guardar") and ted_xml.calls == ["1-2024"]
+        assert not (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+        monkeypatch.setattr(tm, "_presupuesto_agotado", lambda: False)
+        ted_xml.calls.clear()
+        df = tm.download_ted_spain(years=[2024])
+        assert sorted(ted_xml.calls) == ["2-2024", "3-2024"] and not df.attrs.get("sin_guardar")
+        # Con el presupuesto agotado antes de empezar, ni siquiera se lista el año en la API
+        monkeypatch.setattr(tm, "_presupuesto_agotado", lambda: True)
+        ted_2024.calls.clear()
+        _fijar_fecha(tmp_path / "ted_can_2024_ES_api.parquet", "2024-06-01")
+        _fijar_fecha(tmp_path / "ted_es_can.parquet", "2024-06-01")
+        assert tm.download_ted_spain(years=[2024]) is None and not ted_2024.calls
+
+    def test_ritmo_maximo_de_peticiones(self, ted_2024, ted_xml, tmp_path, monkeypatch):
+        # Como mucho XML_MAX_POR_SEGUNDO peticiones por segundo (reloj simulado: solo avanza al esperar)
+        reloj = [1000.0]
+        monkeypatch.setattr(tm.time, "monotonic", lambda: reloj[0])
+        monkeypatch.setattr(tm.time, "sleep", lambda s: reloj.__setitem__(0, reloj[0] + s))
+        monkeypatch.setattr(tm.TEDConfig, "XML_WORKERS", 1)
+        numeros = [f"{i}-2024" for i in range(1, 11)]
+        ted_2024.notices = [_aviso(i) for i in range(1, 11)]
+        FakeTedApi.ultima = ted_2024
+        estados, completo = tm._xml_avisos(numeros)
+        assert completo and {e for e, _ in estados.values()} == {"ok"}
+        assert reloj[0] - 1000.0 == pytest.approx(9 / tm.TEDConfig.XML_MAX_POR_SEGUNDO)
+
+    def test_sesion_de_requests_por_hilo(self, monkeypatch):
+        vistas = []
+
+        class Respuesta:
+            status_code, content, headers = 200, b"<x/>", {}
+
+        def get(self, url, **kw):
+            vistas.append(self)
+            return Respuesta()
+        tm._SESIONES.__dict__.pop("sesion", None)
+        monkeypatch.setattr(tm.requests.Session, "get", get)
+        monkeypatch.setattr(tm, "_descargar_xml", ORIG_DESCARGAR_XML)
+        assert tm._descargar_xml("u1")[0] == 200 and tm._descargar_xml("u2")[0] == 200
+        assert len(vistas) == 2 and vistas[0] is vistas[1] and isinstance(vistas[0], requests.Session)
+        otro = []
+        hilo = threading.Thread(target=lambda: otro.append(tm._sesion()))
+        hilo.start()
+        hilo.join()
+        assert otro[0] is not vistas[0]
 
     def test_formato_anterior_de_la_cache_se_arrastra_sin_duplicar(self, ted_2024, tmp_path):
         # Caché del parser de sept. 2026 (filas por posición, con notice_subtype): el aviso 1 con
@@ -2263,6 +2489,23 @@ class TestTedEforms:
         # Otra ejecución no lo duplica (viene de la caché vieja y del consolidado anterior)
         otra = tm.download_ted_spain(years=[2024], force_redownload=True)
         assert _estado(otra) == _estado(df)
+
+    def test_varios_parsers_anteriores_entra_el_mas_reciente(self, ted_2024, tmp_path):
+        # 9-2024, retirado, está en una caché del parser de v2026.02 (formato 1) y en otra del de
+        # sept. 2026 (formato 2): entra una vez, con las filas del más reciente
+        (tmp_path / "_historico").mkdir()
+        pd.DataFrame({"ted_notice_id": ["9-2024"], "year": ["2024"], "lot_index": [0], "win_name": ["F1"],
+                      "cae_town": ["['Sevilla']"], "source": ["api_v3"]}).to_parquet(
+            tmp_path / "_historico" / "ted_can_2024_ES_api__20250101T000000Z.parquet", index=False)
+        cache = tmp_path / "ted_can_2024_ES_api.parquet"
+        pd.DataFrame({"ted_notice_id": ["9-2024", "9-2024"], "year": ["2024"] * 2, "lot_index": [0, 1],
+                      "notice_subtype": ["29"] * 2, "win_name": ["F2", "F2"], "source": ["api_v3"] * 2}
+                     ).to_parquet(cache, index=False)
+        _fijar_fecha(cache, "2025-06-01")
+        df = tm.download_ted_spain(years=[2024])
+        nueve = df[df["ted_notice_id"] == "9-2024"]
+        assert nueve["win_name"].tolist() == ["F2", "F2"] and not nueve["_en_ultima_descarga"].any()
+        assert _estado(df)["1-2024"] == [True]
 
     def test_avisos_eforms_de_2023_que_el_csv_no_trae(self, monkeypatch, tmp_path, no_sleep, ted_xml):
         # El CSV de 2023 trae los avisos del esquema anterior; los eForms (2.609 CAN de España) solo
@@ -2290,28 +2533,15 @@ class TestTedEforms:
         solo_csv = tm._normalize_ted_data(tm._renombrar_csv(tm._download_csv_year(2023)))
         pd.testing.assert_frame_equal(csv[list(solo_csv.columns)], solo_csv, check_dtype=False)
 
-    def test_varios_parsers_anteriores_entra_el_mas_reciente(self, ted_2024, tmp_path):
-        # 9-2024, retirado, está en una caché del parser de v2026.02 (formato 1) y en otra del de
-        # sept. 2026 (formato 2): entra una vez, con las filas del más reciente
-        (tmp_path / "_historico").mkdir()
-        pd.DataFrame({"ted_notice_id": ["9-2024"], "year": ["2024"], "lot_index": [0], "win_name": ["F1"],
-                      "cae_town": ["['Sevilla']"], "source": ["api_v3"]}).to_parquet(
-            tmp_path / "_historico" / "ted_can_2024_ES_api__20250101T000000Z.parquet", index=False)
-        cache = tmp_path / "ted_can_2024_ES_api.parquet"
-        pd.DataFrame({"ted_notice_id": ["9-2024", "9-2024"], "year": ["2024"] * 2, "lot_index": [0, 1],
-                      "notice_subtype": ["29"] * 2, "win_name": ["F2", "F2"], "source": ["api_v3"] * 2}
-                     ).to_parquet(cache, index=False)
-        _fijar_fecha(cache, "2025-06-01")
-        df = tm.download_ted_spain(years=[2024])
-        nueve = df[df["ted_notice_id"] == "9-2024"]
-        assert nueve["win_name"].tolist() == ["F2", "F2"] and not nueve["_en_ultima_descarga"].any()
-        assert _estado(df)["1-2024"] == [True]
-
-    def test_xml_danado_en_disco_se_vuelve_a_pedir(self, ted_2024, ted_xml, tmp_path):
-        danado = tmp_path / "xml" / "2024" / "1-2024.xml.gz"
-        danado.parent.mkdir(parents=True)
-        danado.write_bytes(b"no es gzip")
-        df = tm.download_ted_spain(years=[2024])
-        assert ted_xml.calls.count("1-2024") == 1 and not df.attrs.get("sin_guardar")
-        assert df.loc[df["ted_notice_id"] == "1-2024", "win_name"].tolist() == ["EMP 1"]
-        assert [p.read_bytes() for p in (danado.parent / "_historico").iterdir()] == [b"no es gzip"]
+    def test_eforms_con_el_anio_sacado_de_la_api(self, monkeypatch, tmp_path, no_sleep):
+        # Si el CSV de 2023 falla, el año sale entero de la API. De una caché eForms de antes, el aviso que
+        # la API trae no se repite y el que ya no trae se conserva, pero no como vigente
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        uno = pd.DataFrame(_filas(_notice("639630-2023", winners=["B55555555"], win_names=["EFORMS SL"],
+                                          values=["70000"])), columns=tm._COLUMNAS_API)
+        otro = pd.DataFrame(_filas(_notice("639631-2023", winners=["B66666666"], win_names=["RETIRADO SL"],
+                                           values=["5"])), columns=tm._COLUMNAS_API)
+        uno.to_parquet(tmp_path / "ted_can_2023_ES_api.parquet", index=False)
+        pd.concat([uno, otro]).to_parquet(tmp_path / "ted_can_2023_ES_eforms.parquet", index=False)
+        df = tm._consolidar({2023: "api"}, tmp_path / "ted_es_can.parquet")
+        assert _estado(df) == {"639630-2023": [True], "639631-2023": [False]}

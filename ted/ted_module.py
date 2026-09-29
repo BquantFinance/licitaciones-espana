@@ -187,6 +187,15 @@ class TEDConfig:
     XML_WORKERS = 8            # peticiones a la vez
     XML_MAX_POR_SEGUNDO = 5.0  # ritmo máximo entre todas
     XML_REINTENTOS = 5
+    # Avisos sin XML (404 o error tras los reintentos) que no impiden guardar el año: van con los
+    # datos del aviso y se vuelven a pedir en la siguiente ejecución. Más (TED caído, una URL que
+    # ha cambiado) deja el año sin guardar: guardarlo todo sin XML sería peor
+    XML_FALLOS_TOLERADOS = 20
+    XML_FALLOS_FRACCION = 0.001
+    # Presupuesto de tiempo por ejecución para pedir XML: al agotarse se deja de pedir y la siguiente
+    # ejecución sigue (lo descargado queda en disco). Con el listado de la API y el consolidado, la
+    # ejecución no pasa de ~10,5 h: el cerrojo global de ejecutar_fuente.sh espera como mucho 12 h
+    XML_PRESUPUESTO_S = 9.5 * 3600
     # Subtipos de los avisos de adjudicación de eForms (notice-subtype, que solo
     # tienen los avisos eForms): 25-28 veat, 29-32 y E4 can-standard, 33-35
     # can-social, 36-37 can-desg, 38-40 y E6 can-modif, E5 compl y T02 can-tran
@@ -277,6 +286,7 @@ def download_ted_spain(
     
     TEDConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
     _borrar_temporales_viejos()
+    _INICIO[0] = time.monotonic()   # presupuesto de tiempo de los XML (TEDConfig.XML_PRESUPUESTO_S)
     
     if output_path is None:
         output_path = TEDConfig.DATA_DIR / "ted_es_can.parquet"
@@ -329,6 +339,10 @@ def download_ted_spain(
     if api_years:
         log.info(f"🌐 Consultando TED API para {api_years}...")
         for year in api_years:
+            if _presupuesto_agotado():
+                log.warning(f"  {year}: presupuesto de tiempo agotado; este año, en la siguiente ejecución")
+                incomplete_years.append(year)
+                continue
             df_year = _download_api_year(year, force_redownload)
             if df_year is not None and df_year.attrs.get('descarga_incompleta'):
                 incomplete_years.append(year)
@@ -341,6 +355,10 @@ def download_ted_spain(
     if eforms_years:
         log.info(f"🌐 Avisos eForms de {eforms_years} (el CSV no los trae)...")
         for year in eforms_years:
+            if _presupuesto_agotado():
+                log.warning(f"  {year}: presupuesto de tiempo agotado; sus avisos eForms, en la siguiente ejecución")
+                incomplete_years.append(year)
+                continue
             df_year = _download_api_year(year, force_redownload, solo_eforms=True)
             if df_year is not None and df_year.attrs.get('descarga_incompleta'):
                 incomplete_years.append(year)
@@ -690,22 +708,25 @@ def _consolidar(fuentes, output_path, semillas=()):
                 tablas[year] = (fuente, tabla)
                 break
     # Avisos eForms de los años del CSV (ted_can_<año>_ES_eforms.parquet), junto a su año. Un aviso
-    # que el CSV ya trae se queda con sus filas del CSV (los avisos del CSV no cambian); si el año
-    # salió de la API (el CSV falló), la API ya trae todos sus avisos
+    # que la tabla del año ya trae se queda con sus filas de esa tabla (los avisos del CSV no cambian).
+    # Si el año salió entero de la API (el CSV falló), la API trae todos sus avisos: lo que solo está en
+    # la caché eForms ya no se sirve y entra con _en_ultima_descarga=False (no se pierde)
     eforms = {}
     for year in sorted(y for y, tipos in en_disco.items() if 'eforms' in tipos):
-        if year in tablas and tablas[year][0] == 'api':
-            continue
         tabla = _tabla_anual(year, 'eforms')
         if tabla is None or len(tabla) == 0:
             continue
         if year in tablas and 'ted_notice_id' in tablas[year][1].columns:
-            en_csv = set(clave_aviso(tablas[year][1]['ted_notice_id']).dropna())
-            repetidos = clave_aviso(tabla['ted_notice_id']).isin(en_csv).to_numpy()
+            fuente, principal = tablas[year]
+            ya = set(clave_aviso(principal['ted_notice_id']).dropna())
+            repetidos = clave_aviso(tabla['ted_notice_id']).isin(ya).to_numpy()
             if repetidos.any():
-                log.info(f"  {year}: {int(repetidos.sum()):,} filas eForms de avisos que ya trae el CSV "
-                         f"(se quedan las del CSV)")
+                log.info(f"  {year}: {int(repetidos.sum()):,} filas eForms de avisos que ya trae la tabla del "
+                         f"{'CSV' if fuente == 'csv' else 'año (API)'} (se quedan las de esa tabla)")
                 tabla = tabla[~repetidos].reset_index(drop=True)
+            if fuente == 'api' and len(tabla) > 0:
+                log.info(f"  {year}: {len(tabla):,} filas eForms de avisos que la API ya no trae")
+                tabla = tabla.assign(_en_ultima_descarga=False)
         if len(tabla) > 0:
             eforms[year] = tabla
     orden = [y for f in ('csv', 'api') for y in sorted(tablas) if tablas[y][0] == f]
@@ -1074,7 +1095,8 @@ def _download_api_year(year, force=False, solo_eforms=False):
             log.info(f"  {year}: usando cache {cache_path}")
             cached = _read_cache(cache_path)
             if cached is not None and 'lot_result_id' in cached.columns:
-                return cached
+                # Avisos guardados sin XML (404 o error): se vuelven a pedir en cada ejecución
+                return _completar_xml(cached, cache_path, year) if _avisos_sin_xml(cached) else cached
             if cached is not None:
                 # De un parser anterior (filas por posición de las listas de la API, sin XML)
                 log.info(f"  {year}: cache {cache_path.name} de una versión anterior; se vuelve a descargar")
@@ -1105,20 +1127,14 @@ def _download_api_year(year, force=False, solo_eforms=False):
         unicos.append(aviso)
     if len(unicos) < len(avisos):
         log.info(f"  {year}: {len(avisos) - len(unicos):,} avisos repetidos entre periodos")
+    # XML de cada aviso (los que faltan o están dañados en disco se piden; ver _xml_avisos)
     estados, xml_completo = _xml_avisos([a['ted_notice_id'] for a in unicos], forzar=force)
-    filas, ritmo = [], _Ritmo(TEDConfig.XML_MAX_POR_SEGUNDO)
+    filas = []
     for aviso in unicos:
         numero = aviso['ted_notice_id']
-        estado = estados.get(numero, 'error')
+        estado, detalle = estados.get(numero, ('error', 'sin número de aviso'))
         contenido = _leer_xml(numero) if estado == 'ok' else None
-        if estado == 'ok' and contenido is None:
-            # En disco pero ilegible (fichero dañado): se vuelve a pedir y el dañado queda en _historico/
-            log.warning(f"  XML {numero} ilegible en disco: se vuelve a pedir")
-            estado = _obtener_xml(numero, ritmo, forzar=True)
-            contenido = _leer_xml(numero) if estado == 'ok' else None
-            if contenido is None:
-                xml_completo = False
-        filas.extend(_filas_aviso(aviso, contenido, estado))
+        filas.extend(_filas_aviso(aviso, contenido, estado, detalle))
     df = pd.DataFrame(filas, columns=_COLUMNAS_API)
     log.info(f"  {year}: {len(df):,} registros de {len(unicos):,} avisos "
              f"({int((df['_xml_eforms'] != '').sum()):,} filas sin resultados del XML eForms)")
@@ -1399,26 +1415,37 @@ def _extract_multilang_name(name_dict):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  XML eForms DE CADA AVISO: resultado de lote → oferta → ganador
+#  XML eForms DE CADA AVISO: resultado de lote → oferta ganadora → adjudicatario
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # La API de búsqueda aplana cada campo en una lista del aviso entero y además
 # deduplica los valores iguales (tres contratos con la misma fecha dan una sola
 # fecha). Hasta sept. 2026 el parser rellenaba la fila i con el elemento i de
 # cada lista y, al acabarse una, repetía el último ganador y el primer importe:
-# 159.677 filas copia (141548-2026: 48.861 filas para 951 adjudicaciones de 226
-# empresas). La API no da los enlaces entre resultado, oferta, parte licitadora
-# y organización (OPT-320, OPT-310, OPT-300, OPT-200), así que las filas salen
-# del XML eForms del aviso:
-#   efac:LotResult (lote, BT-142, BT-144, ofertas recibidas)
-#     → efac:LotTender (BT-720 importe de la oferta) → efac:TenderingParty
-#     → efac:Tenderer → efac:Organization (nombre, NIF, país, tamaño)
-#   y el contrato (efac:SettledContract: BT-150, BT-1451, BT-145) que cita la oferta.
-# Una fila por oferta ganadora de cada resultado de lote; un resultado sin
-# oferta (lote desierto o sin adjudicar) es una fila sin ganador; un aviso sin
-# resultados, una fila con los datos del aviso. Un grupo de empresas (UTE sin
+# 159.677 filas copia. La API no da los enlaces entre resultado, oferta, parte
+# licitadora y organización (OPT-320, OPT-310, OPT-300, OPT-200), así que las
+# filas salen del XML eForms del aviso. Según el esquema (docs.ted.europa.eu,
+# eforms, «competition results»):
+#   - efac:LotResult/efac:LotTender (OPT-320) son las ofertas RECIBIDAS del lote
+#     que describe el aviso, no las ganadoras;
+#   - la ganadora es la oferta que cita un contrato: efac:SettledContract/
+#     efac:LotTender (BT-3202), en un resultado con ganador (BT-142 'selec-w'; en
+#     los avisos de modificación, veat y finalización el código suele faltar);
+#   - efac:LotTender (BT-720, importe) → efac:TenderingParty → efac:Tenderer →
+#     efac:Organization (nombre, NIF, país, tamaño).
+# Una fila por oferta ganadora de cada resultado de lote, con el contrato que la
+# cita (BT-150, BT-1451, BT-145). Un resultado sin oferta ganadora (desierto,
+# sin adjudicar o sin contrato) es una fila sin adjudicatario, con su estado
+# (BT-142), su motivo (BT-144) y cuántas ofertas describe (n_ofertas_descritas);
+# un aviso sin resultados, una fila con los datos del aviso. Las ofertas que no
+# ganan no son filas (siguen en el XML guardado). Un grupo de empresas (UTE sin
 # constituir) va en una fila con los miembros unidos por '---' (el líder
 # primero), como en el CSV de 2006-2023.
+# Excepción medida (5 de 1.403 adjudicatarias en 525 avisos reales): un resultado
+# 'selec-w' con una sola oferta descrita y su propio contrato, cuando ese
+# contrato cita otra oferta de la MISMA empresa (el publicador enlazó el
+# contrato del lote 8 con la oferta del lote 5: 536696-2026). Esa oferta es la
+# ganadora, con ganadora_por='contrato del resultado' (si no, 'contrato').
 
 _NS_EFORMS = {
     'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
@@ -1432,9 +1459,12 @@ _EXT_EFORMS = 'ext:UBLExtensions/ext:UBLExtension/ext:ExtensionContent/efext:Efo
 # Raíz de un aviso eForms (UBL 2.3: ContractAwardNotice-2, ContractNotice-2...). Los avisos del
 # esquema anterior (TED_EXPORT R2.0.9) aún se publicaban a principios de 2024 (1.523 CAN de España)
 _RAIZ_EFORMS = '{urn:oasis:names:specification:ubl:schema:xsd:'
+# Resultados sin adjudicar (BT-142): cerrado sin ganador o sin ganador todavía
+_SIN_GANADOR = ('clos-nw', 'open-nw')
 
 # Columnas de las filas de la API, siempre las mismas y en este orden (una caché con otras
-# columnas sería otra versión aunque no cambie ningún dato)
+# columnas sería otra versión aunque no cambie ningún dato). Todas texto salvo lot_index y
+# n_filas_aviso; un valor que el aviso no trae queda como ''
 _COLUMNAS_API = [
     # Aviso y procedimiento (API de búsqueda)
     'ted_notice_id', 'year', 'iso_country', 'notice_type', 'notice_subtype', 'form_type',
@@ -1445,17 +1475,21 @@ _COLUMNAS_API = [
     'estimated_value_proc_cur', 'procedure_id', 'internal_id_proc', 'modification_prev_notice',
     'direct_award_justification', 'direct_award_justification_text', 'sme_participation',
     'notice_identifier', 'notice_version', 'changed_notice', 'change_reason_code', 'dt_dispatch',
-    # Aviso (XML): valor del aviso (BT-161) y de los acuerdos marco (BT-118, BT-1118) por separado
-    'notice_value', 'notice_value_cur', 'notice_framework_max_value', 'notice_framework_approx_value',
+    # Aviso (XML): valor del aviso (BT-161) y de los acuerdos marco (BT-118, BT-1118), cada uno con
+    # su moneda
+    'notice_value', 'notice_value_cur', 'notice_framework_max_value', 'notice_framework_max_value_cur',
+    'notice_framework_approx_value', 'notice_framework_approx_value_cur',
     # Fila: resultado de lote (XML)
     'lot_index', 'n_filas_aviso', 'lot_result_id', 'lot_id', 'internal_id_lot', 'title_lot',
     'description_lot', 'cpv_lot', 'estimated_value_lot', 'estimated_value_lot_cur', 'duration_lot',
     'duration_lot_unit', 'award_criterion_type', 'award_criterion_weight', 'winner_selection_status',
-    'non_award_justification', 'number_offers', 'tender_value_lowest', 'tender_value_highest',
-    'framework_max_lot', 'framework_est_value',
+    'non_award_justification', 'number_offers', 'n_ofertas_descritas',
+    'tender_value_lowest', 'tender_value_lowest_cur', 'tender_value_highest', 'tender_value_highest_cur',
+    'framework_max_lot', 'framework_max_lot_cur', 'framework_est_value', 'framework_est_value_cur',
     # Oferta ganadora, su parte licitadora y sus organizaciones (XML)
-    'tender_id', 'tender_reference', 'tender_rank', 'tender_value', 'tender_value_cur',
-    'subcontracting_value', 'paid_amount', 'penalties_amount', 'tendering_party_name',
+    'tender_id', 'ganadora_por', 'tender_reference', 'tender_rank', 'tender_value', 'tender_value_cur',
+    'subcontracting_value', 'subcontracting_value_cur', 'paid_amount', 'paid_amount_cur',
+    'penalties_amount', 'penalties_amount_cur', 'tendering_party_name',
     'win_name', 'win_nationalid', 'win_country', 'win_town', 'win_size',
     # Contrato que cita la oferta (XML)
     'contract_id', 'dt_award', 'contract_award_dates', 'contract_conclusion_date', 'contract_title',
@@ -1475,6 +1509,12 @@ def _cantidad(e, ruta):
     if x is None or not x.text or not x.text.strip():
         return '', ''
     return x.text.strip(), x.get('currencyID', '')
+
+
+def _importe(campo, e, ruta):
+    """{campo: importe, campo_cur: moneda} de un elemento con currencyID."""
+    valor, moneda = _cantidad(e, ruta)
+    return {campo: valor, f'{campo}_cur': moneda}
 
 
 def _textos(e, ruta):
@@ -1526,7 +1566,6 @@ def _parse_eforms(contenido):
     lotes = {}
     for lote in raiz.findall('cac:ProcurementProjectLot', _NS_EFORMS):
         pp = lote.find('cac:ProcurementProject', _NS_EFORMS)
-        est, est_cur = _cantidad(pp, 'cac:RequestedTenderTotal/cbc:EstimatedOverallContractAmount')
         dur = pp.find('cac:PlannedPeriod/cbc:DurationMeasure', _NS_EFORMS) if pp is not None else None
         tipos, pesos = [], []
         for crit in lote.findall('cac:TenderingTerms/cac:AwardingTerms/cac:AwardingCriterion/'
@@ -1542,7 +1581,7 @@ def _parse_eforms(contenido):
             'title_lot': _en_castellano(pp, 'cbc:Name'),
             'description_lot': _en_castellano(pp, 'cbc:Description'),
             'cpv_lot': _txt(pp, 'cac:MainCommodityClassification/cbc:ItemClassificationCode'),
-            'estimated_value_lot': est, 'estimated_value_lot_cur': est_cur,
+            **_importe('estimated_value_lot', pp, 'cac:RequestedTenderTotal/cbc:EstimatedOverallContractAmount'),
             'duration_lot': dur.text.strip() if dur is not None and dur.text else '',
             'duration_lot_unit': dur.get('unitCode', '') if dur is not None else '',
             'award_criterion_type': ';'.join(tipos),
@@ -1552,19 +1591,18 @@ def _parse_eforms(contenido):
     nr = raiz.find(ext + '/efac:NoticeResult', _NS_EFORMS)
     if nr is None:
         return {'aviso': aviso, 'filas': filas}
-    aviso['notice_value'], aviso['notice_value_cur'] = _cantidad(nr, 'cbc:TotalAmount')
-    aviso['notice_framework_max_value'] = _cantidad(nr, 'efbc:OverallMaximumFrameworkContractsAmount')[0]
-    aviso['notice_framework_approx_value'] = _cantidad(nr, 'efbc:OverallApproximateFrameworkContractsAmount')[0]
+    aviso.update(_importe('notice_value', nr, 'cbc:TotalAmount'))
+    aviso.update(_importe('notice_framework_max_value', nr, 'efbc:OverallMaximumFrameworkContractsAmount'))
+    aviso.update(_importe('notice_framework_approx_value', nr, 'efbc:OverallApproximateFrameworkContractsAmount'))
     ofertas = {}
     for t in nr.findall('efac:LotTender', _NS_EFORMS):
-        valor, moneda = _cantidad(t, 'cac:LegalMonetaryTotal/cbc:PayableAmount')
         ofertas[_txt(t, 'cbc:ID')] = {
-            'tender_value': valor, 'tender_value_cur': moneda,
+            **_importe('tender_value', t, 'cac:LegalMonetaryTotal/cbc:PayableAmount'),
             'tender_rank': _txt(t, 'cbc:RankCode'),
             'tender_reference': _txt(t, 'efac:TenderReference/cbc:ID'),
-            'subcontracting_value': _cantidad(t, 'efac:SubcontractingTerm/efbc:TermAmount')[0],
-            'paid_amount': _cantidad(t, 'efac:AggregatedAmounts/cbc:PaidAmount')[0],
-            'penalties_amount': _cantidad(t, 'efac:AggregatedAmounts/efbc:PenaltiesAmount')[0],
+            **_importe('subcontracting_value', t, 'efac:SubcontractingTerm/efbc:TermAmount'),
+            **_importe('paid_amount', t, 'efac:AggregatedAmounts/cbc:PaidAmount'),
+            **_importe('penalties_amount', t, 'efac:AggregatedAmounts/efbc:PenaltiesAmount'),
             '_parte': _txt(t, 'efac:TenderingParty/cbc:ID'),
         }
     partes = {}
@@ -1573,7 +1611,12 @@ def _parse_eforms(contenido):
             (0 if _txt(ten, 'efbc:GroupLeadIndicator').lower() == 'true' else 1, i, _txt(ten, 'cbc:ID'))
             for i, ten in enumerate(p.findall('efac:Tenderer', _NS_EFORMS)))
         partes[_txt(p, 'cbc:ID')] = (_txt(p, 'cbc:Name'), [o for _, _, o in miembros])
-    contratos, contratos_de_oferta = {}, defaultdict(list)
+
+    def empresas(oferta):
+        """Organizaciones de la parte licitadora de una oferta (conjunto de ORG-xxxx)."""
+        return frozenset(partes.get(ofertas.get(oferta, {}).get('_parte', ''), ('', []))[1])
+
+    contratos, contratos_de_oferta, ofertas_de_contrato = {}, defaultdict(list), {}
     for c in nr.findall('efac:SettledContract', _NS_EFORMS):
         cid = _txt(c, 'cbc:ID')
         contratos[cid] = {
@@ -1583,40 +1626,54 @@ def _parse_eforms(contenido):
             'contract_title': _en_castellano(c, 'cbc:Title'),
             'contract_framework': _txt(c, 'efbc:ContractFrameworkIndicator'),
         }
-        for tid in _textos(c, 'efac:LotTender/cbc:ID'):
+        ofertas_de_contrato[cid] = list(dict.fromkeys(_textos(c, 'efac:LotTender/cbc:ID')))
+        for tid in ofertas_de_contrato[cid]:
             contratos_de_oferta[tid].append(cid)
     for r in nr.findall('efac:LotResult', _NS_EFORMS):
         lote = _txt(r, 'efac:TenderLot/cbc:ID')
+        estado = _txt(r, 'cbc:TenderResultCode')
         estadisticas = {_txt(s, 'efbc:StatisticsCode'): _txt(s, 'efbc:StatisticsNumeric')
                         for s in r.findall('efac:ReceivedSubmissionsStatistics', _NS_EFORMS)}
+        # Ofertas recibidas que el aviso describe para este resultado (OPT-320)
+        descritas = list(dict.fromkeys(_textos(r, 'efac:LotTender/cbc:ID')))
+        del_resultado = list(dict.fromkeys(_textos(r, 'efac:SettledContract/cbc:ID')))
         base = {
             'lot_result_id': _txt(r, 'cbc:ID'), 'lot_id': lote,
-            'winner_selection_status': _txt(r, 'cbc:TenderResultCode'),
+            'winner_selection_status': estado,
             'non_award_justification': _txt(r, 'efac:DecisionReason/efbc:DecisionReasonCode'),
             # BT-760 del tipo 'tenders' (BT-759): ofertas recibidas para este lote
             'number_offers': estadisticas.get('tenders', ''),
-            'tender_value_lowest': _cantidad(r, 'cbc:LowerTenderAmount')[0],
-            'tender_value_highest': _cantidad(r, 'cbc:HigherTenderAmount')[0],
-            'framework_max_lot': _cantidad(r, 'efac:FrameworkAgreementValues/cbc:MaximumValueAmount')[0],
-            'framework_est_value': _cantidad(r, 'efac:FrameworkAgreementValues/efbc:ReestimatedValueAmount')[0],
+            'n_ofertas_descritas': str(len(descritas)),
+            **_importe('tender_value_lowest', r, 'cbc:LowerTenderAmount'),
+            **_importe('tender_value_highest', r, 'cbc:HigherTenderAmount'),
+            **_importe('framework_max_lot', r, 'efac:FrameworkAgreementValues/cbc:MaximumValueAmount'),
+            **_importe('framework_est_value', r, 'efac:FrameworkAgreementValues/efbc:ReestimatedValueAmount'),
             **lotes.get(lote, {}),
         }
-        del_resultado = list(dict.fromkeys(_textos(r, 'efac:SettledContract/cbc:ID')))
-        ids_ofertas = list(dict.fromkeys(_textos(r, 'efac:LotTender/cbc:ID')))
-        if not ids_ofertas:
-            filas.append(base)   # resultado sin oferta ganadora: lote desierto, sin adjudicar...
+        ganadoras, por = [], 'contrato'
+        if estado not in _SIN_GANADOR:
+            # La ganadora es la oferta que cita un contrato (BT-3202)
+            ganadoras = [t for t in descritas if t in contratos_de_oferta]
+            if not ganadoras and estado == 'selec-w' and len(descritas) == 1 and empresas(descritas[0]) \
+                    and any(empresas(t) == empresas(descritas[0])
+                            for c in del_resultado for t in ofertas_de_contrato.get(c, [])):
+                ganadoras, por = descritas, 'contrato del resultado'
+        if not ganadoras:
+            filas.append(base)   # resultado sin oferta ganadora: desierto, sin adjudicar, sin contrato...
             continue
-        for tid in ids_ofertas:
+        for tid in ganadoras:
             oferta = ofertas.get(tid, {})
             nombre_parte, miembros = partes.get(oferta.get('_parte', ''), ('', []))
             miembros = [orgs.get(o, {}) for o in miembros]
-            # El contrato de la oferta: los del resultado que la citan (BT-3202); si ninguno, los que
-            # la citan y si tampoco, los del resultado (un contrato puede citar ofertas de varios lotes)
-            de_oferta = contratos_de_oferta.get(tid, [])
-            cids = [c for c in del_resultado if c in de_oferta] or list(dict.fromkeys(de_oferta)) \
-                or del_resultado
+            if por == 'contrato':
+                # Los contratos que la citan y, entre ellos, los de su resultado si los hay (un contrato
+                # puede citar ofertas de varios lotes)
+                de_oferta = list(dict.fromkeys(contratos_de_oferta[tid]))
+                cids = [c for c in del_resultado if c in de_oferta] or de_oferta
+            else:
+                cids = del_resultado
             cs = [contratos[c] for c in cids if c in contratos]
-            fila = dict(base, tender_id=tid, tendering_party_name=nombre_parte,
+            fila = dict(base, tender_id=tid, ganadora_por=por, tendering_party_name=nombre_parte,
                         **{k: v for k, v in oferta.items() if not k.startswith('_')})
             for campo, clave in (('win_name', 'name'), ('win_nationalid', 'id'), ('win_country', 'country'),
                                  ('win_town', 'town'), ('win_size', 'size')):
@@ -1686,13 +1743,15 @@ def _aviso_api(notice):
     }
 
 
-def _filas_aviso(aviso, contenido=None, estado='ok'):
+def _filas_aviso(aviso, contenido=None, estado='ok', detalle=''):
     """Filas de un aviso: los datos del aviso de la API (_aviso_api) en cada fila del XML eForms
     (_parse_eforms). Sin XML legible en eForms, una fila con los datos del aviso y el motivo en
-    _xml_eforms ('' si las filas salen del XML)."""
+    _xml_eforms ('' si las filas salen del XML; 'sin XML: …' se vuelve a pedir en la siguiente
+    ejecución)."""
     marca, leido = '', None
     if contenido is None:
-        marca = 'sin XML: TED responde 404' if estado == 'no_disponible' else 'sin XML'
+        marca = ('sin XML: TED responde 404' if estado == 'no_disponible'
+                 else f'sin XML: {detalle}' if detalle else 'sin XML')
     else:
         try:
             leido = _parse_eforms(contenido)
@@ -1731,10 +1790,40 @@ def _leer_xml(numero):
         return None
 
 
+def _es_xml_de_aviso(contenido):
+    """Si una respuesta es el XML de un aviso: eForms (UBL) o del esquema anterior (TED_EXPORT). Una
+    página HTML, un XML de error o una respuesta cortada no lo son y no se guardan."""
+    try:
+        raiz = ET.fromstring(contenido)
+    except ET.ParseError:
+        return False
+    return raiz.tag.startswith(_RAIZ_EFORMS) or raiz.tag.rsplit('}', 1)[-1] == 'TED_EXPORT'
+
+
+_SESIONES = threading.local()
+
+
+def _sesion():
+    """requests.Session del hilo (reutiliza las conexiones entre peticiones)."""
+    s = getattr(_SESIONES, 'sesion', None)
+    if s is None:
+        s = _SESIONES.sesion = requests.Session()
+        s.headers.update({"Accept": "application/xml"})
+    return s
+
+
 def _descargar_xml(url):
     """GET del XML de un aviso: (código HTTP, contenido, cabeceras). Aparte para simularlo."""
-    r = requests.get(url, timeout=(30, 120), headers={"Accept": "application/xml"})
+    r = _sesion().get(url, timeout=(30, 120))
     return r.status_code, r.content, r.headers
+
+
+# Inicio de la ejecución, para el presupuesto de tiempo de los XML (download_ted_spain lo reinicia)
+_INICIO = [time.monotonic()]
+
+
+def _presupuesto_agotado():
+    return time.monotonic() - _INICIO[0] > TEDConfig.XML_PRESUPUESTO_S
 
 
 class _Ritmo:
@@ -1755,55 +1844,67 @@ class _Ritmo:
 
 
 def _obtener_xml(numero, ritmo, forzar=False):
-    """Descarga y guarda el XML de un aviso si no está en disco (o siempre, con forzar): 'ok',
-    'no_disponible' (TED responde 404 dos veces) o 'error' (red, 5xx o 429 en todos los intentos).
-    Con forzar, un XML que no ha cambiado no crea versión (guardar_version)."""
-    ruta = _ruta_xml(numero)
-    if not forzar and ruta.is_file() and ruta.stat().st_size > 0:
-        return 'ok'
+    """Descarga y guarda el XML de un aviso si no está legible en disco (o siempre, con forzar).
+    Devuelve (estado, detalle): 'ok'; 'no_disponible' (TED responde 404 dos veces); 'error' (red,
+    5xx, 429 o una respuesta que no es el XML de un aviso en todos los intentos); 'pendiente' (se
+    ha agotado el presupuesto de tiempo). Solo se guarda el XML de un aviso; con forzar, uno que
+    no ha cambiado no crea versión, y uno dañado en disco queda en _historico/ (guardar_version)."""
+    if not forzar and _leer_xml(numero) is not None:
+        return 'ok', ''
     url = TEDConfig.TED_XML_URL.format(numero=numero)
-    veces_404 = 0
+    veces_404, detalle = 0, ''
     for intento in range(TEDConfig.XML_REINTENTOS):
+        if _presupuesto_agotado():
+            return 'pendiente', 'presupuesto de tiempo agotado'
         ritmo.esperar()
         try:
             codigo, contenido, cabeceras = _descargar_xml(url)
         except requests.exceptions.RequestException as e:
+            detalle = f'red: {type(e).__name__}'
             log.debug(f"  XML {numero}: {e}")
             time.sleep(5 * (intento + 1))
             continue
-        if codigo == 200 and contenido and contenido.lstrip()[:1] == b'<':
-            # Un aviso publicado no cambia: si ya hubiera otra copia, guardar_version la conserva
-            guardar_version(ruta, gzip.compress(contenido, mtime=0))
-            return 'ok'
+        if codigo == 200 and contenido and _es_xml_de_aviso(contenido):
+            guardar_version(_ruta_xml(numero), gzip.compress(contenido, mtime=0))
+            return 'ok', ''
+        detalle = f'HTTP {codigo}' if codigo != 200 else 'HTTP 200 sin el XML de un aviso'
         if codigo == 404:
             veces_404 += 1
             if veces_404 >= 2:
-                return 'no_disponible'
+                return 'no_disponible', detalle
         espera = 5 * (intento + 1)
         if codigo == 429:
             try:
                 espera = max(espera, float((cabeceras or {}).get('Retry-After', 30)))
             except (TypeError, ValueError):
                 espera = max(espera, 30)
-        log.debug(f"  XML {numero}: HTTP {codigo}; nuevo intento en {espera:.0f} s")
+        log.debug(f"  XML {numero}: {detalle}; nuevo intento en {espera:.0f} s")
         time.sleep(espera)
-    return 'error'
+    return 'error', detalle
 
 
 def _xml_avisos(numeros, forzar=False):
     """XML eForms de los avisos: descarga en paralelo (TEDConfig.XML_WORKERS, como mucho
-    XML_MAX_POR_SEGUNDO) los que no están en disco, o todos con forzar (--force). Devuelve
-    ({número: estado}, completo):
-    completo=False si alguno ha fallado por red o por el servidor (el año no se guarda y la
-    siguiente ejecución continúa: lo ya descargado queda en disco)."""
+    XML_MAX_POR_SEGUNDO) los que no están legibles en disco, o todos con forzar (--force).
+
+    Devuelve ({número: (estado, detalle)}, completo). Un aviso sin XML (404 o error) se guarda con
+    una fila de los datos del aviso y el motivo en _xml_eforms, y se vuelve a pedir en la siguiente
+    ejecución: unos pocos no impiden guardar el año. completo=False (el año no se guarda; lo ya
+    descargado queda en disco y la siguiente ejecución sigue) si se agota el presupuesto de tiempo
+    o si fallan más de XML_FALLOS_TOLERADOS + XML_FALLOS_FRACCION de los avisos (TED caído o una
+    URL que ha cambiado: guardar todo sin XML sería peor)."""
     numeros = [n for n in dict.fromkeys(numeros) if n]
-    estados, faltan = {}, []
+    estados, faltan, danados = {}, [], []
     for n in numeros:
-        ruta = _ruta_xml(n)
-        if not forzar and ruta.is_file() and ruta.stat().st_size > 0:
-            estados[n] = 'ok'
-        else:
-            faltan.append(n)
+        if not forzar and _leer_xml(n) is not None:
+            estados[n] = ('ok', '')
+            continue
+        if not forzar and _ruta_xml(n).exists():
+            danados.append(n)
+        faltan.append(n)
+    if danados:
+        log.warning(f"  XML eForms dañados en disco: {len(danados):,} (p.ej. {', '.join(danados[:5])}); se "
+                    f"vuelven a pedir y los dañados quedan en {HISTORICO}/")
     if faltan:
         log.info(f"  XML eForms: {len(numeros) - len(faltan):,} en disco; se piden {len(faltan):,} "
                  f"({TEDConfig.XML_WORKERS} a la vez, ≤{TEDConfig.XML_MAX_POR_SEGUNDO:g}/s)")
@@ -1813,12 +1914,56 @@ def _xml_avisos(numeros, forzar=False):
                 estados[n] = estado
                 if i % 2000 == 0:
                     log.info(f"    XML {i:,}/{len(faltan):,}")
-    cuenta = Counter(estados.values())
-    if cuenta.get('no_disponible') or cuenta.get('error'):
-        ejemplos = [n for n, e in estados.items() if e != 'ok'][:5]
-        log.warning(f"  XML eForms: {cuenta.get('no_disponible', 0):,} avisos sin XML en TED (404) y "
-                    f"{cuenta.get('error', 0):,} con error (p.ej. {', '.join(ejemplos)})")
-    return estados, not cuenta.get('error')
+    fallos = [n for n, (e, _) in estados.items() if e in ('no_disponible', 'error')]
+    pendientes = [n for n, (e, _) in estados.items() if e == 'pendiente']
+    tolerados = TEDConfig.XML_FALLOS_TOLERADOS + int(TEDConfig.XML_FALLOS_FRACCION * len(numeros))
+    if fallos:
+        motivos = Counter(estados[n][1] for n in fallos)
+        log.warning(f"  XML eForms sin descargar: {len(fallos):,} avisos "
+                    f"({', '.join(f'{v:,} {k}' for k, v in motivos.most_common())}; p.ej. "
+                    f"{', '.join(fallos[:5])}): van con los datos del aviso y se vuelven a pedir en la siguiente "
+                    f"ejecución")
+    if len(fallos) > tolerados:
+        log.error(f"  Demasiados avisos sin XML ({len(fallos):,}, se toleran {tolerados:,}): el año no se guarda")
+    if pendientes:
+        log.warning(f"  Presupuesto de tiempo agotado ({TEDConfig.XML_PRESUPUESTO_S / 3600:g} h): faltan "
+                    f"{len(pendientes):,} XML; el año no se guarda y la siguiente ejecución sigue")
+    return estados, not pendientes and len(fallos) <= tolerados
+
+
+def _avisos_sin_xml(df):
+    """Avisos de una caché guardados sin XML ('sin XML: …' en _xml_eforms): se vuelven a pedir."""
+    if df is None or '_xml_eforms' not in df.columns or 'ted_notice_id' not in df.columns:
+        return []
+    sin = df['_xml_eforms'].map(lambda v: isinstance(v, str) and v.startswith('sin XML')).to_numpy(dtype=bool)
+    return list(dict.fromkeys(df.loc[sin, 'ted_notice_id'].astype(str)))
+
+
+def _completar_xml(cached, cache_path, year):
+    """Vuelve a pedir el XML de los avisos que una caché de un año cerrado guardó sin él y, si llega
+    alguno, rehace sus filas con los datos del aviso guardados y guarda la caché (la anterior queda
+    en _historico/). Si no llega ninguno o se agota el presupuesto de tiempo, la caché no cambia."""
+    numeros = _avisos_sin_xml(cached)
+    log.info(f"  {year}: {len(numeros):,} avisos de {Path(cache_path).name} sin XML: se vuelven a pedir")
+    estados, _ = _xml_avisos(numeros)
+    if not any(e == 'ok' for e, _ in estados.values()) or any(e == 'pendiente' for e, _ in estados.values()):
+        return cached
+    ids = cached['ted_notice_id'].astype(str)
+    columnas_aviso = [c for c in _aviso_api({}) if c in cached.columns]
+    nuevas = []
+    for n in numeros:
+        fila = cached.loc[(ids == n).to_numpy()].iloc[0]
+        aviso = {c: ('' if pd.isna(fila[c]) else fila[c]) for c in columnas_aviso}
+        estado, detalle = estados.get(n, ('error', ''))
+        nuevas.extend(_filas_aviso(aviso, _leer_xml(n) if estado == 'ok' else None, estado, detalle))
+    df = pd.concat([cached[~ids.isin(numeros).to_numpy()], pd.DataFrame(nuevas, columns=_COLUMNAS_API)],
+                   ignore_index=True)
+    # El orden de siempre: por aviso (el de la caché) y posición en el aviso
+    orden = {n: i for i, n in enumerate(dict.fromkeys(ids))}
+    df = df.iloc[np.lexsort((df['lot_index'].to_numpy(), df['ted_notice_id'].astype(str).map(orden).to_numpy()))]
+    df = df.reset_index(drop=True)
+    _guardar_cache(df, cache_path)
+    return df
 
 
 def _find_spanish_nif(id_list):
@@ -1965,12 +2110,13 @@ def _normalize_ted_data(df):
             mask = df['importe_ted'].isna()
             if mask.any():
                 df.loc[mask, 'importe_ted'] = pd.to_numeric(df.loc[mask, raw_col], errors='coerce')
-    # Filas de la API leídas del XML eForms (_xml_eforms no nulo): el importe de la fila es el de
-    # su oferta ganadora (BT-720) y, sin oferta, el valor del aviso (BT-161) solo si el aviso es de
-    # una sola fila; nunca un valor estimado ni el total del aviso repetido en cada fila. En otra
-    # moneda, ninguno (importe_ted va en euros). Las filas del CSV no cambian
+    # Filas de la API leídas del XML eForms (_xml_eforms == ''): el importe de la fila es el de su
+    # oferta ganadora (BT-720) y, sin oferta, el valor del aviso (BT-161) solo si el aviso es de una
+    # sola fila; nunca un valor estimado ni el total del aviso repetido en cada fila. En otra moneda,
+    # ninguno (importe_ted va en euros). Las filas del CSV y las de la API sin XML eForms (esquema
+    # anterior, 404: llevan el motivo en _xml_eforms) siguen como antes: total_value de la API
     if '_xml_eforms' in df.columns:
-        del_xml = df['_xml_eforms'].notna()
+        del_xml = df['_xml_eforms'].map(lambda v: isinstance(v, str) and v == '').to_numpy(dtype=bool)
         if del_xml.any():
             def _en_euros(col):
                 return df[col].fillna('').astype(str).isin(['EUR', '']) if col in df.columns \
