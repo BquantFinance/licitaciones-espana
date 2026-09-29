@@ -1136,6 +1136,31 @@ def test_registro_ilegible_cuenta_todo_como_nuevo(portal, tmp_path):
     assert [p.read_text(encoding="utf-8") for p in M.versiones(ruta)[:-1]] == ["{roto"]   # la copia rota, guardada
 
 
+@pytest.mark.parametrize("mala", ["texto", ["lista"], 7, True])
+def test_registro_con_entradas_que_no_son_objetos_las_descarta_con_aviso(portal, tmp_path, mala):
+    """JSON válido con alguna entrada que no es un objeto (editado a mano, p.ej.): antes, AttributeError
+    en registro.fallo() (el fallo de agosto), en _bajado() (julio se baja) y en olvidar() (un fichero
+    que ya no se enlaza), y ningún Parquet. Esas entradas se descartan con aviso: su fallo cuenta como
+    nuevo (código 1, no esconde nada) y las demás entradas se conservan."""
+    buena = {"municipio": "malaga", "url": MAL_4T_2020, "clave_url": M._clave_url(MAL_4T_2020),
+             "estado": "no_existe", "detalle": "HTTP 404", "firma": "no_existe: HTTP 404",
+             "primera": "2026-09-01T00:00:00Z", "ultima": "2026-09-01T00:00:00Z", "veces": 1}
+    ruta = tmp_path / "raw" / M.FALLOS_ORIGEN
+    ruta.parent.mkdir(parents=True)
+    original = json.dumps({REL_AGOSTO: mala, REL_JULIO: mala, "leganes/2019/ya_no_se_enlaza.xlsx": mala,
+                           REL_MAL_4T_2020: buena})
+    ruta.write_text(original, encoding="utf-8")
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1                  # el fallo de agosto, nuevo
+    assert len(_parquet(tmp_path, "leganes")) == 6                             # y el Parquet, normal
+    avisos = _bloque(_ultimo_resumen(tmp_path), "AVISOS")
+    assert f"{M.FALLOS_ORIGEN}: 3 entradas que no son un objeto" in avisos and REL_JULIO in avisos
+    fallos = _fallos(tmp_path)
+    assert fallos[REL_AGOSTO]["veces"] == 1 and fallos[REL_AGOSTO]["estado"] == "invalido"
+    assert fallos[REL_MAL_4T_2020] == buena                                    # la de otro municipio, intacta
+    assert sorted(fallos) == sorted([REL_AGOSTO, REL_MAL_4T_2020])
+    assert [p.read_text(encoding="utf-8") for p in M.versiones(ruta)[:-1]] == [original]   # la copia, guardada
+
+
 # ---------------------------------------------------------------------------
 # Refresco, CLI y rutas
 # ---------------------------------------------------------------------------

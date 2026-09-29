@@ -613,6 +613,16 @@ class RegistroFallos:
             self.datos = {}
             self.aviso = (f"{FALLOS_ORIGEN} ilegible ({str(e)[:100]}): los fallos de esta ejecución cuentan "
                           "como nuevos; la copia ilegible queda en _historico/")
+        # JSON válido con alguna entrada que no es un objeto (editado a mano, p.ej.): fallo(), _bajado() y
+        # olvidar() la leen como un diccionario y el AttributeError tumbaba la ejecución sin generar
+        # ningún Parquet. Se descarta con aviso: su fallo, si se repite, cuenta como nuevo (código 1)
+        malas = [rel for rel, entrada in self.datos.items() if not isinstance(entrada, dict)]
+        for rel in malas:
+            del self.datos[rel]
+        if malas:
+            self.aviso = (f"{FALLOS_ORIGEN}: {len(malas)} entradas que no son un objeto, descartadas "
+                          f"({', '.join(malas[:5])}{', …' if len(malas) > 5 else ''}): sus fallos cuentan "
+                          "como nuevos; la copia anterior queda en _historico/")
 
     def fallo(self, municipio, rel, url, estado, detalle):
         """Anota que `rel` no se ha podido bajar en esta ejecución y devuelve su entrada."""
