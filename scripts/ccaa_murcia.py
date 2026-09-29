@@ -29,6 +29,10 @@ _archivo_origen (ruta en raw/), _hoja (solo Excel), _fecha_descarga y, de
 comun/historico.py, _primera_descarga, _ultima_descarga y _en_ultima_descarga.
 Un registro que el portal retira o modifica NO desaparece: sigue en el Parquet
 con _en_ultima_descarga=False (control del sesgo del superviviente).
+En los CSV que el portal genera desde JSON (ver «CSV del exportador JSON»), además:
+_resto_json (restos de la lista JSON que no son de ningún campo) y
+_<columna>_sin_cortes (el texto sin los cortes de línea cada 80 caracteres; la
+columna original se sirve tal cual).
 
 Qué se descarga:
 - Cada serie se sondea año a año desde --desde (2010 por defecto) hasta el año
@@ -575,6 +579,222 @@ def _leer_csv_tolerante(ruta, sep, codificacion):
     return df.drop(columns=vacias), con_extra, literales
 
 
+# ----------------------------------------------------------------------------
+# CSV del exportador JSON de datosabiertos.carm.es/odata
+# ----------------------------------------------------------------------------
+# Medido en los crudos del VPS (descarga del 2026-09-28):
+# - contratosOD 2019-2023 y CONTRA_ContratosMenores 2021-2022 escapan las comillas de dentro de un campo
+#   entrecomillado con una barra, como una cadena JSON ('"IES \"MENARGUEZ COSTA\", CEIP..."'). Un lector
+#   CSV normal cierra el campo en esa comilla: 44 contratos corridos, 38 a la derecha hasta
+#   _columna_extra_N (1262/2019: '273928.75' como adjudicatario) y 6 a la izquierda sin ninguna marca
+#   (649/2019: el adjudicatario en importadjudicacion), y 207 textos cambiados ('ASOC ... \ASPRODES\""').
+#   El mismo nombre llega bien en los ficheros de 2020 y 2023, que doblan la comilla ('""'): \" es la
+#   sintaxis de la comilla y en el valor queda '"', como con '""'.
+# - Esos ficheros y los menores de 2023 traen el resto de secuencias de escape de JSON sin interpretar
+#   (\n, \t, \uXXXX); todas las barras son de una secuencia válida (ninguna '\\'). Se sirven tal cual.
+#   \n es un corte de línea cada 80 caracteres (se ve en objeto, adjudicatario y CPV): de 35.128 cortes
+#   medidos, ningún trozo pasa de 80 caracteres (contando cada secuencia como uno), 23.309 tienen 80 (el
+#   corte cae donde cae: 'TEMPORAD\nA 2019-2020') y 4.016 tienen 79: el carácter 80 era un espacio y se
+#   recortó ('TRANSPORTE\nY SERVICIOS'); los demás son saltos de línea del texto original. Quitar la
+#   secuencia juntaría dos palabras en esos casos y cambiarla por un espacio partiría las otras: el texto
+#   sin cortes va en _<columna>_sin_cortes (texto_sin_cortes) y la columna original no se toca.
+# - Los menores de 2017 y 2019 llevan cada línea rodeada de espacios (' "14",...,"4" '): un lector normal
+#   leía el código de consejería como ' "14"' (con las comillas) y el trimestre como '4 '. Los de 2018 y
+#   2022 acaban en '"4"]' y una línea ']', y los de 2019 en '"4"","': restos de la lista JSON. No son de
+#   ningún campo y van a _resto_json; la línea ']' se conserva como fila (con solo _resto_json), como
+#   estaba en el Parquet, para no hacer desaparecer ninguna fila ya descargada.
+
+# Secuencias de escape de una cadena JSON; en el texto, cada una es un carácter
+_ESCAPE_JSON = re.compile(r'\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])')
+_ESCAPE_CUALQUIERA = re.compile(r'\\(?:u[0-9a-fA-F]{4}|.)', re.DOTALL)
+# Final de fichero con restos de la lista JSON tras la comilla de cierre del último campo:
+# '"4"]\n]' (menores 2018 y 2022) o '"4"","\n ' (2019). Grupo 1: lo pegado al último campo; grupo 2: lo que
+# sigue (espacios y, en su caso, la línea ']')
+_FINAL_JSON = re.compile(r'"(\]|",")([ \t\r\n]*(?:\][ \t\r\n]*)?)\Z')
+# Primera línea de datos con espacios antes de la comilla del primer campo (menores 2017 y 2019)
+_RELLENO_JSON = re.compile(r'[ \t]+"')
+# Largo de línea del exportador: los cortes caen cada 80 caracteres (ver arriba)
+LARGO_CORTE = 80
+
+
+def _es_texto_json(texto):
+    """¿Trae el texto secuencias de escape de JSON sin interpretar? Sí si tiene alguna barra y todas
+    empiezan una secuencia válida (\\" \\n \\t \\uXXXX...). Los menores de 2024-2025 traen barras sueltas
+    ('RD 390\\2021', 'Conversor\\es'): no lo son y se leen como siempre."""
+    return "\\" in texto and "\\" not in _ESCAPE_JSON.sub("", texto)
+
+
+def _formato_json(texto):
+    """Rasgos del exportador JSON que un lector CSV normal lee mal, o None si el fichero no tiene
+    ninguno: barra (comillas escapadas con \\"), relleno (espacios alrededor de cada campo
+    entrecomillado desde la primera línea de datos) y final (restos de la lista al final)."""
+    barra = '\\"' in texto and _es_texto_json(texto)
+    salto = texto.find("\n")
+    relleno = salto >= 0 and _RELLENO_JSON.match(texto, salto + 1) is not None
+    final = _FINAL_JSON.search(texto, max(0, len(texto) - 200))    # solo el final del fichero
+    if not (barra or relleno or final):
+        return None
+    return {"barra": barra, "relleno": relleno, "final": final}
+
+
+def _fin_de_linea(texto, i):
+    """Posición del salto de línea (o del final) de la línea que empieza en `i`. El '\\r' se busca solo
+    hasta el '\\n': buscarlo en todo el texto en cada registro sería cuadrático (ficheros de 7 MB)."""
+    fin = texto.find("\n", i)
+    fin = len(texto) if fin < 0 else fin
+    retorno = texto.find("\r", i, fin)
+    return fin if retorno < 0 else retorno
+
+
+def _registros_json(texto, sep, barra, relleno):
+    """Registros de un CSV del exportador JSON, como el módulo csv salvo:
+    - barra: dentro de un campo entrecomillado, una barra va con el carácter que la sigue (\\" no cierra
+      el campo). En el valor, \\" queda como '"' (es la sintaxis de la comilla, como '""') y el resto de
+      secuencias (\\n, \\t, \\uXXXX) quedan tal cual, como las publica el portal;
+    - relleno: los espacios y tabuladores entre el separador (o el principio de la línea) y la comilla
+      que abre un campo, y entre la que lo cierra y el separador (o el final), no son del valor;
+    - una comilla que no se cierra nunca es literal (como en comun.lectura_csv), y
+    - las líneas en blanco o de solo espacios no son registros (como en pandas).
+    Devuelve (registros, comillas literales)."""
+    contenido = re.compile(r'((?:[^"\\]|\\.|"")*)"' if barra else r'((?:[^"]|"")*)"', re.DOTALL)
+    desescapar = re.compile(r'\\"|""|\\.', re.DOTALL) if barra else None
+    registros, fila, literales = [], [], 0
+    i, n = 0, len(texto)
+    while i < n:
+        if not fila:
+            fin = _fin_de_linea(texto, i)
+            if not texto[i:fin].strip():
+                i = fin + (2 if texto.startswith("\r\n", fin) else 1)
+                continue
+        j = i
+        if relleno:
+            while j < n and texto[j] in " \t":
+                j += 1
+            if j >= n or texto[j] != '"':
+                j = i                   # campo sin comillas: los espacios son del valor
+        m = contenido.match(texto, j + 1) if j < n and texto[j] == '"' else None
+        if m:
+            valor = m.group(1)
+            valor = (desescapar.sub(lambda e: '"' if e.group() in ('\\"', '""') else e.group(), valor)
+                     if barra else valor.replace('""', '"'))
+            fin = k = m.end()
+            while fin < n and texto[fin] not in (sep, "\r", "\n"):
+                fin += 1
+            cola = texto[k:fin]
+            if not (relleno and not cola.strip(" \t")):
+                valor += cola           # como el módulo csv: lo pegado tras la comilla es del campo
+        else:
+            if j < n and texto[j] == '"':
+                literales += 1          # comilla que no se cierra: literal
+            fin = i
+            while fin < n and texto[fin] not in (sep, "\r", "\n"):
+                fin += 1
+            valor = texto[i:fin]
+        i = fin
+        fila.append(valor)
+        if i < n and texto[i] == sep:
+            i += 1
+            if i == n:                  # separador al final del texto: un último campo vacío
+                fila.append("")
+            continue
+        if i < n and texto[i] == "\r":
+            i += 1
+        if i < n and texto[i] == "\n":
+            i += 1
+        registros.append(fila)
+        fila = []
+    if fila:
+        registros.append(fila)
+    return registros, literales
+
+
+def _leer_csv_json(texto, sep, formato, nombre):
+    """DataFrame (todo texto, '' = nulo) de un CSV del exportador JSON (_formato_json), con las filas y
+    los campos de más en _columna_extra_N como _leer_csv_tolerante. Los restos de la lista JSON del
+    final van a _resto_json: lo pegado al último campo, en la última fila, y la línea ']', en una fila
+    propia sin ningún otro valor. Devuelve (df, avisos)."""
+    avisos, restos = [], {}
+    corchete = False
+    final = formato["final"]
+    if final:
+        texto = texto[:final.start() + 1]          # hasta la comilla que cierra el último campo
+        corchete = "]" in final.group(2)
+    filas, literales = _registros_json(texto, sep, formato["barra"], formato["relleno"])
+    if not filas:
+        return pd.DataFrame(), avisos
+    nombres = _nombres_columnas(filas[0])
+    datos = filas[1:]
+    if final and datos:
+        restos[len(datos) - 1] = final.group(1)
+    if corchete:
+        restos[len(datos)] = "]"
+        datos = datos + [[]]
+    ancho = max([len(nombres)] + [len(fila) for fila in datos])
+    nombres += [f"_columna_extra_{k}" for k in range(1, ancho - len(nombres) + 1)]
+    valores = [[v if v != "" else None for v in fila] + [None] * (ancho - len(fila)) for fila in datos]
+    df = pd.DataFrame(valores, columns=nombres, dtype=object)
+    extra = [c for c in nombres if c.startswith("_columna_extra_")]
+    con_extra = int(df[extra].notna().any(axis=1).sum()) if extra else 0
+    df = df.drop(columns=[c for c in extra if df[c].isna().all()])
+    if restos:
+        df["_resto_json"] = pd.Series([restos.get(i) for i in range(len(df))], index=df.index, dtype=object)
+        avisos.append(f"{nombre}: acaba con restos de la lista JSON ({final.group(1)!r}"
+                      + (" y una línea ']'" if corchete else "") + "): van a _resto_json"
+                      + (" (la línea ']', como fila sin ningún otro valor)" if corchete else ""))
+    if formato["barra"]:
+        avisos.append(f"{nombre}: {texto.count(chr(92) + chr(34)):,} comillas escapadas con barra (\\\") "
+                      "leídas como comillas del texto")
+    if formato["relleno"]:
+        avisos.append(f"{nombre}: líneas con espacios alrededor de los campos entrecomillados (restos del "
+                      "JSON): no son parte de los valores")
+    if con_extra:
+        avisos.append(f"{nombre}: {con_extra:,} filas con más campos que la cabecera; "
+                      "los campos de más se conservan en columnas _columna_extra_N")
+    if literales:
+        avisos.append(f"{nombre}: {literales:,} comillas que no se cierran (se conservan en el texto)")
+    return df, avisos
+
+
+def texto_sin_cortes(valor):
+    """Texto de una celda del exportador JSON sin los cortes de línea (\\n escrito como barra y n): el
+    exportador parte el texto en líneas de 80 caracteres y recorta los espacios del final de cada una.
+    Un trozo de 80 caracteres (contando cada secuencia de escape como uno) se une al siguiente tal cual;
+    uno más corto se une con un espacio: el recortado (79) o un salto de línea del texto original. Las
+    demás secuencias (\\t, \\uXXXX) se dejan como están. None si no hay ningún corte."""
+    if not isinstance(valor, str) or "\\n" not in valor:
+        return None
+    trozos, inicio = [], 0
+    for m in _ESCAPE_CUALQUIERA.finditer(valor):
+        if m.group() == "\\n":
+            trozos.append(valor[inicio:m.start()])
+            inicio = m.end()
+    trozos.append(valor[inicio:])
+    if len(trozos) == 1:
+        return None
+    texto = trozos[0]
+    for previo, trozo in zip(trozos, trozos[1:]):
+        largo = len(previo) - sum(len(e.group()) - 1 for e in _ESCAPE_CUALQUIERA.finditer(previo))
+        union = "" if largo == LARGO_CORTE or not texto or not trozo else " "
+        texto += union + trozo
+    return texto
+
+
+def _anadir_sin_cortes(df, texto, nombre, avisos):
+    """En un CSV con escapes de JSON sin interpretar (_es_texto_json), cada columna del portal con cortes
+    de línea (\\n) tiene al lado _<columna>_sin_cortes con texto_sin_cortes (nulo en las filas sin
+    cortes). La columna original no cambia."""
+    if len(df) == 0 or not _es_texto_json(texto):
+        return df
+    for columna in [c for c in df.columns if not str(c).startswith("_")]:
+        valores = df[columna].astype(object)
+        con_cortes = valores.map(lambda v: isinstance(v, str) and "\\n" in v)
+        if con_cortes.any():
+            df[f"_{columna}_sin_cortes"] = valores.map(texto_sin_cortes).astype(object)
+            avisos.append(f"{nombre}: {int(con_cortes.sum()):,} valores de {columna} con cortes de línea "
+                          f"escritos como \\n; el texto sin cortes va en _{columna}_sin_cortes")
+    return df
+
+
 def leer_csv(ruta):
     """CSV como texto: dtype=str, sin convertir 'NA', 'N/A', 'NULL'... en nulos
     (solo el campo vacío es nulo) y sin perder filas ni campos."""
@@ -582,6 +802,18 @@ def leer_csv(ruta):
     avisos = []
     codificacion = _detectar_codificacion(ruta)
     sep = _detectar_separador(ruta, codificacion)
+    texto = None
+    if codificacion != "utf-16":
+        with open(ruta, encoding=codificacion, newline="") as f:
+            texto = f.read()
+        formato = _formato_json(texto)
+        if formato:
+            df, avisos = _leer_csv_json(texto, sep, formato, ruta.name)
+            lineas = _lineas_de_datos(ruta)
+            if lineas != len(df):
+                avisos.append(f"{ruta.name}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
+                              "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")
+            return _anadir_sin_cortes(df, texto, ruta.name, avisos), avisos
     try:
         with warnings.catch_warnings():
             # "Length of header or names does not match": pandas perdería campos
@@ -615,6 +847,9 @@ def leer_csv(ruta):
         if lineas != len(df):
             avisos.append(f"{ruta.name}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
                           "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")
+    if texto is not None:
+        # Los menores de 2023: escapes de JSON sin interpretar, pero las comillas se doblan ('""')
+        df = _anadir_sin_cortes(df, texto, ruta.name, avisos)
     return df, avisos
 
 

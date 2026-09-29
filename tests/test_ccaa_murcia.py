@@ -489,3 +489,203 @@ def test_un_arreglo_de_lectura_llega_a_las_filas_ya_guardadas(portal, tmp_path, 
     assert set(despues["OBJETO"]) == {"SEÑALIZACIÓN – 5 €"}             # el arreglo llega a todas
     assert despues["_en_ultima_descarga"].all()
     assert despues["_primera_descarga"].tolist() == antes["_primera_descarga"].tolist()   # historia intacta
+
+
+# ---------------------------------------------------------------------------
+# CSV del exportador JSON de datosabiertos.carm.es/odata (líneas reales de los
+# crudos del VPS, 2026-09-28): comillas escapadas con barra, cortes de línea
+# escritos como \n cada 80 caracteres y restos de la lista JSON al final
+# ---------------------------------------------------------------------------
+
+CAB_OD = ["ejercicio", "codinscripcion", "tipocontrato", "procedimiento", "objeto", "importlicitacion",
+          "importadjudicacion", "adjudicatariodescripcion", "adjudicatariocodigo", "fechaformalizacion",
+          "duracion", "organo", "cpvcodigo", "cpvdescripcion", "nummodificaciones", "codigoOrgano", "fechaInicio"]
+# El texto de los campos va como lo publica el portal (r'...': \" y \n son barra + carácter)
+OD_1262 = [r'2019', r'1262/2019', r'OBRAS', r'OTROS',
+           r'EMERGENCIA DE OBRAS EN LOS CENTROS IES \"MENARGUEZ COSTA\", CEIP \"BIENVENIDO CONEJ\nERO\" Y CEIP '
+           r'\"PETRA SÁNCHEZ ROLLÁN\" Y SERVICIOS DE LIMPIEZA EN 29 INSTITUTOS DE L\nA REGIÓN DE MURCIA.',
+           r'273928.75', r'273928.75', r'CONSTRUCCIONES URDECON SA', r'A30032205', r'20/09/2019', r'3 meses y 8 días',
+           r'C. DE EDUCACION Y CULTURA', r'45200000', r'TRABAJOS GENERALES DE CONSTRUCCIÓN', r'0', r'15', r'20/09/2019']
+OD_649 = [r'2019', r'649/2019', r'PRIVADOS', r'NEGOCIACIÓN SIN PUBLICIDAD',
+          r'CONTRATACIÓN DEL SERVICIO DE MANTENIMIENTO, PREVENTIVO Y CORRECTIVO, A REALIZAR\nEN LOS EQUIPOS INSTAL'
+          r'ADOS EN EL ANIMALARIO DEL INSTITUTO MURCIANO DE INVESTIGACI\nÓN BIOSANITARIA ¿VIRGEN DE LA ARRIXACA\"',
+          r'26136', r'26133.97', r'ANTONIO MATACHANA S.A.', r'A08238578', r'02/04/2019', r'12 meses',
+          r'FUNDACIÓN PARA LA FORMACIÓN E INVESTIGACIÓN SANITARIAS', r'50000000', r'SERVICIOS DE REPARACIÓN', r'0',
+          r'91', r'02/04/2019']
+OD_ESCAPES = [r'2019', r'1068/2019', r'PRIVADOS', r'NEGOCIACIÓN SIN PUBLICIDAD',
+              r'OBRAS EN EL CENTRO DE SALUD DE\tLA MANGA PARA LA EJECUCIÓ\u0093N', r'100', r'90', r'EMPRESA, S.L.',
+              r'B30000000', r'01/01/2019', r'1 mes', r'C. DE SALUD', r'45000000', r'OBRAS', r'0', r'14', r'01/01/2019']
+
+
+def _csv_json(cabecera, filas):
+    """CSV como los del exportador: todo entre comillas, separado por comas y con LF."""
+    return "\n".join(",".join(f'"{v}"' for v in fila) for fila in [cabecera] + filas).encode("utf-8")
+
+
+def test_comillas_escapadas_con_barra_no_corren_columnas(tmp_path):
+    """contratosOD 2019-2023: el portal escapa las comillas del texto con barra ('\\"'). Antes el
+    campo se cerraba en esa comilla: 1262/2019 se corría a la derecha (adjudicatario '273928.75' y
+    _columna_extra_1) y 649/2019 a la izquierda sin ninguna marca (el adjudicatario en
+    importadjudicacion)."""
+    ruta = tmp_path / "contratosOD2019.csv"
+    ruta.write_bytes(_csv_json(CAB_OD, [OD_1262, OD_649, OD_ESCAPES]))
+    df, avisos = M.leer_tabla(ruta)
+    assert not [c for c in df.columns if c.startswith("_columna_extra")]
+    assert df["codinscripcion"].tolist() == ["1262/2019", "649/2019", "1068/2019"]
+    assert df["importlicitacion"].tolist() == ["273928.75", "26136", "100"]
+    assert df["importadjudicacion"].tolist() == ["273928.75", "26133.97", "90"]
+    assert df["adjudicatariodescripcion"].tolist() == ["CONSTRUCCIONES URDECON SA", "ANTONIO MATACHANA S.A.",
+                                                      "EMPRESA, S.L."]
+    assert df["adjudicatariocodigo"].tolist() == ["A30032205", "A08238578", "B30000000"]
+    assert df["fechaInicio"].tolist() == ["20/09/2019", "02/04/2019", "01/01/2019"]
+    # \" es la comilla del texto (como '""'); el resto de secuencias se sirven tal cual
+    assert df["objeto"].iloc[0] == (
+        r'EMERGENCIA DE OBRAS EN LOS CENTROS IES "MENARGUEZ COSTA", CEIP "BIENVENIDO CONEJ\nERO" Y CEIP '
+        r'"PETRA SÁNCHEZ ROLLÁN" Y SERVICIOS DE LIMPIEZA EN 29 INSTITUTOS DE L\nA REGIÓN DE MURCIA.')
+    assert df["objeto"].iloc[1].endswith(r'INVESTIGACI\nÓN BIOSANITARIA ¿VIRGEN DE LA ARRIXACA"')
+    assert df["objeto"].iloc[2] == r'OBRAS EN EL CENTRO DE SALUD DE\tLA MANGA PARA LA EJECUCIÓ\u0093N'
+    assert any("comillas escapadas con barra" in a for a in avisos)
+
+
+def test_cortes_de_linea_cada_80_caracteres_van_aparte(tmp_path):
+    """El exportador parte el texto en líneas de 80 caracteres (\\n escrito) y recorta el espacio del
+    final: un trozo de 80 se une tal cual y uno de 79 con el espacio recortado. La columna original
+    no cambia; el texto sin cortes va en _<columna>_sin_cortes (nulo en las filas sin cortes)."""
+    ruta = tmp_path / "contratosOD2019.csv"
+    ruta.write_bytes(_csv_json(CAB_OD, [OD_1262, OD_649, OD_ESCAPES]))
+    df, avisos = M.leer_tabla(ruta)
+    assert _v(df["_objeto_sin_cortes"]) == [
+        'EMERGENCIA DE OBRAS EN LOS CENTROS IES "MENARGUEZ COSTA", CEIP "BIENVENIDO CONEJERO" Y CEIP '
+        '"PETRA SÁNCHEZ ROLLÁN" Y SERVICIOS DE LIMPIEZA EN 29 INSTITUTOS DE LA REGIÓN DE MURCIA.',
+        'CONTRATACIÓN DEL SERVICIO DE MANTENIMIENTO, PREVENTIVO Y CORRECTIVO, A REALIZAR EN LOS EQUIPOS '
+        'INSTALADOS EN EL ANIMALARIO DEL INSTITUTO MURCIANO DE INVESTIGACIÓN BIOSANITARIA ¿VIRGEN DE LA '
+        'ARRIXACA"',
+        None]
+    assert "\\n" in df["objeto"].iloc[0]                      # el original, tal cual
+    assert "_adjudicatariodescripcion_sin_cortes" not in df.columns
+    assert any("_objeto_sin_cortes" in a for a in avisos)
+
+
+@pytest.mark.parametrize("valor, esperado", [
+    ("A" * 80 + r"\nB", "A" * 80 + "B"),                              # 80: el corte cae dentro de la palabra
+    ("A" * 79 + r"\nB", "A" * 79 + " B"),                             # 79: el carácter 80 era un espacio
+    ("A" * 80 + r"\n B", "A" * 80 + " B"),                            # 80 y el espacio en la línea siguiente
+    ("Guantes latex" + r"\n- 4", "Guantes latex - 4"),                 # salto de línea del texto original
+    ("A" * 78 + "\u00d3" + r"\u0093" + r"\nN", "A" * 78 + "\u00d3" + r"\u0093" + "N"),   # \u0093 cuenta uno
+    ("A" * 78 + r"\t" + "B" + r"\nC", "A" * 78 + r"\t" + "BC"),                       # \t también
+    (r"\nA", "A"), ("A" * 80 + r"\n", "A" * 80), ("A" + r"\n\n" + "B", "A B"),
+    ("SIN CORTES", None), (None, None),
+])
+def test_texto_sin_cortes(valor, esperado):
+    assert M.texto_sin_cortes(valor) == esperado
+
+
+def test_barras_que_no_son_escapes_de_json_se_leen_como_siempre(tmp_path):
+    """Los menores de 2024-2025 traen barras del texto ('RD 390\\2021'): no es el exportador JSON
+    (no todas las barras son secuencias válidas), así que ni '\\"' ni '\\n' se interpretan."""
+    ruta = tmp_path / "CONTRA_ContratosMenores_2024.csv"
+    ruta.write_bytes('CODEXPEDIENTE,OBJETO_CONTRATO_MENOR,IMPORTE\n2024/1,"Según el RD 390\\2021 y C:\\nuevo",10\n'
+                     '2024/2,Normal,20\n'.encode("utf-8"))
+    df, avisos = M.leer_tabla(ruta)
+    assert df["OBJETO_CONTRATO_MENOR"].tolist() == ["Según el RD 390\\2021 y C:\\nuevo", "Normal"]
+    assert [c for c in df.columns if c.startswith("_")] == []
+
+
+def test_menores_con_comillas_dobladas_y_cortes(tmp_path):
+    """Los menores de 2023 traen los cortes \\n del exportador pero doblan las comillas ('""'):
+    se leen como siempre (pandas) y el texto sin cortes va aparte."""
+    ruta = tmp_path / "CONTRA_ContratosMenores_2023.csv"
+    obj = "Contratación de la difusión de varias campañas publicitarias en el ámbito de la" + r"\n" + "salud"
+    ruta.write_bytes(('"CODEXPEDIENTE","OBJETO_CONTRATO_MENOR","ADJUDICATARIODESCRIPCION","EJERCICIONUM"\n'
+                      f'"2023/003698","{obj}","EDICIONES ""VITALIDAD"" SL","2023"\n'
+                      '"2023/007031","Gastos alojamiento","VIAJES SL","2023"\n').encode("utf-8"))
+    df, avisos = M.leer_tabla(ruta)
+    assert df["ADJUDICATARIODESCRIPCION"].tolist() == ['EDICIONES "VITALIDAD" SL', "VIAJES SL"]
+    assert df["OBJETO_CONTRATO_MENOR"].iloc[0] == obj
+    assert _v(df["_OBJETO_CONTRATO_MENOR_sin_cortes"]) == [
+        "Contratación de la difusión de varias campañas publicitarias en el ámbito de la salud", None]
+
+
+CAB_MENORES = ["CONSEJERIA-OA-COD", "CONSEJERIA-OA-DESCRIPCION", "ADJUDICATARIO_CIF", "IMPORTE(IVAINCLUIDO)",
+               "EJERCICIO", "TRIMESTRE_NUM"]
+
+
+def test_menores_2018_restos_de_la_lista_json_al_final(tmp_path):
+    """CONTRA_ContratosMenores_2018 y 2022 acaban en '"4"]' y una línea ']'. Antes: TRIMESTRE_NUM '4]'
+    y una fila con ']' como código de consejería. Ahora el ']' va a _resto_json y la línea ']' sigue
+    siendo una fila (solo con _resto_json): ninguna fila ya descargada desaparece."""
+    ruta = tmp_path / "CONTRA_ContratosMenores_2018.csv"
+    ruta.write_bytes(('"' + '","'.join(CAB_MENORES) + '"\n'
+                      '"19","Consejería de Turismo","B73656985","1289.99","2018","4"\n'
+                      '"16","Consejería de Empleo","B73335069","208","2018","4"]\n]').encode("utf-8"))
+    df, avisos = M.leer_tabla(ruta)
+    assert len(df) == 3
+    assert _v(df["CONSEJERIA-OA-COD"]) == ["19", "16", None]
+    assert _v(df["TRIMESTRE_NUM"]) == ["4", "4", None]
+    assert _v(df["_resto_json"]) == [None, "]", "]"]
+    assert df.drop(columns="_resto_json").iloc[2].isna().all()
+    assert any("restos de la lista JSON" in a for a in avisos)
+
+
+def test_menores_2017_y_2019_lineas_con_espacios_y_final(tmp_path):
+    """Los menores de 2017 y 2019 llevan cada línea rodeada de espacios (' "14",...,"4" '): antes el
+    código de consejería era ' "14"' (con las comillas) y el trimestre '4 '. El de 2019 acaba además en
+    '"4"","' y una línea ' ' (que no era ni es una fila)."""
+    cabecera = '"' + '","'.join(CAB_MENORES) + '"\n'
+    for anio, final, resto in (("2017", '"4" \n ', None), ("2019", '"4"","\n ', '","')):
+        ruta = tmp_path / f"CONTRA_ContratosMenores_{anio}.csv"
+        ruta.write_bytes((cabecera + f' "14","Consejería de Fomento","B73802571","35952.29","{anio}","4" \n'
+                          f' "51","IMAS (""ASPRODES"")","B73083461","72,77","{anio}",' + final).encode("utf-8"))
+        df, avisos = M.leer_tabla(ruta)
+        assert df["CONSEJERIA-OA-COD"].tolist() == ["14", "51"]
+        assert df["TRIMESTRE_NUM"].tolist() == ["4", "4"]
+        assert df["CONSEJERIA-OA-DESCRIPCION"].tolist() == ["Consejería de Fomento", 'IMAS ("ASPRODES")']
+        assert df["IMPORTE(IVAINCLUIDO)"].tolist() == ["35952.29", "72,77"]
+        if resto:
+            assert _v(df["_resto_json"]) == [None, resto]
+        else:
+            assert "_resto_json" not in df.columns
+        assert any("espacios alrededor" in a for a in avisos)
+
+
+def test_menores_2021_comillas_con_barra(tmp_path):
+    """CONTRA_ContratosMenores_2021 y 2022 escapan las comillas con barra: antes el adjudicatario
+    quedaba 'ASOC DE PROMOCION AL DEFECIENTE \\ASPRODES\\""'; los ficheros de 2020 y 2023 publican el
+    mismo nombre como 'ASOC DE PROMOCION AL DEFECIENTE "ASPRODES"'. Las filas de 2021 no traen el
+    último campo (TRIMESTRENUM), como en el portal."""
+    cab = ["UNIDAD", "CPVDESCRIPCION", "ADJUDICATARIOCODIGO", "ADJUDICATARIODESCRIPCION", "VALORCONTABPAGO",
+           "EJERCICIONUM", "TRIMESTRENUM"]
+    ruta = tmp_path / "CONTRA_ContratosMenores_2021.csv"
+    ruta.write_bytes(_csv_json(cab, [
+        [r"51", r"HUEVOS", r"G30033146", r'ASOC DE PROMOCION AL DEFECIENTE \"ASPRODES\"', r"131,04", r"2021"],
+        [r"14", r"SERVICIOS DE REPARACIÓN Y MANTENIMIENTO DE MAQUINARIA ELÉCTRICA, APARATOS Y EQUI\nPO ASOCIADO",
+         r"B30811814", r"GISPERT SL", r"10", r"2021"]]))
+    df, _ = M.leer_tabla(ruta)
+    assert df["ADJUDICATARIODESCRIPCION"].tolist() == ['ASOC DE PROMOCION AL DEFECIENTE "ASPRODES"', "GISPERT SL"]
+    assert df["VALORCONTABPAGO"].tolist() == ["131,04", "10"]
+    assert _v(df["TRIMESTRENUM"]) == [None, None]
+    assert _v(df["_CPVDESCRIPCION_sin_cortes"]) == [
+        None, "SERVICIOS DE REPARACIÓN Y MANTENIMIENTO DE MAQUINARIA ELÉCTRICA, APARATOS Y EQUIPO ASOCIADO"]
+
+
+def test_exportador_json_de_punta_a_punta(portal, tmp_path):
+    """Por el portal simulado: contratosOD2019 y los menores de 2018 llegan al Parquet leídos bien
+    (sin _columna_extra_N, con _objeto_sin_cortes y _resto_json) y los originales quedan tal cual en raw/."""
+    portal.urls[url_carm(2019)] = _csv_json(CAB_OD, [OD_1262, OD_649])
+    menores_2018 = ('"' + '","'.join(CAB_MENORES) + '"\n'
+                    '"16","Consejería de Empleo","B73335069","208","2018","4"]\n]').encode("utf-8")
+    portal.urls[url_menores(2018)] = menores_2018
+    assert _ejecutar(tmp_path, desde=2018) == 0
+    df = pq.read_table(tmp_path / "contratos_carm.parquet").to_pandas()
+    od = df[df["_anio_fichero"] == "2019"]
+    assert od["adjudicatariodescripcion"].tolist() == ["CONSTRUCCIONES URDECON SA", "ANTONIO MATACHANA S.A."]
+    assert not [c for c in df.columns if c.startswith("_columna_extra")]
+    assert od["_objeto_sin_cortes"].str.contains("INVESTIGACIÓN BIOSANITARIA").tolist() == [False, True]
+    assert df.loc[df["_anio_fichero"] != "2019", "_objeto_sin_cortes"].isna().all()
+    men = pq.read_table(tmp_path / "contratos_menores_carm.parquet").to_pandas()
+    m18 = men[men["_anio_fichero"] == "2018"]
+    assert _v(m18["TRIMESTRE_NUM"]) == ["4", None] and _v(m18["_resto_json"]) == ["]", "]"]
+    assert m18["_en_ultima_descarga"].all()
+    raw = tmp_path / "raw"
+    assert (raw / "contratos_carm" / "contratosOD2019.csv").read_bytes() == _csv_json(CAB_OD, [OD_1262, OD_649])
+    assert (raw / "contratos_menores_carm" / "CONTRA_ContratosMenores_2018.csv").read_bytes() == menores_2018
