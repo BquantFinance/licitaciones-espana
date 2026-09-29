@@ -2023,5 +2023,335 @@ class GaliciaHistoricoTests(unittest.TestCase):
         )
 
 
+# ── Semilla de organismos que el portal ha retirado enteros ─────────────────
+
+def seed_lic(org, rid):
+    """Licitación de la semilla del organismo `org` (published_seed)."""
+    return dict(fake_lic_records(1, first_id=rid)[0], _organismo_id=org, _tipo="LIC")
+
+
+def seed_cm(org, rid, publicado="2019-02-02T00:00:00+0100"):
+    """Contrato menor de la semilla del organismo `org` (published_seed)."""
+    return dict(fake_cm_records(1, first_id=rid)[0], _organismo_id=org, _tipo="CM", publicado=publicado)
+
+
+def read_manifest(output_dir):
+    return json.loads((Path(output_dir) / scraper_galicia.BASE_PROGRESS_NAME).read_text(encoding="utf-8"))
+
+
+def seed_added(final):
+    """(_tipo, id) de las filas de la tabla final que vienen de la semilla."""
+    return sorted(zip(final.loc[final["_origen"] != "", "_tipo"], final.loc[final["_origen"] != "", "id"]))
+
+
+class GaliciaOrganismosRetiradosTests(unittest.TestCase):
+    """Filas de la semilla de organismos que el portal ha retirado enteros
+    (decisión 4 del propietario, PLAN_PUESTA_A_PUNTO): se añaden solo si la
+    descarga leyó la lista completa de organismos del portal y no están en ella."""
+
+    def _portal(self):
+        # Organismos 2 (LIC), 3 (CM) y 48 (los dos). La paginación se salta un CM del
+        # 48 (2023-06-01), así que su ventana llega incompleta. El 5 ya no está.
+        portal = FakePortal(
+            lic={2: fake_lic_records(3, first_id=700000), 48: fake_lic_records(2)},
+            cm={
+                3: fake_cm_records(4, first_id=600000),
+                48: fake_cm_records(3) + [dict(fake_cm_records(1)[0], id=500099, publicado="2023-06-01T00:00:00+0100")],
+            },
+        )
+        portal.hidden_ids = {500099}
+        return portal
+
+    def test_seed_rows_of_an_organism_missing_from_the_portal_list_are_added(self):
+        portal = self._portal()
+        seed_rows = [
+            # 5: no está en la lista del portal (retirado entero): se añaden
+            seed_lic(5, 910000), seed_lic(5, 910001), seed_cm(5, 910100),
+            # 99: fuera de los ids probados (--max-org-id 48): no se sabe, no se añade
+            seed_lic(99, 990000),
+            # 48 está en la lista: un CM de su ventana incompleta no se añade
+            seed_cm(48, 500098, "2023-06-01T00:00:00+0100"),
+            # 3 está en la lista: un CM retirado de una ventana completa sí (ámbito)
+            seed_cm(3, 600009),
+            # 2: una licitación que sigue en el portal (clave presente)
+            seed_lic(2, 700000),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", seed_rows)
+            out = tmp / "salida"
+            code, stdout = run_at(cli_args(out, "--max-org-id", "48", "--semilla", str(seed)), portal, FECHA_1)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+            manifest = read_manifest(out)
+            # Otro merge con la misma semilla no añade nada ni cambia la tabla
+            before = snapshot(out)
+            code, stdout2 = run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_1)
+            self.assertEqual(code, 0)
+            self.assertEqual(snapshot(out), before)
+            self.assertEqual(historico(out), [])
+
+        self.assertIn("7 filas leídas → 4 añadidas", stdout)
+        self.assertIn("2 filas de la semilla fuera del ámbito", stdout)
+        self.assertIn("organismo 99: 1", stdout)
+        self.assertIn("organismo 48: 1", stdout)
+        self.assertIn("3 filas añadidas de 1 organismos que el portal ha retirado enteros", stdout)
+        self.assertIn(f"no están en su lista de organismos del {FECHA_1}): organismo 5: 3", stdout)
+        self.assertIn("de semillas 4 (de organismos retirados 3)", stdout)
+        self.assertIn("7 filas leídas → 0 añadidas", stdout2)
+        self.assertNotIn("retirado enteros", stdout2)
+        self.assertEqual(
+            seed_added(final),
+            [("CM", "600009"), ("CM", "910100"), ("LIC", "910000"), ("LIC", "910001")],
+        )
+        added = final[final["_origen"] != ""]
+        self.assertEqual(set(added["_origen"]), {"release v2026.02"})
+        self.assertEqual(set(added["_en_ultima_descarga"]), {"False"})
+        self.assertEqual(set(added["_primera_descarga"]) | set(added["_ultima_descarga"]), {""})
+        self.assertEqual(set(added.loc[added["_organismo_id"] == "5", scraper_galicia.SEED_AMOUNT_COLUMN]),
+                         {"123456", "67478"})
+        self.assertEqual(set(final.loc[final["_origen"] == "", "_en_ultima_descarga"]), {"True"})
+        # La lista de organismos del portal queda en el manifiesto
+        self.assertEqual(len(manifest["descubrimientos"]), 1)
+        lista = manifest["descubrimientos"][0]
+        self.assertEqual((lista["fecha"], lista["hasta"]), (FECHA_1, 48))
+        self.assertEqual(
+            lista["organismos"],
+            {"2": {"CM": 0, "LIC": 3}, "3": {"CM": 4, "LIC": 0}, "48": {"CM": 4, "LIC": 2}},
+        )
+
+    def test_download_without_the_portal_list_retires_no_organism(self):
+        seed_rows = [seed_lic(5, 910000), seed_cm(5, 910100), seed_lic(48, 824009)]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", seed_rows)
+            # 1. Descarga de un solo organismo: no lee la lista de organismos
+            single = tmp / "organismo"
+            code, stdout = run_at(
+                cli_args(single, "--organismo", "48", "--semilla", str(seed)), self._portal(), FECHA_1
+            )
+            self.assertEqual(code, 0)
+            self.assertNotIn("descubrimientos", read_manifest(single))
+            single_added = seed_added(read_final(single))
+            # 2. Descarga de la versión anterior del scraper: manifiesto sin la lista
+            legacy = tmp / "anterior"
+            self.assertEqual(run_at(cli_args(legacy, "base", "--max-org-id", "48"), self._portal(), FECHA_1)[0], 0)
+            manifest = read_manifest(legacy)
+            del manifest["descubrimientos"]
+            (legacy / scraper_galicia.BASE_PROGRESS_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+            code, stdout_legacy = run_at(cli_args(legacy, "merge", "--semilla", str(seed)), self._portal(), FECHA_1)
+            self.assertEqual(code, 0)
+            legacy_added = seed_added(read_final(legacy))
+            # 3. CSV base sin manifiesto (versión más antigua)
+            (legacy / scraper_galicia.BASE_PROGRESS_NAME).unlink()
+            code, stdout_none = run_at(cli_args(legacy, "merge", "--semilla", str(seed)), self._portal(), FECHA_1)
+            self.assertEqual(code, 0)
+            none_added = seed_added(read_final(legacy))
+
+        # La licitación retirada del 48 (leído completo) sí se añade; las del 5, no
+        self.assertEqual(single_added, [("LIC", "824009")])
+        self.assertEqual(legacy_added, [("LIC", "824009")])
+        self.assertEqual(none_added, [("LIC", "824009")])
+        for out in (stdout, stdout_legacy, stdout_none):
+            self.assertIn("sin la lista completa de organismos del portal", out)
+            self.assertIn("no se da por retirado ningún organismo; 2 filas de la semilla de 1 organismos que "
+                          "esta descarga no ha leído no se añaden", out)
+            self.assertIn("(de organismos retirados 0)", out)
+            self.assertNotIn("retirado enteros", out)
+        self.assertIn("descarga con --organismo", stdout)
+
+    def test_resume_of_an_old_download_only_reads_the_list(self):
+        portal = self._portal()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", [seed_lic(5, 910000), seed_lic(2, 700000)])
+            out = tmp / "salida"
+            # Descarga completa del código anterior (sin lista) ya acumulada
+            self.assertEqual(run_at(cli_args(out, "base", "--max-org-id", "48"), portal, FECHA_1)[0], 0)
+            manifest = read_manifest(out)
+            del manifest["descubrimientos"]
+            (out / scraper_galicia.BASE_PROGRESS_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_1)[0], 0)
+            self.assertEqual(seed_added(read_final(out)), [])
+            base_before = (out / scraper_galicia.BASE_CSV_NAME).read_bytes()
+            # --resume: solo lee la lista (no vuelve a pedir ningún organismo) y el
+            # merge siguiente añade el retirado
+            portal.requests.clear()
+            self.assertEqual(run_at(cli_args(out, "base", "--resume", "--max-org-id", "48"), portal, FECHA_2)[0], 0)
+            scans = [r for r in portal.requests if "/table" in r["url"] and r["params"]["length"] != "1"]
+            code, stdout = run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_2)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+            manifest = read_manifest(out)
+            base_after = (out / scraper_galicia.BASE_CSV_NAME).read_bytes()
+
+        self.assertEqual(scans, [])
+        self.assertEqual(base_after, base_before)
+        self.assertEqual([d["fecha"] for d in manifest["descubrimientos"]], [FECHA_2])
+        self.assertEqual(manifest["fecha_descarga"], FECHA_1)
+        self.assertEqual(seed_added(final), [("LIC", "910000")])
+        self.assertIn("1 filas añadidas de 1 organismos que el portal ha retirado enteros", stdout)
+        self.assertEqual(set(final.loc[final["_origen"] == "", "_ultima_descarga"]), {FECHA_1})
+
+    def test_interrupted_download_does_not_retire_listed_organisms_it_did_not_read(self):
+        portal = self._portal()
+        portal.fail_orgs = {48}
+        seed_rows = [
+            seed_lic(5, 910000),
+            # Del 48, que está en la lista pero la descarga se corta antes de leerlo
+            seed_lic(48, 824009),
+            seed_cm(48, 500097),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", seed_rows)
+            out = tmp / "salida"
+            code, _ = run_at(cli_args(out, "base", "--max-org-id", "48"), portal, FECHA_1)
+            self.assertEqual(code, 1)
+            code, stdout = run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_1)
+            self.assertEqual(code, 0)
+            partial = seed_added(read_final(out))
+            # Se reanuda sin el fallo: el 48 se lee y sus filas retiradas entran por el ámbito
+            portal.fail_orgs = set()
+            self.assertEqual(run_at(cli_args(out, "base", "--resume", "--max-org-id", "48"), portal, FECHA_2)[0], 0)
+            code, stdout2 = run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_2)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+            manifest = read_manifest(out)
+
+        self.assertEqual(partial, [("LIC", "910000")])
+        self.assertIn("2 filas de la semilla fuera del ámbito", stdout)
+        self.assertIn("organismo 48: 2", stdout)
+        self.assertIn("1 filas añadidas de 1 organismos que el portal ha retirado enteros", stdout)
+        self.assertEqual(seed_added(final), [("CM", "500097"), ("LIC", "824009"), ("LIC", "910000")])
+        self.assertIn("3 filas leídas → 2 añadidas", stdout2)
+        self.assertEqual(len(final[(final["_tipo"] == "LIC") & (final["id"] == "910000")]), 1)
+        # Cada ejecución de base sin --organismo guarda su lista
+        self.assertEqual([d["fecha"] for d in manifest["descubrimientos"]], [FECHA_1, FECHA_2])
+
+    def test_organism_listed_before_a_resume_is_not_retired_by_the_resumed_list(self):
+        portal = self._portal()
+        portal.fail_orgs = {48}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", [seed_lic(48, 824000), seed_lic(5, 910000)])
+            out = tmp / "salida"
+            self.assertEqual(run_at(cli_args(out, "base", "--max-org-id", "48"), portal, FECHA_1)[0], 1)
+            # Al reanudar, el 48 ya no está en la lista, pero estaba en la de la misma
+            # descarga y no se llegó a leer: no se da por retirado
+            portal.fail_orgs = set()
+            del portal.lic[48], portal.cm[48]
+            self.assertEqual(run_at(cli_args(out, "base", "--resume", "--max-org-id", "48"), portal, FECHA_2)[0], 0)
+            code, stdout = run_at(cli_args(out, "merge", "--semilla", str(seed)), portal, FECHA_2)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+            manifest = read_manifest(out)
+
+        self.assertEqual(seed_added(final), [("LIC", "910000")])
+        self.assertIn("organismo 48: 1", stdout)
+        self.assertEqual([sorted(d["organismos"]) for d in manifest["descubrimientos"]], [["2", "3", "48"], ["2", "3"]])
+
+    def test_implausible_portal_list_retires_no_organism(self):
+        # Ningún organismo con contratos menores: la sonda de CM ha respondido vacío
+        portal = FakePortal(lic={2: fake_lic_records(3, first_id=700000), 48: fake_lic_records(2)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", [seed_lic(5, 910000), seed_cm(5, 910100)])
+            out = tmp / "salida"
+            code, stdout = run_at(cli_args(out, "--max-org-id", "48", "--semilla", str(seed)), portal, FECHA_1)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+
+        self.assertEqual(seed_added(final), [])
+        self.assertIn(f"la lista de organismos del {FECHA_1} no trae ninguno con CM", stdout)
+        self.assertIn("2 filas de la semilla de 1 organismos que esta descarga no ha leído no se añaden", stdout)
+
+    def test_too_many_retired_organisms_retire_none_until_confirmed(self):
+        seed_rows = [seed_lic(5, 910000), seed_lic(6, 920000), seed_cm(6, 920100), seed_lic(7, 930000),
+                     seed_lic(48, 824009)]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            seed = published_seed(tmp / "publicado.parquet", seed_rows)
+            out = tmp / "salida"
+            code, stdout = run_at(
+                cli_args(out, "--max-org-id", "48", "--semilla", str(seed), "--max-organismos-retirados", "2"),
+                self._portal(), FECHA_1,
+            )
+            self.assertEqual(code, 0)
+            blocked = seed_added(read_final(out))
+            code, stdout2 = run_at(
+                cli_args(out, "merge", "--semilla", str(seed), "--max-organismos-retirados", "3"),
+                self._portal(), FECHA_1,
+            )
+            self.assertEqual(code, 0)
+            confirmed = seed_added(read_final(out))
+            before = snapshot(out)
+            code, stdout3 = run_at(
+                cli_args(out, "merge", "--semilla", str(seed), "--max-organismos-retirados", "-1"),
+                self._portal(), FECHA_1,
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("--max-organismos-retirados no puede ser negativo", stdout3)
+            self.assertEqual(snapshot(out), before)
+
+        self.assertEqual(blocked, [("LIC", "824009")])
+        self.assertIn("5 filas leídas → 1 añadidas", stdout)
+        self.assertIn("4 filas de la semilla fuera del ámbito", stdout)
+        self.assertIn("3 organismos de la semilla añadirían filas por no estar en la lista del portal, más que "
+                      "--max-organismos-retirados (2)", stdout)
+        self.assertIn("repite 'merge' con --max-organismos-retirados 3: organismo 6: 2", stdout)
+        self.assertEqual(
+            confirmed,
+            [("CM", "920100"), ("LIC", "824009"), ("LIC", "910000"), ("LIC", "920000"), ("LIC", "930000")],
+        )
+        self.assertIn("4 filas añadidas de 3 organismos que el portal ha retirado enteros", stdout2)
+
+    def test_zero_rows_seed_and_seed_without_retired_organisms(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            empty = published_seed(tmp / "vacia.parquet", [])
+            present = published_seed(tmp / "presentes.parquet", [seed_lic(2, 700000), seed_cm(3, 600009)])
+            out = tmp / "salida"
+            code, stdout = run_at(
+                cli_args(out, "--max-org-id", "48", "--semilla", str(empty), "--semilla", str(present)),
+                self._portal(), FECHA_1,
+            )
+            self.assertEqual(code, 0)
+            final = read_final(out)
+
+        self.assertIn("0 filas leídas → 0 añadidas", stdout)
+        self.assertIn("2 filas leídas → 1 añadidas", stdout)
+        self.assertNotIn("retirado enteros", stdout)
+        self.assertNotIn("sin la lista completa", stdout)
+        self.assertIn("de semillas 1 (de organismos retirados 0)", stdout)
+        self.assertEqual(seed_added(final), [("CM", "600009")])
+
+    def test_portal_organisms_and_retired_organisms(self):
+        portal_organisms = scraper_galicia.portal_organisms
+        retired_organisms = scraper_galicia.retired_organisms
+
+        def lista(fecha, hasta, organismos):
+            return {"fecha": fecha, "hasta": hasta, "organismos": organismos}
+
+        uno = lista(FECHA_1, 48, {"2": {"CM": 0, "LIC": 3}, "3": {"CM": 4, "LIC": 0}})
+        otra = lista(FECHA_2, 40, {"2": {"CM": 0, "LIC": 3}, "3": {"CM": 4, "LIC": 0}, "9": {"CM": 1, "LIC": 0}})
+        # Sin lista, con una sonda que ha respondido vacío para todos o ilegible: no hay lista
+        self.assertIn("motivo", portal_organisms({}))
+        self.assertIn("motivo", portal_organisms({"descubrimientos": []}))
+        self.assertIn("motivo", portal_organisms({"descubrimientos": [lista(FECHA_1, 48, {"2": {"CM": 0, "LIC": 3}})]}))
+        self.assertIn("motivo", portal_organisms({"descubrimientos": [uno, lista(FECHA_2, 48, {"3": {"CM": 4}})]}))
+        self.assertIn("motivo", portal_organisms({"descubrimientos": [{"fecha": FECHA_1, "organismos": {}}]}))
+        self.assertIn("motivo", portal_organisms({"descubrimientos": [dict(uno, hasta="x")]}))
+        # Dos listas en la misma descarga: presentes en alguna, ids probados en todas
+        portal = portal_organisms({"descubrimientos": [uno, otra]})
+        self.assertEqual(portal, {"presentes": {"2", "3", "9"}, "hasta": 40, "fechas": [FECHA_1, FECHA_2]})
+        orgs = ["2", "3", "5", "9", "12", "40", "41", "0", "", "x", "5.5", "١٢"]
+        self.assertEqual(retired_organisms(orgs, portal, {}), {"5", "12", "40"})
+        # Uno que la descarga ha leído (ámbito) no está retirado aunque no esté en la lista
+        self.assertEqual(retired_organisms(orgs, portal, {"12": {}}), {"5", "40"})
+        self.assertEqual(retired_organisms(orgs, {"motivo": "sin lista"}, {}), set())
+        self.assertEqual(retired_organisms([], portal, {}), set())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,12 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   dentro de la ventana; también una ventana vacía (0 y 0: ese trimestre ya no
   tiene contratos), salvo que el organismo entero responda vacío (recordsTotal
   0 o ninguna fila en ninguna ventana): una respuesta vacía no retira nada.
+  Guarda también la lista de organismos del portal ('descubrimientos'): la que
+  lee cada ejecución sin --organismo antes de barrer (discover prueba los ids
+  1..--max-org-id y se queda con los que declaran algún contrato, CM o LIC;
+  para ante cualquier sonda fallida, así que es completa; un --resume añade la
+  suya), con su fecha, el último id probado y lo que declara cada organismo
+  de CM y de LIC.
 - Caché de detalle (SQLite): nunca se borra. Una ficha ya descargada ('done')
   no se sustituye por un error ni por una ficha vacía (sin pares ni tablas);
   si el portal la cambia, la anterior pasa a la tabla detail_cache_historico.
@@ -60,10 +66,30 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   instantánea más antigua. Solo se añaden las filas cuya clave estable
   (_tipo, id) no está en la tabla (descarga nueva, contratos retirados y
   semillas ya incorporadas), y solo del ámbito de la descarga (fuera de él no
-  se sabe si el portal las sigue listando), con _origen='release v2026.02' (o
+  se sabe si el portal las sigue listando) o de un organismo que el portal ha
+  retirado entero (ver abajo), con _origen='release v2026.02' (o
   --origen-semilla) y _en_ultima_descarga=False; nunca se modifica ni se
   duplica una fila de la descarga. (_tipo, id) es único en el publicado
   (1.685.789 filas); el id solo no lo es (25.593 ids son a la vez CM y LIC).
+  Organismos retirados enteros (decisión del propietario, sep-2026: sus filas
+  de la semilla son la única copia que queda): un organismo de la semilla lo
+  está si la descarga tiene lista de organismos del portal, su id se ha
+  probado en todas las de la descarga (1..hasta), no está en ninguna y la
+  descarga no lo ha leído (no está en su ámbito). Uno que está en la lista y
+  la descarga no ha leído (un corte, un --resume a medias) no lo está: sus
+  filas quedan fuera del ámbito. No se da por retirado ninguno, y se avisa,
+  si la descarga no tiene lista (--organismo, o descargada por una versión
+  anterior del scraper: hace falta una descarga base sin --organismo con esta
+  versión), si alguna lista no trae ningún organismo con CM o ninguno con LIC
+  (una de las sondas ha respondido vacío para todos) o si los organismos
+  retirados que añaden filas son más de --max-organismos-retirados (20):
+  tantos a la vez apuntan a una lista mal leída; se listan para revisarlo y
+  repetir 'merge' con un máximo mayor. El informe de la semilla da las filas
+  añadidas por organismo retirado; en la tabla van como las demás de la
+  semilla. Riesgo que queda: un organismo al que las dos sondas respondan
+  vacío por error en todas las listas de la descarga se da por retirado (sus
+  filas de la semilla entran con _en_ultima_descarga=False; si vuelve, su
+  descarga entra como alta).
   Errores conocidos del publicado (v2026.02, scraper antiguo) y qué se hace:
   * importe inflado x10/x100: el scraper antiguo quitaba el punto decimal del
     número JSON (674.78 -> 67478; 14900.0 -> 149000). No se puede deshacer con
@@ -235,6 +261,10 @@ SEED_KEY = ["_tipo", "id"]
 # Columnas de contenido con que seleccionar_semilla compara una fila de la
 # semilla con la clave incompleta (no hay ninguna en v2026.02).
 SEED_CONTENT_COLUMNS = ("_organismo_id", "objeto", "publicado", "nif", "adjudicatario")
+# Organismos de la semilla que el portal ha retirado enteros (apply_seed): si
+# añadirían filas más de estos, no se da por retirado ninguno (--max-organismos-retirados).
+# Tantos a la vez apuntan a una lista de organismos mal leída; la semilla tiene 418.
+MAX_ORGANISMOS_RETIRADOS = 20
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1327,6 +1357,22 @@ def resume_base_manifest(output_dir):
     }
 
 
+def discovery_record(org_list, max_org_id):
+    """Lista de organismos del portal que ha leído discover(), para el
+    manifiesto ('descubrimientos'): fecha, último id probado ('hasta': se prueban
+    los ids 1..hasta) y, por organismo con algún contrato, los que declara de
+    cada tipo. Es completa: discover() para ante cualquier sonda fallida. Con
+    ella merge sabe qué organismos ha retirado el portal enteros
+    (portal_organisms)."""
+    return {
+        "fecha": iso_utc(),
+        "hasta": int(max_org_id),
+        "organismos": {
+            str(org_id): {"CM": int(cm or 0), "LIC": int(lic or 0)} for org_id, cm, lic in org_list
+        },
+    }
+
+
 def scope_from_report(informe):
     """Ámbito de un organismo (manifiesto) a partir de lo que ha informado su
     paginación: LIC si está completa y CM con sus ventanas completas y no vacías
@@ -1431,6 +1477,11 @@ def run_base_scrape(
 
     if not org_list:
         raise ScraperError("No se encontraron organismos.")
+    if not organismo:
+        # La lista completa de organismos del portal (discovery_record); cada
+        # --resume añade la suya. Con --organismo no hay lista: merge no da por
+        # retirado ningún organismo.
+        manifest.setdefault("descubrimientos", []).append(discovery_record(org_list, max_org_id))
 
     pending_orgs = [item for item in org_list if item[0] not in completed_orgs]
     skipped_orgs = len(org_list) - len(pending_orgs)
@@ -2609,6 +2660,60 @@ def rows_in_scope(df, ambito):
     return inside
 
 
+def portal_organisms(manifest):
+    """Organismos que lista el portal según las listas que ha leído la descarga
+    (manifiesto, 'descubrimientos': discovery_record, una por ejecución de base
+    sin --organismo). Devuelve {'presentes': ids (texto) que están en alguna,
+    'hasta': el menor último id probado, 'fechas': las de las listas} o, si no
+    hay una lista en que fiarse, {'motivo': por qué}:
+    - la descarga no guardó ninguna (--organismo, o descarga de una versión
+      anterior del scraper): no se sabe qué organismos lista el portal;
+    - alguna no trae ningún organismo con contratos menores o ninguno con
+      licitaciones: una de las dos sondas de discover() ha respondido vacío
+      para todos (p. ej. sin contexto de sesión) y la lista no es la del portal;
+    - el manifiesto no se puede leer."""
+    descubrimientos = manifest.get("descubrimientos") or []
+    if not descubrimientos:
+        return {"motivo": "la descarga no guardó la lista de organismos del portal: descarga con --organismo "
+                          "o de una versión anterior del scraper"}
+    presentes = set()
+    try:
+        for descubrimiento in descubrimientos:
+            organismos = descubrimiento["organismos"]
+            for tipo in ("CM", "LIC"):
+                if not any(int(declarados.get(tipo) or 0) > 0 for declarados in organismos.values()):
+                    return {"motivo": f"la lista de organismos del {descubrimiento.get('fecha')} no trae ninguno con "
+                                      f"{tipo}: esa sonda ha respondido vacío para todos"}
+            presentes.update(str(int(org)) for org in organismos)
+        hasta = min(int(descubrimiento["hasta"]) for descubrimiento in descubrimientos)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return {"motivo": "la lista de organismos del manifiesto no se puede leer"}
+    return {"presentes": presentes, "hasta": hasta, "fechas": [d.get("fecha") for d in descubrimientos]}
+
+
+ORG_ID_RE = re.compile(r"[0-9]+")
+
+
+def retired_organisms(orgs, portal, ambito):
+    """Organismos de `orgs` (ids como texto, _org_keys) que el portal ha retirado
+    enteros según `portal` (portal_organisms): su id se ha probado en todas las
+    listas de la descarga (1..hasta), no está en ninguna y la descarga no lo ha
+    leído (no está en `ambito`, effective_scope). Uno que está en la lista y que
+    la descarga no ha leído (un corte, un --resume a medias) no está retirado.
+    Sin lista (portal con 'motivo'), ninguno."""
+    if "presentes" not in portal:
+        return set()
+    retired = set()
+    for org in set(orgs):
+        if not ORG_ID_RE.fullmatch(org):
+            continue
+        canon = str(int(org))
+        if 1 <= int(org) <= portal["hasta"] and canon not in portal["presentes"] \
+                and canon not in ambito and org not in ambito:
+            retired.add(org)
+    return retired
+
+
 def read_previous_final(output_dir):
     """Registros de la tabla final anterior, de su CSV (el texto tal cual), sin las
     columnas de la ficha (se vuelven a sacar al escribir). None si no hay. Una
@@ -2752,13 +2857,52 @@ def check_seeds(semillas, output_dir):
             raise ScraperError(f"La semilla {path} es una salida de {output_dir}: usa otra carpeta de salida")
 
 
-def apply_seed(acumulado, path, ambito, origen_semilla=None):
+def _detail_by_org(counts, n=10):
+    """{'organismo X': filas} de los n organismos con más filas y 'otros'."""
+    detalle = {f"organismo {org}": int(rows) for org, rows in counts.head(n).items()}
+    if len(counts) > n:
+        detalle["otros"] = int(counts.iloc[n:].sum())
+    return detalle
+
+
+def print_retired_report(report):
+    """Imprime la parte de organismos retirados del informe de una semilla
+    (apply_seed)."""
+    if report.get("sin_lista"):
+        log_warn(
+            f"Semilla: sin la lista completa de organismos del portal ({report['sin_lista']}): no se da por "
+            f"retirado ningún organismo; {report['no_leidas']:,} filas de la semilla de "
+            f"{report['organismos_no_leidos']:,} organismos que esta descarga no ha leído no se añaden"
+        )
+    elif report.get("bloqueados"):
+        log_warn(
+            f"Semilla: {report['organismos_bloqueados']:,} organismos de la semilla añadirían filas por no estar "
+            f"en la lista del portal, más que --max-organismos-retirados ({report['maximo']:,}): no se da por "
+            "retirado ninguno, por si la lista está mal (el portal ha respondido vacío a algunas sondas). "
+            f"Si es correcto, repite 'merge' con --max-organismos-retirados {report['organismos_bloqueados']}: "
+            + ", ".join(f"{k}: {n:,}" for k, n in report["bloqueados"].items())
+        )
+    elif report["organismos"]:
+        log(
+            f"Semilla: {report['anadidas']:,} filas añadidas de {report['organismos']:,} organismos que el portal "
+            f"ha retirado enteros (no están en su lista de organismos del {', '.join(map(str, report['lista']))}): "
+            + ", ".join(f"{k}: {n:,}" for k, n in report["detalle"].items())
+        )
+
+
+def apply_seed(acumulado, path, ambito, origen_semilla=None, portal=None, max_retirados=None):
     """Añade a `acumulado` las filas de la semilla `path` (parquet) cuya clave
     (_tipo, id) no está en la tabla, solo del ámbito de la descarga
-    (rows_in_scope), con _origen (el suyo o origen_semilla / 'release v2026.02')
-    y _en_ultima_descarga=False (seleccionar_semilla, como sembrar). Nunca
-    modifica ni duplica una fila de la tabla. Devuelve (tabla, informe, fichas
-    de la semilla por posición en la tabla, si trae columnas de la ficha)."""
+    (rows_in_scope) o de un organismo que el portal ha retirado entero
+    (retired_organisms con `portal`, de portal_organisms), con _origen (el suyo
+    o origen_semilla / 'release v2026.02') y _en_ultima_descarga=False
+    (seleccionar_semilla, como sembrar). Nunca modifica ni duplica una fila de
+    la tabla. Si los organismos retirados que añaden filas son más de
+    max_retirados (MAX_ORGANISMOS_RETIRADOS), no se da por retirado ninguno:
+    tantos apuntan a una lista mal leída. Devuelve (tabla, informe, fichas de
+    la semilla por posición en la tabla, si trae columnas de la ficha); el
+    informe lleva en 'organismos_retirados' las filas añadidas por organismo
+    retirado (o por qué no hay ninguno)."""
     import pyarrow.parquet as pq
 
     path = Path(path)
@@ -2783,25 +2927,49 @@ def apply_seed(acumulado, path, ambito, origen_semilla=None):
 
     view = seed_text(SEED_KEY + ["_organismo_id", "publicado"])
     seed_keys = _key_frame(view)
+    orgs = _org_keys(view["_organismo_id"])
     inside = rows_in_scope(view, ambito)
+    # Las filas de un organismo que el portal ha retirado entero (decisión del
+    # propietario: son la única copia) se tratan como las del ámbito.
+    portal = portal if portal is not None else {"motivo": "sin lista de organismos del portal"}
+    max_retirados = MAX_ORGANISMOS_RETIRADOS if max_retirados is None else max_retirados
+    retired = pd.Series(orgs, dtype=object).isin(retired_organisms(orgs, portal, ambito)).to_numpy()
     contenido = [c for c in SEED_CONTENT_COLUMNS if c in table.column_names and c in acumulado.columns]
     motivo = seleccionar_semilla(
         _key_frame(acumulado),
         seed_keys,
         lambda filas: acumulado.iloc[filas][contenido].reset_index(drop=True),
         lambda filas: seed_text(contenido, filas),
-        inside,
+        inside | retired,
+    )
+    # Filas que añadiría cada organismo retirado. Si son demasiados organismos,
+    # ninguno cuenta como retirado (sus filas quedan fuera del ámbito, como si no
+    # lo estuvieran: el motivo de cada fila no depende de las demás).
+    by_retired = pd.Series(orgs[retired & (motivo == ANADIDA)], dtype=object).value_counts()
+    report = {"lista": portal.get("fechas"), "sin_lista": portal.get("motivo"), "maximo": max_retirados}
+    if len(by_retired) > max_retirados:
+        motivo[retired] = FUERA_AMBITO
+        report.update(organismos_bloqueados=int(len(by_retired)), bloqueados=_detail_by_org(by_retired))
+        by_retired = by_retired.iloc[:0]
+    not_read = (motivo == FUERA_AMBITO) & ~pd.Series(orgs, dtype=object).isin(set(ambito)).to_numpy()
+    report.update(
+        organismos=int(len(by_retired)),
+        anadidas=int(by_retired.sum()),
+        detalle=_detail_by_org(by_retired),
+        # Filas fuera del ámbito de organismos que la descarga no ha leído (y no
+        # están retirados): los que están en la lista y no se han leído, los de
+        # fuera de los ids probados o todos si no hay lista.
+        no_leidas=int(not_read.sum()),
+        organismos_no_leidos=int(len(set(orgs[not_read]))),
     )
     informe = informe_semilla(motivo, origen, seed_keys)
     informe["ruta"] = str(path)
+    informe["organismos_retirados"] = report
     outside = motivo == FUERA_AMBITO
     if outside.any():
-        by_org = pd.Series(_org_keys(view["_organismo_id"])[outside]).value_counts()
-        detalle = {f"organismo {org}": int(n) for org, n in by_org.head(10).items()}
-        if len(by_org) > 10:
-            detalle["otros"] = int(by_org.iloc[10:].sum())
-        informe["fuera_ambito_detalle"] = detalle
+        informe["fuera_ambito_detalle"] = _detail_by_org(pd.Series(orgs[outside], dtype=object).value_counts())
     imprimir_informe_semilla(informe)
+    print_retired_report(report)
 
     rows = np.flatnonzero(motivo == ANADIDA)
     added = seed_as_text(table.take(rows).to_pandas(), published=not ours)
@@ -2919,11 +3087,13 @@ def write_final_csv(acumulado, tmp_path, conn, fieldnames, previous_csv, n_previ
     return total_rows
 
 
-def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=(), origen_semilla=None):
+def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=(), origen_semilla=None,
+                          max_retirados=None):
     """Tabla final contratos_galicia.csv/.parquet: la tabla anterior acumulada con
-    la descarga base (accumulate_listing), las semillas (apply_seed) y las fichas
-    de la caché de detalle. Se publica con guardar_version (la anterior va a
-    _historico/; si no cambia nada no se toca). Una descarga base vacía no
+    la descarga base (accumulate_listing), las semillas (apply_seed, con la
+    lista de organismos del portal de la descarga: portal_organisms) y las
+    fichas de la caché de detalle. Se publica con guardar_version (la anterior
+    va a _historico/; si no cambia nada no se toca). Una descarga base vacía no
     cambia nada (ScraperError)."""
     output_dir = Path(output_dir)
     base_csv_path = output_dir / BASE_CSV_NAME
@@ -2944,11 +3114,18 @@ def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=()
     del previous, new
 
     seed_details = {}
-    seeded = 0
+    seeded = seeded_retired = 0
+    portal = portal_organisms(manifest)
+    if semillas and "presentes" in portal:
+        log(
+            f"Lista de organismos del portal de esta descarga ({', '.join(map(str, portal['fechas']))}): "
+            f"{len(portal['presentes']):,} organismos con contratos entre los ids 1 y {portal['hasta']:,}"
+        )
     for path in semillas or ():
         before = len(acumulado)
-        acumulado, _, details = apply_seed(acumulado, path, ambito, origen_semilla)
+        acumulado, informe, details = apply_seed(acumulado, path, ambito, origen_semilla, portal, max_retirados)
         seeded += len(acumulado) - before
+        seeded_retired += informe["organismos_retirados"]["anadidas"]
         seed_details.update(details)
 
     # Columnas: las del CSV base, las de la ficha, las 3 de control y después
@@ -2980,7 +3157,8 @@ def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=()
         f"[FINAL] descarga del {fecha}: {summary['descargadas']:,} filas; tabla anterior {summary['anteriores']:,} "
         f"| altas (contratos nuevos o cambiados) {summary['altas']:,} | retiradas en esta descarga "
         f"{summary['retiradas']:,} | vigentes sin volver a ver, fuera del ámbito {summary['fuera_ambito']:,} "
-        f"| de semillas {seeded:,} | total {len(acumulado):,} ({current:,} en la última descarga)"
+        f"| de semillas {seeded:,} (de organismos retirados {seeded_retired:,}) | total {len(acumulado):,} "
+        f"({current:,} en la última descarga)"
     )
     return final_csv_path, parquet_path
 
@@ -3037,13 +3215,22 @@ def build_parser():
         help=(
             "Parquet publicado (p. ej. contratos_galicia.parquet de v2026.02) que se incorpora en merge como la "
             "instantánea más antigua: solo las filas cuya clave (_tipo, id) no está en la tabla y del ámbito "
-            "de la descarga. Repetible"
+            "de la descarga o de un organismo que el portal ha retirado entero (no está en su lista). Repetible"
         ),
     )
     parser.add_argument(
         "--origen-semilla",
         default=None,
         help=f"_origen de las filas añadidas desde --semilla (por defecto '{ORIGEN_SEMILLA}')",
+    )
+    parser.add_argument(
+        "--max-organismos-retirados",
+        type=int,
+        default=MAX_ORGANISMOS_RETIRADOS,
+        help=(
+            "Con --semilla: si más organismos que estos añadirían filas por no estar en la lista de organismos "
+            f"del portal, no se da por retirado ninguno (por defecto {MAX_ORGANISMOS_RETIRADOS}; con 0, nunca)"
+        ),
     )
     parser.add_argument(
         "--autosave-every",
@@ -3164,6 +3351,8 @@ def main(argv=None):
         final_csv_path = None
         final_parquet_path = None
 
+        if args.max_organismos_retirados < 0:
+            raise ScraperError("--max-organismos-retirados no puede ser negativo (con 0 no se da por retirado ninguno).")
         if args.semilla:
             if args.mode not in ("all", "merge"):
                 raise ScraperError("--semilla solo se aplica en merge (o all).")
@@ -3213,7 +3402,10 @@ def main(argv=None):
             if not base_csv_path.exists():
                 raise ScraperError(f"No existe el base CSV: {base_csv_path}")
             final_csv_path, final_parquet_path = merge_base_and_detail(
-                output_dir, semillas=args.semilla, origen_semilla=args.origen_semilla
+                output_dir,
+                semillas=args.semilla,
+                origen_semilla=args.origen_semilla,
+                max_retirados=args.max_organismos_retirados,
             )
 
         elapsed = time.time() - t0
