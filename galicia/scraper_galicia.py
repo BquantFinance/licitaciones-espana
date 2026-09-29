@@ -10,7 +10,10 @@ TODO el histórico, TODOS los organismos, TODOS los campos posibles.
 
 Fases: base (listados JSON de LIC y CM por organismo) -> detail (ficha HTML de
 cada contrato, en caché SQLite) -> merge (tabla final contratos_galicia.csv y
-.parquet). Todo se puede repetir y reanudar (--resume).
+.parquet). Todo se puede repetir y reanudar (--resume). La ficha es la única
+fuente del adjudicatario y del importe adjudicado de las licitaciones (y de su
+procedimiento, tipo, CPV y fecha de formalización); el despliegue del VPS
+(despliegue/vps/fuentes/galicia.sh) aún no ejecuta 'detail'.
 
 SESGO DEL SUPERVIVIENTE (comun/historico.py; docs/CONTINUACION.md §2)
 El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
@@ -38,7 +41,29 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   1..--max-org-id y se queda con los que declaran algún contrato, CM o LIC;
   para ante cualquier sonda fallida, así que es completa; un --resume añade la
   suya), con su fecha, el último id probado y lo que declara cada organismo
-  de CM y de LIC.
+  de CM y de LIC. Y el nombre de cada organismo leído ('nombres'), de su
+  página (consultaOrganismo.jsp), que el scraper visita para la sesión.
+- Paginación de los listados: por id (ORDER_COLUMN), único en cada listado. Antes
+  se pedían por 'publicado', que no es único: con empates el portal no da el
+  mismo orden en cada página, repite filas y se salta otras (29-sep-2026: 45
+  ventanas de CM incompletas en 16 organismos, 989 menores sin descargar; con
+  el orden por id, las 45 llegan completas a la primera, 19.364 de 19.364).
+  Una ventana de CM o un listado de LIC que no llega completo se repite hasta
+  REINTENTOS_PAGINACION veces, visitando antes otra vez la página del organismo
+  (por si se ha perdido el contexto de sesión). Vale la primera pasada completa
+  que trae todo lo visto en las anteriores; si ninguna, se guardan las filas de
+  todas (una por id, la última versión) y queda fuera del ámbito (manifiesto:
+  'intentos' y 'juntadas' de cada ventana incompleta). Una repetición que
+  responde vacía no borra lo visto. Y una respuesta con recordsTotal 0 no
+  confirma ninguna ventana, tampoco vacía: el portal no dice que el organismo
+  tenga contratos (sin contexto de sesión responde así); antes una ventana 0/0
+  a mitad de un organismo contaba como trimestre vacío y retiraba sus contratos.
+- Nombre del organismo (_organismo_nombre, en la tabla final detrás de las
+  columnas del CSV base): el de 'nombres' de esta descarga o, si no lo ha
+  leído (retirado, --organismo, página que no carga), el que tenía en la tabla
+  anterior o, si tampoco, el de la semilla (si es una salida de este script);
+  es el nombre actual en todas las filas del organismo, como lo enseña el
+  portal. No es del listado: no cuenta al comparar versiones.
 - Caché de detalle (SQLite): nunca se borra. Una ficha ya descargada ('done')
   no se sustituye por un error ni por una ficha vacía (sin pares ni tablas);
   si el portal la cambia, la anterior pasa a la tabla detail_cache_historico.
@@ -60,7 +85,9 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   '4' o '4.0' (el tipo de la columna depende de qué más trae el organismo) no
   es un cambio. Las columnas de la ficha no se comparan: salen de la caché (o,
   si la caché no tiene la ficha, de la tabla final anterior). Con una sola
-  descarga la tabla es la de siempre más las 3 columnas de control al final.
+  descarga la tabla es la de siempre más _organismo_nombre (detrás de las
+  columnas del CSV base) y las 3 columnas de control (al final, antes de las de
+  la semilla si las hay: _origen, importe_semilla).
   Repetir 'merge' sin descarga nueva no cambia nada.
 - --semilla <parquet publicado> (repetible): el publicado se incorpora como la
   instantánea más antigua. Solo se añaden las filas cuya clave estable
@@ -174,6 +201,17 @@ DATE_ORIGIN = "2000-01-01"  # barrer hasta aquí, sin parar antes
 PAGE_SIZE = 100
 DELAY = 0.5
 MAX_RETRIES = 3
+# Orden de las páginas de los listados: por id (columna 0), único dentro de cada listado.
+# Antes se pedían por 'publicado' (columna 1, la del navegador), que no es único: con
+# empates el portal no da el mismo orden en cada página, repite filas y se salta otras
+# (29-sep-2026: 45 ventanas de CM de 16 organismos, 989 menores sin descargar). Medido en
+# vivo el 29-sep: la ventana 25-may/25-ago-2018 del organismo 235 da 911 ids distintos de
+# 911 por id y 828 por 'publicado'.
+ORDER_COLUMN = "0"
+ORDER_DIR = "desc"
+# Veces que se repite una ventana de CM (o el listado de LIC de un organismo) que no llega
+# completa, juntando las filas nuevas; la pausa antes de cada repetición es 4 × --delay.
+REINTENTOS_PAGINACION = 2
 
 # Ventana para CM (meses). El browser usa 3 meses. NO paramos antes.
 CM_WINDOW_MONTHS = 3
@@ -257,6 +295,9 @@ LISTING_DATE_COLUMNS = ("publicado", "modificado")
 FINGERPRINT_CHUNK_ROWS = 200_000
 # Semilla publicada por el scraper antiguo: su importe inflado (ver arriba).
 SEED_AMOUNT_COLUMN = "importe_semilla"
+# Nombre del organismo en la tabla final (organism_names_column): no es del listado, no
+# cuenta al comparar versiones y va detrás de las columnas del CSV base.
+ORG_NAME_COLUMN = "_organismo_nombre"
 SEED_KEY = ["_tipo", "id"]
 # Columnas de contenido con que seleccionar_semilla compara una fila de la
 # semilla con la clave incompleta (no hay ninguna en v2026.02).
@@ -307,6 +348,8 @@ class Session:
         self.n_requests = 0
         self.n_errors = 0
         self.current_org_id = None
+        # Nombre de cada organismo en su página (organism_name), según se visitan
+        self.org_names = {}
         self._init()
 
     def _request(
@@ -398,12 +441,13 @@ class Session:
         log(f"Cookies OK: {list(self.s.cookies.get_dict().keys())}")
 
     def visit_org_page(self, org_id):
-        """Visita la página del organismo para establecer contexto de sesión."""
+        """Visita la página del organismo para establecer contexto de sesión y anota su
+        nombre (organism_name) en org_names."""
         self.s.headers["Referer"] = (
             f"{BASE_URL}/consultaOrganismo.jsp?OR={org_id}&N={org_id}&lang=es"
         )
         try:
-            self._request(
+            response = self._request(
                 f"{BASE_URL}/consultaOrganismo.jsp?OR={org_id}&N={org_id}&lang=es",
                 timeout=15,
                 label=f"visita organismo {org_id}",
@@ -411,6 +455,10 @@ class Session:
             self.current_org_id = org_id
         except ScraperError as exc:
             log_warn(f"No se pudo visitar la página del organismo {org_id}: {exc}")
+            return
+        name = organism_name(getattr(response, "text", ""))
+        if name:
+            self.org_names[org_id] = name
 
     def ensure_org_context(self, org_id):
         if self.current_org_id != org_id:
@@ -446,6 +494,30 @@ class Session:
             count_error=count_error,
         )
         return response.text
+
+
+def organism_name(html):
+    """Nombre del organismo en su página (consultaOrganismo.jsp): el <h2> de
+    <div id="objeto"> o, si no está, el <title> «Detalle perfil contratante: <nombre> -
+    Contratos Públicos de Galicia», con los espacios juntos. Es el nombre actual: el
+    portal lo enseña igual en todas las fichas del organismo (docs/etl_v2/grupo7.md de la
+    web). None si no se encuentra."""
+    if not isinstance(html, str) or not html:
+        return None
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:  # noqa: BLE001 - una página rara no para la descarga
+        return None
+    tag = soup.select_one("#objeto h2")
+    text = tag.get_text(" ", strip=True) if tag is not None else ""
+    if not text and soup.title is not None:
+        match = re.match(
+            r"\s*Detalle perfil contratante:\s*(.*?)\s*-\s*Contratos P\S*blicos de Galicia\s*$",
+            soup.title.get_text(" ", strip=True),
+        )
+        text = match.group(1) if match else ""
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
 
 
 DETAIL_FIELD_MAP = {
@@ -875,8 +947,8 @@ def params_cm(start, length, date_start, date_end, draw=1):
         "length": str(length),
         "search[value]": "",
         "search[regex]": "false",
-        "order[0][column]": "1",
-        "order[0][dir]": "desc",
+        "order[0][column]": ORDER_COLUMN,
+        "order[0][dir]": ORDER_DIR,
         "datestart": date_start,
         "dateend": date_end,
         "_": str(int(time.time() * 1000)),
@@ -892,8 +964,8 @@ def params_lic(start, length, draw=1):
         "length": str(length),
         "search[value]": "",
         "search[regex]": "false",
-        "order[0][column]": "1",
-        "order[0][dir]": "desc",
+        "order[0][column]": ORDER_COLUMN,
+        "order[0][dir]": ORDER_DIR,
         "idioma": "es",
         "total": "",
         "estados": "",
@@ -1000,17 +1072,8 @@ def discover(session, max_id, workers=5):
 # PAGINATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def paginate_lic(session, org_id, informe=None):
-    """Todas las licitaciones de un organismo.
-
-    informe (dict, opcional): se anota en informe["LIC"] si la paginación está
-    completa (exactamente recordsTotal filas, todas con id distinto, y alguna):
-    solo entonces sus licitaciones cuentan como vueltas a leer (ámbito) y las
-    que falten se pueden dar por retiradas.
-    """
-    url = f"{BASE_URL}/api/v1/organismos/{org_id}/licitaciones/table"
-    session.visit_org_page(org_id)
-
+def _paginate_lic_once(session, org_id, url):
+    """Una pasada por las páginas del listado de licitaciones: (filas, recordsTotal)."""
     all_recs = []
     start = 0
     total = None
@@ -1024,9 +1087,7 @@ def paginate_lic(session, org_id, informe=None):
         if total is None:
             total = data.get("recordsTotal", 0)
             if total == 0:
-                if informe is not None:
-                    informe["LIC"] = {"declarados": 0, "filas": 0, "unicos": 0, "completo": False}
-                return []
+                return [], 0
             log(f"Org {org_id} LIC: {total:,} registros")
 
         recs = data.get("data", [])
@@ -1046,26 +1107,95 @@ def paginate_lic(session, org_id, informe=None):
         if start >= total:
             break
         time.sleep(DELAY)
+    return all_recs, total
 
-    if total and total > 0:
-        # Por ids únicos: si la paginación repite filas (orden por fecha con empates) el
-        # número de filas cuadra aunque falten licitaciones, y to_dataframe quita el duplicado
-        unique = len({str(r.get("id")) for r in all_recs})
-        ok = "✓" if len(all_recs) == total and unique == total else "⚠"
-        sys.stdout.write(f"\r    Org {org_id} LIC: {len(all_recs):,}/{total:,} {ok}          \n")
-        sys.stdout.flush()
-        if len(all_recs) != total or unique != total:
-            log_warn(
-                f"Org {org_id} LIC: DESAJUSTE esperados={total:,} descargados={len(all_recs):,} "
-                f"únicos={unique:,} (sus licitaciones no se dan por retiradas en esta descarga)"
-            )
+
+def _record_key(record):
+    """Id de una fila del listado como texto comparable, o None si no lo trae."""
+    rid = record.get("id")
+    return None if rid in (None, "") else normalize_record_id(rid)
+
+
+def _join_new(joined, recs):
+    """Junta en `joined` (id -> fila, en el orden en que aparecen) las filas de `recs` con
+    id; de una fila que llega en varias pasadas manda la última (la versión más reciente).
+    Las filas sin id no se pueden juntar entre pasadas: van las de la última."""
+    for record in recs:
+        key = _record_key(record)
+        if key is not None:
+            joined[key] = record
+
+
+def _ids(recs):
+    """Ids (_record_key) distintos de unas filas, sin las que no traen id."""
+    return {key for key in map(_record_key, recs) if key is not None}
+
+
+def paginate_lic(session, org_id, informe=None):
+    """Todas las licitaciones de un organismo.
+
+    informe (dict, opcional): se anota en informe["LIC"] si la paginación está
+    completa (exactamente recordsTotal filas, todas con id distinto, y alguna):
+    solo entonces sus licitaciones cuentan como vueltas a leer (ámbito) y las
+    que falten se pueden dar por retiradas. Si una pasada no llega completa se
+    repite hasta REINTENTOS_PAGINACION veces (visitando antes otra vez la página del
+    organismo, por si se ha perdido el contexto de sesión). Vale la primera pasada
+    completa que trae todo lo visto en las anteriores; si ninguna, se guardan las
+    filas de todas (una por id, la última versión) y queda incompleta. Una repetición
+    que responde vacía (recordsTotal 0) no borra lo visto.
+    """
+    url = f"{BASE_URL}/api/v1/organismos/{org_id}/licitaciones/table"
+    session.visit_org_page(org_id)
+
+    joined, last_without_id = {}, []
+    complete = False
+    total = 0
+    for intento in range(REINTENTOS_PAGINACION + 1):
+        if intento:
+            log_warn(f"Org {org_id} LIC: se repite el listado ({intento}/{REINTENTOS_PAGINACION})")
+            time.sleep(DELAY * 4)
+            session.visit_org_page(org_id)
+        all_recs, pass_total = _paginate_lic_once(session, org_id, url)
+        if not pass_total:
+            if intento:
+                continue  # una respuesta vacía no borra lo visto en las pasadas anteriores
+            if informe is not None:
+                informe["LIC"] = {"declarados": 0, "filas": 0, "unicos": 0, "completo": False}
+            return []
+        total = pass_total
+        # Por ids distintos (sin contar las filas sin id): si la paginación repite filas el
+        # número de filas cuadra aunque falten licitaciones. Y sin perder nada de lo visto
+        # antes: si falta algo, el listado ha cambiado mientras se leía.
+        ids = _ids(all_recs)
+        if len(all_recs) == total and len(ids) == total and set(joined) <= ids:
+            complete = True
+            if intento:
+                log(f"Org {org_id} LIC: completo al repetir el listado ({total:,})")
+            break
+        _join_new(joined, all_recs)
+        last_without_id = [record for record in all_recs if _record_key(record) is None]
+    if not complete:
+        # Ninguna pasada completa: todas las filas vistas (una por id) y las de la última sin
+        # id. Queda incompleta aunque junte tantas como declara el portal: pueden ser de
+        # listados distintos (una licitación retirada entre dos pasadas y otra nueva).
+        all_recs = list(joined.values()) + last_without_id
+
+    unique = len({str(r.get("id")) for r in all_recs if r.get("id") not in (None, "")})
+    ok = "✓" if complete else "⚠"
+    sys.stdout.write(f"\r    Org {org_id} LIC: {len(all_recs):,}/{total:,} {ok}          \n")
+    sys.stdout.flush()
+    if not complete:
+        log_warn(
+            f"Org {org_id} LIC: DESAJUSTE esperados={total:,} descargados={len(all_recs):,} "
+            f"únicos={unique:,} tras {REINTENTOS_PAGINACION + 1} pasadas (sus licitaciones no se dan por "
+            "retiradas en esta descarga)"
+        )
     if informe is not None:
-        unique = len({str(r.get("id")) for r in all_recs if r.get("id") not in (None, "")})
         informe["LIC"] = {
             "declarados": total or 0,
             "filas": len(all_recs),
             "unicos": unique,
-            "completo": bool(total) and len(all_recs) == unique == total,
+            "completo": complete,
         }
 
     for r in all_recs:
@@ -1152,6 +1282,58 @@ def window_check(recs, date_start, date_end, informe):
     return informe
 
 
+def paginate_cm_window_complete(session, org_id, date_start, date_end, org_declared=0):
+    """paginate_cm_window + window_check de una ventana, repitiéndola hasta
+    REINTENTOS_PAGINACION veces si no llega completa (el portal cambia mientras se
+    pagina, o se pierde el contexto de sesión: antes de repetir se visita otra vez la
+    página del organismo). Vale la primera pasada completa que trae todo lo visto en
+    las anteriores; si ninguna, se guardan las filas de todas (una por id, la última
+    versión; las sin id, de la última) y la ventana queda incompleta: una repetición
+    que responde vacía no borra lo visto ni da la ventana por leída.
+    Una respuesta con recordsTotal 0 no confirma la ventana, tampoco vacía: el portal
+    no dice que el organismo tenga contratos (p. ej. sin contexto de sesión). Una
+    ventana vacía sin nada visto no se repite, salvo si el organismo ya ha declarado
+    contratos (`org_declared`, el mayor recordsTotal de sus ventanas anteriores) y la
+    respuesta trae recordsTotal 0. Devuelve (filas, recordsTotal, informe de
+    window_check con 'intentos'; si la ventana queda incompleta, el de la pasada en que
+    el portal declaró más filas)."""
+    joined, last_without_id = {}, []
+    reported_max = 0
+    best = None
+    for intento in range(REINTENTOS_PAGINACION + 1):
+        if intento:
+            log_warn(
+                f"Org {org_id} CM [{date_start}→{date_end}]: se repite la ventana "
+                f"({intento}/{REINTENTOS_PAGINACION}; el portal declara {window['filtrados']}, "
+                f"{window['unicos']:,} ids distintos)"
+            )
+            time.sleep(DELAY * 4)
+            session.visit_org_page(org_id)
+        window = {}
+        recs, reported = paginate_cm_window(session, org_id, date_start, date_end, informe=window)
+        window_check(recs, date_start, date_end, window)
+        window["intentos"] = intento + 1
+        reported_max = max(reported_max, reported)
+        if not reported:
+            window["completa"] = False
+        if best is None or (window.get("filtrados") or 0) >= (best.get("filtrados") or 0):
+            best = window
+        if window["completa"] and set(joined) <= _ids(recs):
+            if intento:
+                log(f"Org {org_id} CM [{date_start}→{date_end}]: completa al repetirla ({window['filas']:,})")
+            return recs, reported, window
+        empty = not (window["filas"] or window["filtrados"])
+        if empty and not joined and (reported or not org_declared):
+            # Ventana vacía y nada visto: no se repite (cuenta como leída si el portal
+            # declara contratos del organismo: ese trimestre ya no tiene)
+            return recs, reported, window
+        _join_new(joined, recs)
+        if not empty:
+            last_without_id = [record for record in recs if _record_key(record) is None]
+    best = dict(best, completa=False, intentos=REINTENTOS_PAGINACION + 1)
+    return list(joined.values()) + last_without_id, reported_max, best
+
+
 def paginate_cm_full(session, org_id, informe=None):
     """
     CM: barre TODAS las ventanas de CM_WINDOW_MONTHS desde hoy hasta DATE_ORIGIN.
@@ -1203,19 +1385,18 @@ def paginate_cm_full(session, org_id, informe=None):
         de = d_end.strftime("%Y-%m-%d")
         total_windows += 1
 
-        window = {}
-        recs, reported = paginate_cm_window(session, org_id, ds, de, informe=window)
+        recs, reported, window = paginate_cm_window_complete(session, org_id, ds, de, org_declared=reported_total)
         reported_total = max(reported_total, reported)
-        window_check(recs, ds, de, window)
         if window["completa"]:
             complete_windows.append([ds, de])
-        elif window["filas"] or window["filtrados"]:
+        elif window["filas"] or window["filtrados"] or window["intentos"] > 1:
+            window["juntadas"] = len(recs)
             incomplete_windows.append(dict(window, desde=ds, hasta=de))
             log_warn(
-                f"Org {org_id} CM [{ds}→{de}]: ventana incompleta (el portal declara "
-                f"{window['filtrados']}, llegan {window['filas']:,} filas, {window['unicos']:,} ids "
-                f"distintos, {window['fuera']:,} fuera de la ventana y {window['sin_id']:,} sin id): "
-                "sus contratos no se dan por retirados en esta descarga"
+                f"Org {org_id} CM [{ds}→{de}]: ventana incompleta tras {window['intentos']} pasadas (el portal "
+                f"declara {window['filtrados']}; en la última llegan {window['filas']:,} filas, {window['unicos']:,} "
+                f"ids distintos, {window['fuera']:,} fuera de la ventana y {window['sin_id']:,} sin id; se guardan "
+                f"{len(recs):,} de todas): sus contratos no se dan por retirados en esta descarga"
             )
 
         new_recs = []
@@ -1394,7 +1575,8 @@ def scope_from_report(informe):
         scope["CM"] = ranges
         if cm.get("incompletas"):
             scope["CM_incompletas"] = [
-                {k: w.get(k) for k in ("desde", "hasta", "filtrados", "filas", "unicos", "fuera", "sin_id")}
+                {k: w.get(k) for k in ("desde", "hasta", "filtrados", "filas", "unicos", "fuera", "sin_id",
+                                       "intentos", "juntadas")}
                 for w in cm["incompletas"]
             ]
     return scope
@@ -1521,6 +1703,10 @@ def run_base_scrape(
         # Lo que se ha vuelto a leer completo de este organismo (ámbito de la
         # descarga): con él merge decide qué contratos se dan por retirados.
         manifest["ambito"][str(org_id)] = scope_from_report(report)
+        # Su nombre, de la página que se visita para la sesión (merge lo lleva a
+        # _organismo_nombre); si no se ha podido leer, merge conserva el anterior.
+        if session.org_names.get(org_id):
+            manifest.setdefault("nombres", {})[str(org_id)] = session.org_names[org_id]
         manifest["acumulada"] = False
         stats["completed_orgs_count"] = len(completed_orgs)
         save_base_progress(output_dir, completed_orgs, stats=stats, manifest=manifest)
@@ -1716,6 +1902,7 @@ PARQUET_DATE_COLUMNS = (
 # de control (_primera_descarga, _ultima_descarga) y _origen son texto.
 PARQUET_TEXT_COLUMNS = (
     "nif",
+    "_organismo_nombre",
     "detail_referencia",
     "detail_cp",
     "detail_telefono",
@@ -3087,6 +3274,36 @@ def write_final_csv(acumulado, tmp_path, conn, fieldnames, previous_csv, n_previ
     return total_rows
 
 
+def known_organism_names(tabla):
+    """{organismo: nombre} de las filas de una tabla que traen _organismo_nombre (si un
+    organismo tiene varios, el de la última fila); {} si no tiene la columna."""
+    if ORG_NAME_COLUMN not in tabla.columns:
+        return {}
+    names = {}
+    for org, name in zip(_org_keys(tabla["_organismo_id"]), tabla[ORG_NAME_COLUMN].astype(object)):
+        if org and not _is_blank(name):
+            names[org] = str(name)
+    return names
+
+
+def organism_names_column(acumulado, manifest, previous=None):
+    """_organismo_nombre de cada fila de la tabla final: el nombre de su organismo en la
+    lista del manifiesto de esta descarga ('nombres', de la página de cada organismo que
+    ha leído) o, si esta descarga no lo ha leído (retirado, --organismo, página que no
+    carga), el que tenía en la tabla anterior (`previous`, known_organism_names antes de
+    sembrar) y, si tampoco, el que traiga la propia fila (una semilla que es una salida
+    de este script). Es el nombre actual del organismo en todas sus filas (también las
+    retiradas y las de la semilla), como lo enseña el portal; los anteriores quedan en
+    las versiones de la tabla en _historico/. '' si no se sabe."""
+    orgs = _org_keys(acumulado["_organismo_id"])
+    names = known_organism_names(acumulado)
+    names.update(previous or {})
+    for org, name in (manifest.get("nombres") or {}).items():
+        if name:
+            names[normalize_record_id(org)] = str(name)
+    return pd.Series([names.get(org, "") for org in orgs], index=acumulado.index, dtype=object)
+
+
 def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=(), origen_semilla=None,
                           max_retirados=None):
     """Tabla final contratos_galicia.csv/.parquet: la tabla anterior acumulada con
@@ -3112,6 +3329,9 @@ def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=()
     n_previous = 0 if previous is None else len(previous)
     acumulado, summary = accumulate_listing(previous, new, fecha, ambito)
     del previous, new
+    # Nombres de organismo de la tabla anterior, antes de unir las semillas (que pueden traer
+    # los suyos, más antiguos)
+    previous_names = known_organism_names(acumulado)
 
     seed_details = {}
     seeded = seeded_retired = 0
@@ -3128,10 +3348,13 @@ def merge_base_and_detail(output_dir, chunksize=BASE_READ_CHUNKSIZE, semillas=()
         seeded_retired += informe["organismos_retirados"]["anadidas"]
         seed_details.update(details)
 
-    # Columnas: las del CSV base, las de la ficha, las 3 de control y después
-    # cualquier otra de la tabla (las de la semilla: _origen, importe_semilla...).
+    acumulado[ORG_NAME_COLUMN] = organism_names_column(acumulado, manifest, previous_names)
+
+    # Columnas: las del CSV base, el nombre del organismo, las de la ficha, las 3 de
+    # control y después cualquier otra de la tabla (las de la semilla: _origen,
+    # importe_semilla...).
     fieldnames = list(dict.fromkeys(
-        base_columns + DETAIL_EXPORT_FIELDS + list(COLUMNAS_META) + list(acumulado.columns)
+        base_columns + [ORG_NAME_COLUMN] + DETAIL_EXPORT_FIELDS + list(COLUMNAS_META) + list(acumulado.columns)
     ))
     conn = init_detail_db(output_dir)
     # Se escribe a un temporal y se publica al terminar (guardar_version): un merge
