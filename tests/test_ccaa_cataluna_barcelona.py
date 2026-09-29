@@ -3,10 +3,13 @@
 - cada recurso se construye con todas sus versiones (comun.historico.acumular): una segunda descarga
   que cambia o retira filas conserva las anteriores con _en_ultima_descarga=False; una versión vacía o
   ilegible no retira nada;
-- los CSV que no son UTF-8 se leen en CP1252 (antes latin-1: el '€' llegaba como chr(128));
+- los CSV se leen en UTF-8 y, solo en las secuencias que no lo son, en CP1252 (antes latin-1: el '€'
+  llegaba como chr(128)); un byte mal codificado no cambia la lectura del resto del fichero;
+- una versión con otra cabecera no se acumula a ciegas: es un caso a revisar (código 1);
 - --semilla añade las publicaciones del perfil de contratante que el release trae y la descarga ya no.
 """
 import importlib.util
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -68,19 +71,111 @@ def test_csv_cp1252_el_euro_y_las_comillas_no_llegan_como_controles_c1(tmp_path)
 
 
 def test_utf8_no_cambia_y_los_bytes_sin_asignar_de_cp1252_no_se_pierden(tmp_path):
-    # UTF-8: como siempre (va primero)
+    # UTF-8: como siempre
     utf8 = _recurso(tmp_path, "contratos_menores", "u.csv", "Nom,Import\nL’Hospitalet,5 €\n")
     assert cp.load_csv(utf8)["Nom"].tolist() == ["L’Hospitalet"]
     # Los 5 bytes que CP1252 no asigna (0x81, 0x8D, 0x8F, 0x90, 0x9D) no hacen fallar la lectura: dan el
-    # control C1 del mismo valor (como latin-1) y se puede volver a los bytes originales
+    # control C1 del mismo valor (como latin-1)
     crudo = b"Nom,Import\nA\x81B\x8dC\x8fD\x90E\x9d,\x80 5\n"
     ruta = _recurso(tmp_path, "contratos_menores", "raro.csv", crudo)
     df = cp.load_csv(ruta)
     assert df["Nom"].tolist() == ["A\x81B\x8dC\x8fD\x90E\x9d"] and df["Import"].tolist() == ["€ 5"]
-    assert "".join(df.iloc[0]).encode(cp.CP1252) == b"A\x81B\x8dC\x8fD\x90E\x9d\x80 5"
-    # Los 256 bytes: un carácter cada uno, ida y vuelta sin pérdida
-    todos = bytes(range(256))
-    assert len(todos.decode(cp.CP1252)) == 256 and todos.decode(cp.CP1252).encode(cp.CP1252) == todos
+    # Cada uno de los 128 bytes altos, suelto (ninguno es UTF-8 válido solo): un carácter, el de CP1252,
+    # distinto para cada byte (no se pierde ninguno)
+    altos = [bytes([b]).decode("utf-8", errors=cp.ERRORES_UTF8) for b in range(0x80, 0x100)]
+    assert all(len(c) == 1 for c in altos) and len(set(altos)) == 128
+    assert (altos[0x80 - 0x80], altos[0x92 - 0x80], altos[0xF3 - 0x80]) == ("€", "’", "ó")
+
+
+def _cp1252_entero(datos):
+    """Los bytes leídos enteros en CP1252, como antes (los 5 sin asignar, como su control C1)."""
+    return "".join(chr(b) if b in (0x81, 0x8D, 0x8F, 0x90, 0x9D) else bytes([b]).decode("cp1252") for b in datos)
+
+
+# Como 2018_menors.csv del VPS: cabecera con un salto de línea dentro de las comillas y texto catalán en
+# varias columnas (una lectura del fichero entero en CP1252 cambia todas)
+CABECERA_2018 = ('"Trimestre","Tipus ens","Òrgan contractant","Tipus Contracte     ","Data \nadjudicació",'
+                 '"Proveïdor","NIF","Objecte del contracte","Import adjudicat","Durada"\r\n')
+FILAS_2018 = ('1,"CONSORCIS","CONSORCI AGÈNCIA LOCAL D\'ECOLOGIA URBANA DE BARCELONA","Serveis","02/01/2018",'
+              '"CENTRAL DE VIAJES, S.L.","B08323404","Contractació servei agència de viatges",24500.00,"12 m"\r\n'
+              '1,"AJUNTAMENT","GERÈNCIA DE RECURSOS","Subministrament","03/01/2018","PAPERERIA L’ÀNCORA, S.L.",'
+              '"B00000001","Material d’oficina",1830.20,"1 m"\r\n'
+              '2,"AJUNTAMENT","DISTRICTE DE SANT MARTÍ","Obres","04/04/2018","CONSTRUCCIONS PÉREZ, S.A.",'
+              '"A00000002","Reparació de voreres",9999.99,"2 m"\r\n')
+COLUMNAS_2018 = ["Trimestre", "Tipus ens", "Òrgan contractant", "Tipus Contracte     ", "Data \nadjudicació",
+                 "Proveïdor", "NIF", "Objecte del contracte", "Import adjudicat", "Durada"]
+
+
+def test_un_byte_cp1252_en_un_utf8_no_cambia_el_resto_del_fichero(tmp_path, monkeypatch):
+    """Revisión de la PR #40 (simulación con el 2018_menors.csv real): una versión nueva igual a la
+    anterior salvo la 'ó' de 'Contractació' escrita en CP1252 (0xF3) dentro del UTF-8 se leía entera en
+    CP1252. Tres cabeceras cambiaban ('Ã’rgan contractant') y la acumulación daba 26.115 de las 39.192
+    filas por retiradas y las volvía a añadir con mojibake (en el ETL de la web, el fichero de 2018 pasaba
+    de 140,6 a 251,4 M€). Ahora solo ese byte se lee en CP1252: la versión nueva es la misma y no cambia
+    nada."""
+    monkeypatch.setattr(cp, "REVISAR", [], raising=False)    # raising=False: corre también con el código anterior
+    anterior = (CABECERA_2018 + FILAS_2018).encode("utf-8")
+    nueva = anterior.replace("Contractació".encode("utf-8"), b"Contractaci\xf3", 1)
+    assert nueva != anterior
+    ruta = _recurso(tmp_path, "contratos_menores", "2018_menors.csv", nueva)
+    _version_anterior(ruta, "20260901T000000Z", anterior.decode("utf-8"))
+    df = _menores(tmp_path, tmp_path / "pq")
+    assert list(df.columns) == COLUMNAS_2018 + ["_año"] + META                 # ninguna cabecera con mojibake
+    assert len(df) == 3 and df["_en_ultima_descarga"].all()                   # nada retirado ni duplicado
+    assert df["_primera_descarga"].tolist() == ["2026-09-01T00:00:00Z"] * 3
+    assert df["Objecte del contracte"].tolist()[0] == "Contractació servei agència de viatges"
+    assert df["Proveïdor"].tolist()[1] == "PAPERERIA L’ÀNCORA, S.L." and cp.REVISAR == []
+
+
+def test_version_con_otra_cabecera_no_se_acumula_y_es_caso_a_revisar(tmp_path, caplog):
+    """Una versión cuya cabecera pierde columnas (aquí, el mismo CSV codificado dos veces en UTF-8: todas
+    las letras con tilde en mojibake, también en la cabecera) no se acumula a ciegas: acumular solo
+    compararía las columnas comunes y daría el fichero por retirado y vuelto a publicar. Se avisa, no se
+    retira ni se duplica nada y main() acaba con código 1. Una columna nueva sí se acumula."""
+    caplog.set_level(logging.INFO)
+    texto = CABECERA_2018 + FILAS_2018
+    mojibake = _cp1252_entero(texto.encode("utf-8"))
+    ruta = _recurso(tmp_path, "contratos_menores", "2018_menors.csv", mojibake.encode("utf-8"))
+    _version_anterior(ruta, "20260901T000000Z", texto)
+    otra = _recurso(tmp_path, "contratos_menores", "2017_menors.csv",
+                    "Expedient,Import,Codi\nE-1,10,A\nE-2,20,B\n")                # añade una columna
+    _version_anterior(otra, "20260901T000000Z", "Expedient,Import\nE-1,10\nE-2,20\n")
+    args = ["--entrada", str(tmp_path), "--salida", str(tmp_path / "pq"), "--categorias", "contratacion"]
+    assert cp.main(args) == 1
+    df = pd.read_parquet(tmp_path / "pq" / "contratacion" / "contratos_menores_bcn.parquet")
+    d18 = df[df["_año"] == 2018]
+    assert len(d18) == 3 and d18["_en_ultima_descarga"].all()                 # la versión anterior, tal cual
+    assert not [c for c in df.columns if "Ã" in c]
+    assert d18["Òrgan contractant"].tolist()[0] == "CONSORCI AGÈNCIA LOCAL D'ECOLOGIA URBANA DE BARCELONA"
+    d17 = df[df["_año"] == 2017]
+    assert d17["Codi"].tolist() == ["A", "B"] and d17["_en_ultima_descarga"].all()   # columna nueva: se acumula
+    assert len(cp.REVISAR) == 1 and "contratos_menores/2018_menors.csv: la cabecera cambia" in cp.REVISAR[0]
+    assert "'Òrgan contractant'" in cp.REVISAR[0] and "'Ã’rgan contractant'" in cp.REVISAR[0]
+    assert "Casos a revisar: 1" in caplog.text and "REVISAR contratos_menores/2018_menors.csv" in caplog.text
+    # Si la siguiente descarga vuelve a la cabecera de antes, se acumula con normalidad
+    ruta.write_text(texto, encoding="utf-8")
+    assert cp.main(args) == 0 and cp.REVISAR == []
+
+
+def test_versiones_de_un_csv_se_comparan_como_texto(tmp_path):
+    """Las versiones se comparan tal como las sirvió el portal (todo como texto): leídas con tipos, una
+    fila con decimales en la versión nueva pasa la columna de entero a float y 5 dejaría de casar con
+    5.0: el fichero entero parecería retirado y vuelto a publicar."""
+    ruta = _recurso(tmp_path, "contratos_menores", "2019_menors.csv", "Expedient,Import\nE-1,5\nE-2,7\nE-3,7.5\n")
+    _version_anterior(ruta, "20260101T000000Z", "Expedient,Import\nE-1,5\nE-2,7\n")
+    df = _menores(tmp_path, tmp_path / "pq")
+    assert df["Expedient"].tolist() == ["E-1", "E-2", "E-3"] and df["_en_ultima_descarga"].all()
+    assert df["Import"].tolist() == [5.0, 7.0, 7.5]                           # tipos de una lectura suelta
+    assert df["_primera_descarga"].tolist() == ["2026-01-01T00:00:00Z"] * 2 + [df["_ultima_descarga"].iloc[2]]
+
+
+def test_csv_cp1252_conserva_los_ceros_a_la_izquierda(tmp_path):
+    """restaurar_ceros_iniciales vuelve a leer el CSV como texto: con la misma lectura (UTF-8 y CP1252 en
+    las secuencias que no lo son). Si no, en un CSV en CP1252 la relectura fallaba y '08002' se quedaba
+    en 8002."""
+    texto = 'Proveïdor,CODIPOSTAL,Import\r\n"Òmnium","08002"," 5 € "\r\n"L’Àncora","25001"," 7 € "\r\n'
+    df = cp.load_csv(_recurso(tmp_path, "contratistas", "2012_contractistes_.csv", texto, encoding="cp1252"))
+    assert df["CODIPOSTAL"].tolist() == ["08002", "25001"] and df["Proveïdor"].tolist() == ["Òmnium", "L’Àncora"]
 
 
 # --- Versiones -----------------------------------------------------------------------------------

@@ -173,6 +173,10 @@ def acumular(anterior, nuevos, fecha, ambito=None, ignorar=IGNORAR_POR_DEFECTO,
       delimitan lo que se ha vuelto a descargar (p.ej. ['_archivo_origen'] o
       ['anio']); fuera de él no se sabe si siguen publicadas y no cambian.
     - Columnas nuevas se añaden (nulas en las filas que no las tenían).
+    - Sin ninguna columna en común (salvo COLUMNAS_META e `ignorar`) no hay
+      nada que comparar: ninguna fila casa (las de `anterior` del ámbito
+      quedan con _en_ultima_descarga=False y las de `nuevos` entran como
+      altas). Nunca se emparejan por posición.
     - Una descarga vacía es casi siempre un fallo (no que la administración lo
       haya retirado todo): da error salvo permitir_vacio=True.
     """
@@ -190,14 +194,20 @@ def acumular(anterior, nuevos, fecha, ambito=None, ignorar=IGNORAR_POR_DEFECTO,
     excluir = set(COLUMNAS_META) | set(ignorar or ())
     comunes = [c for c in nuevos.columns if c in anterior.columns and c not in excluir]
 
-    k_ant = _claves(anterior, comunes)
-    k_nue = _claves(nuevos, comunes)
-    pos_ant = pd.Series(anterior.index.to_numpy(), index=pd.MultiIndex.from_arrays(
-        [k_ant.to_numpy(), k_ant.groupby(k_ant).cumcount().to_numpy()]))
-    pos = pos_ant.reindex(pd.MultiIndex.from_arrays(
-        [k_nue.to_numpy(), k_nue.groupby(k_nue).cumcount().to_numpy()]))
-    casada = pos.notna().to_numpy()
-    i_ant = pos.to_numpy()[casada].astype("int64")
+    if comunes:
+        k_ant = _claves(anterior, comunes)
+        k_nue = _claves(nuevos, comunes)
+        pos_ant = pd.Series(anterior.index.to_numpy(), index=pd.MultiIndex.from_arrays(
+            [k_ant.to_numpy(), k_ant.groupby(k_ant).cumcount().to_numpy()]))
+        pos = pos_ant.reindex(pd.MultiIndex.from_arrays(
+            [k_nue.to_numpy(), k_nue.groupby(k_nue).cumcount().to_numpy()]))
+        casada = pos.notna().to_numpy()
+        i_ant = pos.to_numpy()[casada].astype("int64")
+    else:
+        # Nada que comparar: antes _claves daba la misma clave a todas las filas y el multiconjunto
+        # las emparejaba por posición (la fila A/X/100 se fundía con C/Z/300 y quedaba como vigente)
+        casada = np.zeros(len(nuevos), dtype=bool)
+        i_ant = np.zeros(0, dtype="int64")
 
     if ambito:
         vistos = set(map(tuple, nuevos[ambito].astype(str).to_numpy()))
