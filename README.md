@@ -85,7 +85,9 @@ ted/
 ├── ...
 ├── ted_can_2025_ES_api.parquet      # 2025 (API v3 eForms)
 ├── ted_can_2026_ES_api_en_curso.parquet  # año en curso: solo histórico, no se usa como caché
+├── ted_can_2023_ES_eforms.parquet   # avisos eForms de 2023, que el CSV bulk no trae
 ├── ted_can_<año>_registros_irregulares.csv  # registros irregulares del CSV bulk (solo si los hay)
+├── xml/<año>/<número>.xml.gz        # XML eForms de cada aviso de la API (capa cruda: se pide una vez)
 ├── _historico/                      # versiones anteriores de las cachés y del consolidado
 └── ted_es_can.parquet               # Consolidado (591K, 31 MB)
 ```
@@ -95,7 +97,20 @@ ted/
 - `ted_es_can.parquet` se reconstruye desde todas las versiones de cada año con `acumular`. Los avisos que TED retira o cambia quedan con `_en_ultima_descarga=False`, y un año que la ejecución no pide no se toca.
 - La clave es el aviso normalizado a `número-año`: el CSV da `2020112` y la API `112-2020`, y son el mismo aviso.
 - `--semilla ted_es_can.parquet` (el publicado en v2026.02) añade los avisos que ya no se sirven. **Úsalo en el primer refresco**: las cachés antiguas de la API tienen otro formato y no se comparan fila a fila.
+- Las cachés de la API de un parser anterior tampoco se comparan fila a fila, pero no se pierde lo que solo está en ellas: los avisos que ya no trae la descarga (TED los ha retirado) se añaden con sus filas de entonces, `_en_ultima_descarga=False` y `_origen='caché de <año> del parser anterior'`.
 - Para contar o cruzar, quédate con la última versión de cada aviso y sin los cancelados: `avisos_para_cruce()`. Ya lo hacen `cross_validate_ted`, `run_ted_crossvalidation.py` y los scripts de análisis.
+
+**Filas de la API (2024 en adelante y los avisos eForms de 2023): resultado de lote → oferta → ganador.**
+- Una fila por oferta ganadora de cada resultado de lote, leída del XML eForms del aviso: `efac:LotResult` → `efac:LotTender` (importe de la oferta, BT-720) → `efac:TenderingParty` → organización (nombre, NIF, país, tamaño), con el contrato que cita la oferta (BT-150, fecha de adjudicación BT-1451). Un resultado sin oferta ganadora (lote desierto o sin adjudicar) es una fila sin adjudicatario, con su motivo (`non_award_justification`, BT-144); un aviso sin resultados, una fila con los datos del aviso.
+- Hasta septiembre de 2026 las filas salían por posición de las listas de la API, que aplana cada campo en una lista del aviso entero y deduplica valores iguales: al acabarse una lista se repetían el último ganador y el primer importe (159.677 filas copia; 141548-2026 tenía 48.861 filas para sus 951 adjudicaciones, y 646040-2026, 9 filas para 3). La API no da los enlaces entre resultado, oferta y organización; el XML sí.
+- Un grupo de empresas va en una fila con los miembros unidos por `---`, el líder primero, como en el CSV bulk.
+- Cada importe en su columna: `tender_value` y `tender_value_cur` (la oferta ganadora de la fila), `estimated_value_lot` (valor estimado del lote, BT-27), `framework_max_lot` y `framework_est_value` (máximo y reestimado del acuerdo marco del lote, BT-709 y BT-660), `notice_value` (valor del aviso, BT-161) y `notice_framework_max_value` (BT-118). `total_value` es el campo de la API, que mezcla BT-161 y BT-118. Las filas de la API ya no llevan `value_euro`, que mezclaba la oferta, el máximo del acuerdo marco y el valor estimado del lote. `importe_ted` es la oferta en euros y, sin oferta, el valor del aviso solo si el aviso es de una fila.
+- Título y descripción: `title_proc` y `description_proc` (API, BT-21 y BT-24 del procedimiento), `title_lot` y `description_lot` (XML).
+- Versiones de eForms: `notice_identifier` (BT-701), `notice_version` (BT-757), `changed_notice` (BT-758, el aviso que se cambia: la API da su número de publicación si lo conoce y, si no, el identificador y la versión) y `change_reason_code` (BT-140).
+- Clave de la fila: aviso, `lot_result_id` y `tender_id`; `lot_index` es su posición en el aviso y `n_filas_aviso`, las filas del aviso.
+- `_xml_eforms` vacío: la fila sale del XML. Si no, el motivo por el que solo lleva los datos del aviso: 404 de TED o XML del esquema anterior a eForms (1.523 avisos de principios de 2024).
+- Los XML se guardan comprimidos en `ted/xml/<año>/<número>.xml.gz` y solo se piden una vez: un aviso publicado no cambia (una corrección es otro aviso). `--force` los vuelve a pedir, y uno igual no crea versión. La primera ejecución pide unos 100.000 (≈6 h a 5 por segundo, con 8 hilos); después, solo los avisos nuevos. Si falla alguno (red, 5xx o 429), el año no se guarda y la ejecución sale con 1; la siguiente sigue donde se quedó.
+- El CSV bulk de 2023 no trae los avisos eForms (2.609 de España, 0 en el CSV): se piden a la API con `notice-subtype` y se guardan en `ted_can_2023_ES_eforms.parquet`. Si el CSV ya trae un aviso, se queda con sus filas del CSV.
 
 **Lo publicado, tal cual.**
 - Los avisos cancelados se conservan con `cancelled='1'` (TED usa `'0'`/`'1'`, no `'Y'`/`'N'`). Hasta septiembre de 2026 se eliminaban al descargar. Para contar adjudicaciones, exclúyelos **después** de quedarte con la última versión de cada aviso, como hace `avisos_para_cruce()`: si los quitas antes, un aviso cancelado en una descarga posterior vuelve con su versión anterior.
@@ -113,10 +128,10 @@ ted/
 
 | Categoría | Campos |
 |-----------|--------|
-| Identificación | ted_notice_id, notice_type, year, source, lot_id, internal_id_proc |
+| Identificación | ted_notice_id, notice_type, year, source, lot_id, internal_id_proc; API: lot_result_id, tender_id, notice_identifier, notice_version, changed_notice |
 | Comprador | cae_name, cae_nationalid, cae_type, cae_town, buyer_legal_type, iso_country |
-| Contrato | cpv, type_of_contract, top_type, is_framework, lots_number |
-| Importes | importe_ted, value_euro, award_value_euro (CSV bulk), total_value, estimated_value_proc |
+| Contrato | cpv, type_of_contract, top_type, is_framework, lots_number; API: title_proc, title_lot, description_proc, contract_id |
+| Importes | importe_ted, value_euro, award_value_euro (CSV bulk), total_value, estimated_value_proc; API: tender_value, estimated_value_lot, notice_value, framework_max_lot |
 | Adjudicación | win_name, win_nationalid, win_country, win_size (SME), dt_award |
 | Competencia | number_offers, direct_award_justification, award_criterion_type |
 | Duración | duration_lot |
