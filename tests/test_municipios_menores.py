@@ -14,7 +14,7 @@ import runpy
 import sys
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import openpyxl
@@ -567,7 +567,9 @@ def test_valladolid_solo_hojas_de_operaciones_y_trimestres_acumulados(portal, tm
     assert [(r["url"], r["estructurado"], r["motivo"]) for r in inventario if r["formato"] == "pdf"] == [
         (VLL_PDF, False, "PDF")]
     log = _log(tmp_path)
-    assert "no se cargan 2 hojas de resumen o auxiliares" in log and "Hoja1 (2 filas), MENOR-AREA (3 filas)" in log
+    assert "no se cargan 2 hojas de resumen o auxiliares" in log
+    assert "Hoja1 (2 filas, sin fila de cabecera), MENOR-AREA (3 filas)" in log   # la lista de códigos, no se carga
+    assert "[Hoja1]: sin fila de cabecera" not in log                             # no parece de los registros
     assert "valladolid: 1 ficheros (PDF: 1)" in log
 
 
@@ -750,6 +752,46 @@ def test_cabecera_con_huecos_y_hoja_sin_cabecera_no_se_comen_el_primer_registro(
     codigos = df[df["_hoja"] == "Hoja2"]
     assert codigos[["columna_1", "columna_2"]].values.tolist() == [["19", "ALCALDÍA"], ["22", "INFRAESTR. Y PROYECTOS"]]
     assert any("[C.M.2trim2017]: 4 columnas con valores y sin nombre" in a for a in avisos)
+    assert any("[Hoja2]: sin fila de cabecera" in a for a in avisos)          # se carga: el aviso sigue suelto
+
+
+def test_valladolid_cabecera_real_y_hojas_auxiliares_sin_cabecera(tmp_path):
+    """Formato medido en los 40 ficheros de Valladolid (2017-2026): las hojas de registros traen la
+    cabecera en la primera fila (OPERACIONES SICALWIN, con una fila de total al pie en 2018 y 2025; en
+    2017, una hoja por área). Las que se leían «sin fila de cabecera» son la lista de códigos de área
+    (Hoja1, a veces tras una fila vacía) y los totales por área de 2017 (TOTALES), que no tienen
+    cabecera en el original y no se cargan: el aviso va con ellas, no suelto."""
+    ruta = tmp_path / "1179354-CONTRATACION EJERCICIO 2025 AYUNTAMIENTO VALLADOLID.xlsx"
+    operacion = [220250049061, "AD", datetime(2025, 10, 2), 22025007039, "2025 01 9207 22699", 828.85,
+                 "UNIFORMES Y VESTUARIO LABORAL, S.L.", "ADJUDICA OTROS GASTOS: OBSEQUIO PAÑOLETA", 220, "VALLADOLID",
+                 "VALLADOLID", "Suministro - De suministro", "AdDirec - Adjudicación Directa", "SinC - Sin Criterio",
+                 "Contratación menor", "Cuarto", "2", "2. Gastos corrientes en bienes y servicios", "01",
+                 "01. Alcaldía", "9207", "9207. Gobierno y relaciones", "22", "22699"]
+    ruta.write_bytes(_xlsx({
+        "Hoja1": [[None, None], ["01", "01. Alcaldía"], ["02", "02. Urbanismo y vivienda"]],
+        "OPERACIONES SICALWIN": [CABECERA_SICALWIN, operacion, [None] * 5 + [154636997.88]],
+        "% PROVINCIAS": [["PROCEDIMIENTO", "Contratación menor"], ["Suma de Importe", None], ["VALLADOLID", 3]]}))
+    df, avisos = M.leer_valladolid(ruta)
+    assert [c for c in df.columns if not c.startswith("_")] == CABECERA_SICALWIN
+    assert set(df["_hoja"]) == {"OPERACIONES SICALWIN"} and "_titulo_tabla" not in df.columns
+    assert df["Nº Operación"].tolist() == ["220250049061", None]                 # el total al pie, como viene
+    assert _v(df["Importe"]) == ["828.85", "154636997.88"]
+    assert not any("sin fila de cabecera (" in a for a in avisos)
+    assert any("no se cargan 2 hojas de resumen o auxiliares (quedan en el original): "
+               "Hoja1 (2 filas, sin fila de cabecera), % PROVINCIAS (2 filas)" in a for a in avisos)
+
+    ruta = tmp_path / "403633-ÁREAS 1º TRIMESTRE 2017 YOLANDA DEFINITIVO.xlsx"
+    ruta.write_bytes(_xlsx({
+        "ALCALDÍA 01": [["NOMBRE DE TERCERO", "CONCEPTO", "IMPORTE"],
+                        ["ABACO C.E. INFORMATICOS, S.L.", "MANTENIMIENTO CONTROL HORARIO WCRONOS", 1921.92],
+                        ["TOTAL", None, 55356.69]],
+        "TOTALES": [["SUMA TOTAL CONTRATOS MENORES\n(2º TRIMESTRE 2015)", None], ["Alcaldia", 55356.69],
+                    ["TOTAL", 561271.69]]}))
+    df, avisos = M.leer_valladolid(ruta)
+    assert [c for c in df.columns if not c.startswith("_")] == ["NOMBRE DE TERCERO", "CONCEPTO", "IMPORTE"]
+    assert df["NOMBRE DE TERCERO"].tolist() == ["ABACO C.E. INFORMATICOS, S.L.", "TOTAL"]
+    assert any("TOTALES (2 filas, sin fila de cabecera)" in a for a in avisos)
+    assert not any("sin fila de cabecera (" in a for a in avisos)
 
 
 # ---------------------------------------------------------------------------
@@ -875,6 +917,223 @@ def test_anio_sondeado_que_pasa_a_dar_404_queda_retirado(portal, tmp_path):
     assert df.loc[df["_anio"] == str(ANIO), "_en_ultima_descarga"].tolist() == [False]
     assert df.loc[df["_anio"] != str(ANIO), "_en_ultima_descarga"].all()
     assert f"vigo vigo/contratos-menores-{ANIO % 100:02d}.csv: el portal ya no lo sirve" in _log(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Errores de origen permanentes (raw/_fallos_origen.json)
+# ---------------------------------------------------------------------------
+
+REL_AGOSTO = "leganes/2026/Informe_menores_agosto_2026.xlsx"
+REL_JULIO = "leganes/2026/Informe_menores_julio_2026.xlsx"
+MAL_4T_2020 = MAL + "contratacion2020/CONTRATOS_MENORES_4TRIMESTRE_2020.xlsx"
+REL_MAL_4T_2020 = "malaga/contratos-menores-4-trimestre-2020-ayuntamiento-de-malaga/CONTRATOS_MENORES_4TRIMESTRE_2020.xlsx"
+
+
+def _fallos(salida):
+    ruta = salida / "raw" / M.FALLOS_ORIGEN
+    return json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else None
+
+
+def _una_semana_despues(salida, horas=24 * 7):
+    """Como si la ejecución anterior hubiera sido hace `horas` (el semanal): retrasa las fechas de
+    los fallos anotados."""
+    ruta = salida / "raw" / M.FALLOS_ORIGEN
+    datos = json.loads(ruta.read_text(encoding="utf-8"))
+    for entrada in datos.values():
+        for campo in ("primera", "ultima"):
+            entrada[campo] = M.iso(M._instante(entrada[campo]) - timedelta(hours=horas))
+    ruta.write_text(json.dumps(datos), encoding="utf-8")
+
+
+def _ultimo_resumen(salida):
+    texto = _log(salida)
+    return texto[texto.rfind(M.TITULO):]
+
+
+def _bloque(resumen, titulo):
+    """Líneas del bloque `titulo` del resumen ('' si no está)."""
+    if titulo not in resumen:
+        return ""
+    return resumen.split(titulo, 1)[1].split("\n\n", 1)[0]
+
+
+CONOCIDOS = "ERRORES DE ORIGEN CONOCIDOS"
+ERRORES = "ERRORES - vuelve a ejecutar"
+
+
+def _malaga_con_4t_2020(portal):
+    """El conjunto del 4T-2020 del Ayuntamiento de Málaga enlaza un XLSX que da 404 (así está)."""
+    portal.ckan[M.URL_CKAN_MALAGA] = paquetes_malaga() + [
+        {"id": "5", "name": "contratos-menores-4-trimestre-2020-ayuntamiento-de-malaga",
+         "title": "Contratos menores 4 trimestre 2020 - Ayuntamiento de Málaga", "resources": [
+             _recurso_ckan("pdf", "PDF", MAL + "contratacion2020/CONTRATOS_MENORES_4TRIMESTRE_2020.pdf"),
+             _recurso_ckan("xlsx", "XLSX", MAL_4T_2020)]}]
+
+
+def test_error_de_origen_permanente_da_codigo_1_solo_la_primera_vez(portal, tmp_path):
+    """Leganés enlaza como XLSX de agosto de 2026 la portada del sitio (HTML), igual cada semana: el
+    semanal no puede fallar siempre por eso, pero la primera vez sí avisa con código 1."""
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1                  # fallo nuevo
+    entrada = _fallos(tmp_path)[REL_AGOSTO]
+    assert (entrada["estado"], entrada["detalle"], entrada["veces"], entrada["url"]) == (
+        "invalido", "la respuesta es HTML, no una tabla", 1, LEG_AGOSTO)
+    assert f"leganes {REL_AGOSTO}: la respuesta es HTML" in _bloque(_ultimo_resumen(tmp_path), ERRORES)
+
+    for semana in (2, 3):
+        _una_semana_despues(tmp_path)
+        assert _ejecutar(tmp_path, "--municipio", "leganes") == 0              # el mismo fallo: conocido
+        resumen = _ultimo_resumen(tmp_path)
+        assert "COMPLETADO (con 1 errores de origen conocidos)" in resumen and ERRORES not in resumen
+        conocido = _bloque(resumen, CONOCIDOS)
+        assert f"leganes {REL_AGOSTO}: la respuesta es HTML, no una tabla ({LEG_AGOSTO})" in conocido
+        assert f"({semana} intentos seguidos)" in conocido and "falla igual desde" in conocido
+        assert _fallos(tmp_path)[REL_AGOSTO]["veces"] == semana
+    assert portal.pedidas(LEG_AGOSTO) == 3                                     # se sigue pidiendo
+    assert not (tmp_path / "raw" / REL_AGOSTO).exists()
+    df = _parquet(tmp_path, "leganes")                                         # el resto, normal
+    assert len(df) == 6 and df["_en_ultima_descarga"].all()
+    ruta = tmp_path / "raw" / M.FALLOS_ORIGEN
+    assert len(M.versiones(ruta)) == 3                                         # sin machacar historia
+    antes = ruta.read_bytes()
+    assert _ejecutar(tmp_path, "--solo-procesar") == 0 and ruta.read_bytes() == antes
+
+
+def test_404_de_un_recurso_enlazado_es_permanente_si_se_repite_al_dia_siguiente(portal, tmp_path):
+    """Málaga: el XLSX del 4T-2020 da 404 en cada ejecución. Dos ejecuciones seguidas en unos
+    minutos no bastan (un 404 de una hora no es permanente); a la semana siguiente, sí."""
+    _malaga_con_4t_2020(portal)
+    assert _ejecutar(tmp_path, "--municipio", "malaga") == 1
+    assert _fallos(tmp_path)[REL_MAL_4T_2020]["firma"] == "no_existe: HTTP 404"
+    SLEEP_REAL(1.1)
+    assert _ejecutar(tmp_path, "--municipio", "malaga") == 1                   # en seguida: sigue siendo error
+    assert "(2 intentos seguidos)" in _bloque(_ultimo_resumen(tmp_path), ERRORES)
+    _una_semana_despues(tmp_path)
+    assert _ejecutar(tmp_path, "--municipio", "malaga") == 0
+    assert f"malaga {REL_MAL_4T_2020}: HTTP 404" in _bloque(_ultimo_resumen(tmp_path), CONOCIDOS)
+    assert len(_parquet(tmp_path, "malaga")) == 2                              # los demás ficheros, normal
+
+
+def test_404_pasajero_no_retira_nada_y_al_volver_sale_del_registro(portal, tmp_path):
+    """Un 404 un día y 200 al siguiente en un fichero ya descargado: la primera vez es un error, sus
+    filas y su copia se conservan, y al volver se baja normal y sale del registro. Si vuelve a
+    fallar después, es un fallo nuevo."""
+    portal.urls[M.URL_LEGANES] = pagina_leganes([e for e in ENLACES_LEGANES if e[0] != LEG_AGOSTO])
+    julio = portal.urls[LEG_JULIO]
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 0 and _fallos(tmp_path) is None
+    SLEEP_REAL(1.1)
+    portal.urls[LEG_JULIO] = 404
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+    assert f"leganes {REL_JULIO}: HTTP 404" in _bloque(_ultimo_resumen(tmp_path), ERRORES)
+    df = _parquet(tmp_path, "leganes")
+    assert (df["_archivo_origen"] == REL_JULIO).sum() == 2 and df["_en_ultima_descarga"].all()
+    assert (tmp_path / "raw" / REL_JULIO).read_bytes() == julio and _manifiesto(tmp_path)[REL_JULIO]["publicado"]
+
+    SLEEP_REAL(1.1)
+    portal.urls[LEG_JULIO] = julio
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 0
+    recuperados = _bloque(_ultimo_resumen(tmp_path), "RECUPERADOS")
+    assert f"leganes {REL_JULIO}: vuelve a bajarse (sin_cambios); fallaba desde" in recuperados
+    assert _fallos(tmp_path) == {}
+    assert len(M.versiones(tmp_path / "raw" / M.FALLOS_ORIGEN)) == 2
+
+    SLEEP_REAL(1.1)
+    portal.urls[LEG_JULIO] = 404
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1                  # otra vez nuevo
+    assert _fallos(tmp_path)[REL_JULIO]["veces"] == 1
+
+
+def test_fallo_nuevo_o_que_cambia_sigue_dando_codigo_1(portal, tmp_path):
+    """Con un error de origen ya conocido, otro fichero que empieza a fallar da código 1; y si el
+    conocido cambia de fallo (de HTML a 404), también."""
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+    _una_semana_despues(tmp_path)
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 0
+
+    portal.urls[LEG_JULIO] = 404
+    _una_semana_despues(tmp_path)
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1                  # julio: nuevo
+    resumen = _ultimo_resumen(tmp_path)
+    assert f"leganes {REL_JULIO}: HTTP 404" in _bloque(resumen, ERRORES)
+    assert f"leganes {REL_AGOSTO}" in _bloque(resumen, CONOCIDOS)             # agosto sigue conocido
+
+    portal.urls[LEG_AGOSTO] = 404                                              # agosto cambia de fallo
+    _una_semana_despues(tmp_path)
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+    resumen = _ultimo_resumen(tmp_path)
+    assert f"leganes {REL_AGOSTO}: HTTP 404 ({LEG_AGOSTO})" in _bloque(resumen, ERRORES)
+    assert f"leganes {REL_JULIO}: HTTP 404" in _bloque(resumen, CONOCIDOS)   # julio: ya conocido
+    assert (_fallos(tmp_path)[REL_AGOSTO]["firma"], _fallos(tmp_path)[REL_AGOSTO]["veces"]) == (
+        "no_existe: HTTP 404", 1)
+
+
+def test_otra_url_del_mismo_fichero_es_un_fallo_nuevo(portal, tmp_path):
+    """Si el portal cambia el enlace (otra URL sin contar ?t=) y sigue fallando igual, es un fallo
+    nuevo; otra ?t= de Liferay es la misma URL."""
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+    otra_t = LEG_AGOSTO.replace("t=1790159511328", "t=1790999999999")
+    portal.urls[otra_t] = portal.urls[LEG_AGOSTO]
+    portal.urls[M.URL_LEGANES] = pagina_leganes([(otra_t, "Menores agosto 2026")] + ENLACES_LEGANES[1:])
+    _una_semana_despues(tmp_path)
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 0                  # misma URL sin ?t=
+    otra = LEG_AGOSTO.replace("/d1f5265f?", "/0e11aa22?")
+    portal.urls[otra] = portal.urls[LEG_AGOSTO]
+    portal.urls[M.URL_LEGANES] = pagina_leganes([(otra, "Menores agosto 2026")] + ENLACES_LEGANES[1:])
+    _una_semana_despues(tmp_path)
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+    assert _fallos(tmp_path)[REL_AGOSTO]["veces"] == 1 and _fallos(tmp_path)[REL_AGOSTO]["url"] == otra
+
+
+@pytest.mark.parametrize("respuesta", [503, 403])
+def test_fallos_pasajeros_dan_codigo_1_aunque_se_repitan(portal, tmp_path, respuesta):
+    """Red, 429, 5xx u otros 4xx pueden ser del portal o nuestros: nunca pasan a conocidos."""
+    portal.urls[LEG_AGOSTO] = respuesta
+    for _ in range(3):
+        assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+        _una_semana_despues(tmp_path)
+    entrada = _fallos(tmp_path)[REL_AGOSTO]
+    assert entrada["estado"] == "error" and entrada["veces"] == 3
+    assert "(3 intentos seguidos)" in _bloque(_ultimo_resumen(tmp_path), ERRORES)
+
+
+def test_fallo_que_el_portal_deja_de_enlazar_sale_del_registro(portal, tmp_path):
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+    portal.urls[M.URL_LEGANES] = pagina_leganes(ENLACES_LEGANES[1:])
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 0
+    assert _fallos(tmp_path) == {}
+    assert (f"leganes {REL_AGOSTO}: el portal ya no lo enlaza; sale del registro de fallos"
+            in _bloque(_ultimo_resumen(tmp_path), "AVISOS"))
+
+
+def test_lista_incompleta_no_olvida_los_fallos(portal, tmp_path):
+    """Fuenlabrada pierde entradas al paginar: que un fichero que falla no salga en la lista no
+    prueba que ya no se enlace (como al retirar)."""
+    portal.urls[FUE_NG] = b"<!DOCTYPE html><html><body>Error</body></html>"
+    assert _ejecutar(tmp_path, "--municipio", "fuenlabrada") == 1
+    rel = "fuenlabrada/2021-2025/NEXT-GENERATION-2021-2025-AYTO.xlsx"
+    assert _fallos(tmp_path)[rel]["estado"] == "invalido"
+    portal.urls[M.URL_FUENLABRADA] = pagina_fuenlabrada(FILAS_FUENLABRADA_1[:1])
+    portal.urls[M.URL_FUENLABRADA + "page/2/"] = pagina_fuenlabrada(FILAS_FUENLABRADA_2[1:])
+    assert _ejecutar(tmp_path, "--municipio", "fuenlabrada") == 0
+    assert rel in _fallos(tmp_path) and _fallos(tmp_path)[rel]["veces"] == 1
+
+
+def test_anio_confirmado_de_vigo_que_da_404_tambien_puede_ser_permanente(portal, tmp_path):
+    del portal.urls[M.URL_VIGO.format(aa="21")]
+    assert _ejecutar(tmp_path, "--municipio", "vigo") == 1
+    _una_semana_despues(tmp_path)
+    assert _ejecutar(tmp_path, "--municipio", "vigo") == 0
+    assert "vigo 2021: año publicado según las fuentes y ahora no disponible" in _bloque(
+        _ultimo_resumen(tmp_path), CONOCIDOS)
+
+
+def test_registro_ilegible_cuenta_todo_como_nuevo(portal, tmp_path):
+    ruta = tmp_path / "raw" / M.FALLOS_ORIGEN
+    ruta.parent.mkdir(parents=True)
+    ruta.write_text("{roto", encoding="utf-8")
+    assert _ejecutar(tmp_path, "--municipio", "leganes") == 1
+    assert f"{M.FALLOS_ORIGEN} ilegible" in _bloque(_ultimo_resumen(tmp_path), "AVISOS")
+    assert _fallos(tmp_path)[REL_AGOSTO]["veces"] == 1
+    assert [p.read_text(encoding="utf-8") for p in M.versiones(ruta)[:-1]] == ["{roto"]   # la copia rota, guardada
 
 
 # ---------------------------------------------------------------------------
