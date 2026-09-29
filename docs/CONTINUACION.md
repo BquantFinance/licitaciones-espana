@@ -223,7 +223,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`) | `95815b3` | Sí (primera descarga del VPS, 2026-09-28) |
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
-| `scripts/ccaa_murcia.py` | Cerrado | `83e49b2` | Sí (codificación cp850 de contratosOD 2014-2018, con los ficheros del VPS) |
+| `scripts/ccaa_murcia.py` | Cerrado | `e0053fa` | Sí, con los crudos del VPS (2026-09-29): CSV del exportador JSON (comillas `\"`, cortes `\n` cada 80 caracteres en `_<columna>_sin_cortes` y restos de la lista en `_resto_json`), mismas filas y ningún texto perdido; y la codificación cp850 de contratosOD 2014-2018 |
 | `scripts/ccaa_aragon.py` | Cerrado | `48e4d42` | Sí |
 | `scripts/ccaa_castilla_leon.py` | Cerrado | `0263faf` | Sí |
 | `scripts/ccaa_extremadura.py` | Cerrado | `4163d85` | Sí |
@@ -299,7 +299,7 @@ Avisos de la sesión del VPS (2026-09-28):
      - El aviso "No existen datos asociados" del histórico ya no se convierte en tabla.
      - `licitacion-de-obras-publicas` es una estadística agregada con una fila `</HTML>`, basura del portal: excluirla del descubrimiento o dejarla documentada.
    - **Murcia**: 15.399 contratos, 244.185 menores CARM y 748.984 líneas de menores del SMS 2019-2025 (`8791825`; antes solo 2020, con 155.085).
-     - Los `contratosOD2019`-`2023.csv` tienen entre 3 y 10 filas con campos de más, que van a `_columna_extra_N` (columnas corridas por separadores sin comillas).
+     - Los `contratosOD2019`-`2023.csv` escapan las comillas con barra (`\"`): 44 contratos se corrían (38 a `_columna_extra_N` y 6 a la izquierda sin marca). Arreglado en `e0053fa`, con los cortes `\n` y los restos de JSON de los menores.
    - **Aragón**: 9 tablas (106.146 contratos y 84.436 menores del Gobierno, Registro de Contratos, encargos, anuncios).
      - ~~Los 4 `.xls` de 2024-2025 del Gobierno dan HTTP 403~~: el CKAN los da con `http://` y el proxy rechaza HTTP plano. Arreglado en `48e4d42` (primero `https://`): 3.139 filas de 2025.
      - Revisar los ZIP "Contratos del Sector Público de Aragón 2014/2015", que se omiten como no tabulares.
