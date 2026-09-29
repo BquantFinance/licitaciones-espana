@@ -218,7 +218,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 |---|---|---|---|
 | `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `de70485` | Sí (regeneración del 2026-09-27) |
 | `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
-| `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `b8c6709` | Sí (y el lector nuevo del CSV, con los CSV reales de 2019 y 2021) |
+| `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado (filas de la API desde el XML eForms) | `0e1fa68` | Sí: ventana real de 3 días (493 avisos y sus 493 XML) y 35 XML elegidos; sin descarga nueva, el consolidado sale idéntico byte a byte al de producción |
 | `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `95815b3` | Sí (la semilla, con la primera descarga del VPS) |
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`) | `95815b3` | Sí (primera descarga del VPS, 2026-09-28) |
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
@@ -375,7 +375,12 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   - La semilla se aplica entera y no solo en el ámbito de lo parseado, porque el BORME no retira actos. En una máquina sin PDF, la tabla cruda queda con filas `_origen`.
   - `calidad/calidad_licitaciones.py` lee `empresa_norm` de todas las filas, versiones antiguas incluidas. No afecta a la pertenencia, pero conviene filtrar `_en_ultima_descarga`.
 - TED quedó cubierto el 2026-09-28. Pendientes que dejó su revisión:
-  - **Hueco de 2020-2023:** el CSV no trae los `can-modif` ni los `can-desg` (1.620 solo en 2020). Viene de `5827174`. Con `--semilla` se recuperan del publicado, pero no se vuelven a descargar. Decidir si se piden a la API.
+  - **Hueco de 2020-2023:** el CSV no trae los `can-modif` ni los `can-desg` (1.620 solo en 2020). Viene de `5827174`. Con `--semilla` se recuperan del publicado, pero no se vuelven a descargar. Decidir si se piden a la API. Los avisos eForms de 2023 (2.609, también `can-modif`) ya se piden (`0e1fa68`); quedan los del esquema anterior.
+  - **Filas de la API desde el XML eForms** (`0e1fa68`): una fila por oferta ganadora de cada resultado de lote, cada importe en su columna, título, descripción y BT-758 (README, «Filas de la API»). Pendientes:
+    - La primera ejecución pide unos 100.000 XML (~6 h; `ted.sh` pasa a `LIMITE=14h`). Si se corta, sigue en la siguiente.
+    - Los 1.523 avisos de principios de 2024 del esquema anterior a eForms (TED_EXPORT) siguen en una fila con los datos del aviso, sin adjudicatario. Su XML queda en `ted/xml/2024/`: falta leer ese formato.
+    - El ETL de la web (`etl/v2/fuentes_grupo4.py`) tiene que pasar a las columnas nuevas: `tender_value` y `tender_value_cur` en vez de `value_euro_1` y `currency`, clave aviso + `lot_result_id` + `tender_id`, `changed_notice` para las versiones y `title_lot`/`title_proc` para el objeto. Las reglas de filas idénticas por posición ya no hacen falta en lo nuevo.
+    - Sin tocar: los nombres del CSV que solo difieren en mayúsculas (`VALUE_EURO`/`value_euro`) y el NIF del órgano de la API (`buyer-identifier`, 'ORG-0001' en 507 órganos).
   - El primer refresco real, con `--semilla` y el `ted_es_can.parquet` publicado.
   - **Coste:** cada ejecución acumula todas las versiones (unos 6 s por versión en un año de 125.000 filas). Para ejecuciones diarias haría falta un acumulado intermedio por año.
   - ~~`diagnostico_missing_ted.py`, `analisis_sector_salud.py` y `cross-validation_ted_placsp.py` leen el consolidado entero~~: **hecho** (`c0230cb`). Usan `avisos_para_cruce`: la última versión de cada aviso y, después, sin los cancelados.
