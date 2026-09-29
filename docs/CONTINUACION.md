@@ -1,5 +1,56 @@
 # Continuación del trabajo (instrucciones para la próxima sesión de Claude Code)
 
+## Estado al 2026-09-29 (sesión del VPS)
+
+**Fusionado en `main`:**
+- #30 TED, regla 2;
+- #31 Catalunya y Valencia por categorías, y semilla de Catalunya;
+- #32 Murcia en CP850;
+- #33 regla 3 en 7 scrapers;
+- #34 semilla de la PSCP por uuid;
+- #35 crones en `despliegue/vps`;
+- #36 Galicia: la semilla conserva los organismos retirados enteros;
+- #37 menores de la Junta de Andalucía desde el CKAN, con el SAS entero: 768.647 filas y +79.721 que no teníamos.
+
+**VPS, primeras descargas verificadas:**
+- Sin semilla: asturias, ayto_madrid, aragon, castilla_leon, murcia, extremadura, la_rioja, valencia_menores, castilla_la_mancha y valencia.
+- ted: 1.029.593 filas.
+- catalunya: semillas +751.187 en el RPC, +85.397 en la PSCP, +9.047 y +5.095.
+- nacional: 9.719.224 entradas y 0 errores; la semilla no añade ninguna fila.
+- municipios: rc=1 por dos errores de origen permanentes (ver abajo).
+
+**VPS, crones semanales (01:00; el cerrojo global los pone en fila):**
+- lunes: nacional;
+- martes: catalunya y valencia;
+- miércoles: asturias;
+- viernes: ayto_madrid, aragon, castilla_leon, murcia, extremadura, la_rioja, valencia_menores y castilla_la_mancha;
+- sábado: ted.
+- La cola de las 00:30 sigue con andalucia, comunidad_madrid, galicia, catalunya_menores, borme, euskadi y andalucia_menores.
+
+**Web (repo privado BquantFinance/buscalicitaciones, PR #1 fusionada):**
+- ETL v2 (`etl/v2/`, decisiones en `docs/etl_v2/grupo1..5.md`): 59 tablas, 32,3 M filas, 24,7 M a la web y 0 errores.
+  - PLACSP por resultado de lote, con el presupuesto del lote para las correcciones: cubre las «reglas de escala por lote» del punto 3 de abajo en la web.
+  - TED, Catalunya, 11 fuentes nuevas.
+  - Fase 1: las fuentes sin descarga nueva, desde la web actual.
+- Despliegue azul/verde preparado; el cambio espera el OK del propietario.
+
+**Siguiente, por orden (sustituye a la lista de abajo donde choquen):**
+1. Cambio de la web (azul/verde) con el OK del propietario.
+2. Fase 2 del ETL según terminen las descargas: Andalucía (buscador + menores del CKAN, deduplicando por id y nº de expediente), Comunidad de Madrid, Galicia, Euskadi y menores de Catalunya.
+3. Arreglos de scrapers medidos por el ETL:
+   - **TED:** el parser de la API rellena por posición (159.677 copias) y falta el título; hay que leer resultado de lote → oferta → ganador.
+   - **Murcia:** `escapechar='\\'` (38 filas corridas), `\n` literal y restos de JSON.
+   - **Aragón:** se pierde la 1.ª fila de cada .xls.
+   - **Municipios:** errores de origen permanentes (Leganés da HTML en agosto de 2026 y Málaga 404 en 4T-2020) que no deben dar rc=1 cada semana, y Valladolid sin cabecera.
+   - **Barcelona:** la consolidación no acumula versiones y lee CP1252 como latin-1.
+   - **PLACSP:** nombre de fichero fijo; hoy lleva el año (`licitaciones_completo_2012_<año>`) y el ETL lo cita.
+4. Menores alcanzables desde el VPS (§3.6.8; medido el 28-sep: responden todos salvo dpz.es):
+   - Asturias 2016-2018 y 2024-2026;
+   - Cantabria;
+   - A Coruña, Oviedo, Avilés, Palma y Zaragoza;
+   - Navarra (CKAN, 2007+).
+5. Matriz de cobertura de menores por CCAA (canal API/CSV/HTML/PLACSP, campos y hueco medido), plan de la web y, después, el modelo.
+
 ## Relevo del 2026-09-28: una sola sesión, la del VPS, lleva el VPS y GitHub
 
 Desde el 2026-09-28 hay **una sola sesión de trabajo**: la de Claude Code en el VPS (Remote Control, `/opt/apps/licitaciones-vps` y `/opt/apps/licitaciones-espana`). Lleva a la vez el VPS y este repo. La sesión en la nube (claude.ai/code, rama `claude/continue-previous-process-wsi03z`) se cerró tras las PR #25 y #26 y no deja trabajo a medias. Así no hay dos sesiones tocando lo mismo.
