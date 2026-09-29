@@ -57,14 +57,19 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 ```
 0 23 * * *  /opt/apps/licitaciones-vps/bin/vigia_codigo.sh
 30 0 * * *  /opt/apps/licitaciones-vps/bin/cola_primera_descarga.sh --hasta-vaciar >> /opt/data/licitaciones-historico/logs/cola.log 2>&1
-# Semanales (desde el 28-sep-2026), a la 01:00; si coinciden, el cerrojo global las pone en fila
+# Semanales (desde el 28/29-sep-2026), a la 01:00; si coinciden, el cerrojo global las pone en fila
+0 1 * * 1   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh nacional semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
+0 1 * * 2   … catalunya y valencia (una línea por fuente)
 0 1 * * 3   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh asturias semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
-0 1 * * 5   … ayto_madrid, aragon, castilla_leon, murcia, extremadura, la_rioja y valencia_menores (una línea por fuente)
+0 1 * * 5   … ayto_madrid, aragon, castilla_leon, murcia, extremadura, la_rioja, valencia_menores y castilla_la_mancha
 0 1 * * 6   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh ted semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
+# Mensual: Comunidad de Madrid (día 5; cada ejecución guarda ~1 GB en _historico/)
+0 1 5 * *   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh comunidad_madrid semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
 ```
 
 Cada fuente entra en su cron semanal (`bin/ejecutar_fuente.sh <fuente> semanal`) cuando su primera
-descarga está verificada. Calendario previsto para las que faltan: lunes PLACSP (con calidad y cruce
-TED), martes Catalunya y Valencia, miércoles Andalucía, jueves Euskadi y BORME, viernes Castilla-La
-Mancha y municipios, sábado menores de la PSCP; Comunidad de Madrid y Galicia, mensuales. Con la cola
-vacía, el cron de las 00:30 no hace nada.
+descarga está verificada. Calendario previsto para las que faltan: miércoles Andalucía (y sus menores
+del CKAN), jueves Euskadi y BORME, viernes municipios (cuando un error de origen permanente deje de dar
+rc=1), sábado menores de la PSCP; Galicia, mensual (después de relanzar su primera descarga con la
+lista de organismos de la PR #36). La calidad y el cruce TED de la PLACSP aún no van en cron. Con la
+cola vacía, el cron de las 00:30 no hace nada.
