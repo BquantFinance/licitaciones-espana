@@ -13,3 +13,5 @@ galicia
 catalunya_menores
 borme
 euskadi
+# 29-sep: menores de la Junta de Andalucía del CKAN (con el SAS entero)
+andalucia_menores

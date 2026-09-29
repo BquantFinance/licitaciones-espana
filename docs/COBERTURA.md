@@ -53,6 +53,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Madrid | Ayuntamiento (datos.madrid.es) | 7.857 | 8.772 | 6.152 | 6.753 | 6.566 | 5.719 | 5.535 | 4.730 |
 | Galicia | Xunta (contratosdegalicia) | 156.608 | 186.075 | 181.151 | 204.315 | 200.331 | 191.457 | 221.827 | 251.968 |
 | Andalucía | Junta (buscador; faltan ~41K del SAS) | 30.786 | 77.237 | 59.366 | 96.777 | 64.945 | 106.580 | 126.517 | 115.696 |
+| Andalucía | Junta, CKAN «Contratación Menor en {año}» (año de adjudicación, con el SAS entero; `ccaa_andalucia_menores.py`, 2026-09-29) | 50.526 | 74.407 | 84.183 | 96.800 | 85.510 | 101.336 | 116.328 | 124.824 |
 | Asturias | Principado (contratación centralizada) | – | 96.758 | 98.490 | 69.208 | 44.312 | 38.010 | 19.742 | – |
 | Murcia | CARM (datosabiertos) | 20.223 | 24.633 | 17.892 | 18.810 | 19.906 | 21.313 | 21.452 | 20.987 |
 | Murcia | SMS (**solo 2020**) | – | – | 155.085 | – | – | – | – | – |
@@ -90,7 +91,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 |---|---|---|---|---|
 | Catalunya | ~95 % dentro de la ventana del RPC | = | PSCP 99,7-100 % desde el 2.º sem. 2022; RPC sin NIF | Antes de 2021 solo lo guardado. Faltan grandes ayuntamientos que solo publican documentos. El Parquet debe acumular versiones |
 | Galicia | ~92 % | ~100 % (volver a ejecutar) | 99 % | Concellos fuera del 1143: Vigo (sin NIF), A Coruña (bloqueado desde la nube) |
-| Andalucía | 75-85 % | = | 98 % | SAS ~41 mil (CSV del CKAN de la Junta, bloqueado desde la nube), 6 universidades, capitales y diputaciones de Granada y Huelva |
+| Andalucía | 75-85 % | **Junta y SAS completos** uniendo el buscador y el CKAN de menores (`scripts/ccaa_andalucia_menores.py`, verificado desde el VPS el 2026-09-29: +41.022 menores del SAS 2019-2025) | 98,4 % | 6 universidades, capitales y diputaciones de Granada y Huelva |
 | Castilla y León | Junta ~100 % | = | 99 % | Valladolid, León, Salamanca, Ponferrada; diputaciones de Burgos y Ávila. SACYL publica ~2,4 mil/año (probable caja fija, art. 63.4) |
 | Asturias | ~100 % del Principado hasta 2024 | = | 99,9 % combinando columnas | 2025-2026 bloqueado desde la nube; Gijón (64 mil con CIF desde 2018), Oviedo, Avilés |
 | Madrid | Comunidad: 2015-2024 completo (la descarga del 2026-09-28 cuadra con el publicado); faltaban 2025 (215 mil de 349 mil) y 2026 | 2025-2026 al día (+133 mil y +127 mil, descargados el 2026-09-28, sin publicar) | 99,999 % | Ayuntamientos de Alcalá, Fuenlabrada, Móstoles, Leganés, Parla; universidades |
@@ -165,7 +166,7 @@ Antes de raspar pliegos en HTML/PDF, el XML CODICE de cada entrada ATOM trae muc
 |------|-----------|-------------------|------------------------------|
 | **Euskadi** | XLSX anuales B1 (metadatos de anuncios), REVASCON 2013-2018, API (poderes, empresas), Bilbao | **Sin importes ni adjudicatario 2019-2026**: la API `/contracts` (655.518 contratos con importe, CIF, CPV) solo daba una muestra de 10 | API `/contracts` y `/contracting-notices` por ventanas de fecha (A); REVASCON por poder y año `contratos_poder{ID}_{AÑO}` 2018-2026 (A); Vitoria "Contratos formalizados" y "menores formalizados" (A); OpenDataBizkaia menores/no menores desde 2016 (A); Gipuzkoa Irekia (M); XML de detalle de cada anuncio (`xml_datos`) como plan B |
 | **Catalunya** | Socrata (RPC `hb6v-jcbf`, PSCP `ybgg-dgi6`…), API de contractaciopublica.cat, Barcelona | Menores del portal incompletos frente a `ybgg-dgi6` (tope 20K por consulta en ICS, UPF, UAB…) | Socrata `qjue-2pk9` menores de la Generalitat con adjudicatario (A; importes en céntimos); AOC RPC local y histórico del perfil (A); `prorrogues-de-contractes` de Barcelona (M); detalle de publicación (`detall-publicacio-expedient`) con lotes y adjudicatario (M); instantáneas periódicas (el RPC es una ventana móvil de 5 años) |
-| **Andalucía** | Buscador ES de la Junta (licitaciones y menores) | ~41K menores del SAS por encima del límite de 10K | CSV oficial anual "Contratación menor en {año}" del CKAN de la Junta, con NIF y nombre del adjudicatario (A); "Licitaciones publicadas {año}" como control (A); Registro de Contratos 2023+ (modificaciones y prórrogas) (M); menores municipales: Málaga (CKAN), Córdoba (CKAN), Diputación de Cádiz (A) |
+| **Andalucía** | Buscador ES de la Junta (licitaciones y menores) | ~41K menores del SAS por encima del límite de 10K | ~~CSV oficial anual "Contratación menor en {año}" del CKAN de la Junta, con NIF y nombre del adjudicatario (A)~~: **hecho** (`scripts/ccaa_andalucia_menores.py`, 2026-09-29; §5.2); "Licitaciones publicadas {año}" como control (A); Registro de Contratos 2023+ (modificaciones y prórrogas) (M); menores municipales: Málaga (CKAN), Córdoba (CKAN), Diputación de Cádiz (A) |
 | **Asturias** | CSV de contratación centralizada 2019+ | Años posteriores a 2024 (corregido); menores anteriores a 2019 | Menores 2016-2020 del dataset de datos.gob.es (M); relaciones trimestrales de menores por consejería 2024-2025 (A); Gijón datos abiertos (A); Oviedo perfil propio y BI (M) |
 | **Galicia** | API de contratosdegalicia.gal (licitaciones 2007+, menores 2018+) | Licitaciones completas (99,95 % frente a PLACSP 1044); huecos puntuales de menores por errores HTTP del scraper antiguo | RSS de novedades para actualizaciones incrementales (A); menores de concellos y Deputacións vía 1143 filtrado por NUTS ES11 |
 | **Madrid (Comunidad)** | Buscador del portal (CSV con CAPTCHA) | Menores de entidades históricas que ya no aparecen en el desplegable (consejerías de legislaturas anteriores) | Menores por ventanas de fecha sin entidad (M); feed Atom `feed/licitaciones2` para incrementales (A) |
@@ -213,14 +214,14 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
   - Aragón: CKAN en `/api/3` y `/ckan/api/3`.
   - Excepciones: el CSV antiguo de licitaciones de CyL devuelve 92 bytes y el listado `transparencia.carm.es/…/SMS/Contratos_menores/` da 403.
 - **Inalcanzables desde la nube de Claude Code.** No se pueden verificar ni regenerar desde allí:
-  - `www.juntadeandalucia.es` (Andalucía) y `descargas.asturias.es` (Asturias): el túnel se corta en origen.
+  - `www.juntadeandalucia.es` (Andalucía) y `descargas.asturias.es` (Asturias): el túnel se corta en origen. Desde el VPS, `www.juntadeandalucia.es` sí responde (su CKAN, verificado el 2026-09-29).
   - `www.zaragoza.es`: conexión reiniciada.
   - `datos.gob.es`: 403 de su cortafuegos (Imperva).
 
 ### 4.2 Pendiente
 
 - **PLACSP.** Nº de entradas borradas por ZIP y hueco de `agregacion` del 17 al 22 de octubre de 2025. Salen del informe de procesado de la regeneración completa.
-- **Andalucía.** Partición por mes de publicación (o `search_after`) para los segmentos del SAS de más de 10K y nº de documentos BRR. Requiere una máquina que llegue a la Junta.
+- **Andalucía.** Partición por mes de publicación (o `search_after`) para los segmentos del SAS de más de 10K y nº de documentos BRR. Requiere una máquina que llegue a la Junta. Para los menores ya no hace falta: el CKAN trae el SAS entero (§5.2).
 - **Catalunya.** Filtro de fechas del portal de menores para segmentar ICS, UPF y UAB.
 - **Madrid Comunidad.** Filtros de fecha para menores sin entidad.
 - **Euskadi.** IDs de poder de REVASCON.
@@ -352,10 +353,44 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 | Fuente | Órganos | Formato | Periodo | Volumen/año | ¿La tenemos? | ¿En 1143? | Conf. | URL |
 |---|---|---|---|---|---|---|---|---|
 | Buscador ES de la Plataforma de la Junta | Junta, SAS, agencias, empresas. **Sin universidades, diputaciones ni ayuntamientos**: 0 filas en el publicado, contra lo que dice el README | JSON | 2016-2026 | 106-127K | Sí, `ccaa_andalucia.py` (faltan ~41K del SAS) | No | A (publicado) | `juntadeandalucia.es/haciendayadministracionpublica/apl/pdc-front-publico/` |
-| CKAN "Contratación Menor en {año}" | Igual | CSV/JSON (2025: 224 MB) | 2018-2026 | Igual | No | No | M (data.europa.eu) | `…/datosabiertos/portal/dataset/00510697-…/download/menores_2025_v1_20260618.csv` |
+| CKAN «Contratación Menor en {año}» (9 conjuntos) | Igual, con el SAS entero (71 % de las filas) | CSV con `\|` (2018-2023 en ZIP) y JSON; NIF y nombre del adjudicatario | 2018-2026 (año de adjudicación; 2026 hasta el 30 de junio) | 50-125K | **Sí**, `ccaa_andalucia_menores.py` (2026-09-29; ver abajo) | No | A (VPS) | `www.juntadeandalucia.es/datosabiertos/portal/dataset/00510697-…/download/menores_2025_v1_20260618.csv` |
 | Pestaña "Documentos" del perfil en PLACSP | UGR (desde 2020), Diputación de Granada | PDF/XLS | 2019- | ? | No | No | A (UGR) | `scgp.ugr.es/pages/contratos-menores/contratos-menores` |
 | Ayuntamiento de Sevilla | Ayuntamiento y organismos | PDF mensual | 2017- | ? | No | 320 | M | `sevilla.org/servicios/contratacion/contratos/{año}` |
 | CKAN de Málaga y de Córdoba | Ayuntamientos | XLSX/XLS/ODS/PDF trimestral con CIF | 2016-2026 | ~600 / ~400 | **Sí**, `municipios_menores.py` | Sí | A | `datosabiertos.malaga.eu`, `datosabiertos.cordoba.es` |
+
+**CKAN de menores de la Junta, medido desde el VPS el 2026-09-29** (`scripts/ccaa_andalucia_menores.py`, confianza A).
+- 9 conjuntos «Contratación Menor en {año} publicada en la Plataforma de Contratación de la Junta de Andalucía» (organización Economía, Hacienda y Fondos Europeos; CC BY 4.0), cada uno con un CSV y un JSON con los mismos datos. El año es el de adjudicación; el de 2026 llega al 30 de junio. La Junta sustituye el fichero de un año durante el siguiente (el de 2025, el 2026-07-07).
+- La salida es idéntica al original: mismas filas y celdas con valor y el mismo texto, celda a celda, en los 9 ficheros.
+- NIF válido: DNI, NIE o CIF con su dígito de control, tras quitar el relleno, el `;` final, guiones y puntos. Además hay 3.964 enmascarados (personas físicas, `630****1948`), 5.094 con forma de NIF de otro país de la UE, 2.546 con otras formas y 511 vacíos.
+- "En el buscador" = casan con el publicado v2026.02 de `ccaa_andalucia.py` (731.246 menores) por (`ID_EXPEDIENTE`, `NUM_EXPEDIENTE`) = (`id_expediente`, `numero_expediente`). En los que casan, el NIF coincide en el 99,92 % y el importe sin IVA en el 99,97 %: es la misma plataforma.
+
+| Año | Registros | SAS | NIF válido | En el buscador | Nuevos | Nuevos del SAS | M€ sin IVA |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2018 | 50.526 | 22.072 | 97,9 % | 50.525 | 1 | 0 | 317,4 |
+| 2019 | 74.407 | 46.981 | 97,7 % | 73.574 | 833 | 831 | 553,4 |
+| 2020 | 84.183 | 58.193 | 98,2 % | 74.416 | 9.767 | 9.743 | 689,8 |
+| 2021 | 96.800 | 69.683 | 98,3 % | 80.883 | 15.917 | 12.413 | 830,8 |
+| 2022 | 85.510 | 62.742 | 98,3 % | 72.802 | 12.708 | 11.093 | 725,9 |
+| 2023 | 101.336 | 76.599 | 98,8 % | 101.334 | 2 | 1 | 863,5 |
+| 2024 | 116.328 | 87.045 | 98,6 % | 116.234 | 94 | 94 | 960,6 |
+| 2025 | 124.824 | 98.976 | 98,8 % | 117.496 | 7.328 | 6.847 | 1.077,1 |
+| 2026 (hasta el 30-jun) | 34.733 | 22.607 | 98,7 % | 1.662 | 33.071 | 22.606 | 278,3 |
+| **Total** | **768.647** | **544.898** | **98,4 %** | **688.926** | **79.721** | **63.628** | **6.296,8** |
+
+- **Los nuevos** son el hueco del tope de 10.000 del buscador (41.022 menores del SAS en 2019-2025: los «~41K») y lo posterior a la semilla (33.071 de 2026). Hay que volver a medir 2026 con la primera descarga del buscador en el VPS.
+- **Lo que el CKAN no trae: 42.357 menores del buscador.**
+  - 19.427 son de 2010-2017: no hay conjuntos anteriores a 2018.
+  - 22.930 son de 2018-2026: los de enero y febrero de 2018 adjudicados en 2017 (5.244), cargas de un mes que el CKAN no recoge (noviembre de 2023 y mayo de 2024 y de 2025: unos 5.000 al año, sobre todo del SAS) y órganos enteros ("Centros docentes públicos dependientes de la Consejería DEFP" en 2024-2025).
+  - **Las dos fuentes se complementan**: la unión, deduplicada por (id_expediente, número de expediente), es lo más completo.
+- **`ID_EXPEDIENTE` no basta para deduplicar**: en 2021 y 2022 el SAS (expedientes `+6.…`) y la Junta comparten números. 8.812 y 9.562 filas del CKAN casan con el buscador por el id y no por el número.
+- **Referencia independiente:** el RCSP «Directo» autonómico de Andalucía (menores y emergencias; §5.4, B1) da 103,1 mil en 2023 y 120,2 mil en 2024, frente a 101.336 y 116.328 del CKAN.
+- **Formato y trampas** (detalle en el docstring del script):
+  - Codificación: cp1252 en 2018-2025 y UTF-8 en 2026.
+  - Desde 2023, cada campo va relleno con espacios hasta un ancho fijo: el CSV de 2025 pesa 224 MB.
+  - Coma decimal y fechas dd/mm/aaaa en 2025; el resto, punto decimal y fechas ISO con zona (2026: dd/mm/aaaa con punto).
+  - La cabecera de 2022 trae ` FECHA_ADJUDICACION` y ` FECHA_FORMALIZACION` con un espacio delante.
+  - Un registro de 2020 (expediente 533944) va partido por un salto de línea sin comillas en el título: se une y se marca (`_lineas_unidas`).
+  - Fechas imposibles en origen (años 0201, 1492 y 5384) y 275 menores de más de 40.000 € sin IVA (máximo 488.173 €): se dejan como vienen.
 
 **Región de Murcia**
 
@@ -401,7 +436,7 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 - **Extremadura, ~70 %.** Sobre todo el SES (26-63K al año que solo están en el registro), más la UEx y 173 ayuntamientos.
 - **Murcia, ~55 %.** Sobre todo el SMS de 2019 y 2021-2025, por el fallo de nombres del scraper; también la UPCT y 14 ayuntamientos.
 - **Castilla-La Mancha, 35-50 %.** La UCLM (~27K), la caja pagadora (~33K), el SESCAM y 469 ayuntamientos.
-- **Andalucía, 15-25 %.** Seis universidades, Sevilla y Granada capital, las diputaciones de Granada y Huelva, 340 ayuntamientos y los ~41K del SAS.
+- **Andalucía, 15-25 %.** Seis universidades, Sevilla y Granada capital, las diputaciones de Granada y Huelva y 340 ayuntamientos. ~~Los ~41K del SAS~~: cubiertos con el CKAN (2026-09-29).
 - **Melilla**: casi todo.
 - **Patrón común:** muchos órganos cumplen el art. 63.4 con listados en la pestaña "Documentos" de PLACSP, que no llegan al 1143.
 
@@ -415,7 +450,7 @@ Correcciones: los menores del SCS son agregados; el registro de Extremadura es X
    - El trimestre del listado es el de inscripción, no el de adjudicación.
 3. **UCLM 2017-2026**: un postback por año. **0,5-1 día.**
 4. **Ficheros de la JCCM**: 57 enlaces en XLS, XLSX, ZIP y RAR (caja pagadora, 2015-2018, UCLM 2019-2023). **1 día.**
-5. **CKAN de menores de la Junta de Andalucía**: cierra el hueco del SAS. Hay que ejecutarlo desde una máquina con acceso. **0,5 día.**
+5. ~~**CKAN de menores de la Junta de Andalucía**~~: hecho (`scripts/ccaa_andalucia_menores.py`, verificado desde el VPS el 2026-09-29; medición arriba).
 6. **Pestaña "Documentos" de PLACSP** (UGR, Diputación de Granada, Melilla): navegar el portal WPS y extraer tablas de PDF. **3-5 días.**
 7. **Portales municipales**: Málaga, Córdoba, Santa Cruz de Tenerife, Lorca y Cáceres. Poco volumen, sirven para el histórico. **0,5 día cada uno.**
 8. **SCS**: solicitud de acceso a la información.

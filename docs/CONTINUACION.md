@@ -181,6 +181,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/municipios_menores.py` | Cerrado | `1361abd` | Sí |
 | `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | Sí, desde el VPS (2026-09-28): 2019-2024, 375.380 filas; la semilla no añade ninguna; 2025 y 2026 dan 404 en `dataset-contratacion-centralizada-<año>.csv` |
 | `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
+| `scripts/ccaa_andalucia_menores.py` | Cerrado | `6f2f73c` | Sí, desde el VPS (2026-09-29): 9 CSV del CKAN de la Junta (2018-2026), 768.647 registros, 544.898 del SAS; la salida es idéntica al original celda a celda |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | Cerrado | `699bf16` | Sí (descarga completa del 2026-09-28) |
 | `galicia/scraper_galicia.py` | Cerrado | `699bf16` | Sí (4 organismos) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Cerrado (sin segmentación por fecha: los órganos grandes quedan fuera del ámbito) | `1fa7f01` | Sí (dos fases) |
@@ -279,7 +280,7 @@ Avisos de la sesión del VPS (2026-09-28):
 Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la semilla del release, a cada uno.
 
 **Estado a 2026-09-28** (comprobado con `grep` de `guardar_version`, `acumular` y `_en_ultima_descarga`):
-- **Cubiertos:** PLACSP (`--semilla` y `_borrados`), Catalunya RPC y Generalitat, Valencia REGCON, Ayuntamiento de Madrid, Aragón, Castilla y León, Murcia, la tabla de la API de Euskadi, y los scrapers nuevos (Extremadura, La Rioja, menores valencianos; Castilla-La Mancha y municipios, en curso).
+- **Cubiertos:** PLACSP (`--semilla` y `_borrados`), Catalunya RPC y Generalitat, Valencia REGCON, Ayuntamiento de Madrid, Aragón, Castilla y León, Murcia, la tabla de la API de Euskadi, y los scrapers nuevos (Extremadura, La Rioja, menores valencianos, Castilla-La Mancha, municipios y menores de la Junta de Andalucía del CKAN).
 - **Todas las fuentes están cubiertas desde el 2026-09-28.** Pendientes de las dos últimas:
   - **Comunidad de Madrid:**
     - **El histórico crudo crece mucho.** Los menores cambian a diario y cada ejecución guarda casi 1 GB en `_historico/`. Opciones: comprimir, refrescar con menos frecuencia o consolidar de forma incremental, como en Extremadura.
@@ -364,7 +365,7 @@ Desde la nube de Claude Code los portales oficiales devolvían 403 del proxy. En
    - URL del CSV de TED 2020-2023 y nombres de campo de la API.
    - API de sumarios del BORME.
    - Parámetros de la API de Euskadi.
-   - Partición por mes del Elasticsearch de Andalucía (unos 41K menores del SAS por encima del límite de 10K).
+   - Partición por mes del Elasticsearch de Andalucía (unos 41K menores del SAS por encima del límite de 10K). Para los menores ya no hace falta: el CKAN de la Junta trae el SAS entero (`scripts/ccaa_andalucia_menores.py`).
    - Filtro de fechas de los menores de Catalunya (ICS, UPF, UAB).
    - Menores de Madrid sin entidad.
    - URLs de los scrapers nuevos.
@@ -395,7 +396,7 @@ Desde la nube de Claude Code los portales oficiales devolvían 403 del proxy. En
   - AOC: RPC local e histórico.
   - Barcelona: `prorrogues-de-contractes`.
   - Comprobar si existen `ydq4-xy5b`, `jxvs-kzbu`, `w2cu-rmuv`, `wwmk-zys7` y `nuym-4erw`.
-- **Andalucía.** CSV oficial de menores de la Junta (CKAN, separador `|`, con NIF y nombre del adjudicatario) y "Licitaciones publicadas {año}".
+- **Andalucía.** ~~CSV oficial de menores de la Junta (CKAN, separador `|`, con NIF y nombre del adjudicatario)~~: **hecho** (`scripts/ccaa_andalucia_menores.py`, 2026-09-29; `docs/COBERTURA.md` §5.2). Queda "Licitaciones publicadas {año}".
 - **Asturias.** Menores 2016-2018 (datos.gob.es) y relaciones trimestrales de menores 2024-2025.
 - **Madrid.** Menores de entidades históricas que ya no salen en el desplegable.
 - **Galicia.** Paginar por id y publicar el detalle.
@@ -431,7 +432,7 @@ Inventario completo, veredicto por CCAA y referencias (RCSP, OIReScon) en `docs/
 7. **Municipios con fuente propia**: Gijón (64K desde 2018, con CIF), Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife.
 8. **Bloqueados desde la nube**: ejecutar desde una IP española que no sea de la nube.
    - `*.asturias.es` (2025-2026), `*.cantabria.es`, A Coruña, Oviedo, Avilés, Palma, zaragoza.es y dpz.es.
-   - `www.juntaandalucia.es`: CSV de menores de la Junta en el CKAN, con los ~41K del SAS.
+   - ~~`www.juntaandalucia.es`: CSV de menores de la Junta en el CKAN, con los ~41K del SAS~~: **hecho** desde el VPS (2026-09-29): 41.022 menores del SAS 2019-2025 que el buscador no alcanzaba (`scripts/ccaa_andalucia_menores.py`, `docs/COBERTURA.md` §5.2). El CKAN no es un superconjunto del buscador: hay que usar los dos, deduplicados por (id_expediente, número de expediente).
 9. **Sin fuente pública contrato a contrato**: menores del SCS (Canarias, 89K en 2025, solo totales). Hay que pedirlo por acceso a la información.
 10. **Pestaña "Documentos" de la PLACSP**: UGR, Diputación de Granada, Melilla y unos 1.950 ayuntamientos con perfil en la PLACSP y sin menores en el 1143. Requiere extraer tablas de PDF.
 11. **Navarra y La Rioja**: ver el inventario de §5 de COBERTURA.
