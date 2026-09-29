@@ -592,12 +592,18 @@ def _leer_csv_tolerante(ruta, sep, codificacion):
 #   sintaxis de la comilla y en el valor queda '"', como con '""'.
 # - Esos ficheros y los menores de 2023 traen el resto de secuencias de escape de JSON sin interpretar
 #   (\n, \t, \uXXXX); todas las barras son de una secuencia válida (ninguna '\\'). Se sirven tal cual.
-#   \n es un corte de línea cada 80 caracteres (se ve en objeto, adjudicatario y CPV): de 35.128 cortes
-#   medidos, ningún trozo pasa de 80 caracteres (contando cada secuencia como uno), 23.309 tienen 80 (el
-#   corte cae donde cae: 'TEMPORAD\nA 2019-2020') y 4.016 tienen 79: el carácter 80 era un espacio y se
-#   recortó ('TRANSPORTE\nY SERVICIOS'); los demás son saltos de línea del texto original. Quitar la
-#   secuencia juntaría dos palabras en esos casos y cambiarla por un espacio partiría las otras: el texto
-#   sin cortes va en _<columna>_sin_cortes (texto_sin_cortes) y la columna original no se toca.
+#   \n es a la vez el corte de línea que el exportador mete cada 80 caracteres (se ve en objeto,
+#   adjudicatario y CPV) y el salto de línea del texto original, y el contador del exportador NO se
+#   reinicia en los saltos del texto: cuentan como un carácter. En 'mencionado.\nDichos ma\nteriales' el
+#   corte cae tras 70 + 1 + 9 = 80. De 35.128 \n medidos, ese contador acumulado (cada secuencia cuenta
+#   uno) explica 35.044: 25.702 cortes a 80 (caen donde caen: 'CEIP MIGUEL DE CER\nVANTES'), 4.392 a 79 (el
+#   carácter 80 era un espacio y se recortó: 'TRANSPORTE\nY SERVICIOS') y 4.950 saltos del texto. Los otros
+#   84 son cortes con más espacios recortados: el trozo siguiente no cabría en la línea tras un salto del
+#   texto ('Régimen Especial y\nEducación Per\nmanente', con la línea anterior cortada a 70). Contar cada
+#   línea por separado metía 2.291 espacios de más en 1.289 textos ('Dichos ma teriales', '968,0 0
+#   euros'). Quitar la secuencia juntaría dos palabras en los saltos del texto y cambiarla por un espacio
+#   partiría las otras: el texto sin cortes va en _<columna>_sin_cortes (texto_sin_cortes) y la columna
+#   original no se toca.
 # - Los menores de 2017 y 2019 llevan cada línea rodeada de espacios (' "14",...,"4" '): un lector normal
 #   leía el código de consejería como ' "14"' (con las comillas) y el trimestre como '4 '. Los de 2018 y
 #   2022 acaban en '"4"]' y una línea ']', y los de 2019 en '"4"","': restos de la lista JSON. No son de
@@ -618,17 +624,25 @@ LARGO_CORTE = 80
 
 
 def _es_texto_json(texto):
-    """¿Trae el texto secuencias de escape de JSON sin interpretar? Sí si tiene alguna barra y todas
-    empiezan una secuencia válida (\\" \\n \\t \\uXXXX...). Los menores de 2024-2025 traen barras sueltas
-    ('RD 390\\2021', 'Conversor\\es'): no lo son y se leen como siempre."""
-    return "\\" in texto and "\\" not in _ESCAPE_JSON.sub("", texto)
+    """¿Trae el texto secuencias de escape de JSON sin interpretar (\\" \\n \\t \\uXXXX...)? Sí si la
+    mayoría de sus barras empiezan una secuencia válida. Los ficheros del exportador no traen ninguna
+    barra suelta, pero una sola (copiada de otro sistema: 'RD 390\\2021') no debe dejar todo el fichero
+    sin _<columna>_sin_cortes. Los menores de 2024-2025 solo traen barras sueltas ('RD 390\\2021',
+    'Conversor\\es'): no lo son y se leen como siempre."""
+    resto, validas = _ESCAPE_JSON.subn("", texto)
+    return validas > resto.count("\\")
 
 
 def _formato_json(texto):
     """Rasgos del exportador JSON que un lector CSV normal lee mal, o None si el fichero no tiene
     ninguno: barra (comillas escapadas con \\"), relleno (espacios alrededor de cada campo
-    entrecomillado desde la primera línea de datos) y final (restos de la lista al final)."""
-    barra = '\\"' in texto and _es_texto_json(texto)
+    entrecomillado desde la primera línea de datos) y final (restos de la lista al final).
+    La barra se decide solo por la presencia de \\": si una barra suelta en otro campo ('RD 390\\2021')
+    devolviera el fichero al lector normal, los contratos con \\" se correrían otra vez y, en el
+    histórico, la versión corrupta pasaría a vigente. Un fichero sin \\" se lee igual con barra que sin
+    ella (medido con los menores de 2023-2025): uno normal con una barra al final de un campo ('C:\\"')
+    solo leería mal esa fila."""
+    barra = '\\"' in texto
     salto = texto.find("\n")
     relleno = salto >= 0 and _RELLENO_JSON.match(texto, salto + 1) is not None
     final = _FINAL_JSON.search(texto, max(0, len(texto) - 200))    # solo el final del fichero
@@ -756,11 +770,19 @@ def _leer_csv_json(texto, sep, formato, nombre):
 
 
 def texto_sin_cortes(valor):
-    """Texto de una celda del exportador JSON sin los cortes de línea (\\n escrito como barra y n): el
-    exportador parte el texto en líneas de 80 caracteres y recorta los espacios del final de cada una.
-    Un trozo de 80 caracteres (contando cada secuencia de escape como uno) se une al siguiente tal cual;
-    uno más corto se une con un espacio: el recortado (79) o un salto de línea del texto original. Las
-    demás secuencias (\\t, \\uXXXX) se dejan como están. None si no hay ningún corte."""
+    """Texto de una celda del exportador JSON sin los cortes de línea (\\n escrito como barra y n).
+
+    El exportador parte el texto en líneas de 80 caracteres y recorta los espacios del final de cada
+    una, y escribe también como \\n los saltos de línea del texto, que para su contador son un carácter
+    más (no lo reinician). Se recorre con ese contador (cada secuencia de escape cuenta uno) y cada \\n es:
+    - un corte en mitad de la línea si el contador llega a 80: se une sin nada ('CER\\nVANTES');
+    - el corte con el espacio 80 recortado si llega a 79 y sigue texto: un espacio. Si sigue otro \\n, el
+      carácter 80 es ese salto del texto y el corte es el \\n siguiente;
+    - un corte con más espacios recortados si el trozo siguiente no cabría tras un salto del texto
+      (pasaría de 80): un espacio;
+    - si no, un salto de línea del texto (suma uno al contador): un espacio.
+    Los \\n seguidos dejan un solo espacio, y ninguno al principio ni al final. Las demás secuencias
+    (\\t, \\uXXXX) se dejan como están. None si no hay ningún corte."""
     if not isinstance(valor, str) or "\\n" not in valor:
         return None
     trozos, inicio = [], 0
@@ -771,11 +793,22 @@ def texto_sin_cortes(valor):
     trozos.append(valor[inicio:])
     if len(trozos) == 1:
         return None
-    texto = trozos[0]
-    for previo, trozo in zip(trozos, trozos[1:]):
-        largo = len(previo) - sum(len(e.group()) - 1 for e in _ESCAPE_CUALQUIERA.finditer(previo))
-        union = "" if largo == LARGO_CORTE or not texto or not trozo else " "
-        texto += union + trozo
+    largos = [len(t) - sum(len(e.group()) - 1 for e in _ESCAPE_CUALQUIERA.finditer(t)) for t in trozos]
+    texto, espacio, linea = "", False, 0
+    for i, trozo in enumerate(trozos):
+        if i:
+            linea += largos[i - 1]
+            if linea >= LARGO_CORTE:                            # corte en mitad de la línea
+                linea = 0
+            elif linea == LARGO_CORTE - 1 and trozo:            # corte con el espacio 80 recortado
+                linea, espacio = 0, True
+            elif linea + 1 + largos[i] > LARGO_CORTE:           # tras un salto del texto no cabría
+                linea, espacio = 0, True
+            else:                                               # salto de línea del texto
+                linea, espacio = linea + 1, True
+        if trozo:
+            texto += (" " if espacio and texto else "") + trozo
+            espacio = False
     return texto
 
 
