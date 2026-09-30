@@ -16,13 +16,62 @@ v4 - Producción:
 
     Estrategia por tipo de publicación:
 
-    A) CONTRATOS MENORES (99% del volumen, ~4.5M):
+    A) CONTRATOS MENORES (99% del volumen, 4.832.623 en sept. 2026):
        - Fecha hasta NO funciona, fecha desde rompe combinada con entidad
        - Solución: descargar por ENTIDAD ADJUDICADORA (las del desplegable)
        - Sin filtro de fecha; si una entidad llega a UMBRAL se subdivide por
          rango de presupuesto (incluidos ≤0 y ≥50.000, que también existen)
        - Ojo: los menores de entidades que ya no están en el desplegable
-         (consejerías de legislaturas anteriores...) no se descargan
+         (consejerías de legislaturas anteriores...) no se descargan por
+         esta vía: faltaban ~2 M (2,79 M de 4,83 M), casi todos de 2015-2022.
+         Los recoge la vía A2.
+
+    A2) CONTRATOS MENORES POR VENTANAS DE FECHA, SIN ENTIDAD (vía por fecha):
+       - Filtro «Fecha del contrato o encargo» (ds_fecha_encargo / _1) con
+         la entidad en «Cualquiera». Medido el 30-9-2026 contra el portal:
+         · cuadra con la faceta: 4.832.621 menores con fecha de 1900 a 2099
+           y 2 de 1899 = los 4.832.623 del portal;
+         · por año de 2015 a 2026: 124.070, 494.836, 628.128, 505.580,
+           473.356, 448.316, 450.747, 405.235, 443.460, 387.866, 349.025 y
+           127.001 (la vía A tenía 18.813, 177.229, 255.747, 206.630,
+           174.992, 171.760, 164.473, 320.027, 439.418, 384.812, 348.814 y
+           127.001, por el año de «Fecha del contrato»);
+         · las ventanas son intervalos cerrados en UTC: el día D va de las
+           00:00 UTC de D a las 00:00 UTC de D+1, y los menores guardados a
+           las 00:00 UTC de la frontera salen en las dos ventanas contiguas
+           (14-5-2019: 2.262; 15-5-2019: 2.374; los dos días: 4.107, con 529
+           en común). Por eso la suma de las ventanas pasa del total y cada
+           menor repetido en dos ventanas se deja una vez (unificar);
+         · en el día 15-5-2019, 1.251 de los 2.374 menores (53 %) no estaban
+           en la vía A: todos de entidades con el nombre de entonces
+           ('Hospital Ramón y Cajal', 'Hospital Universitario Doce de
+           Octubre', 'Gerencia de Atención Primaria', 'SUMMA 112',
+           'Consejería de Cultura y Turismo'...). Los otros 1.123, idénticos
+           en las 18 columnas a los de la vía A;
+         · la exportación es la misma (CAPTCHA incluido) y es estable: el
+           mismo día pedido dos veces da el mismo CSV byte a byte;
+         · el feed Atom feed/licitaciones2 solo trae licitaciones (la
+           colección 121 de la agregación de la PLACSP), ningún menor: no
+           sirve para los menores.
+       - Ventanas: 1-1-1800 a 31-12-2014 (49 menores), un mes desde
+         ANIO_VENTANAS hasta el mes actual y una de lo posterior (fechas
+         futuras, hoy 0). La página del buscador trae el recuento («Mostrando
+         1 - 10 de N»), así que antes de exportar se sabe si la ventana llega
+         al tope de la exportación (UMBRAL_TRUNCADO): entonces se parte en dos
+         mitades por días, sin exportarla, hasta que quepa.
+       - Cada exportación se comprueba contra el recuento del portal: una
+         ventana cuyo CSV no trae tantos registros como dice el buscador está
+         incompleta. Se reintenta; si sigue sin cuadrar, se parte en dos
+         mitades, y una ventana de un día que no cuadra se marca incompleta:
+         nunca sustituye a la copia anterior (salvo que la contenga entera,
+         así no retira nada), se anota sin «comprobado» y se vuelve a pedir en
+         la ejecución siguiente.
+       - CSV en csv_originales/por_fecha/ (su propio _historico/ y su
+         propio _comprobaciones.json): la vía A ni los ve ni los archiva.
+       - Al terminar una pasada completa, un CSV de ventana que ya no es de
+         ninguna consulta (una ventana que ahora se parte) pasa a _historico/
+         si todas las ventanas que lo cubren han llegado completas o sin
+         ningún menor según el portal; con alguna incompleta, se conserva.
 
     B) OTROS TIPOS (licitaciones, adjudicaciones, etc., ~36K):
        - Fecha hasta SÍ funciona
@@ -104,7 +153,30 @@ HISTÓRICO: NUNCA SE MACHACA NADA (comun/historico.py)
       - Memoria: la tabla se procesa por partes (una por CSV) y nunca está
         dos veces en memoria. Con pandas 3, la descarga de septiembre de
         2026 (2,85 millones de filas) pide unos 2,8 GB, y 3,4 GB con
-        --semilla. El código anterior pedía 3,7 GB sin semilla.
+        --semilla. El código anterior pedía 3,7 GB sin semilla. Medido el
+        30-9-2026 como RSS máximo del proceso (getrusage), pandas 3.0.6, con
+        la capa cruda real de la descarga del 29-9-2026: 5,6-5,9 GB con
+        --semilla, y 5,7 GB (4 min en vez de 3) con la vía por fecha entera
+        simulada a escala (4,84 M filas más en 133 ventanas): cada CSV de
+        ventana se filtra al leerlo y solo se queda lo que entra en la tabla.
+      - Vía por fecha (A2): sus CSV (csv_originales/por_fecha/) se
+        acumulan igual, versión a versión, y entran DESPUÉS de la tabla de la
+        vía A sin tocar ninguna de sus filas presentes (el mismo menor por
+        las dos vías es uno solo, el de la vía A):
+        · no entra un bloque cuya clave estable (Referencia + Entidad
+          Adjudicadora, la de la semilla) tiene una fila presente en la vía A
+          (en la última descarga de su CSV), sea cual sea su contenido;
+        · ni uno sin Referencia idéntico a un bloque presente de la vía A;
+        · el resto entra al final, en orden de ventana. Un bloque repetido
+          en dos ventanas (la frontera) o idéntico a uno que la vía A ya no
+          trae en su última descarga (p.ej. su entidad salió del desplegable)
+          queda una vez, como en las consultas solapadas: la copia presente,
+          con la _primera_descarga mínima y la _ultima_descarga máxima;
+        · si una clave queda presente en dos ventanas con distinto contenido
+          (el portal la cambió entre las dos descargas), sigue presente la de
+          la descarga más reciente y la otra queda como versión anterior
+          (_en_ultima_descarga=False): nunca dos filas presentes por clave.
+        Sin CSV de la vía por fecha, la tabla es la de antes, byte a byte.
     Semilla (unificar --semilla <parquet publicado>, repetible):
       - Clave estable: Referencia + Entidad Adjudicadora. Referencia es el
         identificador del anuncio en el portal ('D957_2', '1152625',
@@ -168,7 +240,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
 from calendar import monthrange
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 import logging
 import sys
 
@@ -269,6 +342,34 @@ RANGOS_IMPORTE = [
     ("50000", ""),
 ]
 
+# --- Vía por fecha (A2 en el docstring): menores sin entidad por ventanas ---
+# Subcarpeta de csv_originales/ con sus CSV, su _historico/ y su propio
+# _comprobaciones.json: la vía por entidad no la ve ni la archiva (y no empieza
+# por 'menores_', así ningún 'menores_*' la confunde con un CSV de esa vía)
+CARPETA_FECHA = "por_fecha"
+# Filtro «Fecha del contrato o encargo (desde/hasta)» del buscador
+PARAM_FECHA_DESDE = "ds_fecha_encargo"
+PARAM_FECHA_HASTA = "ds_fecha_encargo_1"
+# Ventanas: de FECHA_MINIMA al 31-12 del año anterior a ANIO_VENTANAS (49
+# menores en septiembre de 2026, 2 de ellos de 1899), un mes desde
+# ANIO_VENTANAS hasta el mes actual y lo posterior hasta FECHA_MAXIMA
+FECHA_MINIMA = date(1800, 1, 1)
+FECHA_MAXIMA = date(2099, 12, 31)
+ANIO_VENTANAS = 2015
+VENTANA_POSTERIORES = "menores_fecha_posteriores.csv"
+# Ventanas seguidas sin respuesta útil (sin recuento o sin CSV) tras las que se
+# deja la vía por fecha para la ejecución siguiente: el portal está caído o ha
+# cambiado, y seguir sería martillearlo
+FALLOS_SEGUIDOS_MAX = 5
+# Recuento de la página del buscador ('Mostrando 1 - 10 de 473356') y la
+# página sin resultados ('NO EXISTEN RESULTADOS PARA LA BÚSQUEDA ACTUAL EN
+# ESTE PORTAL'), medidos el 30-9-2026
+PATRON_RECUENTO = re.compile(r"Mostrando\s+\d[\d.]*\s*-\s*\d[\d.]*\s+de\s+(\d[\d.]*)")
+PATRON_SIN_RESULTADOS = re.compile(r"no\s+existen\s+resultados\s+para\s+la\s+b[uú]squeda", re.IGNORECASE)
+# Estados de una ventana que cuentan como llegada entera (su CSV cuadra con el
+# recuento del portal)
+COMPLETAS = ("nuevo", "actualizado", "sin_cambios")
+
 
 # ---------------------------------------------------------------------------
 # UTILIDADES
@@ -335,12 +436,13 @@ def epoch_de_iso(texto):
         return None
 
 
-def leer_comprobaciones():
+def leer_comprobaciones(carpeta=None):
     """{nombre del CSV: {'comprobado', 'intento', 'resultado', 'filas'}} de
-    csv_originales/_comprobaciones.json. Si no existe o no se puede leer se
-    empieza de cero: solo sirve para no repetir comprobaciones recientes y
+    csv_originales/_comprobaciones.json (o del de `carpeta`: la vía por fecha
+    lleva el suyo, con 'recuento' del portal). Si no existe o no se puede leer
+    se empieza de cero: solo sirve para no repetir comprobaciones recientes y
     para el ámbito de la semilla."""
-    ruta = CSV_DIR / COMPROBACIONES
+    ruta = (CSV_DIR if carpeta is None else Path(carpeta)) / COMPROBACIONES
     if not ruta.exists():
         return {}
     try:
@@ -354,9 +456,9 @@ def leer_comprobaciones():
     return {}
 
 
-def guardar_comprobaciones(comprobaciones):
-    """Escribe _comprobaciones.json de forma atómica."""
-    ruta = CSV_DIR / COMPROBACIONES
+def guardar_comprobaciones(comprobaciones, carpeta=None):
+    """Escribe _comprobaciones.json (el de `carpeta`, si se da) de forma atómica."""
+    ruta = (CSV_DIR if carpeta is None else Path(carpeta)) / COMPROBACIONES
     tmp = ruta.with_name(f".{ruta.name}.nuevo")
     tmp.write_text(json.dumps(comprobaciones, ensure_ascii=False, indent=1, sort_keys=True),
                    encoding="utf-8")
@@ -403,6 +505,94 @@ def generar_segmentos_mensuales(anio_inicio, anio_fin):
     return segmentos
 
 
+# --- Vía por fecha -----------------------------------------------------------
+def carpeta_fecha():
+    """csv_originales/por_fecha/ (se calcula al llamar: CSV_DIR puede cambiar)."""
+    return CSV_DIR / CARPETA_FECHA
+
+
+def fecha_portal(dia):
+    """Fecha como la pide el buscador ('15-05-2019')."""
+    return dia.strftime("%d-%m-%Y")
+
+
+def nombre_csv_ventana(desde, hasta):
+    """CSV de la ventana [desde, hasta] de la vía por fecha."""
+    return f"menores_fecha_{desde:%Y%m%d}_{hasta:%Y%m%d}.csv"
+
+
+def ventanas_fecha(hoy=None):
+    """[(desde, hasta, nombre del CSV)] de la vía por fecha, en orden y sin
+    huecos: lo anterior a ANIO_VENTANAS en una ventana, un mes por ventana
+    hasta el mes de `hoy` (entero) y lo posterior (fechas futuras) en otra, de
+    nombre fijo aunque su inicio avance cada mes."""
+    hoy = hoy or date.today()
+    ventanas = [(FECHA_MINIMA, date(ANIO_VENTANAS - 1, 12, 31))]
+    anio, mes = ANIO_VENTANAS, 1
+    while (anio, mes) <= (hoy.year, hoy.month):
+        ventanas.append((date(anio, mes, 1), date(anio, mes, monthrange(anio, mes)[1])))
+        anio, mes = (anio + 1, 1) if mes == 12 else (anio, mes + 1)
+    salida = [(d, h, nombre_csv_ventana(d, h)) for d, h in ventanas]
+    salida.append((date(anio, mes, 1), FECHA_MAXIMA, VENTANA_POSTERIORES))
+    return salida
+
+
+def mitades_ventana(desde, hasta):
+    """Las dos mitades (por días) de la ventana [desde, hasta], o None si es
+    de un solo día."""
+    if hasta <= desde:
+        return None
+    medio = desde + timedelta(days=(hasta - desde).days // 2)
+    return [(desde, medio), (medio + timedelta(days=1), hasta)]
+
+
+def rango_de_ventana(nombre):
+    """(desde, hasta) del nombre de un CSV de ventana, o None (el de las
+    posteriores, que avanza, u otro fichero)."""
+    m = re.fullmatch(r"menores_fecha_(\d{8})_(\d{8})\.csv", nombre)
+    if not m:
+        return None
+    try:
+        return tuple(datetime.strptime(g, "%Y%m%d").date() for g in m.groups())
+    except ValueError:
+        return None
+
+
+def recuento_portal(html):
+    """Nº de resultados de una página del buscador: el de 'Mostrando 1 - 10
+    de N', 0 si dice que no hay resultados o None si no trae ninguno de los
+    dos (otra página, o el portal ha cambiado)."""
+    m = PATRON_RECUENTO.search(html)
+    if m:
+        return int(m.group(1).replace(".", ""))
+    if PATRON_SIN_RESULTADOS.search(html):
+        return 0
+    return None
+
+
+def registros_de_csv(ruta):
+    """Registros (filas con Tipo de Publicación) del CSV `ruta`, leído como lo
+    leerá unificar (leer_csv): el nº que se compara con el recuento del
+    portal. Las filas de continuación no son registros."""
+    df, _ = leer_csv(ruta)
+    if len(df) == 0:
+        return 0
+    return int(inicio_de_bloque(df).sum())
+
+
+def contiene_todo(actual, nuevo):
+    """¿Trae el CSV `nuevo` todas las filas del CSV `actual` (contando las
+    repetidas)? Entonces guardarlo como versión nueva no retira nada."""
+    a, _ = leer_csv(actual)
+    b, _ = leer_csv(nuevo)
+    if len(a) == 0:
+        return True
+    if list(a.columns) != list(b.columns):
+        return False
+    filas = lambda df: Counter(map(tuple, df.astype(object).where(df.notna(), "").astype(str).to_numpy().tolist()))  # noqa: E731
+    return not (filas(a) - filas(b))
+
+
 # ---------------------------------------------------------------------------
 # DESCARGADOR
 # ---------------------------------------------------------------------------
@@ -416,13 +606,19 @@ class DescargadorComunidadMadrid:
         self.stats = {
             "ok": 0, "nuevo": 0, "actualizado": 0, "sin_cambios": 0,
             "error": 0, "skip_existe": 0, "skip_vacio": 0, "partidos": 0,
-            "archivados": 0, "filas": 0, "bytes": 0, "archivos": [],
+            "archivados": 0, "incompletas": 0, "filas": 0, "bytes": 0, "archivos": [],
         }
         self.t_inicio = None
         self.comprobaciones = leer_comprobaciones()
         # CSV de menores de las consultas de esta ejecución (las que no se
         # parten): al terminar todas, los demás CSV de menores se archivan
         self.vigentes = set()
+        # Vía por fecha: su _comprobaciones.json (se lee al empezarla) y las
+        # ventanas que no se parten de esta ejecución: {nombre: (estado,
+        # desde, hasta)}
+        self.comprobaciones_fecha = {}
+        self.hojas_fecha = {}
+        self.fallos_seguidos = 0
 
     # -----------------------------------------------------------------------
     # PASO 0: Obtener antibot_key + lista de entidades
@@ -903,6 +1099,271 @@ class DescargadorComunidadMadrid:
             log.info(f"    {p.name} → {HISTORICO}/{destino.name}")
 
     # ===================================================================
+    # A2) CONTRATOS MENORES — por ventanas de fecha, sin entidad
+    # ===================================================================
+    def descargar_menores_por_fecha(self, hoy=None):
+        """Menores de todas las entidades, también las que ya no están en el
+        desplegable, por ventanas de «Fecha del contrato o encargo» (A2 en el
+        docstring). Cada exportación se comprueba contra el recuento del
+        portal. Devuelve False si se deja a medias (fallos seguidos)."""
+        carpeta = carpeta_fecha()
+        carpeta.mkdir(parents=True, exist_ok=True)
+        self.comprobaciones_fecha = leer_comprobaciones(carpeta)
+        self.hojas_fecha = {}
+        self.fallos_seguidos = 0
+        ventanas = ventanas_fecha(hoy)
+
+        log.info(f"\n{'='*65}")
+        log.info("CONTRATOS MENORES — Por ventanas de fecha del contrato, sin entidad")
+        log.info(f"  Ventanas: {len(ventanas)} (una que llegue a {UMBRAL_TRUNCADO:,} se parte en dos)")
+        log.info(f"  Directorio: {carpeta}")
+        log.info(f"{'='*65}")
+
+        entera = True
+        for i, (desde, hasta, nombre) in enumerate(ventanas, 1):
+            log.info(f"\n  [{i}/{len(ventanas)}] {fecha_portal(desde)} a {fecha_portal(hasta)}")
+            if not self._ventana(desde, hasta, nombre):
+                log.error(f"  ✗ {FALLOS_SEGUIDOS_MAX} ventanas seguidas sin respuesta útil del portal: se deja la "
+                          f"vía por fecha para la próxima ejecución (no se toca ni se retira nada)")
+                entera = False
+                break
+        self._resumen_fecha()
+        if entera:
+            self._archivar_ventanas_sustituidas()
+        return entera
+
+    def _ventana(self, desde, hasta, nombre):
+        """La ventana [desde, hasta]: su CSV o, si se parte, sus dos mitades.
+        Devuelve False si hay que dejar la vía (FALLOS_SEGUIDOS_MAX)."""
+        if self.fallos_seguidos >= FALLOS_SEGUIDOS_MAX:
+            return False
+        mitades = mitades_ventana(desde, hasta)
+        if mitades and self._ventana_partida(nombre, mitades):
+            # No saltarla entera: si la ejecución anterior se cortó, hay que
+            # completar las mitades que falten (las comprobadas se saltan)
+            log.info(f"    Ya se descarga en dos mitades: {nombre}")
+        else:
+            estado = self._descargar_ventana(desde, hasta, nombre, partible=bool(mitades))
+            if estado != "reciente":
+                time.sleep(PAUSA_BASE)
+            if estado != "partir":
+                return self.fallos_seguidos < FALLOS_SEGUIDOS_MAX
+            log.info(f"    → Partiendo {fecha_portal(desde)} a {fecha_portal(hasta)} en dos mitades")
+        for d, h in mitades:
+            if not self._ventana(d, h, nombre_csv_ventana(d, h)):
+                return False
+        return True
+
+    def _ventana_partida(self, nombre, mitades):
+        """¿La ventana ya se descarga por sus dos mitades? (se partió o hay CSV
+        de alguna). Así no se vuelve a pedir en cada ejecución una ventana que
+        no cabe en una exportación."""
+        if self.comprobaciones_fecha.get(nombre, {}).get("resultado") == "partido":
+            return True
+        return any((carpeta_fecha() / nombre_csv_ventana(d, h)).exists() for d, h in mitades)
+
+    def _exportar_ventana(self, desde, hasta, exportar_con_tope):
+        """Búsqueda de los menores de la ventana (su página trae el recuento) y,
+        si hay algo que exportar, su CSV. Devuelve (recuento, bytes o None):
+        None si el recuento es 0 o llega al tope y la ventana se puede partir
+        (exportar_con_tope=False). Un fallo del portal es una excepción."""
+        html = self._buscar(tipo_pub="Contratos Menores", extra_params={
+            PARAM_FECHA_DESDE: fecha_portal(desde), PARAM_FECHA_HASTA: fecha_portal(hasta)})
+        n = recuento_portal(html)
+        if n is None:
+            raise ValueError("la página del buscador no trae el recuento ('Mostrando 1 - 10 de N')")
+        if n == 0 or (n >= UMBRAL_TRUNCADO and not exportar_con_tope):
+            return n, None
+        time.sleep(PAUSA_BASE)
+        form = self._obtener_form_captcha()
+        if not form:
+            raise ValueError("sin formulario de exportación (CAPTCHA)")
+        time.sleep(1)
+        datos = self._post_captcha(form)
+        if not datos:
+            raise ValueError("la exportación no devolvió un CSV")
+        return n, datos
+
+    def _descargar_ventana(self, desde, hasta, nombre, partible):
+        """Exporta una ventana y la guarda (guardar_version) si trae tantos
+        registros como dice el portal. Devuelve:
+          'reciente'    comprobada hace menos de VIGENCIA_HORAS: no se pide;
+          'completa'    cuadra y se guarda (nueva, actualizada o sin cambios);
+          'vacia'       0 según el portal: no se guarda nada (se conserva la
+                        copia anterior, si la hay);
+          'partir'      llega al tope, o no cuadra tras MAX_REINTENTOS: el
+                        llamante la parte en dos (nada se guarda);
+          'incompleta'  de un día y no cuadra (_guardar_incompleta);
+          'error'       el portal no responde bien: se conserva lo anterior."""
+        fp = carpeta_fecha() / nombre
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        etiqueta = f"{fecha_portal(desde)} a {fecha_portal(hasta)}"
+        if es_reciente(fp, self.comprobaciones_fecha):
+            log.info(f"    Ya comprobada hace menos de {VIGENCIA_HORAS} h: {nombre}, skip")
+            self.stats["skip_existe"] += 1
+            self.hojas_fecha[nombre] = ("reciente", desde, hasta)
+            return "reciente"
+
+        desajuste = None      # (recuento, registros, bytes) de la última exportación que no cuadró
+        for intento in range(MAX_REINTENTOS):
+            try:
+                n, datos = self._exportar_ventana(desde, hasta, exportar_con_tope=not partible)
+                if n == 0:
+                    if fp.exists():
+                        log.warning(f"    0 menores según el portal: se conserva la descarga anterior de {nombre}")
+                    else:
+                        log.info("    0 menores, skip")
+                    self.stats["skip_vacio"] += 1
+                    self.fallos_seguidos = 0
+                    self._anotar_fecha(nombre, "vacio", filas=0, recuento=0)
+                    self.hojas_fecha[nombre] = ("vacia", desde, hasta)
+                    return "vacia"
+                if datos is None:
+                    log.info(f"    {n:,} menores: llega al tope de la exportación ({UMBRAL_TRUNCADO:,}), se "
+                             f"parte sin exportarla")
+                    self.stats["partidos"] += 1
+                    self.fallos_seguidos = 0
+                    self._anotar_fecha(nombre, "partido", recuento=n, motivo="tope")
+                    return "partir"
+                registros = self._registros(fp, datos)
+                if registros == n:
+                    self._guardar_ventana(fp, datos, registros, n)
+                    self.fallos_seguidos = 0
+                    self.hojas_fecha[nombre] = ("completa", desde, hasta)
+                    return "completa"
+                desajuste = (n, registros, datos)
+                log.warning(f"    Intento {intento+1}/{MAX_REINTENTOS}: el portal cuenta {n:,} menores en "
+                            f"{etiqueta} y el CSV trae {registros:,}")
+            except Exception as e:  # noqa: BLE001 - se reintenta y, si sigue, se anota
+                log.error(f"    Error intento {intento+1}: {e}")
+            time.sleep(5 * (intento + 1))
+            self._reset_sesion()
+
+        if desajuste is not None:
+            n, registros, datos = desajuste
+            self.fallos_seguidos = 0
+            if partible:
+                log.warning(f"    → {etiqueta} no cuadra con el recuento del portal: se parte en dos")
+                self.stats["partidos"] += 1
+                self._anotar_fecha(nombre, "partido", filas=registros, recuento=n, motivo="incompleta")
+                return "partir"
+            return self._guardar_incompleta(fp, datos, registros, n, desde, hasta)
+
+        self.stats["error"] += 1
+        self.fallos_seguidos += 1
+        self._anotar_fecha(nombre, "error")
+        self.hojas_fecha[nombre] = ("error", desde, hasta)
+        return "error"
+
+    @staticmethod
+    def _registros(fp, datos):
+        """Registros del CSV `datos` leído como lo leerá unificar (se escribe en
+        un temporal junto a `fp`, que se borra)."""
+        tmp = fp.with_name(f".{fp.name}.contar")
+        try:
+            tmp.write_bytes(datos)
+            return registros_de_csv(tmp)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+
+    def _guardar_ventana(self, fp, datos, registros, recuento):
+        """Guarda una ventana que cuadra con el recuento (guardar_version)."""
+        estado = guardar_version(fp, datos)
+        log.info(f"  ✓ {fp.name} ({registros:,} registros, los del portal; "
+                 f"{len(datos) / (1024 * 1024):.1f} MB, {estado})")
+        self.stats["ok"] += 1
+        self.stats[estado] += 1
+        self.stats["filas"] += registros
+        self.stats["bytes"] += len(datos)
+        self.stats["archivos"].append(str(fp))
+        self._anotar_fecha(fp.name, estado, filas=registros, recuento=recuento)
+
+    def _guardar_incompleta(self, fp, datos, registros, recuento, desde, hasta):
+        """Ventana de un día que no cuadra con el recuento del portal. Nunca
+        retira nada: se guarda solo si no hay copia anterior o si la nueva la
+        contiene entera (así solo añade); si no, se conserva la anterior. Se
+        anota sin 'comprobado': la ejecución siguiente la vuelve a pedir."""
+        tmp = fp.with_name(f".{fp.name}.nuevo")
+        try:
+            tmp.write_bytes(datos)
+            if registros == 0:
+                log.warning(f"    ⚠ {fp.name}: incompleta (0 de {recuento:,} registros): una descarga sin "
+                            f"registros no se guarda")
+            elif fp.exists() and not contiene_todo(fp, tmp):
+                log.warning(f"    ⚠ {fp.name}: incompleta ({registros:,} de {recuento:,} registros) y le faltan "
+                            f"filas de la copia anterior: no la sustituye (se retirarían sin motivo)")
+            else:
+                estado = guardar_version(fp, desde=tmp)
+                log.warning(f"    ⚠ {fp.name}: incompleta ({registros:,} de {recuento:,} registros): se guarda "
+                            f"({estado}) porque no retira nada")
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+        self.stats["incompletas"] += 1
+        self._anotar_fecha(fp.name, "incompleta", filas=registros, recuento=recuento)
+        self.hojas_fecha[fp.name] = ("incompleta", desde, hasta)
+        return "incompleta"
+
+    def _anotar_fecha(self, nombre, resultado, filas=None, recuento=None, motivo=None):
+        """Como _anotar, en el _comprobaciones.json de la vía por fecha y con el
+        recuento del portal. 'error' e 'incompleta' no cuentan como comprobada:
+        se vuelven a pedir."""
+        entrada = dict(self.comprobaciones_fecha.get(nombre, {}))
+        ahora = iso_utc(time.time())
+        entrada.update(intento=ahora, resultado=resultado)
+        if resultado not in ("error", "incompleta"):
+            entrada["comprobado"] = ahora
+        for clave, valor in (("filas", filas), ("recuento", recuento), ("motivo", motivo)):
+            if valor is not None:
+                entrada[clave] = valor
+            elif clave == "motivo":
+                entrada.pop(clave, None)
+        self.comprobaciones_fecha[nombre] = entrada
+        guardar_comprobaciones(self.comprobaciones_fecha, carpeta_fecha())
+
+    def _archivar_ventanas_sustituidas(self):
+        """Tras una pasada completa: un CSV de ventana que ya no es de ninguna
+        consulta de esta ejecución (una ventana que ahora se parte en dos) pasa
+        a _historico/ (archivar) si todas las ventanas de la pasada que lo
+        cubren han llegado completas (su CSV cuadra con el recuento) o el
+        portal dice que no tienen ningún menor. Si alguna está incompleta o
+        falló, se conserva: sus filas se retirarían por una ventana incompleta."""
+        def completa(nombre, estado):
+            anotado = self.comprobaciones_fecha.get(nombre, {}).get("resultado")
+            return (estado in ("completa", "vacia")
+                    or (estado == "reciente" and (anotado in COMPLETAS or anotado == "vacio")))
+
+        for p in sorted(carpeta_fecha().glob("*.csv")):
+            if p.name.startswith(".") or p.name in self.hojas_fecha:
+                continue
+            rango = rango_de_ventana(p.name)
+            if rango is None:
+                log.warning(f"  {p.name}: no es de ninguna ventana de esta ejecución ni se sabe qué fechas cubre: "
+                            f"se conserva")
+                continue
+            cubren = [(n, e) for n, (e, d, h) in self.hojas_fecha.items() if d <= rango[1] and h >= rango[0]]
+            if cubren and all(completa(n, e) for n, e in cubren):
+                destino = archivar(p)
+                self.stats["archivados"] += 1
+                log.info(f"    {p.name} → {HISTORICO}/{destino.name} (sustituido por {len(cubren)} ventanas "
+                         f"completas o sin menores)")
+            else:
+                log.warning(f"  {p.name}: ya no es de ninguna consulta, pero alguna de las ventanas que lo cubren está "
+                            f"incompleta o falló: se conserva")
+
+    def _resumen_fecha(self):
+        estados = Counter(e for e, _, _ in self.hojas_fecha.values())
+        recuento = sum(self.comprobaciones_fecha.get(n, {}).get("recuento") or 0
+                       for n, (e, _, _) in self.hojas_fecha.items() if e != "vacia")
+        log.info(f"\n  Vía por fecha: {len(self.hojas_fecha)} ventanas ({', '.join(f'{k} {v}' for k, v in sorted(estados.items()))})")
+        log.info(f"  Menores según el portal en esas ventanas: {recuento:,} (los de las fronteras, dos veces)")
+        pendientes = sorted(n for n, (e, _, _) in self.hojas_fecha.items() if e in ("incompleta", "error"))
+        if pendientes:
+            log.warning(f"  ⚠ {len(pendientes)} ventanas incompletas o con error (no retiran nada y se vuelven a pedir "
+                        f"en la próxima ejecución): {', '.join(pendientes[:20])}")
+
+    # ===================================================================
     # B) OTROS TIPOS — por mes + tipo publicación (con fechas)
     # ===================================================================
     def descargar_otros(self, anio_inicio=ANIO_INICIO, anio_fin=datetime.now().year):
@@ -958,9 +1419,24 @@ class DescargadorComunidadMadrid:
         # Fase 1: Contratos menores por entidad
         self.descargar_menores()
 
+        # Fase 1b: Contratos menores por ventanas de fecha, sin entidad (los de
+        # las entidades que ya no están en el desplegable). Un fallo inesperado
+        # de esta vía no para las demás: lo que ya había no se toca
+        try:
+            self.descargar_menores_por_fecha()
+        except Exception:  # noqa: BLE001 - se registra y se sigue con los otros tipos
+            log.exception("  ✗ La vía por fecha falló: se sigue con los otros tipos (no se toca ni se retira nada)")
+            self.stats["error"] += 1
+
         # Fase 2: Otros tipos por mes
         self.descargar_otros(anio_inicio, anio_fin)
 
+        self._resumen()
+
+    def descargar_fechas(self):
+        """Solo la vía por fecha (modo 'fechas'), con su resumen."""
+        self.t_inicio = time.time()
+        self.descargar_menores_por_fecha()
         self._resumen()
 
     def descargar_prueba(self):
@@ -1000,6 +1476,7 @@ class DescargadorComunidadMadrid:
         log.info(f"  Ya comprobados:  {self.stats['skip_existe']}")
         log.info(f"  Vacíos:          {self.stats['skip_vacio']}")
         log.info(f"  Partidos:        {self.stats['partidos']}")
+        log.info(f"  Incompletas:     {self.stats['incompletas']}")
         log.info(f"  Archivados:      {self.stats['archivados']}")
         log.info(f"  Filas totales:   {self.stats['filas']:,}")
         log.info(f"  Tamaño total:    {total_mb:.1f} MB")
@@ -1037,12 +1514,14 @@ def fecha_version(ruta):
     return iso_utc(ruta.stat().st_mtime)
 
 
-def ficheros_crudos():
-    """{nombre: [(ruta, fecha, vigente)]} de cada CSV de csv_originales/, de su
-    versión más antigua a la vigente, en orden de nombre. Incluye los que ya
-    solo tienen versiones en _historico/ (sustituidos: ninguna vigente)."""
-    nombres = {p.name for p in CSV_DIR.glob("*.csv") if not p.name.startswith(".")}
-    carpeta = CSV_DIR / HISTORICO
+def ficheros_crudos(raiz=None):
+    """{nombre: [(ruta, fecha, vigente)]} de cada CSV de csv_originales/ (o de
+    `raiz`: la carpeta de la vía por fecha), de su versión más antigua a la
+    vigente, en orden de nombre. Incluye los que ya solo tienen versiones en
+    _historico/ (sustituidos: ninguna vigente)."""
+    raiz = CSV_DIR if raiz is None else Path(raiz)
+    nombres = {p.name for p in raiz.glob("*.csv") if not p.name.startswith(".")}
+    carpeta = raiz / HISTORICO
     if carpeta.is_dir():
         for p in carpeta.glob("*.csv"):
             m = PATRON_VERSION.fullmatch(p.stem)
@@ -1050,7 +1529,7 @@ def ficheros_crudos():
                 nombres.add(m.group("base") + p.suffix)
     salida = {}
     for nombre in sorted(nombres):
-        destino = CSV_DIR / nombre
+        destino = raiz / nombre
         lista = []
         for ruta in versiones(destino):
             if ruta == destino:
@@ -1288,6 +1767,152 @@ def quitar_repetidos_entre_ficheros(partes):
     return int(sobra.sum())
 
 
+# ---------------------------------------------------------------------------
+# VÍA POR FECHA EN LA TABLA: solo entra lo que la vía por entidad no trae
+# ---------------------------------------------------------------------------
+def _texto(serie):
+    """Serie como texto, con la celda nula vacía."""
+    return serie.astype(object).where(serie.notna(), "").astype(str)
+
+
+def claves_de_filas(p):
+    """Clave estable de cada fila (CLAVE_SEMILLA unidas por \\x1f), o '' si no
+    tiene Referencia (como en la semilla, la celda vacía no es clave)."""
+    ref, ent = (_texto(p[c]) if c in p.columns else pd.Series([""] * len(p), index=p.index, dtype=object)
+                for c in CLAVE_SEMILLA)
+    return (ref + "\x1f" + ent).where(ref != "", "")
+
+
+def _bloque_de_cada_fila(p):
+    """Nº de bloque de cada fila (0 para las de continuación antes de la
+    primera cabecera, que no son de ningún registro)."""
+    return inicio_de_bloque(p).cumsum().to_numpy()
+
+
+def _firmas_de_bloques(p, cabeceras):
+    """{posición de la cabecera: firma del bloque} de los bloques cuya cabecera
+    está en `cabeceras` (máscara): el texto de todas sus filas, con las
+    columnas del portal con valor (nombre=valor), así casan dos CSV aunque uno
+    traiga una columna de más vacía."""
+    bloque = _bloque_de_cada_fila(p)
+    elegidos = np.unique(bloque[cabeceras])
+    filas = np.flatnonzero(np.isin(bloque, elegidos))
+    columnas = sorted(c for c in p.columns if c not in PROPIAS and c != BLOQUE)
+    valores = p.iloc[filas][columnas].astype(object).where(p.iloc[filas][columnas].notna(), "").astype(str)
+    texto = ["\x1f".join(f"{c}={v}" for c, v in zip(columnas, fila) if v != "") for fila in valores.to_numpy()]
+    por_bloque = pd.Series(texto).groupby(bloque[filas]).agg("\x1e".join)
+    cabecera = {b: pos for pos, b in zip(np.flatnonzero(cabeceras), bloque[cabeceras])}
+    return {cabecera[b]: firma for b, firma in por_bloque.items()}
+
+
+def _presentes_via_entidad(partes):
+    """Claves (pd.Index de texto, sin repetir) de los registros presentes en
+    la tabla de la vía por entidad y firmas de sus bloques presentes sin
+    Referencia (se comparan por contenido)."""
+    claves, firmas = [], set()
+    for _, p in partes:
+        if len(p) == 0:
+            continue
+        cab = inicio_de_bloque(p).to_numpy(dtype=bool)
+        en = (p["_en_ultima_descarga"].to_numpy(dtype=bool) if "_en_ultima_descarga" in p.columns
+              else np.ones(len(p), dtype=bool))
+        clave = claves_de_filas(p).to_numpy(dtype=object)
+        claves.append(clave[cab & en & (clave != "")])
+        sin = cab & en & (clave == "")
+        if sin.any():
+            firmas.update(_firmas_de_bloques(p, sin).values())
+    indice = pd.Index(np.concatenate(claves) if claves else np.array([], dtype=object), dtype=object)
+    return indice.unique(), firmas
+
+
+def _sin_bloques(p, cabeceras):
+    """`p` sin los bloques (cabecera y continuaciones) de las `cabeceras`."""
+    bloque = _bloque_de_cada_fila(p)
+    quitar = np.zeros(bloque.max() + 1 if len(bloque) else 1, dtype=bool)
+    quitar[bloque[cabeceras]] = True
+    return p.loc[~quitar[bloque]].reset_index(drop=True)
+
+
+def _una_presente_por_clave(partes):
+    """Si una clave queda presente en varios bloques de la vía por fecha (con
+    distinto contenido: los idénticos ya se quitaron), sigue presente el de la
+    descarga más reciente (a igualdad, el último) y los demás pasan a
+    _en_ultima_descarga=False, como una versión anterior. Modifica `partes` y
+    devuelve cuántos bloques pasan."""
+    trozos = []
+    for i, (_, p) in enumerate(partes):
+        cab = inicio_de_bloque(p).to_numpy(dtype=bool)
+        clave = claves_de_filas(p).to_numpy(dtype=object)
+        pos = np.flatnonzero(cab & p["_en_ultima_descarga"].to_numpy(dtype=bool) & (clave != ""))
+        trozos.append(pd.DataFrame({"parte": i, "pos": pos, "clave": clave[pos],
+                                    "ultima": _texto(p["_ultima_descarga"]).to_numpy(dtype=object)[pos]}))
+    if not trozos:
+        return 0
+    t = pd.concat(trozos, ignore_index=True)
+    t = t[t.duplicated("clave", keep=False)]
+    if t.empty:
+        return 0
+    t = t.sort_values(["clave", "ultima", "parte", "pos"], kind="stable")
+    pasan = t.drop(t.drop_duplicates("clave", keep="last").index)
+    for i, grupo in pasan.groupby("parte"):
+        nombre, p = partes[i]
+        bloque = _bloque_de_cada_fila(p)
+        p = p.copy()
+        p.loc[np.isin(bloque, bloque[grupo["pos"].to_numpy()]), "_en_ultima_descarga"] = False
+        partes[i] = (nombre, p)
+    return len(pasan)
+
+
+def anadir_via_fecha(partes):
+    """Añade a `partes` (la tabla de la vía por entidad, ya sin repetidos) lo
+    que traen los CSV de la vía por fecha y ella no (ver «Vía por fecha» en
+    HISTÓRICO): no entra un bloque cuya clave tiene una fila presente en la vía
+    por entidad, ni uno sin Referencia idéntico a un bloque presente de ella;
+    el resto va al final, sin repetidos (quitar_repetidos_entre_ficheros, que
+    también deja la copia presente de un bloque que la vía por entidad ya no
+    trae) y con una sola fila presente por clave. Devuelve (partes, informe);
+    sin CSV de la vía por fecha, (partes, None) sin tocar nada."""
+    raiz = carpeta_fecha()
+    ficheros = ficheros_crudos(raiz) if raiz.is_dir() else {}
+    if not ficheros:
+        return partes, None
+    claves, firmas = _presentes_via_entidad(partes)
+    informe = {"csv": 0, "filas_leidas": 0, "clave_en_via_entidad": 0, "contenido_en_via_entidad": 0}
+    nuevas = []
+    for nombre, lista in ficheros.items():
+        acumulado = acumular_fichero(nombre, lista)
+        if acumulado is None:
+            continue
+        informe["csv"] += 1
+        informe["filas_leidas"] += len(acumulado)
+        cab = inicio_de_bloque(acumulado).to_numpy(dtype=bool)
+        clave = claves_de_filas(acumulado).to_numpy(dtype=object)
+        por_clave = np.zeros(len(acumulado), dtype=bool)
+        con = np.flatnonzero(cab & (clave != ""))
+        if len(con) and len(claves):
+            por_clave[con] = claves.get_indexer(pd.Index(clave[con], dtype=object)) >= 0
+        por_contenido = np.zeros(len(acumulado), dtype=bool)
+        sin = cab & (clave == "")
+        if sin.any() and firmas:
+            for pos, firma in _firmas_de_bloques(acumulado, sin).items():
+                por_contenido[pos] = firma in firmas
+        informe["clave_en_via_entidad"] += int(por_clave.sum())
+        informe["contenido_en_via_entidad"] += int(por_contenido.sum())
+        quedan = _sin_bloques(acumulado, por_clave | por_contenido)
+        if len(quedan):
+            nuevas.append((nombre, quedan))
+    filas_entidad = sum(len(p) for _, p in partes)
+    todas = partes + nuevas
+    informe["repetidas"] = quitar_repetidos_entre_ficheros(todas) if nuevas else 0
+    # Bloques que la vía por entidad ya no trae y la vía por fecha sí (idénticos): la copia presente
+    informe["sustituidas_en_via_entidad"] = filas_entidad - sum(len(p) for _, p in todas[:len(partes)])
+    via_fecha = todas[len(partes):]
+    informe["versiones_anteriores"] = _una_presente_por_clave(via_fecha)
+    todas[len(partes):] = via_fecha
+    informe["anadidas"] = sum(len(p) for _, p in via_fecha)
+    return todas, informe
+
+
 def ordenar_columnas(columnas):
     """Columnas del portal (y _columna_extra_N) y después las del script, en el
     orden de PROPIAS."""
@@ -1479,8 +2104,9 @@ def unificar_csvs(semillas=(), origen=ORIGEN_SEMILLA):
     """Tabla consolidada desde TODAS las versiones de todos los CSV descargados
     (ver HISTÓRICO), con las semillas (--semilla) si se dan, en su orden.
     Escribe el CSV y el Parquet y devuelve un resumen {'filas', 'retiradas',
-    'salidas': {nombre: estado}, 'semillas': [informes]}, o None si no hay
-    nada que unificar (entonces no se escribe nada)."""
+    'salidas': {nombre: estado}, 'semillas': [informes], 'via_fecha':
+    informe de anadir_via_fecha o None}, o None si no hay nada que unificar
+    (entonces no se escribe nada)."""
     log.info("Unificando CSVs...")
     semillas = [Path(s) for s in semillas]
     faltan = [str(s) for s in semillas if not s.is_file()]
@@ -1517,6 +2143,17 @@ def unificar_csvs(semillas=(), origen=ORIGEN_SEMILLA):
     if quitadas:
         log.info(f"  Eliminadas {quitadas:,} filas de registros repetidos en dos CSV")
 
+    # Vía por fecha: al final, solo lo que la vía por entidad no trae
+    partes, via_fecha = anadir_via_fecha(partes)
+    if via_fecha:
+        log.info(f"  Vía por fecha: {via_fecha['csv']:,} CSV de ventana, {via_fecha['filas_leidas']:,} filas; no "
+                 f"entran {via_fecha['clave_en_via_entidad']:,} con la clave presente en la vía por entidad ni "
+                 f"{via_fecha['contenido_en_via_entidad']:,} sin Referencia idénticas a una suya; "
+                 f"{via_fecha['repetidas']:,} repetidas (fronteras de las ventanas y copias presentes de "
+                 f"{via_fecha['sustituidas_en_via_entidad']:,} filas que la vía por entidad ya no trae); "
+                 f"{via_fecha['versiones_anteriores']:,} bloques con la clave presente en otra ventana más "
+                 f"reciente pasan a versión anterior; entran {via_fecha['anadidas']:,}")
+
     informes = []
     if semillas:
         consultas = set(ficheros) | {n for n, e in leer_comprobaciones().items() if e.get("comprobado")}
@@ -1537,7 +2174,7 @@ def unificar_csvs(semillas=(), origen=ORIGEN_SEMILLA):
         log.info(f"\n✓ {salida} ({estado}, {salida.stat().st_size / (1024 * 1024):.1f} MB)")
     log.info(f"  {filas:,} filas; {retiradas:,} ya no están en la última descarga")
     log.info(f"  Columnas: {columnas}")
-    return {"filas": filas, "retiradas": retiradas, "salidas": estados, "semillas": informes}
+    return {"filas": filas, "retiradas": retiradas, "salidas": estados, "semillas": informes, "via_fecha": via_fecha}
 
 
 # ---------------------------------------------------------------------------
@@ -1550,10 +2187,13 @@ Descarga de Contratación Pública - Comunidad de Madrid v4
 Uso:
   python script.py prueba           → Test: 1 entidad + 1 mes
   python script.py menores          → Solo contratos menores (por entidad)
+  python script.py fechas           → Solo contratos menores por ventanas de fecha
+                                      del contrato, sin entidad (también los de
+                                      entidades que ya no están en el desplegable)
   python script.py otros            → Solo otros tipos (por mes, 2017-año actual
                                       + lo publicado antes de 2017)
   python script.py otros 2020 2025  → Otros tipos, período parcial
-  python script.py todo             → Todo: menores + otros
+  python script.py todo             → Todo: menores (por entidad y por fecha) + otros
   python script.py unificar         → Une todas las versiones de los CSVs en la
                                       tabla consolidada (CSV + Parquet)
   python script.py unificar --semilla contratacion_comunidad_madrid_completo.parquet
@@ -1562,11 +2202,14 @@ Uso:
                                       Entidad Adjudicadora); repetible
 
 Estrategia:
-  Contratos menores: por entidad adjudicadora (126), sin fechas
+  Contratos menores: por entidad adjudicadora (126), sin fechas, y por ventanas
+    de un mes de la fecha del contrato, sin entidad (solo entra en la tabla lo
+    que no trae la vía por entidad)
   Otros tipos: por mes + tipo publicación, con fechas
 
 Directorio de salida: comunidad_madrid/csv_originales/ (versiones anteriores
-en csv_originales/_historico/)
+en csv_originales/_historico/); la vía por fecha, en
+csv_originales/por_fecha/
 """
 
 if __name__ == "__main__":
@@ -1586,6 +2229,9 @@ if __name__ == "__main__":
 
     elif args.modo == "menores":
         DescargadorComunidadMadrid().descargar_menores()
+
+    elif args.modo == "fechas":
+        DescargadorComunidadMadrid().descargar_fechas()
 
     elif args.modo == "otros":
         DescargadorComunidadMadrid().descargar_otros(a1, a2)
