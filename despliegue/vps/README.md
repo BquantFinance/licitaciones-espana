@@ -46,9 +46,17 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
   menos de 100 GB libres (se mira después de conseguir el cerrojo).
 - Comunidad de Madrid y TED escriben junto a su script: se ejecuta una copia byte a byte idéntica
   dentro de su carpeta de datos (el log guarda el sha256 de las dos).
-- PLACSP: la salida se llama `licitaciones_completo_2012_<año>`; al cambiar de año se escribe un
-  fichero con otro nombre. Quien lea la salida tiene que buscarla por patrón y quedarse con la más
-  reciente.
+- PLACSP: la salida se llama `licitaciones_completo` (`.parquet`, `_resultados.parquet`...): nombre
+  fijo, así que al cambiar de año la cadena de versiones de `_historico/` sigue y no queda ninguna salida
+  congelada. El nombre con años de cada año (`licitaciones_completo_2012_<año>...`, el de antes) es un
+  enlace simbólico a la vigente: lo que aún lo lee (el ETL de la web) sigue funcionando.
+  - Quien lea la salida, por el nombre fijo y **nunca por patrón**: un glob lee también los enlaces (en
+    2027, `*_resultados.parquet` daría el triple de filas).
+  - El script nunca escribe a través de un enlace: un rango parcial cuyo nombre es uno de ellos (p.ej.
+    `--anos 2012-2026` en 2027) se para sin tocar nada.
+  - Para volver al código sin nombre fijo, antes de desplegarlo y con el cerrojo de la fuente (ver
+    «Volver al código sin nombre fijo» en el README principal):
+    `flock /opt/data/licitaciones-historico/nacional/.cerrojo docker run --rm --network none -v "$(readlink -f /opt/apps/licitaciones-vps/produccion)":/repo:ro -v /opt/data/licitaciones-historico/nacional:/datos licitaciones-scrapers:vps python /repo/nacional/licitaciones.py --output-dir /datos/salida --deshacer-nombre-fijo`
 - El parse privado del BORME (`borme/parse/`) contiene nombres de personas: no se publica. Solo
   `borme/pub/`.
 
@@ -69,7 +77,9 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 
 Cada fuente entra en su cron semanal (`bin/ejecutar_fuente.sh <fuente> semanal`) cuando su primera
 descarga está verificada. Calendario previsto para las que faltan: miércoles Andalucía (y sus menores
-del CKAN), jueves Euskadi y BORME, viernes municipios (cuando un error de origen permanente deje de dar
-rc=1), sábado menores de la PSCP; Galicia, mensual (después de relanzar su primera descarga con la
+del CKAN), jueves Euskadi y BORME, viernes municipios (un error de origen permanente, como el XLSX de
+agosto de 2026 de Leganés o el del 4T-2020 de Málaga, solo da rc=1 la primera vez: la primera ejecución
+con `raw/_fallos_origen.json` los anota y, desde el día siguiente, se avisan con rc=0), sábado menores
+de la PSCP; Galicia, mensual (después de relanzar su primera descarga con la
 lista de organismos de la PR #36). La calidad y el cruce TED de la PLACSP aún no van en cron. Con la
 cola vacía, el cron de las 00:30 no hace nada.

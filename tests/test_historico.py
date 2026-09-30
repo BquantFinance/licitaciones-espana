@@ -41,6 +41,25 @@ def test_guardar_version_desde_fichero_y_sellos_repetidos(tmp_path):
     assert [p.read_bytes() for p in h.versiones(destino)] == [b"v1", b"v2", b"v3"]
 
 
+def test_guardar_version_y_archivar_no_tocan_un_enlace(tmp_path):
+    """Nunca se escribe a través de un enlace simbólico ni se mueve uno a _historico/: guardar_version lo
+    sustituía por un fichero real (solo si el contenido cambiaba) y archivar lo movía a _historico/,
+    donde un enlace relativo queda roto (revisión de la PR #44, salida de la PLACSP)."""
+    real = tmp_path / "tabla.parquet"
+    real.write_bytes(b"v1")
+    enlace = tmp_path / "tabla_2012_2026.parquet"
+    enlace.symlink_to(real.name)
+    parte = tmp_path / "tabla.part"
+    parte.write_bytes(b"v2")
+    for llamada in (lambda: h.guardar_version(enlace, b"v2"), lambda: h.guardar_version(enlace, desde=parte),
+                    lambda: h.archivar(enlace)):
+        with pytest.raises(ValueError, match="enlace simbólico"):
+            llamada()
+    assert enlace.is_symlink() and os.readlink(enlace) == real.name and real.read_bytes() == b"v1"
+    assert not (tmp_path / h.HISTORICO).exists() and not list(tmp_path.glob(".*"))
+    assert h.guardar_version(real, b"v2") == "actualizado"     # el fichero real, como siempre
+
+
 def test_guardar_version_exige_contenido_o_desde(tmp_path):
     with pytest.raises(ValueError):
         h.guardar_version(tmp_path / "a")
@@ -109,6 +128,25 @@ def test_columnas_nuevas_ignoradas_y_tipos():
     assert len(t2) == 2                                   # 1 y "1" son el mismo valor
     assert t2["cpv"].iloc[0] == "0913" and pd.isna(t2["cpv"].iloc[1])   # columna nueva rellenada
     assert t2["_fecha_descarga"].tolist() == ["d1", "d1"] # no rompe la igualdad
+
+
+def test_sin_columnas_en_comun_no_se_empareja_por_posicion():
+    """Dos versiones sin ninguna columna en común (p.ej. el portal cambia todas las cabeceras): antes
+    _claves daba la misma clave a todas las filas y el multiconjunto las emparejaba por posición: la
+    fila A/X/100 se fundía con C/Z/300 y quedaba como vigente. Sin nada que comparar, ninguna casa."""
+    t1 = h.acumular(None, _df([["A", "X", "100"], ["B", "Y", "200"]], ("a", "b", "c")), "d1")
+    t2 = h.acumular(t1, _df([["C", "Z", "300"]], ("d", "e", "f")), "d2")
+    filas = t2[["a", "b", "c", "d", "e", "f", "_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]]
+    assert [[None if pd.isna(v) else v for v in fila] for fila in filas.values.tolist()] == [
+        ["A", "X", "100", None, None, None, "d1", "d1", False],     # retirada: se conserva, sin fundirse
+        ["B", "Y", "200", None, None, None, "d1", "d1", False],
+        [None, None, None, "C", "Z", "300", "d2", "d2", True],      # la nueva, como alta
+    ]
+    # Tampoco si lo único en común son las columnas que no se comparan (las meta y `ignorar`)
+    t1 = h.acumular(None, pd.DataFrame({"a": ["A"], "_fecha_descarga": ["d1"]}), "d1")
+    t2 = h.acumular(t1, pd.DataFrame({"d": ["C"], "_fecha_descarga": ["d2"]}), "d2")
+    assert t2["a"].tolist()[0] == "A" and pd.isna(t2["d"].tolist()[0]) and len(t2) == 2
+    assert t2["_en_ultima_descarga"].tolist() == [False, True]
 
 
 def test_descarga_vacia_no_retira_nada():

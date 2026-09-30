@@ -300,6 +300,208 @@ def test_excel_celdas_de_error_se_conservan_como_texto(tmp_path):
     assert df["_fila_origen"].tolist() == ["2", "4"]
 
 
+# .xls del Gobierno de Aragón (contratos, menores y encargos, 2018-2025): HTML en ISO-8859-1 declarado,
+# con la cabecera en <TH> sueltas dentro de <TABLE>, fuera de todo <TR> (así llegan los 17 ficheros).
+# El byte 0xA4 es el euro (ISO-8859-15) y 0xA0, el espacio duro de '&nbsp;' escrito tal cual.
+CABECERA_GOBIERNO = ["Obj", "Órgano", "Procedimiento de adjudicación", "Tipo de contrato",
+                     "Importe de licitación", "Importe de adjudicación", "Instrumento de publicación",
+                     "Número de licitadores", "Identidad del adjudicatario", "Ejercicio", "Código Expediente", "M"]
+
+
+def _html_gobierno(filas, cabecera=CABECERA_GOBIERNO, codificacion="latin-1"):
+    ths = "".join(f"<TH>{c}</TH>\n" for c in cabecera)
+    trs = "".join('<TR WIDTH="100%">\n'
+                  + "".join(f'<TD VALIGN="TOP" NOWRAP>\n{v}\n \n\n</TD>\n' for v in fila)
+                  + "\n</TR>\n" for fila in filas)
+    texto = ('<HTML>\n<head>\n<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"/>\n'
+             '</head>\n<BODY>\n<TABLE BORDER="1" width="100%" CELLSPACING="1" CELLPADDING="1">\n'
+             f"{ths}{trs}</TABLE>\n</BODY>\n</HTML>\n")
+    return texto.encode(codificacion).replace("¤".encode(codificacion), b"\xa4")
+
+
+FILAS_GOBIERNO_2025 = [
+    ["Hannover\xa0Messe\xa0(31\xa0marzo)\xa02025", "Aragón Exterior, S.A.U. (AREX)", "Sin procedimiento",
+     "Servicios", "17.810,00", "17.810,00", "Ninguno", "1", "DEUTSCHE\xa0MESSE\xa0AG", "2025", "CF2503/0010",
+     "&nbsp;"],
+    ["Canon: 1.028 ¤/año/máquina", "SERVICIO ARAGONÉS DE SALUD", "Abierto", "Suministros", "45.164,55",
+     "44.290,70", "https://aplicaciones.aragon.es/pcon/pcon-public/", "&nbsp;", "BESTMEDIC SL", "2025",
+     "CONEX20255200001325", "CONTRATO MENOR"],
+]
+
+
+def test_xls_html_cabecera_en_th_fuera_de_tr_no_pierde_la_primera_fila(tmp_path):
+    """Antes la cabecera <TH> no se veía: la primera fila de datos hacía de cabecera (las columnas se
+    llamaban 'Hannover Messe…', 'Aragón Exterior…') y ese contrato se perdía."""
+    ruta = tmp_path / "gobierno_2025.xls"
+    ruta.write_bytes(_html_gobierno(FILAS_GOBIERNO_2025))
+    assert A.tipo_contenido(ruta) == "html"
+    df = A.leer_tabular(ruta)["datos"][0]
+    assert [c for c in df.columns if not c.startswith("_")] == CABECERA_GOBIERNO
+    assert len(df) == 2
+    assert df["Obj"].tolist() == ["Hannover\xa0Messe\xa0(31\xa0marzo)\xa02025", "Canon: 1.028 €/año/máquina"]
+    assert df["Órgano"].tolist() == ["Aragón Exterior, S.A.U. (AREX)", "SERVICIO ARAGONÉS DE SALUD"]
+    assert df["Identidad del adjudicatario"].tolist() == ["DEUTSCHE\xa0MESSE\xa0AG", "BESTMEDIC SL"]
+    assert df["Código Expediente"].tolist() == ["CF2503/0010", "CONEX20255200001325"]
+    assert L(df["Número de licitadores"]) == ["1", None]            # '&nbsp;' es una celda vacía
+    assert L(df["M"]) == [None, "CONTRATO MENOR"]
+    assert df["_fila_origen"].tolist() == ["2", "3"]                 # la cabecera es la fila 1
+    assert "_encabezado" not in df.columns
+
+
+def test_xls_html_celdas_sueltas_forman_filas_en_su_orden(tmp_path):
+    """Las celdas fuera de <tr> seguidas son una fila, en su sitio del fichero: una cabecera suelta
+    con colspan, filas <tr> y un pie suelto después."""
+    html = ("<html><body><table>"
+            "<th>A</th><th colspan='2'>B</th>"
+            "<tr><td>1</td><td>2</td><td>3</td></tr>"
+            "<tr><td>4</td><td></td><td>6</td></tr>"
+            "<td>pie</td><td>7</td>"
+            "</table></body></html>").encode()
+    ruta = tmp_path / "t.xls"
+    ruta.write_bytes(html)
+    assert A.filas_html(ruta) == [("tabla1", [["A", "B", None], ["1", "2", "3"], ["4", None, "6"],
+                                              ["pie", "7"]])]
+    df = A.leer_tabular(ruta)["datos"][0]
+    assert list(df.columns[:3]) == ["A", "B", "Unnamed: 2"]
+    assert df.values[:, :3].tolist() == [["1", "2", "3"], ["4", None, "6"], ["pie", "7", None]]
+    assert df["_fila_origen"].tolist() == ["2", "3", "4"]
+
+
+def test_xls_html_celdas_dentro_de_un_tr_que_no_son_hijas_directas(tmp_path):
+    """Exportadores de HTML antiguos meten etiquetas de formato entre <TR> y <TD> ('<TR><FONT>'), y
+    html.parser no las recoloca: las celdas son hijas del <FONT>. Siguen siendo de su fila (se buscan
+    en todo el <tr>) y no son celdas sueltas: no se pierden ni se duplican. Los 17 .xls del Gobierno no
+    lo traen (sept. 2026)."""
+    ruta = tmp_path / "font.xls"
+    ruta.write_bytes(b'<HTML><BODY><TABLE BORDER="1">\n<TH>Obj</TH><TH>Importe</TH>\n'
+                     b'<TR><FONT SIZE="2"><TD>Obra A</TD><TD>1.000,00 \xa4</TD></FONT></TR>\n'
+                     b"<TR><TD>Obra B</TD><TD>2.000,00</TD></TR>\n</TABLE></BODY></HTML>\n")
+    assert A.filas_html(ruta) == [("tabla1", [["Obj", "Importe"], ["Obra A", "1.000,00 €"], ["Obra B", "2.000,00"]])]
+
+
+def test_xls_html_cabecera_suelta_de_una_tabla_anidada_no_es_de_la_exterior(tmp_path):
+    """Las <TH> sueltas de una tabla dentro de una celda son la cabecera de esa tabla (que se lee
+    aparte), no una fila de la de fuera."""
+    ruta = tmp_path / "anidada.xls"
+    ruta.write_bytes(b"<HTML><BODY><TABLE>\n<TH>Obj</TH><TH>Lotes</TH>\n"
+                     b"<TR><TD>Obra A</TD><TD><TABLE><TH>Lote</TH><TH>Importe</TH>"
+                     b"<TR><TD>1</TD><TD>500,00</TD></TR></TABLE></TD></TR>\n"
+                     b"<TR><TD>Obra B</TD><TD>-</TD></TR>\n</TABLE></BODY></HTML>\n")
+    (_, exterior), (_, anidada) = A.filas_html(ruta)
+    assert ["Lote", "Importe"] not in exterior
+    assert exterior[0] == ["Obj", "Lotes"] and exterior[-1] == ["Obra B", "-"]
+    assert anidada == [["Lote", "Importe"], ["1", "500,00"]]
+
+
+def test_xls_html_codificacion_euro_0xa4_y_cp1252(tmp_path):
+    """0xA4 es '€' (el Gobierno escribe el euro como en ISO-8859-15) y los bytes de cp1252 (0x80 '€',
+    0x93 '“') también, aunque el fichero traiga uno que cp1252 no define (0x8D, de un 'Í' en UTF-8
+    leído como latin-1): antes ese fichero entero se leía como latin-1 y 0x80 era el control U+0080."""
+    datos = (b"<html><body><table><th>Obj</th><th>Importe</th>"
+             b"<tr><td>35,00 \xa4/ Tn</td><td>14,88 \x80/ud</td></tr>"
+             b"<tr><td>\x93Nueva edici\xf3n</td><td>VEH\xc3\x8dCULOS</td></tr></table></body></html>")
+    ruta = tmp_path / "c.xls"
+    ruta.write_bytes(datos)
+    df = A.leer_tabular(ruta)["datos"][0]
+    assert df["Obj"].tolist() == ["35,00 €/ Tn", "“Nueva edición"]
+    assert df["Importe"].tolist() == ["14,88 €/ud", "VEHÃ\x8dCULOS"]
+    # Un HTML en UTF-8 se lee como UTF-8 (el '¤' que traiga es un '¤')
+    utf8 = tmp_path / "u.xls"
+    utf8.write_bytes("<html><table><th>Obj</th><tr><td>Órgano ¤ €</td></tr></table></html>".encode("utf-8"))
+    assert A.leer_tabular(utf8)["datos"][0]["Obj"].tolist() == ["Órgano ¤ €"]
+
+
+def test_registro_marca_la_razon_social_que_es_un_codigo_de_pais(tmp_path):
+    """El Registro publica en razon_social_adjudicatario el código de país en vez del nombre (11 filas de
+    mayores, 40 de menores y 19 de encargos en sept. 2026, igual en su JSON): no hay lectura que lo
+    arregle; se marca la fila (_razon_social_es_pais) sin tocar ningún valor. 'AST' y 'MAZ' son nombres
+    (siglas), no países."""
+    df = pd.DataFrame({
+        "numero_de_expediente": ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"],
+        "razon_social_adjudicatario": ["ES", " AT ", "ATU", "AST", "MAZ", "CR CONFECCIONES RAMOS SL", None,
+                                       "ES", "NL"],
+        "nif_adjudicatario": ["A28122125", "ATU65728938", "ATU65728938", "Q5000455E", "B99083404",
+                              "B50349323", "B50349323", "ESPAÑA", None],
+    }, dtype=object)
+    marcado = A.marcar_razon_social_pais(df)
+    assert marcado["_razon_social_es_pais"].tolist() == [True, True, True, False, False, False, False, True, True]
+    assert marcado.drop(columns="_razon_social_es_pais").equals(df)          # ningún valor cambia
+    otra = pd.DataFrame({"razon_social_cesionario": ["ES"]})
+    assert list(A.marcar_razon_social_pais(otra).columns) == ["razon_social_cesionario"]
+
+
+@pytest.mark.parametrize("nombre, nif", [
+    ("EY", "B00000001"),            # siglas de empresa de dos letras que no son un código de país
+    ("BP", "A00000002"),
+    ("AST", "AST"),                 # un NIF que es solo las siglas no es un NIF-IVA con prefijo de país
+])
+def test_registro_siglas_que_no_son_un_pais_no_se_marcan(nombre, nif):
+    """Solo se marcan los códigos ISO 3166-1 alfa-2 y el prefijo de país de un NIF-IVA que sigue ('ATU'
+    con 'ATU65728938'). En sept. 2026 todas las razones sociales de dos letras del Registro son países,
+    pero unas siglas como 'EY' o 'BP' son un nombre."""
+    df = pd.DataFrame({"razon_social_adjudicatario": [nombre], "nif_adjudicatario": [nif]}, dtype=object)
+    assert A.marcar_razon_social_pais(df)["_razon_social_es_pais"].tolist() == [False]
+
+
+def test_registro_la_marca_es_false_en_un_fichero_sin_razon_social(web, tmp_path):
+    """Una serie del Registro con un fichero que no trae razon_social_adjudicatario (otro año con otro
+    esquema): sus filas llevan la marca a False, no nula, y la columna sigue siendo booleana."""
+    _web_basica(web)
+    web.paquete("registro-de-contratos-de-la-comunidad-autonoma-de-aragon-desde-2023", [
+        _recurso("r-reg-2023", "Registro de contratos 2023", "CSV", f"{F}/registro2023.csv"),
+        _recurso("r-reg-2024", "Registro de contratos 2024", "CSV", f"{F}/registro2024.csv")])
+    web.poner(f"{F}/registro2023.csv", b"numero_de_expediente,adjudicatario,nif\r\nE-2023-1,EMPRESA SL,B00000001\r\n")
+    web.poner(f"{F}/registro2024.csv", (b"numero_de_expediente,razon_social_adjudicatario,nif_adjudicatario\r\n"
+                                        b"ECU_SGT_2024_51,ES,A28122125\r\nHAP_SGT_2024_EMP5,AST,Q5000455E\r\n"))
+    assert A.main(["--salida", str(tmp_path), "--sin-zaragoza"]) == 0
+    registro = pd.read_parquet(tmp_path / "registro_contratos__registro_de_contratos.parquet")
+    assert registro["numero_de_expediente"].tolist() == ["E-2023-1", "ECU_SGT_2024_51", "HAP_SGT_2024_EMP5"]
+    assert registro["_razon_social_es_pais"].tolist() == [False, True, False]
+    assert registro["_razon_social_es_pais"].dtype == bool
+
+
+def test_main_gobierno_html_y_registro_con_la_marca(web, tmp_path):
+    _web_basica(web, registro=("numero_de_expediente,razon_social_adjudicatario,nif_adjudicatario\r\n"
+                               "ECU_SGT_2024_51,ES,A28122125\r\n"
+                               "SERPA2-1123002622,AT,ATU65728938\r\n"
+                               "HAP_SGT_2024_EMP5,AST,Q5000455E\r\n").encode("utf-8"))
+    web.paquete("contratos-gobierno-de-aragon", [
+        _recurso("r-cg-2025", "Contratos Gobierno de Aragón 2025", "XLS", f"{F}/cg2025.xls")])
+    web.poner(f"{F}/cg2025.xls", _html_gobierno(FILAS_GOBIERNO_2025))
+    assert A.main(["--salida", str(tmp_path), "--sin-zaragoza"]) == 0
+    gobierno = pd.read_parquet(tmp_path / "contratos_gobierno__contratos_gobierno_de_aragon.parquet")
+    assert [c for c in gobierno.columns if not c.startswith("_")] == CABECERA_GOBIERNO
+    assert gobierno["Código Expediente"].tolist() == ["CF2503/0010", "CONEX20255200001325"]
+    assert "_razon_social_es_pais" not in gobierno.columns
+    registro = pd.read_parquet(tmp_path / "registro_contratos__registro_de_contratos_desde.parquet")
+    assert registro["razon_social_adjudicatario"].tolist() == ["ES", "AT", "AST"]
+    assert registro["_razon_social_es_pais"].tolist() == [True, True, False]
+    assert registro["_razon_social_es_pais"].dtype == bool
+    columnas = list(registro.columns)
+    assert columnas.index("_razon_social_es_pais") == columnas.index("_fuente") - 1   # antes de los metadatos
+
+
+def test_gobierno_html_versiones_conservan_la_primera_fila_retirada(web, tmp_path):
+    """Regla 3: el parquet se rehace con el código actual desde todas las versiones del .xls. Si el
+    portal retira el primer contrato del fichero, sigue en la salida con _en_ultima_descarga=False (antes
+    era la cabecera de esa versión y no estaba en ninguna)."""
+    _web_basica(web)
+    web.paquete("contratos-gobierno-de-aragon", [
+        _recurso("r-cg-2025", "Contratos Gobierno de Aragón 2025", "XLS", f"{F}/cg2025.xls")])
+    web.poner(f"{F}/cg2025.xls", _html_gobierno(FILAS_GOBIERNO_2025))
+    assert A.main(["--salida", str(tmp_path), "--sin-zaragoza"]) == 0
+    crudo = tmp_path / "raw" / "contratos_gobierno" / "r-cg-2025.xls"
+    os.utime(crudo, (1_767_225_600, 1_767_225_600))            # 2026-01-01T00:00:00Z
+    tercera = ["Obra nueva", "Departamento X", "Abierto", "Obras", "1,00", "1,00", "-", "2", "EMPRESA SL",
+               "2025", "EXP-3", "&nbsp;"]
+    web.poner(f"{F}/cg2025.xls", _html_gobierno(FILAS_GOBIERNO_2025[1:] + [tercera]))
+    assert A.main(["--salida", str(tmp_path), "--sin-zaragoza"]) == 0
+    df = pd.read_parquet(tmp_path / "contratos_gobierno__contratos_gobierno_de_aragon.parquet")
+    assert df[["Código Expediente", "_en_ultima_descarga"]].values.tolist() == [
+        ["CF2503/0010", False], ["CONEX20255200001325", True], ["EXP-3", True]]
+    assert df["_primera_descarga"].tolist()[:2] == ["2026-01-01T00:00:00Z"] * 2
+
+
 # ---------------------------------------------------------------------------
 # Descargas
 # ---------------------------------------------------------------------------
