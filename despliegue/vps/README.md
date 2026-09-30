@@ -69,17 +69,23 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 0 1 * * 1   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh nacional semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
 0 1 * * 2   … catalunya y valencia (una línea por fuente)
 0 1 * * 3   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh asturias semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
-0 1 * * 5   … ayto_madrid, aragon, castilla_leon, murcia, extremadura, la_rioja, valencia_menores y castilla_la_mancha
+0 1 * * 4   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh andalucia semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
+0 1 * * 5   … ayto_madrid, aragon, castilla_leon, murcia, extremadura, la_rioja, valencia_menores, castilla_la_mancha y municipios
 0 1 * * 6   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh ted semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
-# Mensual: Comunidad de Madrid (día 5; cada ejecución guarda ~1 GB en _historico/)
+# Mensuales: Comunidad de Madrid (día 5; cada ejecución guarda ~1 GB en _historico/) y Galicia (día 15; ~9 h)
 0 1 5 * *   /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh comunidad_madrid semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
+0 1 15 * *  /opt/apps/licitaciones-vps/bin/ejecutar_fuente.sh galicia semanal >> /opt/data/licitaciones-historico/logs/semanal.log 2>&1
+# Web (repo BquantFinance/buscalicitaciones, docs/PASO_A_PRODUCCION_V2.md §7): el domingo a las 07:00 construye y publica
+# la web con lo bajado en la semana; su ETL toma el cerrojo global mientras lee
+0 7 * * 0   /opt/apps/buscalicitaciones-v2/despliegue/actualizar_web.sh >> /opt/data/buscalicitaciones-v2/logs/cron.log 2>&1
 ```
 
 Cada fuente entra en su cron semanal (`bin/ejecutar_fuente.sh <fuente> semanal`) cuando su primera
-descarga está verificada. Calendario previsto para las que faltan: miércoles Andalucía (y sus menores
-del CKAN), jueves Euskadi y BORME, viernes municipios (un error de origen permanente, como el XLSX de
-agosto de 2026 de Leganés o el del 4T-2020 de Málaga, solo da rc=1 la primera vez: la primera ejecución
-con `raw/_fallos_origen.json` los anota y, desde el día siguiente, se avisan con rc=0), sábado menores
-de la PSCP; Galicia, mensual (después de relanzar su primera descarga con la
-lista de organismos de la PR #36). La calidad y el cruce TED de la PLACSP aún no van en cron. Con la
+descarga está verificada. Andalucía (jueves), Galicia (día 15) y municipios (viernes) entraron el
+30-sep-2026, tras las PR #46, #47 y #42. En municipios, un error de origen permanente (el XLSX de agosto de
+2026 de Leganés o el del 4T-2020 de Málaga) solo da rc=1 la primera vez: esa ejecución lo anota en
+`raw/_fallos_origen.json` y, desde el día siguiente, se avisa con rc=0. Calendario previsto para las que
+faltan, cuando su primera descarga termine bien: jueves los menores de Andalucía del CKAN, Euskadi y BORME
+(este y los menores de la PSCP murieron por memoria en su primera descarga el 29-sep); sábado los menores de
+la PSCP. La calidad y el cruce TED de la PLACSP aún no van en cron. Con la
 cola vacía, el cron de las 00:30 no hace nada.
