@@ -57,7 +57,7 @@ Procesado por lotes (memoria acotada):
 
 Semilla (--semilla, repetible; el orden es la prioridad):
     Un parquet publicado (p.ej. licitaciones_espana.parquet de v2026.02) se
-    incorpora como la instantánea más antigua (docs/CONTINUACION.md, regla 4):
+    incorpora como la instantánea más antigua (docs/PRINCIPIOS.md, regla 4):
     de él solo se añaden, detrás de la descarga, las filas cuya clave (id,
     fecha_updated) no está en la descarga ni en una semilla anterior; nunca se
     modifica ni se duplica una fila de la descarga. Pasan por

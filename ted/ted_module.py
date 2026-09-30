@@ -2230,7 +2230,7 @@ def _normalize_ted_data(df):
             if len(extracted.columns) > 0:
                 df.loc[mask, 'year'] = pd.to_numeric(extracted[0], errors='coerce')
     
-    # ── Cancelados: se conservan (reglas 1 y 2 de docs/CONTINUACION.md §2), con cancelled='1' ──
+    # ── Cancelados: se conservan (reglas 1 y 2 de docs/PRINCIPIOS.md), con cancelled='1' ──
     # Antes se eliminaban aquí. Los cruces los excluyen después de quedarse con la última versión
     # de cada aviso (avisos_para_cruce, run_ted_crossvalidation.load_ted).
     if 'cancelled' in df.columns:

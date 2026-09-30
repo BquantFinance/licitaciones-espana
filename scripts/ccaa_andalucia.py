@@ -28,7 +28,7 @@ Salida (en --salida):
   licitaciones_{std,menores,all}.csv  la misma tabla, partida por codigo_procedimiento
   perfiles_cache.json, scraper.log
 
-Sesgo del superviviente (docs/CONTINUACION.md, regla 3; comun/historico.py)
+Sesgo del superviviente (docs/PRINCIPIOS.md, regla 3; comun/historico.py)
 ---------------------------------------------------------------------------
 - Capa cruda: toda descarga pasa por guardar_version. Si el contenido no cambio no se
   toca nada (se compara sin comprimir) y si cambio la version anterior va a
@@ -102,12 +102,12 @@ adjudicacion de primer nivel tal como la sirve el portal, sea cual sea su result
 adjudicaciones van en lotes_json[].adjudicacion). todos_adjudicatarios_nif junta los NIF
 de primer nivel. Todas las adjudicaciones, con su lote, resultado, fechas y copia de
 formalizacion, van completas en adjudicaciones_json y lotes_json: para sumar lo
-adjudicado hay que leerlas (lo hace el ETL de buscalicitaciones, docs/etl_v2/grupo8.md).
+adjudicado hay que leerlas (lo hace el ETL de la web).
 fecha_publicacion es el fechaPublicacion del indice, que a menudo es una publicacion
 posterior: la primera es anuncio_primera_fecha. url_detalle lleva solo el idExpediente,
 que en los ids compartidos no dice de que numeracion es.
 
-Semilla (--semilla; docs/CONTINUACION.md, regla 4)
+Semilla (--semilla; docs/PRINCIPIOS.md, regla 4)
 --------------------------------------------------
 El publicado v2026.02 (andalucia.zip, licitaciones_andalucia.parquet) no trae
 portalGestor, y su id_expediente es unico porque el codigo que lo genero tambien

@@ -75,7 +75,7 @@ valor que el original y el mismo texto, celda a celda):
   con el salto de línea dentro del título y _lineas_unidas='2'. Solo se unen trozos
   que se quedan cortos y juntos suman exactamente los campos de la cabecera.
 
-Sesgo del superviviente (docs/CONTINUACION.md, regla 3; comun/historico.py):
+Sesgo del superviviente (docs/PRINCIPIOS.md, regla 3; comun/historico.py):
 - Capa cruda: cada descarga pasa por guardar_version; si el contenido no cambia no
   se toca nada y si cambia la copia anterior va a _historico/. El fichero de un año
   es uno aunque la Junta lo sustituya por otro con otro nombre (menores_2025_v1_
