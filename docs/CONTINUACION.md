@@ -218,7 +218,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 |---|---|---|---|
 | `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `de70485` | Sí (regeneración del 2026-09-27) |
 | `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
-| `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado (filas de la API desde el XML eForms; adjudicataria = oferta que cita un contrato) | `7f39a99` | Sí: ventana real de 3 días (493 avisos) y 525 XML, contrastados con los ganadores que da la API; sin descarga nueva, el consolidado sale idéntico byte a byte al de producción |
+| `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado (filas de la API desde el XML eForms; adjudicataria = oferta que cita un contrato) | `67d81dc` | Sí: ventana real de 3 días (493 avisos) y 525 XML, contrastados con los ganadores que da la API; sin descarga nueva, el consolidado sale idéntico byte a byte al de producción |
 | `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `95815b3` | Sí (la semilla, con la primera descarga del VPS) |
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`) | `95815b3` | Sí (primera descarga del VPS, 2026-09-28) |
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
@@ -376,9 +376,10 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   - `calidad/calidad_licitaciones.py` lee `empresa_norm` de todas las filas, versiones antiguas incluidas. No afecta a la pertenencia, pero conviene filtrar `_en_ultima_descarga`.
 - TED quedó cubierto el 2026-09-28. Pendientes que dejó su revisión:
   - **Hueco de 2020-2023:** el CSV no trae los `can-modif` ni los `can-desg` (1.620 solo en 2020). Viene de `5827174`. Con `--semilla` se recuperan del publicado, pero no se vuelven a descargar. Decidir si se piden a la API. Los avisos eForms de 2023 (2.609, también `can-modif`) ya se piden (`0e1fa68`); quedan los del esquema anterior.
-  - **Filas de la API desde el XML eForms** (`0e1fa68`, revisado en `7f39a99`): una fila por oferta ganadora de cada resultado de lote, cada importe en su columna con su moneda, título, descripción y BT-758 (README, «Filas de la API»).
+  - **Filas de la API desde el XML eForms** (`0e1fa68`, revisado en `7f39a99` y `67d81dc`): una fila por oferta ganadora de cada resultado de lote, cada importe en su columna con su moneda, título, descripción y BT-758 (README, «Filas de la API»).
     - La ganadora es la oferta que cita un contrato (BT-3202): `efac:LotResult/efac:LotTender` son las ofertas recibidas.
     - Revisión adversarial de `0e1fa68`, corregida en `7f39a99`: ganadoras falsas (285 de 1.312 filas de la ventana), importe perdido sin XML eForms (974 avisos de 2024, 5.290,1 M€), XML no validado, un fallo que bloqueaba el año y límite de tiempo por encima del cerrojo global.
+    - Segunda revisión, corregida en `67d81dc`: la excepción del contrato del resultado duplicaba un contrato (543120-2026) y el NIF podía ser el número interno de la plataforma (ahora en `win_platform_id`); los 404 ya no cuentan para el umbral y las esperas tienen tope.
     Pendientes:
     - La primera ejecución pide unos 100.000 XML (~6 h). Hay un presupuesto de 9,5 h y `ted.sh` tiene `LIMITE=11h`: si se corta, sigue en la siguiente.
     - Los 1.523 avisos de principios de 2024 del esquema anterior a eForms (TED_EXPORT) siguen en una fila con los datos del aviso, sin adjudicatario. Su XML queda en `ted/xml/2024/`: falta leer ese formato.
