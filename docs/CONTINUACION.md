@@ -216,7 +216,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 
 | Script | Estado | Commit de cierre | Verificado en vivo |
 |---|---|---|---|
-| `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `3efaf26` | Sí (regeneración del 2026-09-27; nombre fijo con los ZIP reales de encargos del VPS: tablas iguales byte a byte y enlaces leídos con DuckDB 1.1.3) |
+| `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `93b840d` | Sí (regeneración del 2026-09-27; nombre fijo con los ZIP reales de encargos del VPS: tablas iguales byte a byte y enlaces leídos con DuckDB 1.1.3; migración de la salida con años de cualquier año y nunca a través de un enlace, simulado en enero de 2027 con el ETL de la web igual) |
 | `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
 | `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `b8c6709` | Sí (y el lector nuevo del CSV, con los CSV reales de 2019 y 2021) |
 | `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `95815b3` | Sí (la semilla, con la primera descarga del VPS) |
