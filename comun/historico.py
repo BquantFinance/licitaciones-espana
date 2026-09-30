@@ -90,11 +90,13 @@ def guardar_version(destino, contenido=None, *, desde=None):
     Recibe el contenido en bytes (`contenido`) o la ruta de un fichero ya
     descargado (`desde`, p.ej. un .part escrito en streaming), que se mueve.
     Devuelve 'nuevo', 'sin_cambios' (idéntico al actual: no se toca) o
-    'actualizado' (la versión anterior queda en _historico/).
+    'actualizado' (la versión anterior queda en _historico/). Un `destino`
+    que es un enlace simbólico da ValueError sin escribir nada (_sin_enlace).
     """
     destino = Path(destino)
     if (contenido is None) == (desde is None):
         raise ValueError("Indica contenido o desde, no ambos")
+    _sin_enlace(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
     if contenido is not None:
         desde = destino.with_name(f".{destino.name}.nuevo")
@@ -113,11 +115,23 @@ def guardar_version(destino, contenido=None, *, desde=None):
     return "actualizado"
 
 
+def _sin_enlace(destino):
+    """Nunca se escribe a través de un enlace simbólico ni se mueve uno a
+    _historico/: guardar_version sustituiría el enlace por un fichero real
+    (y solo cuando el contenido cambia) y archivar lo movería a _historico/,
+    donde un enlace relativo queda roto. ValueError si `destino` lo es."""
+    if Path(destino).is_symlink():
+        raise ValueError(f"{destino} es un enlace simbólico (→ {os.readlink(destino)}): no se escribe a "
+                         "través de él ni se mueve a _historico/")
+
+
 def archivar(destino):
     """Mueve la copia actual de `destino` a _historico/ con el sello de su fecha
     (ruta_historica) sin poner nada en su lugar, p.ej. una salida que una
-    ejecución nueva ya no produce. Devuelve la ruta en _historico/."""
+    ejecución nueva ya no produce. Devuelve la ruta en _historico/. Un
+    enlace simbólico da ValueError (_sin_enlace)."""
     destino = Path(destino)
+    _sin_enlace(destino)
     previo = datetime.fromtimestamp(destino.stat().st_mtime, timezone.utc)
     archivo = ruta_historica(destino, previo)
     archivo.parent.mkdir(exist_ok=True)
