@@ -532,30 +532,54 @@ def cleanup_incremental_files(output_path: Path, fases: list):
 
 
 def analyze_duplicates(df: pd.DataFrame, key_cols: list) -> dict:
-    dupes_mask = df.duplicated(subset=key_cols, keep=False)
-    dupes = df[dupes_mask].copy()
+    """Filas que comparten key_cols y columnas en que difieren dentro de cada grupo.
+
+    Da lo mismo que agrupar una copia de esas filas (dupes.groupby(key_cols)[col].nunique()
+    por columna: los grupos con algún nulo en la clave no cuentan y el nulo no es un valor),
+    sin la copia ni un groupby por columna: con el crudo de la primera descarga (4,8 M de
+    filas, 4,6 M repetidas) eso llevaba el pico a 10,6 GiB. De cada columna se
+    factorizan sus filas repetidas (los mismos valores iguales que en nunique) y se cuentan
+    sus valores distintos en cada grupo."""
+    dupes_mask = df.duplicated(subset=key_cols, keep=False).to_numpy(dtype=bool)
+    n_dupe_rows = int(dupes_mask.sum())
     
-    if len(dupes) == 0:
+    if n_dupe_rows == 0:
         return {'duplicate_rows': 0, 'duplicate_groups': 0, 'differing_columns': []}
     
-    n_dupe_rows = len(dupes)
-    n_dupe_groups = dupes.groupby(key_cols).ngroups
+    # Grupo de cada fila repetida (groupby: fuera las que tienen algún nulo en la clave)
+    combinado = np.zeros(n_dupe_rows, dtype=np.int64)
+    completa = np.ones(n_dupe_rows, dtype=bool)
+    for col in key_cols:
+        codigos, unicos = pd.factorize(df[col][dupes_mask])
+        completa &= codigos >= 0
+        combinado = pd.factorize(combinado * (len(unicos) + 1) + (codigos + 1))[0]
+    grupo, grupos = pd.factorize(combinado[completa])
+    n_dupe_groups = len(grupos)
     
     differing_cols = []
     non_key_cols = [c for c in df.columns if c not in key_cols]
     
     for col in non_key_cols:
+        serie = df[col]
+        if isinstance(serie, pd.DataFrame):
+            continue  # nombre de columna repetido: nunique no daba un resultado por grupo
         try:
-            nunique = dupes.groupby(key_cols)[col].nunique()
-            if (nunique > 1).any():
-                n_groups_differ = (nunique > 1).sum()
-                differing_cols.append({
-                    'column': col,
-                    'groups_with_differences': int(n_groups_differ),
-                    'pct_groups': float(n_groups_differ / n_dupe_groups * 100)
-                })
+            # Solo las filas repetidas, como nunique (un valor no hashable fuera de ellas no cuenta)
+            codigos, unicos = pd.factorize(serie[dupes_mask])
         except Exception:
-            pass  # Skip columns that can't be compared
+            continue  # Skip columns that can't be compared (valores no hashables)
+        codigos = codigos[completa]
+        con_valor = codigos >= 0
+        # Pares (grupo, valor) distintos: los valores distintos de cada grupo
+        pares = pd.unique(grupo[con_valor] * np.int64(len(unicos) + 1) + codigos[con_valor])
+        distintos = np.bincount(pares // (len(unicos) + 1), minlength=n_dupe_groups)
+        n_groups_differ = (distintos > 1).sum()
+        if n_groups_differ > 0:
+            differing_cols.append({
+                'column': col,
+                'groups_with_differences': int(n_groups_differ),
+                'pct_groups': float(n_groups_differ / n_dupe_groups * 100)
+            })
     
     differing_cols.sort(key=lambda x: x['groups_with_differences'], reverse=True)
     
@@ -566,30 +590,57 @@ def analyze_duplicates(df: pd.DataFrame, key_cols: list) -> dict:
     }
 
 
+def _a_texto(v):
+    if isinstance(v, np.ndarray):
+        v = v.tolist()
+    return json.dumps(v, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _serie_comparable(serie: pd.Series) -> pd.Series:
+    """La columna con las listas/dicts/arrays (campos anidados de la API, que al leer
+    el parquet llegan como numpy arrays) como JSON; sin ninguno, la misma serie."""
+    if serie.dtype != object:
+        return serie
+    anidado = serie.map(lambda v: isinstance(v, (list, dict, np.ndarray)))
+    if anidado.any():
+        return serie.where(~anidado, serie.map(_a_texto))
+    return serie
+
+
 def _valores_comparables(df: pd.DataFrame) -> pd.DataFrame:
     """Copia de df donde listas/dicts/arrays (campos anidados de la API, que al leer
     el parquet llegan como numpy arrays) pasan a JSON para poder comparar filas."""
-    def a_texto(v):
-        if isinstance(v, np.ndarray):
-            v = v.tolist()
-        return json.dumps(v, sort_keys=True, ensure_ascii=False, default=str)
-    
     out = df
     for col in df.columns:
-        if df[col].dtype != object:
-            continue
-        anidado = df[col].map(lambda v: isinstance(v, (list, dict, np.ndarray)))
-        if anidado.any():
+        serie = df[col]
+        comparable = _serie_comparable(serie)
+        if comparable is not serie:
             if out is df:
                 out = df.copy()
-            out[col] = df[col].where(~anidado, df[col].map(a_texto))
+            out[col] = comparable
     return out
     
     
+def _codigos_filas(df: pd.DataFrame) -> np.ndarray:
+    """Código de cada fila: el mismo en dos filas si son iguales en todas las columnas,
+    con los valores de _valores_comparables y la igualdad de DataFrame.duplicated (el
+    nulo es un valor más). Se calcula columna a columna: DataFrame.duplicated tiene a la
+    vez las etiquetas de todas (con 43 columnas y 4,8 M de filas, 1,6 GB más) y
+    _valores_comparables copia la tabla si alguna columna es anidada."""
+    codigo = np.zeros(len(df), dtype=np.int64)
+    for _, serie in df.items():
+        etiquetas, unicos = pd.factorize(_serie_comparable(serie))
+        codigo = pd.factorize(codigo * (len(unicos) + 1) + (etiquetas + 1))[0]
+    return codigo
+
+
 def quitar_copias_identicas(df: pd.DataFrame) -> pd.DataFrame:
     """Quita solo las filas idénticas en todas las columnas (copias del mismo
     registro devueltas por varias consultas). No usa claves parciales."""
-    copias = _valores_comparables(df).duplicated(keep='first')
+    if df.empty:
+        copias = _valores_comparables(df).duplicated(keep='first')
+    else:
+        copias = pd.Series(_codigos_filas(df)).duplicated(keep='first').to_numpy()
     return df[~copias].reset_index(drop=True)
 
 
@@ -637,6 +688,8 @@ def _mismas_filas(df: pd.DataFrame, ruta: Path, formato: str) -> bool:
             if (fichero.metadata.num_rows != len(df)
                     or set(fichero.schema_arrow.names) != set(map(str, df.columns))):
                 return False
+            if all(isinstance(c, str) for c in df.columns):
+                return _mismas_filas_parquet(df, ruta)
             anterior = pd.read_parquet(ruta)
         elif formato == 'csv':
             anterior = pd.read_csv(ruta, dtype=str, keep_default_na=False, na_values=[''], encoding='utf-8-sig')
@@ -647,6 +700,44 @@ def _mismas_filas(df: pd.DataFrame, ruta: Path, formato: str) -> bool:
     if len(anterior) != len(df) or set(map(str, anterior.columns)) != set(map(str, df.columns)):
         return False
     h_anterior, h_nuevo = huellas_contenido(anterior, df)
+    return bool(np.array_equal(np.sort(h_anterior), np.sort(h_nuevo)))
+
+
+class _ColumnaDistinta(Exception):
+    """El fichero no da la columna con el mismo nombre (_mismas_filas_parquet)."""
+
+
+def _mismas_filas_parquet(df: pd.DataFrame, ruta: Path) -> bool:
+    """_mismas_filas de un parquet sin leerlo entero: la huella de sus filas se calcula
+    leyendo una columna cada vez (como las da pd.read_parquet). Con el crudo de la primera
+    descarga (4,8 M de filas), tener a la vez el crudo nuevo y el anterior sumaba otros
+    4,8 GiB. Si el fichero no se puede leer, no son las mismas filas; si no
+    da alguna columna con su nombre, se compara leyéndolo entero (como antes)."""
+    columnas = _columnas_huella(df)
+
+    def columna_anterior(nombre):
+        try:
+            parte = pd.read_parquet(ruta, columns=[nombre])
+        except Exception as e:
+            raise _LecturaFallida(nombre) from e
+        if list(parte.columns) != [nombre]:
+            raise _ColumnaDistinta(nombre)
+        return parte[nombre]
+
+    try:
+        h_anterior = _huella_filas(len(df), columnas, columna_anterior)
+    except _ColumnaDistinta:
+        try:
+            anterior = pd.read_parquet(ruta)
+        except Exception:
+            return False
+        if len(anterior) != len(df) or set(map(str, anterior.columns)) != set(map(str, df.columns)):
+            return False
+        h_anterior, h_nuevo = huellas_contenido(anterior, df)
+        return bool(np.array_equal(np.sort(h_anterior), np.sort(h_nuevo)))
+    except _LecturaFallida:
+        return False
+    h_nuevo = _huella_filas(len(df), columnas, lambda nombre: df[nombre] if nombre in df.columns else None)
     return bool(np.array_equal(np.sort(h_anterior), np.sort(h_nuevo)))
 
 
@@ -777,21 +868,38 @@ def huellas_contenido(*tablas) -> list:
     ellas: todas las columnas de datos (no las de control, que empiezan por '_') en orden
     alfabético, con _canonico. Una columna que falta en una tabla cuenta como nula:
     json_normalize solo crea las columnas de las fases que salen en cada descarga."""
-    columnas = sorted({str(c) for t in tablas for c in t.columns if not str(c).startswith('_')})
-    huellas = []
-    for tabla in tablas:
-        h = np.full(len(tabla), 0x345678, dtype=np.uint64)
-        mult = np.uint64(1000003)
-        for i, columna in enumerate(columnas):
-            if columna in tabla.columns:
-                texto = _texto_comparable(tabla[columna])
-            else:
-                texto = np.full(len(tabla), None, dtype=object)
-            # hash_array (con categorize) distingue el nulo del texto 'None'
-            h = (h ^ pd.util.hash_array(texto)) * mult
-            mult = np.uint64(int(mult) + 82520 + 2 * (len(columnas) - i))
-        huellas.append(h)
-    return huellas
+    columnas = _columnas_huella(*tablas)
+    return [_huella_filas(len(tabla), columnas,
+                          lambda columna, tabla=tabla: tabla[columna] if columna in tabla.columns else None)
+            for tabla in tablas]
+
+
+def _columnas_huella(*tablas) -> list:
+    """Columnas de huellas_contenido: las de datos de todas las tablas, en orden alfabético."""
+    return sorted({str(c) for t in tablas for c in t.columns if not str(c).startswith('_')})
+
+
+class _LecturaFallida(Exception):
+    """No se ha podido leer una columna del fichero (_mismas_filas_parquet)."""
+
+
+def _huella_filas(n: int, columnas: list, columna_de) -> np.ndarray:
+    """Huella de huellas_contenido de las n filas de una tabla. columna_de(nombre) da cada
+    columna (None si la tabla no la tiene): solo hace falta una columna en memoria."""
+    h = np.full(n, 0x345678, dtype=np.uint64)
+    mult = np.uint64(1000003)
+    for i, columna in enumerate(columnas):
+        serie = columna_de(columna)
+        if serie is not None:
+            texto = _texto_comparable(serie)
+        else:
+            texto = np.full(n, None, dtype=object)
+        del serie
+        # hash_array (con categorize) distingue el nulo del texto 'None'
+        h = (h ^ pd.util.hash_array(texto)) * mult
+        del texto
+        mult = np.uint64(int(mult) + 82520 + 2 * (len(columnas) - i))
+    return h
 
 
 def grupo_fase(fase: int) -> Optional[str]:
