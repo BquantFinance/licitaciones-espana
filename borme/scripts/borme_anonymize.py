@@ -28,6 +28,9 @@ from pathlib import Path
 from itertools import combinations
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,7 +70,8 @@ def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
         "fecha_inscripcion", "pdf_filename",
     ]
     cols = [c for c in keep_cols + COLUMNAS_CONTROL if c in df_emp.columns]
-    df = df_emp[cols].copy()
+    # Sin .copy(): no se modifica y la copia duplicaba la tabla (9,6 M de filas con la semilla)
+    df = df_emp[cols]
 
     # El domicilio social se publica tal cual en el BORME ("CALLE NUM (MUNICIPIO)")
     # y se conserva completo.
@@ -76,17 +80,31 @@ def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _donde(condicion: pd.Series, valores: pd.Series, otros: pd.Series) -> pd.Series:
+    """valores.where(condicion, otros). Si las dos son texto de Arrow con el mismo tipo
+    (pandas 3), con if_else de Arrow y el mismo tipo de resultado: where pasa por objetos
+    de Python (1,4 GB más con los 17,8 M de cargos de la semilla)."""
+    if (isinstance(valores.dtype, pd.StringDtype) and valores.dtype.storage == "pyarrow"
+            and valores.dtype == otros.dtype):
+        resultado = pc.if_else(pa.array(condicion.to_numpy(dtype=bool)),
+                               pa.chunked_array(pa.array(valores.array)), pa.chunked_array(pa.array(otros.array)))
+        return pd.Series(pd.array(resultado, dtype=valores.dtype), index=valores.index, name=valores.name)
+    return valores.where(condicion, otros)
+
+
 def anonymize_cargos(df_car: pd.DataFrame) -> pd.DataFrame:
     """Reemplaza nombres de personas por hash irreversible."""
     log.info("Anonimizando cargos...")
 
-    df = df_car.copy()
+    # Copia superficial: solo se sustituyen columnas enteras (una copia completa duplicaba
+    # la tabla, 17,8 M de filas con la semilla)
+    df = df_car.copy(deep=False)
     nombres = df["persona"] if "persona" in df.columns else pd.Series(None, index=df.index, dtype=object)
     hashes = nombres.apply(hash_persona)
     # Filas de la semilla (release publicado, borme_batch_parser.py --semilla): no
     # traen el nombre sino el hash publicado, que se conserva tal cual
     if "persona_hash" in df.columns:
-        hashes = hashes.where(nombres.notna(), df["persona_hash"])
+        hashes = _donde(nombres.notna(), hashes, df["persona_hash"])
     df["persona_hash"] = hashes
 
     # Eliminar nombre real
@@ -182,34 +200,40 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cargar
+    # Cargar. Las tablas se anonimizan y se escriben de una en una: con la semilla del
+    # release son 9,6 M y 17,8 M de filas y las dos a la vez (más sus copias) llegaban a
+    # 10 GiB. El número de filas de las dos sale de sus metadatos antes de
+    # nada (como cuando se cargaban las dos al empezar: si falta una tabla, no se escribe nada)
     log.info(f"Cargando datos de {input_dir}...")
-    df_emp = pd.read_parquet(input_dir / "borme_empresas.parquet")
-    df_car = pd.read_parquet(input_dir / "borme_cargos.parquet")
-    log.info(f"  Empresas: {len(df_emp):,} filas")
-    log.info(f"  Cargos: {len(df_car):,} filas")
+    ruta_emp = input_dir / "borme_empresas.parquet"
+    ruta_car = input_dir / "borme_cargos.parquet"
+    n_emp, n_car = (pq.ParquetFile(ruta).metadata.num_rows for ruta in (ruta_emp, ruta_car))
+    log.info(f"  Empresas: {n_emp:,} filas")
+    log.info(f"  Cargos: {n_car:,} filas")
 
-    # Anonimizar
-    df_emp_pub = anonymize_empresas(df_emp)
-    df_car_pub = anonymize_cargos(df_car)
-
-    # Guardar
-    log.info("\nGuardando...")
-
+    # Anonimizar y guardar
     path_emp = output_dir / "borme_empresas_pub.parquet"
+    df_emp_pub = anonymize_empresas(pd.read_parquet(ruta_emp))
+    filas_emp, unicas_emp = len(df_emp_pub), df_emp_pub['empresa_norm'].nunique()
     df_emp_pub.to_parquet(path_emp, index=False, engine="pyarrow")
+    del df_emp_pub
+
+    df_car_pub = anonymize_cargos(pd.read_parquet(ruta_car))
+    log.info("\nGuardando...")
     log.info(f"  {path_emp} ({path_emp.stat().st_size / 1e6:.1f} MB)")
 
     path_car = output_dir / "borme_cargos_pub.parquet"
     df_car_pub.to_parquet(path_car, index=False, engine="pyarrow")
     log.info(f"  {path_car} ({path_car.stat().st_size / 1e6:.1f} MB)")
+    filas_car = len(df_car_pub)
+    del df_car_pub
 
     # Resumen
     log.info(f"\n{'='*60}")
     log.info("ANONIMIZACIÓN COMPLETADA")
     log.info(f"{'='*60}")
-    log.info(f"  Empresas:  {len(df_emp_pub):,} filas ({df_emp_pub['empresa_norm'].nunique():,} únicas)")
-    log.info(f"  Cargos:    {len(df_car_pub):,} filas (personas hasheadas)")
+    log.info(f"  Empresas:  {filas_emp:,} filas ({unicas_emp:,} únicas)")
+    log.info(f"  Cargos:    {filas_car:,} filas (personas hasheadas)")
     log.info("")
     log.info("  ✅ Datos listos para subir al repo público")
     log.info("  ⚠️  NO subir borme_empresas.parquet ni borme_cargos.parquet originales")

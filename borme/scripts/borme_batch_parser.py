@@ -53,8 +53,8 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from comun.historico import (  # noqa: E402
-    COLUMNAS_META, HISTORICO, ORIGEN_SEMILLA, acumular, guardar_registros,
-    imprimir_informe_semilla, leer_registros, sembrar, versiones,
+    ANADIDA, COLUMNAS_META, HISTORICO, ORIGEN_SEMILLA, PRESENTE_CLAVE, acumular, guardar_registros,
+    imprimir_informe_semilla, informe_semilla, leer_registros, sembrar, versiones,
 )
 
 logging.basicConfig(
@@ -680,7 +680,27 @@ def _acumular_pdfs(anterior, nuevos: pd.DataFrame, fecha: str, pdfs: set):
     anterior = _con_meta(anterior)
     dentro = anterior["pdf_filename"].isin(pdfs).to_numpy()
     acumuladas = acumular(anterior[dentro], nuevos, fecha, permitir_vacio=True)
-    return pd.concat([anterior[~dentro], acumuladas], ignore_index=True, sort=False)
+    return pd.concat(_filas_fuera(anterior, dentro) + [acumuladas], ignore_index=True, sort=False)
+
+
+# Más tramos que estos y _filas_fuera copia las filas (concat de muchos trozos es lento)
+MAX_TRAMOS = 10_000
+
+
+def _filas_fuera(anterior: pd.DataFrame, dentro: np.ndarray) -> list:
+    """anterior[~dentro] en tramos de filas seguidas (iloc, sin copiarlas: con copy-on-write
+    son vistas) para concat: la tabla de cargos con la semilla tiene 17,8 M de filas y
+    copiarla entera para añadir las de unos PDF duplicaba su memoria. Sin ninguna fila
+    fuera, el trozo vacío de siempre (pesa en los tipos de concat)."""
+    fuera = np.flatnonzero(~dentro)
+    if len(fuera) == 0:
+        return [anterior.iloc[:0]]
+    cortes = np.flatnonzero(np.diff(fuera) != 1) + 1
+    if len(cortes) >= MAX_TRAMOS:
+        return [anterior[~dentro]]
+    inicios = np.concatenate([[fuera[0]], fuera[cortes]])
+    finales = np.concatenate([fuera[cortes - 1], [fuera[-1]]]) + 1
+    return [anterior.iloc[a:b] for a, b in zip(inicios, finales)]
 
 
 def _tabla_semilla(ruta: Path) -> str:
@@ -692,17 +712,93 @@ def _tabla_semilla(ruta: Path) -> str:
     return "cargos" if {"cargo", "tipo_acto"} <= columnas else "empresas"
 
 
-def _leer_filas(ruta: Path, posiciones: np.ndarray) -> pd.DataFrame:
-    """Filas `posiciones` (ordenadas) de un parquet, leído por grupos de filas."""
+def _leer_filas(ruta: Path, posiciones: np.ndarray, columnas=None) -> pd.DataFrame:
+    """Filas `posiciones` (ordenadas, sin repetir; al menos una) de un parquet, leído por
+    grupos de filas (solo `columnas`, si se dan). Un grupo del que se quieren todas las
+    filas no se copia (take) y la tabla de Arrow se libera columna a columna al pasarla a
+    pandas (self_destruct): con la semilla de cargos se leen 17 M de filas."""
     archivo = pq.ParquetFile(ruta)
     partes, inicio = [], 0
     for i in range(archivo.metadata.num_row_groups):
         n = archivo.metadata.row_group(i).num_rows
         sel = posiciones[(posiciones >= inicio) & (posiciones < inicio + n)] - inicio
         if len(sel):
-            partes.append(archivo.read_row_group(i).take(pa.array(sel)))
+            grupo = archivo.read_row_group(i, columns=columnas)
+            partes.append(grupo if len(sel) == n else grupo.take(pa.array(sel)))
+            del grupo
         inicio += n
-    return pa.concat_tables(partes).to_pandas()
+    tabla = pa.concat_tables(partes)
+    del partes
+    return tabla.to_pandas(self_destruct=True)
+
+
+def _es_texto(serie: pd.Series) -> bool:
+    """Si la columna solo tiene texto (o nulos)."""
+    if isinstance(serie.dtype, pd.StringDtype):
+        return True
+    return serie.dtype == object and pd.api.types.infer_dtype(serie, skipna=True) in ("string", "empty")
+
+
+def _es_texto_arrow(tipo) -> bool:
+    """Si una columna del parquet es de texto (pd.read_parquet la da como texto o nulos)."""
+    return pa.types.is_string(tipo) or pa.types.is_large_string(tipo)
+
+
+class _SinComparacionDeTexto(Exception):
+    """La clave no se puede comparar como texto con Arrow (_motivos_por_clave)."""
+
+
+def _motivos_por_clave(base: pd.DataFrame, ruta: Path):
+    """Motivo de cada fila de la semilla `ruta` como seleccionar_semilla() sin columnas de
+    contenido y con toda la semilla en el ámbito: ANADIDA, salvo las filas con la clave
+    completa (sin nulos) que está en `base` (PRESENTE_CLAVE). seleccionar_semilla pasa cada
+    valor de la clave a str (un objeto de Python por valor: 17,1 M de claves en la semilla
+    de cargos y, en un semanal, otros 17,8 M de la salida); con columnas de texto, str(v)
+    es v y basta comparar los valores tal cual. Las claves de la semilla se leen y se
+    buscan por grupos de filas. None si alguna columna de la clave no es de texto
+    (entonces se usa sembrar)."""
+    archivo = pq.ParquetFile(ruta)
+    if not all(_es_texto(base[c]) and _es_texto_arrow(archivo.schema_arrow.field(c).type) for c in CLAVE_SEMILLA):
+        return None
+    try:
+        return _motivos_por_clave_texto(base, archivo)
+    except (_SinComparacionDeTexto, pa.ArrowException, UnicodeError):
+        return None   # p.ej. texto que Arrow no admite (surrogates sueltos): sembrar()
+
+
+def _motivos_por_clave_texto(base: pd.DataFrame, archivo) -> np.ndarray:
+    # Código de la clave de cada fila de la base: la combinación de los valores de sus
+    # columnas (el nulo es el 0 de cada una, que un valor de la semilla nunca tiene)
+    codigo_base = np.zeros(len(base), dtype=np.int64)
+    valores_base, combinaciones = [], 1
+    for c in CLAVE_SEMILLA:
+        codigos, unicos = pd.factorize(base[c])
+        combinaciones *= len(unicos) + 1
+        if combinaciones >= 2 ** 62:
+            raise _SinComparacionDeTexto(c)
+        codigo_base = codigo_base * (len(unicos) + 1) + (codigos + 1)
+        valores_base.append(pa.array(np.asarray(unicos, dtype=object), type=pa.large_string()))
+        del codigos, unicos
+    presentes = np.unique(codigo_base)
+    del codigo_base
+    # La semilla, por grupos de filas: el código de la misma combinación si todos sus
+    # valores están en la base (index_in de Arrow, sin un objeto de Python por valor)
+    motivo = np.full(archivo.metadata.num_rows, ANADIDA, dtype=object)
+    inicio = 0
+    for i in range(archivo.metadata.num_row_groups):
+        grupo = archivo.read_row_group(i, columns=CLAVE_SEMILLA)
+        codigo = np.zeros(grupo.num_rows, dtype=np.int64)
+        completa = np.ones(grupo.num_rows, dtype=bool)
+        for c, valores in zip(CLAVE_SEMILLA, valores_base):
+            indice = pc.index_in(pc.cast(grupo.column(c), pa.large_string()), value_set=valores)
+            indice = indice.fill_null(-1).to_numpy().astype(np.int64)
+            completa &= indice >= 0
+            codigo = codigo * (len(valores) + 1) + (indice + 1)
+        if len(presentes):
+            posicion = np.minimum(np.searchsorted(presentes, codigo), len(presentes) - 1)
+            motivo[inicio:inicio + grupo.num_rows][completa & (presentes[posicion] == codigo)] = PRESENTE_CLAVE
+        inicio += grupo.num_rows
+    return motivo
 
 
 def _sembrar(salida, ruta: Path, origen: str = ORIGEN_SEMILLA):
@@ -718,28 +814,55 @@ def _sembrar(salida, ruta: Path, origen: str = ORIGEN_SEMILLA):
     es un PDF que falta en disco (o que el parser actual no lee igual), y es
     justo lo que hay que conservar.
 
-    A sembrar() se le pasa solo la clave (con la posición de cada fila) y luego
-    se leen del parquet solo las filas que añade: las tablas publicadas tienen
-    9,2M y 17M filas. Las de cargos traen persona_hash en vez de persona
+    Primero se decide con la clave sola qué filas se añaden (_motivos_por_clave, lo
+    mismo que sembrar() con contenido=[]; sembrar() si la clave no es de texto) y
+    luego se leen del parquet solo esas filas: las tablas publicadas tienen 9,2M y
+    17M filas. Las de cargos traen persona_hash en vez de persona
     (borme_anonymize.py lo conserva) y las de empresas no traen objeto_social."""
     columnas = pq.read_schema(ruta).names
-    claves = pd.read_parquet(ruta, columns=CLAVE_SEMILLA + [c for c in ("_origen",) if c in columnas])
-    claves[COLUMNA_POSICION] = np.arange(len(claves))
     base = (salida[CLAVE_SEMILLA] if salida is not None and len(salida)
             else pd.DataFrame({c: pd.Series(dtype=object) for c in CLAVE_SEMILLA}))
-    resultado, informe = sembrar(base, claves, CLAVE_SEMILLA, origen=origen, contenido=[])
-    marcas = resultado.iloc[len(base):]
-    if not len(marcas):
+    motivo = _motivos_por_clave(base, ruta)
+    if motivo is None:
+        claves = pd.read_parquet(ruta, columns=CLAVE_SEMILLA + [c for c in ("_origen",) if c in columnas])
+        claves[COLUMNA_POSICION] = np.arange(len(claves))
+        resultado, informe = sembrar(base, claves, CLAVE_SEMILLA, origen=origen, contenido=[])
+        marcas = resultado.iloc[len(base):]
+        posiciones = marcas[COLUMNA_POSICION].to_numpy(dtype="int64")
+        origenes = marcas["_origen"].to_numpy()
+        del claves, resultado, marcas
+    else:
+        # Lo mismo que sembrar() con contenido=[]: los ejemplos del informe se leen del
+        # parquet y cada fila añadida lleva su _origen propio o `origen`
+        informe = informe_semilla(motivo, origen,
+                                  lambda filas: _leer_filas(ruta, np.asarray(filas), CLAVE_SEMILLA)[CLAVE_SEMILLA])
+        posiciones = np.flatnonzero(motivo == ANADIDA)
+        del motivo
+        if "_origen" in columnas and len(posiciones):
+            origenes = _leer_filas(ruta, posiciones, ["_origen"])["_origen"].astype(object).to_numpy(copy=True)
+            origenes[pd.isna(origenes)] = origen
+        else:
+            origenes = np.full(len(posiciones), origen, dtype=object)
+    del base
+    if not len(posiciones):
         return salida, informe
-    nuevas = _leer_filas(ruta, marcas[COLUMNA_POSICION].to_numpy(dtype="int64"))
-    nuevas["_origen"] = marcas["_origen"].to_numpy()
+    nuevas = _leer_filas(ruta, posiciones)
+    if salida is not None and len(salida) and "_origen" not in salida.columns:
+        salida = salida.assign(_origen=pd.Series([None] * len(salida), index=salida.index, dtype=object))
+    if salida is not None and len(salida) and salida["_origen"].dtype == object:
+        # Unida a una columna object, la columna sale object con cualquier tipo: así no se
+        # pasa por texto de Arrow y no se crea un objeto de Python por fila (17 M en cargos)
+        nuevas["_origen"] = pd.Series(origenes, index=nuevas.index, dtype=object)
+    else:
+        nuevas["_origen"] = origenes
     nuevas["_en_ultima_descarga"] = False
     if salida is None or len(salida) == 0:
         return nuevas, informe
-    if "_origen" not in salida.columns:
-        salida = salida.assign(_origen=pd.Series([None] * len(salida), index=salida.index, dtype=object))
     orden = list(salida.columns) + [c for c in nuevas.columns if c not in salida.columns]
-    out = pd.concat([salida, nuevas], ignore_index=True, sort=False)[orden]
+    out = pd.concat([salida, nuevas], ignore_index=True, sort=False)
+    del nuevas
+    if list(out.columns) != orden:   # concat ya da este orden: reordenar copiaría columnas
+        out = out[orden]
     out["_en_ultima_descarga"] = out["_en_ultima_descarga"].astype(bool)
     return out, informe
 
@@ -852,6 +975,10 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
         n_cargos += len(filas["cargos"][0])
         log.info(f"   Batch guardado ({batch_start + len(batch):,} procesados "
                  f"| empresas: {n_empresas:,} | cargos: {n_cargos:,})")
+    # Las filas del último batch ya están en sus partes: que no sigan en memoria durante la
+    # consolidación (en la primera descarga, 1 M de filas en diccionarios de Python, que
+    # también guardan los futures con su resultado)
+    resultados = filas = futures = future = None
 
     # Por PDF, las versiones parseadas en orden hasta la primera que ha fallado:
     # las posteriores esperan a la siguiente ejecución (acumularlas antes dejaría
@@ -886,39 +1013,42 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
         posicion = df[COLUMNA_VERSION].map(orden).to_numpy()
         return df.iloc[np.argsort(posicion, kind="stable")].reset_index(drop=True)
 
-    df_empresas = leer_registros(empresas_parquet)
-    df_cargos = leer_registros(cargos_parquet)
-    cambio = {"empresas": False, "cargos": False}
-    empresas, cargos = filas_partes("empresas"), filas_partes("cargos")
-    for ronda in sorted({r for r, _ in acumuladas.values()}):
-        rels = {rel for rel, (r, _) in acumuladas.items() if r == ronda}
-        # Ámbito: PDF de la ronda con alguna fila (un parse vacío no retira nada)
-        ambito = {info["pdf"] for rel, (r, info) in acumuladas.items() if r == ronda and info["empresas"]}
-        nuevos_emp = _preparar(empresas, rels, DEDUP_EMPRESAS, "Empresas")
-        nuevos_car = _preparar(cargos, rels, DEDUP_CARGOS, "Cargos")
-        if len(nuevos_emp) or ambito:
-            df_empresas = _acumular_pdfs(df_empresas, nuevos_emp, fecha, ambito)
-            cambio["empresas"] = True
-        if len(nuevos_car) or ambito:
-            df_cargos = _acumular_pdfs(df_cargos, nuevos_car, fecha, ambito)
-            cambio["cargos"] = True
-    del empresas, cargos
+    # Las dos tablas no dependen una de otra: se acumula, se siembra y se escribe una entera
+    # y después la otra, para no tenerlas en memoria a la vez (con la semilla del release
+    # son 9,6 M y 17,8 M de filas, 7 GiB en pandas). Las semillas se
+    # comprueban antes de tocar nada, como cuando se sembraba después de acumular las dos.
+    rondas = sorted({r for r, _ in acumuladas.values()})
+    semillas = [(Path(ruta), _tabla_semilla(Path(ruta))) for ruta in semillas]
+    resumen = {}
+    for nombre, ruta_tabla, subset, etiqueta in (("empresas", empresas_parquet, DEDUP_EMPRESAS, "Empresas"),
+                                                 ("cargos", cargos_parquet, DEDUP_CARGOS, "Cargos")):
+        df = leer_registros(ruta_tabla)
+        cambio = False
+        partes = filas_partes(nombre)
+        for ronda in rondas:
+            rels = {rel for rel, (r, _) in acumuladas.items() if r == ronda}
+            # Ámbito: PDF de la ronda con alguna fila (un parse vacío no retira nada)
+            ambito = {info["pdf"] for rel, (r, info) in acumuladas.items() if r == ronda and info["empresas"]}
+            nuevos = _preparar(partes, rels, subset, etiqueta)
+            if len(nuevos) or ambito:
+                df = _acumular_pdfs(df, nuevos, fecha, ambito)
+                cambio = True
+            del nuevos
+        del partes
 
-    for ruta in semillas:
-        ruta = Path(ruta)
-        tabla = _tabla_semilla(ruta)
-        if tabla == "cargos":
-            df_cargos, informe = _sembrar(df_cargos, ruta)
-        else:
-            df_empresas, informe = _sembrar(df_empresas, ruta)
-        cambio[tabla] |= informe["anadidas"] > 0
-        informe["ruta"] = f"{ruta} ({tabla})"
-        imprimir_informe_semilla(informe)
+        for ruta, tabla in semillas:
+            if tabla != nombre:
+                continue
+            df, informe = _sembrar(df, ruta)
+            cambio |= informe["anadidas"] > 0
+            informe["ruta"] = f"{ruta} ({tabla})"
+            imprimir_informe_semilla(informe)
 
-    for nombre, df, ruta in (("empresas", df_empresas, empresas_parquet), ("cargos", df_cargos, cargos_parquet)):
-        if cambio[nombre] and df is not None and len(df) > 0:
-            estado = guardar_registros(df, ruta)
-            log.info(f"   {ruta} ({ruta.stat().st_size / 1e6:.1f} MB): {estado}")
+        if cambio and df is not None and len(df) > 0:
+            estado = guardar_registros(df, ruta_tabla)
+            log.info(f"   {ruta_tabla} ({ruta_tabla.stat().st_size / 1e6:.1f} MB): {estado}")
+        resumen[nombre] = _resumen_tabla(nombre, df)
+        del df
 
     # Registro de lo acumulado, después de escribir las tablas: si se corta antes,
     # la siguiente ejecución lo vuelve a parsear y acumular (no se duplica nada)
@@ -940,30 +1070,49 @@ def run_batch(base_dir: Path, output_dir: Path, workers: int = 8,
     log.info(f"COMPLETADO en {elapsed / 60:.1f} minutos")
     log.info(f"   PDFs procesados: {total:,}")
     log.info(f"   Errores: {len(errores):,}")
-    for nombre, df in (("Empresas", df_empresas), ("Cargos", df_cargos)):
-        if df is None or len(df) == 0:
-            continue
-        log.info(f"   {nombre} (filas): {len(df):,}")
-        if "_en_ultima_descarga" in df.columns:
-            log.info(f"      del último parse de su PDF: {int(df['_en_ultima_descarga'].sum()):,}")
-        if "_origen" in df.columns:
-            log.info(f"      de la semilla: {int(df['_origen'].notna().sum()):,}")
-    if df_empresas is not None and len(df_empresas) > 0:
-        log.info(f"   Empresas unicas: {df_empresas['empresa_norm'].nunique():,}")
-        log.info(f"   Provincias: {df_empresas['provincia'].nunique()}")
-        log.info(f"   Rango fechas: {df_empresas['fecha_borme'].min()} -> {df_empresas['fecha_borme'].max()}")
-        constit = df_empresas[df_empresas["actos"].str.contains("Constitución", na=False)]
-        log.info(f"   Constituciones: {len(constit):,}")
-        if "capital_euros" in df_empresas.columns:
-            with_capital = df_empresas["capital_euros"].notna().sum()
-            log.info(f"   Con capital: {with_capital:,}")
-    if df_cargos is not None and len(df_cargos) > 0:
-        log.info(f"   Cargos unicos (tipos): {df_cargos['cargo'].nunique()}")
-        if "persona" in df_cargos.columns:
-            log.info(f"   Personas unicas: {df_cargos['persona'].nunique():,}")
-        for tipo, n in df_cargos['tipo_acto'].value_counts().items():
-            log.info(f"      {tipo}: {n:,}")
+    for nombre in ("empresas", "cargos"):
+        for linea in resumen[nombre][0]:
+            log.info(linea)
+    for nombre in ("empresas", "cargos"):
+        lineas, error = resumen[nombre][1:]
+        for linea in lineas:
+            log.info(linea)
+        if error is not None:
+            raise error
     log.info(f"{'=' * 60}")
+
+
+def _resumen_tabla(nombre: str, df):
+    """Líneas del resumen final de una tabla, calculadas antes de liberarla (run_batch
+    trata las tablas de una en una): (filas, detalle, error). Si una cifra del detalle
+    falla, el error se lanza al llegar a ella en el resumen, como cuando se calculaba allí."""
+    filas, detalle = [], []
+    if df is None or len(df) == 0:
+        return filas, detalle, None
+    filas.append(f"   {nombre.capitalize()} (filas): {len(df):,}")
+    if "_en_ultima_descarga" in df.columns:
+        filas.append(f"      del último parse de su PDF: {int(df['_en_ultima_descarga'].sum()):,}")
+    if "_origen" in df.columns:
+        filas.append(f"      de la semilla: {int(df['_origen'].notna().sum()):,}")
+    try:
+        if nombre == "empresas":
+            detalle.append(f"   Empresas unicas: {df['empresa_norm'].nunique():,}")
+            detalle.append(f"   Provincias: {df['provincia'].nunique()}")
+            detalle.append(f"   Rango fechas: {df['fecha_borme'].min()} -> {df['fecha_borme'].max()}")
+            constituciones = int(df["actos"].str.contains("Constitución", na=False).sum())
+            detalle.append(f"   Constituciones: {constituciones:,}")
+            if "capital_euros" in df.columns:
+                with_capital = df["capital_euros"].notna().sum()
+                detalle.append(f"   Con capital: {with_capital:,}")
+        else:
+            detalle.append(f"   Cargos unicos (tipos): {df['cargo'].nunique()}")
+            if "persona" in df.columns:
+                detalle.append(f"   Personas unicas: {df['persona'].nunique():,}")
+            for tipo, n in df['tipo_acto'].value_counts().items():
+                detalle.append(f"      {tipo}: {n:,}")
+    except Exception as e:
+        return filas, detalle, e
+    return filas, detalle, None
 
 
 if __name__ == "__main__":
