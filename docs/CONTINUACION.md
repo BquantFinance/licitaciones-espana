@@ -234,7 +234,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_andalucia.py` | Cerrado (registro (`portalGestor`, `idExpediente`), tramos de id, semilla que mira antes si está) | `a8b13a7` | Sí, desde el VPS: primera descarga del 2026-09-29 (900.929 filas) y, con este cierre, OBRA/RES sin tramitación 6.072 de 6.072 y las tres consultas del SAS con tope en tramos de 9.874 como mucho (en vivo, 2026-09-29) |
 | `scripts/ccaa_andalucia_menores.py` | Cerrado | `6f2f73c` | Sí, desde el VPS (2026-09-29): 9 CSV del CKAN de la Junta (2018-2026), 768.647 registros, 544.898 del SAS; la salida es idéntica al original celda a celda |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | Cerrado | `699bf16` | Sí (descarga completa del 2026-09-28) |
-| `galicia/scraper_galicia.py` | Cerrado | `699bf16` | Sí (4 organismos) |
+| `galicia/scraper_galicia.py` | Cerrado (listados por id, ventanas repetidas, `_organismo_nombre`; sin la fase `detail` en el VPS) | `c8d7806` | Sí, desde el VPS: primera descarga del 2026-09-29 (420 organismos) y, con este cierre, las 45 ventanas de CM que quedaron incompletas llegan completas (19.364 de 19.364, en vivo) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | Cerrado (sin segmentación por fecha: los órganos grandes quedan fuera del ámbito) | `1fa7f01` | Sí (dos fases) |
 | `borme/scripts/*.py` | Cerrado | `38e72aa` | Sí (boe.es) |
 
@@ -354,6 +354,7 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
     - El importe de la semilla va a `importe_semilla`, sin corregir el ×10/×100.
     - `csv_to_parquet` ya no pasa a `to_numeric` textos que no son números normales. Algunos hashes parecen notación científica, y es la causa probable del segfault del VPS en pandas 2.2 (sin confirmar).
     - `csv_to_parquet` convierte en nulo el texto literal `NA`/`null` (código anterior; el publicado no tiene ninguno).
+    - Desde `c8d7806`: listados ordenados por id (por `publicado`, con empates, se perdían 989 menores en 45 ventanas), ventanas y listados incompletos repetidos (una repetición vacía no borra lo visto ni da la ventana por leída; `recordsTotal` 0 no confirma ninguna ventana) y nombre del organismo en `_organismo_nombre`. La fase `detail` (adjudicatario e importe adjudicado de las 52.133 licitaciones) sigue sin ejecutarse en el VPS: propuesta en la PR.
   - **`_ultima_descarga`** es la fecha de la última versión que trae la fila, no la de la última comprobación. Así una re-ejecución idéntica no reescribe la salida. Es igual en TED, Comunidad de Madrid y Galicia.
 - **Catalunya (Socrata): semilla del release** (`95815b3`, 2026-09-28). `ccaa_cataluna_parquet.py` no la admitía.
   - Lo que la ventana móvil sacó antes de la primera descarga del VPS solo estaba en el release.
@@ -454,7 +455,7 @@ Desde la nube de Claude Code los portales oficiales devolvían 403 del proxy. En
 - **Andalucía.** ~~CSV oficial de menores de la Junta (CKAN, separador `|`, con NIF y nombre del adjudicatario)~~: **hecho** (`scripts/ccaa_andalucia_menores.py`, 2026-09-29; `docs/COBERTURA.md` §5.2). Queda "Licitaciones publicadas {año}".
 - **Asturias.** Menores 2016-2018 (datos.gob.es) y relaciones trimestrales de menores 2024-2025.
 - **Madrid.** Menores de entidades históricas que ya no salen en el desplegable.
-- **Galicia.** Paginar por id y publicar el detalle.
+- **Galicia.** ~~Paginar por id~~: **hecho** (`c8d7806`). Queda publicar el detalle: la fase `detail` no se ejecuta en el VPS (propuesta de ritmo en la PR).
 
 ### 3.5 CCAA nuevas pendientes (detalle y URLs en `docs/COBERTURA.md` §3)
 1. Navarra: CKAN Registro de Contratos 2007+ e instantáneas del año en curso.

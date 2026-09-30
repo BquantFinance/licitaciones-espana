@@ -1,6 +1,8 @@
 import importlib.util
 import io
+import itertools
 import json
+import random
 import re
 import sqlite3
 import tempfile
@@ -129,6 +131,25 @@ PORTAL_DETAIL_TEMPLATE = """
 """
 
 
+# Página de un organismo (consultaOrganismo.jsp) con la estructura de la real (29-sep-2026)
+ORG_PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <title>Detalle perfil contratante:&nbsp;{nombre} - Contratos P&uacute;blicos de Galicia</title>
+  </head>
+  <body>
+    <div id="consulta-datos"><div class="box-pcpg">
+      <div class="titulo" id="objeto">
+        <h2>
+            {nombre}
+        </h2>
+      </div>
+    </div></div>
+  </body>
+</html>
+"""
+
+
 EMPTY_DETAIL_HTML = """
 <html>
   <head><title>Detalle procedemento: {n} - Contratos Públicos de Galicia</title></head>
@@ -150,6 +171,11 @@ class FakePortal:
     salta aunque cuentan en recordsFiltered; details: N de la ficha -> código
     HTTP de error, 'vacia' o un texto que sustituye a la referencia (ficha
     cambiada).
+    inestable: ordena por la columna que pide order[0] y, si no es el id, da los
+    empates en otro orden en cada página (como el portal con 'publicado': repite
+    filas y se salta otras); hidden_once: ids que la paginación se salta solo la
+    primera vez que caen en una página (el listado cambia mientras se pagina);
+    nombres: organismo -> nombre en su página (consultaOrganismo.jsp).
     """
 
     def __init__(self, lic=None, cm=None):
@@ -163,6 +189,9 @@ class FakePortal:
         self.windowless_orgs = set()
         self.hidden_ids = set()
         self.details = {}
+        self.inestable = False
+        self.hidden_once = set()
+        self.nombres = {}
 
     def __call__(self, session, method, url, params=None, data=None, timeout=None, headers=None, **kwargs):
         with self.lock:
@@ -203,12 +232,27 @@ class FakePortal:
             filtered = len(rows)
             if org_id in self.empty_orgs or (org_id in self.empty_scan_orgs and length != 1):
                 rows, total, filtered = [], 0, 0
+            if self.inestable:
+                field = params[f"columns[{params['order[0][column]']}][data]"]
+                rows = sorted(rows, key=lambda row: row[field], reverse=params["order[0][dir]"] == "desc")
+                if field != "id":
+                    shuffled, rng = [], random.Random(start)
+                    for _, group in itertools.groupby(rows, key=lambda row: row[field]):
+                        group = list(group)
+                        rng.shuffle(group)
+                        shuffled.extend(group)
+                    rows = shuffled
             visible = [row for row in rows if row["id"] not in self.hidden_ids]
+            page = visible[start : start + length]
+            if self.hidden_once & {row["id"] for row in page}:
+                hidden = self.hidden_once & {row["id"] for row in page}
+                self.hidden_once -= hidden
+                page = [row for row in page if row["id"] not in hidden]
             response.json.return_value = {
                 "draw": int(params["draw"]),
                 "recordsTotal": total,
                 "recordsFiltered": filtered,
-                "data": [dict(row) for row in visible[start : start + length]],
+                "data": [dict(row) for row in page],
             }
             return response
         if method == "POST" and url.endswith("/licitacion"):
@@ -225,6 +269,9 @@ class FakePortal:
             return response
         if "resultadoIndex.jsp" in url or "consultaOrganismo.jsp" in url:
             response.text = "<html></html>"
+            org = re.search(r"consultaOrganismo\.jsp\?OR=(\d+)", url)
+            if org and int(org.group(1)) in self.nombres:
+                response.text = ORG_PAGE_TEMPLATE.format(nombre=self.nombres[int(org.group(1))])
             return response
         response.status_code = 404
         response.ok = False
@@ -447,7 +494,8 @@ class GaliciaScraperTests(unittest.TestCase):
 
     def test_paginate_lic_warns_when_repeated_rows_hide_missing_ones(self):
         # La paginación por fecha con empates puede repetir una fila y saltarse otra: el
-        # número de filas cuadraba con recordsTotal y no se avisaba
+        # número de filas cuadraba con recordsTotal y no se avisaba. Ahora se repite el
+        # listado (REINTENTOS_PAGINACION veces) y se juntan las filas por id.
         with patch.object(scraper_galicia.Session, "_init", return_value=None):
             session = scraper_galicia.Session()
         visit = Mock(status_code=200, ok=True)
@@ -455,13 +503,19 @@ class GaliciaScraperTests(unittest.TestCase):
         page1.json.return_value = {"recordsTotal": 3, "data": [{"id": 1}, {"id": 2}]}
         page2 = Mock(status_code=200, ok=True)
         page2.json.return_value = {"recordsTotal": 3, "data": [{"id": 2}]}
+        pasadas = scraper_galicia.REINTENTOS_PAGINACION + 1
 
-        with patch.object(session.s, "request", side_effect=[visit, page1, page2]), patch.object(
+        # Antes de cada repetición se visita otra vez la página del organismo
+        with patch.object(session.s, "request", side_effect=[visit, page1, page2] * pasadas), patch.object(
             scraper_galicia, "_LOG_PATH", None
         ), patch.object(scraper_galicia, "DELAY", 0), patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            scraper_galicia.paginate_lic(session, 48)
+            informe = {}
+            got = scraper_galicia.paginate_lic(session, 48, informe=informe)
 
-        self.assertIn("Org 48 LIC: DESAJUSTE esperados=3 descargados=3 únicos=2", stdout.getvalue())
+        self.assertIn(f"Org 48 LIC: DESAJUSTE esperados=3 descargados=2 únicos=2 tras {pasadas} pasadas",
+                      stdout.getvalue())
+        self.assertEqual(sorted(record["id"] for record in got), [1, 2])
+        self.assertEqual(informe["LIC"], {"declarados": 3, "filas": 2, "unicos": 2, "completo": False})
 
     def test_parse_detail_html_tolerates_malformed_links(self):
         parsed = scraper_galicia.parse_detail_html(DETAIL_HTML_WITH_MALFORMED_LINK)
@@ -1212,10 +1266,11 @@ class GaliciaScraperTests(unittest.TestCase):
         self.assertIn(("C", "824000", "48"), payloads)
         self.assertIn(("CM", "CM500000", "48"), payloads)
 
-        # Final: 12 + 52 columnas (las 62 del README + adjudicaciones y campos extra en
-        # JSON) y, al final, las 3 de control de comun/historico.py; mismas filas,
-        # detalle mapeado.
-        self.assertEqual(len(final_text.columns), 67)
+        # Final: 12 + el nombre del organismo + 52 columnas (las 62 del README +
+        # adjudicaciones y campos extra en JSON) y, al final, las 3 de control de
+        # comun/historico.py; mismas filas, detalle mapeado.
+        self.assertEqual(len(final_text.columns), 68)
+        self.assertEqual(final_text.columns[12], scraper_galicia.ORG_NAME_COLUMN)
         self.assertEqual(
             list(final_text.columns[-3:]), ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]
         )
@@ -2351,6 +2406,425 @@ class GaliciaOrganismosRetiradosTests(unittest.TestCase):
         self.assertEqual(retired_organisms(orgs, portal, {"12": {}}), {"5", "40"})
         self.assertEqual(retired_organisms(orgs, {"motivo": "sin lista"}, {}), set())
         self.assertEqual(retired_organisms([], portal, {}), set())
+
+
+
+def same_day_cm(count, first_id, publicado="2024-12-23T00:00:00+0100"):
+    """Menores del mismo día (como los 138 del SERGAS del 23-dic-2024 a 12.621,09 €): un
+    solo día cae siempre en una sola ventana, sea cual sea la fecha del test."""
+    base = fake_cm_records(1)[0]
+    return [dict(base, id=first_id + i, publicado=publicado, objeto=f"PRODUCTOS FARMACEUTICOS {i}")
+            for i in range(count)]
+
+
+class GaliciaPaginacionTests(unittest.TestCase):
+    """Paginación de los listados (29-sep-2026: 45 ventanas de CM incompletas en 16
+    organismos y 989 menores perdidos, por pedirlos ordenados por 'publicado')."""
+
+    def run_base_merge(self, out, portal, *extra):
+        code, stdout = run_at(cli_args(out, "base", "--organismo", "48", *extra), portal, FECHA_1)
+        self.assertEqual(code, 0)
+        code, merge_stdout = run_at(cli_args(out, "merge"), portal, FECHA_1)
+        self.assertEqual(code, 0)
+        return stdout + merge_stdout
+
+    def test_cm_window_with_ties_in_publicado_arrives_complete_ordered_by_id(self):
+        empate = same_day_cm(150, 700000)
+        portal = FakePortal(cm={48: empate})
+        portal.inestable = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.run_base_merge(out, portal, "--skip-lic")
+            final = read_final(out)
+            manifest = read_manifest(out)
+            pages = [call for call in portal.calls("/contratosmenores/table") if call["params"]["length"] != "1"]
+            # Con el orden de antes (publicado, con empates) la misma ventana se repite y
+            # sigue incompleta: el portal simulado reproduce el fallo real
+            with patch.object(scraper_galicia, "ORDER_COLUMN", "1"), patch.object(
+                requests.Session, "request", autospec=True, side_effect=portal
+            ), patch.object(scraper_galicia, "_LOG_PATH", None), patch.object(scraper_galicia, "DELAY", 0), patch(
+                "sys.stdout", new_callable=io.StringIO
+            ):
+                session = scraper_galicia.Session()
+                recs, _, window = scraper_galicia.paginate_cm_window_complete(session, 48, "2024-12-01", "2024-12-31")
+
+        self.assertEqual(sorted(final["id"].astype(int)), [row["id"] for row in empate])
+        self.assertNotIn("CM_incompletas", manifest["ambito"]["48"])
+        self.assertEqual({(call["params"]["order[0][column]"], call["params"]["order[0][dir]"]) for call in pages},
+                         {("0", "desc")})
+        self.assertFalse(window["completa"])
+        self.assertEqual(window["intentos"], scraper_galicia.REINTENTOS_PAGINACION + 1)
+        self.assertLess(len(recs), 150)
+
+    def test_incomplete_window_is_repeated_until_complete(self):
+        # Una fila se salta una vez (el listado cambia mientras se pagina): antes la
+        # ventana entera quedaba fuera del ámbito y la fila sin descargar
+        cm = same_day_cm(150, 710000)
+        portal = FakePortal(cm={48: cm})
+        portal.hidden_once = {710100}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            stdout = self.run_base_merge(out, portal, "--skip-lic")
+            final = read_final(out)
+            manifest = read_manifest(out)
+
+        self.assertIn("se repite la ventana (1/", stdout)
+        self.assertIn("completa al repetirla", stdout)
+        self.assertEqual(len(final), 150)
+        self.assertIn("710100", set(final["id"]))
+        self.assertNotIn("CM_incompletas", manifest["ambito"]["48"])
+
+    def test_window_that_never_completes_keeps_every_row_seen(self):
+        # Si ninguna pasada llega completa se guardan las filas de todas (por id) y la
+        # ventana no retira nada
+        cm = same_day_cm(150, 720000)
+        portal = FakePortal(cm={48: cm})
+        portal.hidden_ids = {720149}
+        portal.hidden_once = {720010}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            self.run_base_merge(out, portal, "--skip-lic")
+            final = read_final(out)
+            manifest = read_manifest(out)
+
+        self.assertEqual(sorted(final["id"].astype(int)), [row["id"] for row in cm if row["id"] != 720149])
+        (incomplete,) = manifest["ambito"]["48"]["CM_incompletas"]
+        self.assertEqual((incomplete["filtrados"], incomplete["intentos"], incomplete["juntadas"]),
+                         (150, scraper_galicia.REINTENTOS_PAGINACION + 1, 149))
+
+    def test_lic_listing_is_repeated_until_complete(self):
+        lic = fake_lic_records(150)
+        portal = FakePortal(lic={48: lic})
+        portal.hidden_once = {824120}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            stdout = self.run_base_merge(out, portal, "--skip-cm")
+            final = read_final(out)
+            manifest = read_manifest(out)
+
+        self.assertIn("Org 48 LIC: se repite el listado (1/", stdout)
+        self.assertEqual(len(final), 150)
+        self.assertTrue(manifest["ambito"]["48"]["LIC"])
+        pages = [call for call in portal.calls("/licitaciones/table") if call["params"]["length"] != "1"]
+        self.assertEqual({call["params"]["order[0][column]"] for call in pages}, {"0"})
+
+
+class GaliciaNombreOrganismoTests(unittest.TestCase):
+    """_organismo_nombre: el nombre de la página de cada organismo (hasta ahora el ETL de
+    la web usaba un mapa de 332 hecho a mano)."""
+
+    def test_organism_name_from_its_page_goes_to_manifest_and_final_table(self):
+        portal = GaliciaHistoricoTests._three_orgs(None)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            # Sin nombre en la página: columna vacía, de texto también en el Parquet
+            self.assertEqual(run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_1)[0], 0)
+            sin_nombre = read_final(out)
+            parquet_sin_nombre = (pd.read_parquet(out / scraper_galicia.FINAL_PARQUET_NAME)
+                                  if scraper_galicia.HAS_PYARROW else None)
+            portal.nombres = {2: "Consellería de Facenda", 3: "Servizo Galego de Saúde", 48: "Concello de Proba"}
+            self.assertEqual(run_at(cli_args(out, "--max-org-id", "48"), portal, FECHA_2)[0], 0)
+            primera = read_final(out)
+            manifest = read_manifest(out)
+            # El 48 cambia de nombre y retira un menor; el 2 y el 3 no se leen en esta descarga
+            portal.nombres[48] = "Concello de Proba (novo nome)"
+            retirado = portal.cm[48][0]["id"]
+            portal.cm[48] = portal.cm[48][1:]
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48"), portal, FECHA_3)[0], 0)
+            segunda = read_final(out)
+            parquet = pd.read_parquet(out / scraper_galicia.FINAL_PARQUET_NAME) if scraper_galicia.HAS_PYARROW else None
+
+        self.assertEqual(set(sin_nombre[scraper_galicia.ORG_NAME_COLUMN]), {""})
+        self.assertEqual(manifest["nombres"], {"2": "Consellería de Facenda", "3": "Servizo Galego de Saúde",
+                                               "48": "Concello de Proba"})
+        self.assertEqual(primera.groupby("_organismo_id")[scraper_galicia.ORG_NAME_COLUMN].agg(set).to_dict(),
+                         {"2": {"Consellería de Facenda"}, "3": {"Servizo Galego de Saúde"},
+                          "48": {"Concello de Proba"}})
+        # El nombre no cuenta como cambio del contrato: ninguna versión nueva por él
+        self.assertEqual(len(primera), len(sin_nombre))
+        nombres = segunda.groupby("_organismo_id")[scraper_galicia.ORG_NAME_COLUMN].agg(set).to_dict()
+        self.assertEqual(nombres, {"2": {"Consellería de Facenda"}, "3": {"Servizo Galego de Saúde"},
+                                   "48": {"Concello de Proba (novo nome)"}})
+        fila = segunda.set_index("id").loc[str(retirado)]
+        self.assertEqual((fila["_en_ultima_descarga"], fila[scraper_galicia.ORG_NAME_COLUMN]),
+                         ("False", "Concello de Proba (novo nome)"))
+        if parquet is not None:
+            for tabla in (parquet_sin_nombre, parquet):
+                self.assertFalse(pd.api.types.is_numeric_dtype(tabla[scraper_galicia.ORG_NAME_COLUMN]))
+            self.assertEqual(parquet[scraper_galicia.ORG_NAME_COLUMN].isna().sum(), 0)
+
+    def test_organism_name_parser_uses_title_when_there_is_no_heading(self):
+        pagina = ORG_PAGE_TEMPLATE.format(nombre="Consorcio Axencia para a Calidade do Sistema Universitario de Galicia (ACSUG)")
+        sin_h2 = re.sub(r"<h2>.*?</h2>", "", pagina, flags=re.S)
+        for html in (pagina, sin_h2):
+            self.assertEqual(scraper_galicia.organism_name(html),
+                             "Consorcio Axencia para a Calidade do Sistema Universitario de Galicia (ACSUG)")
+        for html in ("<html></html>", "", None, "<html><title>Otra cosa</title></html>"):
+            self.assertIsNone(scraper_galicia.organism_name(html))
+
+
+
+class GlitchPortal(FakePortal):
+    """FakePortal que responde vacío (recordsTotal 0, recordsFiltered 0 y sin filas, como
+    empty_orgs: sin contexto de sesión) a la n-ésima primera página (start=0) de los
+    listados que cumplen `pred(url, params)` si n está en `blank_hits`, y que puede
+    cambiar el listado antes de servirla (`before_hit(portal, n)`)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pred = None
+        self.blank_hits = set()
+        self.before_hit = None
+        self.hits = 0
+
+    def __call__(self, session, method, url, params=None, data=None, timeout=None, headers=None, **kwargs):
+        if self.pred and params and params.get("length") != "1" and params.get("start") == "0" \
+                and self.pred(url, params):
+            self.hits += 1
+            if self.before_hit:
+                self.before_hit(self, self.hits)
+            if self.hits in self.blank_hits:
+                response = Mock(status_code=200, ok=True)
+                response.json.return_value = {"draw": int(params["draw"]), "recordsTotal": 0,
+                                              "recordsFiltered": 0, "data": []}
+                return response
+        return super().__call__(session, method, url, params=params, data=data, timeout=timeout,
+                                headers=headers, **kwargs)
+
+
+class SessionLostPortal(FakePortal):
+    """Pierde el contexto de sesión (todas las tablas responden 0/0) al servir la primera
+    página de la ventana que cumple `pred` (o antes de ella: lose_before=True). Con
+    restore_on_visit, visitar la página del organismo lo recupera."""
+
+    def __init__(self, *args, lose_before=False, restore_on_visit=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pred = None
+        self.lost = False
+        self.lose_before = lose_before
+        self.restore_on_visit = restore_on_visit
+        self.lost_times = 0
+
+    def __call__(self, session, method, url, params=None, data=None, timeout=None, headers=None, **kwargs):
+        if "consultaOrganismo.jsp" in url and self.restore_on_visit:
+            self.lost = False
+        first_page = bool(self.pred and params and params.get("length") != "1" and params.get("start") == "0"
+                          and self.pred(url, params))
+        if first_page and self.lose_before and not self.lost_times:
+            self.lost, self.lost_times = True, 1
+        if self.lost and "/table" in url and params and params.get("length") != "1":
+            response = Mock(status_code=200, ok=True)
+            response.json.return_value = {"draw": int(params["draw"]), "recordsTotal": 0, "recordsFiltered": 0,
+                                          "data": []}
+            return response
+        response = super().__call__(session, method, url, params=params, data=data, timeout=timeout,
+                                    headers=headers, **kwargs)
+        if first_page and not self.lose_before and not self.lost_times:
+            self.lost, self.lost_times = True, 1
+        return response
+
+
+def window_2024_12_23(url, params):
+    return "contratosmenores" in url and params["datestart"] <= "2024-12-23" <= params["dateend"]
+
+
+def lic_listing(url, params):
+    return "licitaciones/table" in url
+
+
+class GaliciaRepeticionTests(unittest.TestCase):
+    """Repeticiones de ventanas y listados (revisión adversarial de ce82a02): una respuesta
+    vacía o una pasada que pierde lo visto no puede retirar nada ni tirar filas."""
+
+    def two_runs(self, portal, prepare, extra=("--skip-lic",)):
+        """Dos descargas (base + merge) del organismo 48; `prepare(portal)` antes de la
+        segunda. Devuelve la tabla final, el manifiesto y la salida de la segunda."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir)
+            for fecha, antes in ((FECHA_1, None), (FECHA_2, prepare)):
+                if antes:
+                    antes(portal)
+                code, stdout = run_at(cli_args(out, "base", "--organismo", "48", *extra), portal, fecha)
+                self.assertEqual(code, 0)
+                code, merge_stdout = run_at(cli_args(out, "merge"), portal, fecha)
+                self.assertEqual(code, 0)
+            return read_final(out), read_manifest(out), stdout + merge_stdout
+
+    def test_blank_repetition_keeps_what_was_seen_and_retires_nothing(self):
+        # 1.a pasada de la ventana sin una fila (el listado cambia) y la repetición responde
+        # vacía: antes la ventana contaba como leída, se retiraban sus 150 contratos y se
+        # perdían los 2 nuevos vistos en la 1.a pasada
+        portal = GlitchPortal(cm={48: same_day_cm(150, 710000) + fake_cm_records(3)})
+
+        def prepare(p):
+            p.cm[48] = p.cm[48] + same_day_cm(2, 710150)
+            p.hidden_once = {710100}
+            p.pred, p.blank_hits = window_2024_12_23, {2, 3}  # las dos repeticiones, vacías
+
+        final, manifest, stdout = self.two_runs(portal, prepare)
+        ventana = final[final["id"].astype(int).between(710000, 710199)]
+        self.assertEqual(int((ventana["_en_ultima_descarga"] == "False").sum()), 0)
+        self.assertTrue({"710150", "710151"} <= set(ventana["id"]))
+        self.assertIn("retiradas en esta descarga 0", stdout)
+        (incompleta,) = manifest["ambito"]["48"]["CM_incompletas"]
+        self.assertEqual((incompleta["filtrados"], incompleta["intentos"], incompleta["juntadas"]),
+                         (152, scraper_galicia.REINTENTOS_PAGINACION + 1, 151))
+
+    def test_blank_repetition_then_a_complete_one_reads_the_window(self):
+        # Si tras la repetición vacía llega una completa con todo lo visto, vale
+        portal = GlitchPortal(cm={48: same_day_cm(150, 710000) + fake_cm_records(3)})
+
+        def prepare(p):
+            p.cm[48] = p.cm[48] + same_day_cm(2, 710150)
+            p.hidden_once = {710100}
+            p.pred, p.blank_hits = window_2024_12_23, {2}
+
+        final, manifest, stdout = self.two_runs(portal, prepare)
+        self.assertNotIn("CM_incompletas", manifest["ambito"]["48"])
+        self.assertIn("completa al repetirla (152)", stdout)
+        self.assertEqual(len(final), 155)
+
+    def test_blank_lic_repetition_keeps_what_was_seen(self):
+        lic = fake_lic_records(150)
+        portal = GlitchPortal(lic={48: list(lic)})
+
+        def prepare(p):
+            p.lic[48] = lic + fake_lic_records(2, first_id=824150)
+            p.hidden_once = {824120}
+            p.pred, p.blank_hits = lic_listing, {2, 3}  # las dos repeticiones, vacías
+
+        final, manifest, _ = self.two_runs(portal, prepare, extra=("--skip-cm",))
+        self.assertTrue({"824150", "824151"} <= set(final["id"]))
+        self.assertEqual(set(final["_en_ultima_descarga"]), {"True"})
+        self.assertEqual(manifest["ambito"]["48"]["LIC_informe"]["declarados"], 152)
+        self.assertFalse(manifest["ambito"]["48"]["LIC"])
+
+    def test_lic_row_without_id_is_not_a_complete_listing(self):
+        lic = fake_lic_records(3)
+        portal = FakePortal(lic={48: list(lic)})
+
+        def prepare(p):
+            p.lic[48] = [lic[0], dict(lic[1], id=None), lic[2]]  # sigue listada, pero sin id
+
+        final, manifest, _ = self.two_runs(portal, prepare, extra=("--skip-cm",))
+        self.assertFalse(manifest["ambito"]["48"]["LIC"])
+        self.assertEqual(final.set_index("id").loc["824001", "_en_ultima_descarga"], "True")
+
+    def test_row_seen_in_a_discarded_pass_is_kept_and_the_window_is_not_read(self):
+        # Un menor nuevo aparece en la 1.a pasada y el portal lo quita antes de la 2.a, que
+        # llega completa: se guarda (nada de lo descargado se pierde) y la ventana no retira
+        portal = GlitchPortal(cm={48: same_day_cm(150, 710000) + fake_cm_records(3)})
+
+        def prepare(p):
+            p.cm[48] = p.cm[48] + same_day_cm(1, 710150)
+            p.hidden_once = {710100}
+
+            def quita(portal_, hit):
+                if hit == 2:
+                    portal_.cm[48] = [row for row in portal_.cm[48] if row["id"] != 710150]
+            p.pred, p.before_hit = window_2024_12_23, quita
+
+        final, manifest, _ = self.two_runs(portal, prepare)
+        self.assertIn("710150", set(final["id"]))
+        self.assertEqual(set(final["_en_ultima_descarga"]), {"True"})
+        (incompleta,) = manifest["ambito"]["48"]["CM_incompletas"]
+        self.assertEqual(incompleta["intentos"], scraper_galicia.REINTENTOS_PAGINACION + 1)
+
+    def test_joined_passes_keep_the_latest_version(self):
+        portal = GlitchPortal(cm={48: same_day_cm(150, 710000) + fake_cm_records(3)})
+
+        def prepare(p):
+            p.hidden_ids = {710149}  # ninguna pasada llega completa
+
+            def cambia(portal_, hit):
+                if hit == 2:  # el portal corrige un importe antes de la 2.a pasada
+                    portal_.cm[48] = [dict(r, importe=999.99) if r["id"] == 710005 else r for r in portal_.cm[48]]
+            p.pred, p.before_hit = window_2024_12_23, cambia
+
+        final, _, _ = self.two_runs(portal, prepare)
+        versiones = final.loc[final["id"] == "710005", ["importe", "_en_ultima_descarga"]].values.tolist()
+        self.assertIn(["999.99", "True"], versiones)
+
+    def test_session_lost_mid_window_retires_nothing(self):
+        cm = same_day_cm(150, 710000) + same_day_cm(3, 500000, publicado="2025-06-15T00:00:00+0100")
+        portal = SessionLostPortal(cm={48: cm})
+
+        def prepare(p):
+            p.pred = window_2024_12_23
+
+        final, manifest, stdout = self.two_runs(portal, prepare)
+        self.assertEqual(set(final["_en_ultima_descarga"]), {"True"})
+        self.assertIn("retiradas en esta descarga 0", stdout)
+        self.assertTrue(manifest["ambito"]["48"]["CM_incompletas"])
+
+    def test_session_lost_before_a_window_retires_nothing(self):
+        # Sin sesión desde una ventana a mitad del organismo: esa y las anteriores responden
+        # 0/0 con recordsTotal 0. Antes contaban como trimestres vacíos y se retiraban
+        cm = same_day_cm(150, 710000) + same_day_cm(3, 500000, publicado="2025-06-15T00:00:00+0100")
+        portal = SessionLostPortal(cm={48: cm}, lose_before=True)
+
+        def prepare(p):
+            p.pred = window_2024_12_23
+
+        final, manifest, stdout = self.two_runs(portal, prepare)
+        self.assertEqual(set(final["_en_ultima_descarga"]), {"True"})
+        self.assertIn("retiradas en esta descarga 0", stdout)
+        ambito = manifest["ambito"]["48"]["CM"]
+        self.assertFalse(any(desde <= "2024-12-23" <= hasta for desde, hasta in ambito))
+
+    def test_repetition_visits_the_organism_page_again_and_recovers_the_session(self):
+        cm = same_day_cm(150, 710000) + same_day_cm(3, 500000, publicado="2025-06-15T00:00:00+0100")
+        portal = SessionLostPortal(cm={48: cm}, restore_on_visit=True)
+
+        def prepare(p):
+            p.pred = window_2024_12_23
+
+        final, manifest, stdout = self.two_runs(portal, prepare)
+        self.assertNotIn("CM_incompletas", manifest["ambito"]["48"])
+        self.assertIn("completa al repetirla", stdout)
+        self.assertEqual(set(final["_en_ultima_descarga"]), {"True"})
+
+    def test_record_key_normalizes_ids_and_skips_missing_ones(self):
+        claves = [scraper_galicia._record_key({"id": valor}) for valor in (1, 1.0, "1", " 1 ", "1.0", None, "")]
+        self.assertEqual(claves, ["1", "1", "1", "1", "1", None, None])
+        joined = {}
+        scraper_galicia._join_new(joined, [{"id": 1, "v": "a"}, {"id": None, "v": "b"}])
+        scraper_galicia._join_new(joined, [{"id": "1", "v": "c"}, {"id": 2, "v": "d"}])
+        self.assertEqual({k: r["v"] for k, r in joined.items()}, {"1": "c", "2": "d"})
+
+
+class GaliciaNombreConSemillaTests(unittest.TestCase):
+
+    def test_seed_name_does_not_override_the_previous_table_name(self):
+        # Una semilla que es una salida de este script trae su _organismo_nombre (más
+        # antiguo): si la descarga no lee la página, manda el de la tabla anterior
+        cm = fake_cm_records(3)
+        portal = FakePortal(cm={48: list(cm)})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            vieja = tmp / "vieja"
+            portal.nombres = {48: "Nombre viejo"}
+            self.assertEqual(run_at(cli_args(vieja, "--organismo", "48", "--skip-lic"), portal, FECHA_1)[0], 0)
+            semilla = tmp / "semilla.parquet"
+            semilla.write_bytes((vieja / scraper_galicia.FINAL_PARQUET_NAME).read_bytes())
+            # El portal retira un menor y cambia el nombre; la salida nueva no lo ha visto nunca
+            portal.cm[48] = cm[1:]
+            portal.nombres = {48: "Nombre nuevo"}
+            out = tmp / "salida"
+            self.assertEqual(run_at(cli_args(out, "--organismo", "48", "--skip-lic"), portal, FECHA_2)[0], 0)
+            # La descarga siguiente no lee el nombre y la semilla (salida vieja) añade el retirado
+            portal.nombres = {}
+            code, _ = run_at(cli_args(out, "--organismo", "48", "--skip-lic", "--semilla", str(semilla),
+                                      "--origen-semilla", "salida anterior"), portal, FECHA_3)
+            self.assertEqual(code, 0)
+            final = read_final(out)
+        sembrada = final[final["_origen"] == "salida anterior"]
+        self.assertEqual(sembrada["id"].tolist(), [str(cm[0]["id"])])
+        self.assertEqual(set(final[scraper_galicia.ORG_NAME_COLUMN]), {"Nombre nuevo"})
+
+    def test_organism_name_joins_inner_whitespace(self):
+        pagina = ORG_PAGE_TEMPLATE.format(nombre="Consellería de\n            Facenda  e   Administración")
+        self.assertEqual(scraper_galicia.organism_name(pagina), "Consellería de Facenda e Administración")
 
 
 if __name__ == "__main__":
