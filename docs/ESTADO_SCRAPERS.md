@@ -27,7 +27,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_andalucia_menores.py` | Cerrado | `6f2f73c` | Sí, desde el VPS (2026-09-29): 9 CSV del CKAN de la Junta (2018-2026), 768.647 registros, 544.898 del SAS; la salida es idéntica al original celda a celda |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | Cerrado | `699bf16` | Sí (descarga completa del 2026-09-28) |
 | `galicia/scraper_galicia.py` | Cerrado (listados por id, ventanas repetidas, `_organismo_nombre`; sin la fase `detail` en el VPS) | `c8d7806` | Sí, desde el VPS: primera descarga del 2026-09-29 (420 organismos) y, con este cierre, las 45 ventanas de CM que quedaron incompletas llegan completas (19.364 de 19.364, en vivo) |
-| `scripts/ccaa_cataluna_contratosmenores.py` | Cerrado (sin segmentación por fecha: los órganos grandes quedan fuera del ámbito) | `1fa7f01` | Sí (dos fases) |
+| `scripts/ccaa_cataluna_contratosmenores.py` | Cerrado (sin segmentación por fecha: los órganos grandes quedan fuera del ámbito) | `c1bc252` | Sí (dos fases; consolidación de la primera descarga completa, 4,8 M de filas, en 6,4-6,8 GiB y con la salida de antes byte a byte) |
 | `borme/scripts/*.py` | Cerrado | `38e72aa` | Sí (boe.es) |
 
 Avisos de la sesión del VPS (2026-09-28):
