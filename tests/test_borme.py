@@ -1599,3 +1599,347 @@ def test_scraper_comprobar_con_descarga_fallida_no_toca_el_pdf(monkeypatch, tmp_
     assert not (pdf.parent / "_historico").exists()
     assert [e["date"] for e in _state(out)["errors"]] == ["2024-01-04"]  # el día queda pendiente
     assert len(_manifest(out)) == 1
+
+
+# ═════════════════════════════════════════════
+#  Memoria: primera descarga con las semillas del release
+# ═════════════════════════════════════════════
+# Con las semillas del release (9,25 M de empresas y 17,1 M de cargos), el parser llegaba a
+# 12,4 GiB al sembrar y el anonimizador a 10,1 GiB con las dos tablas. Lo reescrito tiene
+# que dar exactamente lo mismo que el código anterior, que se copia aquí tal cual (main en
+# c889c2d) como referencia.
+import pyarrow.parquet as pq  # noqa: E402
+
+from comun.historico import acumular as _acumular, sembrar as _sembrar_historico  # noqa: E402
+
+
+def _sembrar_anterior(salida, ruta, origen=bparser.ORIGEN_SEMILLA):
+    clave, posicion = bparser.CLAVE_SEMILLA, bparser.COLUMNA_POSICION
+    columnas = pq.read_schema(ruta).names
+    claves = pd.read_parquet(ruta, columns=clave + [c for c in ("_origen",) if c in columnas])
+    claves[posicion] = np.arange(len(claves))
+    base = (salida[clave] if salida is not None and len(salida)
+            else pd.DataFrame({c: pd.Series(dtype=object) for c in clave}))
+    resultado, informe = _sembrar_historico(base, claves, clave, origen=origen, contenido=[])
+    marcas = resultado.iloc[len(base):]
+    if not len(marcas):
+        return salida, informe
+    nuevas = bparser._leer_filas(ruta, marcas[posicion].to_numpy(dtype="int64"))
+    nuevas["_origen"] = marcas["_origen"].to_numpy()
+    nuevas["_en_ultima_descarga"] = False
+    if salida is None or len(salida) == 0:
+        return nuevas, informe
+    if "_origen" not in salida.columns:
+        salida = salida.assign(_origen=pd.Series([None] * len(salida), index=salida.index, dtype=object))
+    orden = list(salida.columns) + [c for c in nuevas.columns if c not in salida.columns]
+    out = pd.concat([salida, nuevas], ignore_index=True, sort=False)[orden]
+    out["_en_ultima_descarga"] = out["_en_ultima_descarga"].astype(bool)
+    return out, informe
+
+
+def _acumular_pdfs_anterior(anterior, nuevos, fecha, pdfs):
+    if anterior is None or len(anterior) == 0:
+        return _acumular(None, nuevos, fecha) if len(nuevos) else anterior
+    anterior = bparser._con_meta(anterior)
+    dentro = anterior["pdf_filename"].isin(pdfs).to_numpy()
+    acumuladas = _acumular(anterior[dentro], nuevos, fecha, permitir_vacio=True)
+    return pd.concat([anterior[~dentro], acumuladas], ignore_index=True, sort=False)
+
+
+def _anonimizar_anterior(src, out):
+    """main() de borme_anonymize.py anterior: las dos tablas a la vez y copias completas."""
+    df_emp = pd.read_parquet(src / "borme_empresas.parquet")
+    df_car = pd.read_parquet(src / "borme_cargos.parquet")
+    keep_cols = [
+        "fecha_borme", "num_borme", "num_entrada",
+        "empresa", "empresa_norm", "provincia", "cod_provincia",
+        "tipo_borme", "actos", "domicilio", "capital_euros",
+        "fecha_constitucion", "hoja_registral", "tomo", "inscripcion",
+        "fecha_inscripcion", "pdf_filename",
+    ]
+    cols = [c for c in keep_cols + anon.COLUMNAS_CONTROL if c in df_emp.columns]
+    df_emp_pub = df_emp[cols].copy()
+    df = df_car.copy()
+    nombres = df["persona"] if "persona" in df.columns else pd.Series(None, index=df.index, dtype=object)
+    hashes = nombres.apply(anon.hash_persona)
+    if "persona_hash" in df.columns:
+        hashes = hashes.where(nombres.notna(), df["persona_hash"])
+    df["persona_hash"] = hashes
+    df = df.drop(columns=["persona"], errors="ignore")
+    col_order = [
+        "fecha_borme", "num_entrada", "empresa", "empresa_norm",
+        "provincia", "hoja_registral", "tipo_acto", "cargo",
+        "persona_hash", "pdf_filename",
+    ] + anon.COLUMNAS_CONTROL
+    df_car_pub = df[[c for c in col_order if c in df.columns]]
+    out.mkdir(parents=True, exist_ok=True)
+    df_emp_pub.to_parquet(out / "borme_empresas_pub.parquet", index=False, engine="pyarrow")
+    df_car_pub.to_parquet(out / "borme_cargos_pub.parquet", index=False, engine="pyarrow")
+
+
+PDFS_MEMORIA = [f"BORME-A-2024-{n}-28.pdf" for n in range(1, 9)]
+
+
+def _claves_aleatorias(rng, n, nulos=True):
+    """pdf_filename y num_entrada como los del BORME, con repeticiones, cadenas vacías y
+    (con nulos=True) nulos de los dos tipos."""
+    pdf = rng.choice(np.array(PDFS_MEMORIA + [""], dtype=object), n)
+    num = rng.choice(np.array(["1", "2", "3", "10", "0", "00", ""], dtype=object), n)
+    if nulos:
+        pdf[rng.random(n) < 0.05] = None
+        num[rng.random(n) < 0.05] = np.nan
+    return pdf, num
+
+
+def _tabla_aleatoria(rng, n, nulos=True, origen=False):
+    pdf, num = _claves_aleatorias(rng, n, nulos)
+    df = pd.DataFrame({
+        "fecha_borme": pd.to_datetime(rng.choice(["2024-01-04", "2023-05-29"], n)),
+        "num_entrada": num,
+        "empresa": rng.choice(np.array(["ALFA SL", "BETA SA", None], dtype=object), n),
+        "capital_euros": rng.choice([3000.0, np.nan], n),
+        "pdf_filename": pdf,
+    })
+    if origen:
+        df["_origen"] = rng.choice(np.array(["release anterior", None], dtype=object), n)
+    return df
+
+
+@pytest.mark.parametrize("semilla", range(8))
+def test_sembrar_da_lo_mismo_que_antes(tmp_path, semilla):
+    rng = np.random.default_rng(semilla)
+    ruta = tmp_path / "borme_empresas_pub.parquet"
+    _tabla_aleatoria(rng, 300, origen=semilla % 2 == 1).to_parquet(ruta, index=False, row_group_size=64)
+    parse = _releer(_tabla_aleatoria(rng, 120).assign(_primera_descarga="2026-10-01", _ultima_descarga="2026-10-01",
+                                                      _en_ultima_descarga=True), tmp_path / "s.parquet")
+    for caso, salida in (("sin salida", None), ("salida vacía", parse.iloc[:0]), ("con salida", parse),
+                         ("con _origen", parse.assign(_origen=None))):
+        nuevo, informe = bparser._sembrar(salida, ruta)
+        anterior, informe_anterior = _sembrar_anterior(salida, ruta)
+        assert informe == informe_anterior, caso
+        if anterior is None:
+            assert nuevo is None, caso
+        else:
+            pd.testing.assert_frame_equal(nuevo, anterior, obj=caso)
+
+
+def test_sembrar_con_claves_que_no_son_texto_usa_el_camino_general(tmp_path):
+    rng = np.random.default_rng(1)
+    ruta = tmp_path / "pub.parquet"
+    _tabla_aleatoria(rng, 200).to_parquet(ruta, index=False)
+    salida = _tabla_aleatoria(rng, 80, nulos=False)
+    salida["num_entrada"] = salida["num_entrada"].map(lambda v: int(v) if v not in ("", None) else 7)
+    assert bparser._motivos_por_clave(salida[bparser.CLAVE_SEMILLA], ruta) is None
+    nuevo, informe = bparser._sembrar(salida, ruta)
+    anterior, informe_anterior = _sembrar_anterior(salida, ruta)
+    assert informe == informe_anterior
+    pd.testing.assert_frame_equal(nuevo, anterior)
+
+
+def test_sembrar_no_pasa_las_claves_a_objetos_de_python(tmp_path, monkeypatch):
+    # seleccionar_semilla hacía str(v) de cada valor de la clave: 35 M de objetos con las
+    # tablas del release. Con claves de texto no se llama a sembrar() ni a texto_canonico
+    rng = np.random.default_rng(2)
+    ruta = tmp_path / "pub.parquet"
+    _tabla_aleatoria(rng, 200).to_parquet(ruta, index=False)
+    salida = _tabla_aleatoria(rng, 50)
+    esperado, informe = _sembrar_anterior(salida, ruta)
+    monkeypatch.setattr(bparser, "sembrar", lambda *a, **k: pytest.fail("sembrar() con claves de texto"))
+    nuevo, informe_nuevo = bparser._sembrar(salida, ruta)
+    pd.testing.assert_frame_equal(nuevo, esperado)
+    assert informe_nuevo == informe and informe["anadidas"] > 0 and informe["descartadas_clave"] > 0
+
+
+def _anterior_con_bloques(rng, n=400):
+    """Tabla acumulada: las filas de cada PDF seguidas (como las deja el parser)."""
+    tabla = _tabla_aleatoria(rng, n, nulos=False)
+    tabla["pdf_filename"] = np.sort(rng.choice(np.array(PDFS_MEMORIA, dtype=object), n))
+    return _acumular(None, tabla, "2026-10-01")
+
+
+@pytest.mark.parametrize("pdfs", [set(), {PDFS_MEMORIA[0]}, {PDFS_MEMORIA[3]}, {PDFS_MEMORIA[-1]},
+                                  set(PDFS_MEMORIA[1::2]), set(PDFS_MEMORIA), {"BORME-A-2025-1-01.pdf"}])
+def test_acumular_pdfs_da_lo_mismo_que_antes(tmp_path, pdfs):
+    rng = np.random.default_rng(len(pdfs))
+    anterior = _releer(_anterior_con_bloques(rng), tmp_path / "a.parquet")
+    nuevos = _tabla_aleatoria(rng, 60, nulos=False)
+    nuevos["pdf_filename"] = rng.choice(np.array(sorted(pdfs) or ["BORME-A-2025-1-01.pdf"], dtype=object), 60)
+    esperado = _acumular_pdfs_anterior(anterior, nuevos, "2026-10-02", pdfs)
+    pd.testing.assert_frame_equal(bparser._acumular_pdfs(anterior, nuevos, "2026-10-02", pdfs), esperado)
+    # Con muchos tramos, se copian las filas como antes
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bparser, "MAX_TRAMOS", 1)
+        pd.testing.assert_frame_equal(bparser._acumular_pdfs(anterior, nuevos, "2026-10-02", pdfs), esperado)
+
+
+def test_acumular_pdfs_no_copia_las_filas_de_los_otros_pdf(tmp_path, monkeypatch):
+    rng = np.random.default_rng(5)
+    anterior = _releer(_anterior_con_bloques(rng), tmp_path / "a.parquet")
+    nuevos = _tabla_aleatoria(rng, 30, nulos=False).assign(pdf_filename=PDFS_MEMORIA[2])
+    esperado = _acumular_pdfs_anterior(anterior, nuevos, "2026-10-02", {PDFS_MEMORIA[2]})
+    getitem = pd.DataFrame.__getitem__
+
+    def sin_filtrar_la_tabla(self, key):
+        if (len(self) == len(anterior) and isinstance(key, np.ndarray) and key.dtype == bool
+                and key.sum() > len(self) // 2):
+            raise AssertionError("anterior[~dentro] copia casi toda la tabla")
+        return getitem(self, key)
+
+    monkeypatch.setattr(pd.DataFrame, "__getitem__", sin_filtrar_la_tabla)
+    resultado = bparser._acumular_pdfs(anterior, nuevos, "2026-10-02", {PDFS_MEMORIA[2]})
+    monkeypatch.undo()
+    pd.testing.assert_frame_equal(resultado, esperado)
+
+
+def _resumen_anterior(df_empresas, df_cargos):
+    """Líneas del resumen final de run_batch anterior, desde "(filas)" hasta los tipos de acto."""
+    lineas = []
+    for nombre, df in (("Empresas", df_empresas), ("Cargos", df_cargos)):
+        if df is None or len(df) == 0:
+            continue
+        lineas.append(f"   {nombre} (filas): {len(df):,}")
+        if "_en_ultima_descarga" in df.columns:
+            lineas.append(f"      del último parse de su PDF: {int(df['_en_ultima_descarga'].sum()):,}")
+        if "_origen" in df.columns:
+            lineas.append(f"      de la semilla: {int(df['_origen'].notna().sum()):,}")
+    if df_empresas is not None and len(df_empresas) > 0:
+        lineas.append(f"   Empresas unicas: {df_empresas['empresa_norm'].nunique():,}")
+        lineas.append(f"   Provincias: {df_empresas['provincia'].nunique()}")
+        lineas.append(f"   Rango fechas: {df_empresas['fecha_borme'].min()} -> {df_empresas['fecha_borme'].max()}")
+        constit = df_empresas[df_empresas["actos"].str.contains("Constitución", na=False)]
+        lineas.append(f"   Constituciones: {len(constit):,}")
+        if "capital_euros" in df_empresas.columns:
+            lineas.append(f"   Con capital: {df_empresas['capital_euros'].notna().sum():,}")
+    if df_cargos is not None and len(df_cargos) > 0:
+        lineas.append(f"   Cargos unicos (tipos): {df_cargos['cargo'].nunique()}")
+        if "persona" in df_cargos.columns:
+            lineas.append(f"   Personas unicas: {df_cargos['persona'].nunique():,}")
+        for tipo, n in df_cargos['tipo_acto'].value_counts().items():
+            lineas.append(f"      {tipo}: {n:,}")
+    return lineas
+
+
+def test_run_batch_una_tabla_entera_y_despues_la_otra_con_el_resumen_de_antes(fake_pdf, fechas, tmp_path,
+                                                                                 monkeypatch, caplog):
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    fake_pdf.update({PDF_MADRID: [PAG1, PAG2], PDF_ENERO: [PAG_ENERO]})
+    _pdf_file(base, dt.date(2024, 1, 4), PDF_MADRID)
+    _pdf_file(base, dt.date(2024, 1, 2), PDF_ENERO)
+    bparser.run_batch(base, tmp_path / "ref", workers=1)
+    semilla_emp, semilla_car = tmp_path / "borme_empresas_pub.parquet", tmp_path / "borme_cargos_pub.parquet"
+    emp_ref, car_ref = _tablas(tmp_path / "ref")
+    extra = _publicado(emp_ref).iloc[[0, 1]].assign(pdf_filename=PDF_OTRO)
+    pd.concat([_publicado(emp_ref), extra], ignore_index=True).to_parquet(semilla_emp, index=False)
+    car_pub = car_ref.drop(columns=META + ["persona"]).assign(persona_hash="h")
+    pd.concat([car_pub, car_pub.iloc[[0]].assign(pdf_filename=PDF_OTRO)]).to_parquet(semilla_car, index=False)
+
+    llamadas = []
+    leer, guardar = bparser.leer_registros, bparser.guardar_registros
+    monkeypatch.setattr(bparser, "leer_registros", lambda r: llamadas.append(("leer", Path(r).name)) or leer(r))
+    monkeypatch.setattr(bparser, "guardar_registros",
+                        lambda df, r: llamadas.append(("guardar", Path(r).name)) or guardar(df, r))
+    caplog.set_level("INFO", logger=bparser.log.name)
+    bparser.run_batch(base, out, workers=2, semillas=[semilla_car, semilla_emp])
+    assert llamadas == [("leer", "borme_empresas.parquet"), ("guardar", "borme_empresas.parquet"),
+                        ("leer", "borme_cargos.parquet"), ("guardar", "borme_cargos.parquet")]
+    emp, car = _tablas(out)
+    sembradas_emp = set(emp.loc[emp["_origen"].notna(), "pdf_filename"])
+    assert sembradas_emp == set(car.loc[car["_origen"].notna(), "pdf_filename"]) == {PDF_OTRO}
+    mensajes = [r.getMessage() for r in caplog.records]
+    inicio = next(i for i, m in enumerate(mensajes) if m.startswith("   Empresas (filas)"))
+    esperado = _resumen_anterior(emp, car)
+    assert mensajes[inicio:inicio + len(esperado)] == esperado
+    assert mensajes[inicio + len(esperado)] == "=" * 60
+
+
+def test_resumen_con_una_cifra_que_falla_lanza_el_error_al_final(tmp_path, fechas):
+    # Una semilla de empresas sin empresa_norm: el resumen falla como antes, después de
+    # escribir la tabla y el progreso
+    base, out = tmp_path / "borme_pdfs", tmp_path / "salida"
+    base.mkdir()
+    semilla = tmp_path / "borme_empresas_pub.parquet"
+    _publicado(_empresas_privadas()).drop(columns="empresa_norm").to_parquet(semilla, index=False)
+    with pytest.raises(KeyError, match="empresa_norm"):
+        bparser.run_batch(base, out, workers=1, semillas=[semilla])
+    assert len(pd.read_parquet(out / "borme_empresas.parquet")) == 3
+    assert (out / "borme_parse_progress.json").exists()
+
+
+def _tablas_privadas_con_semilla():
+    emp = _empresas_privadas().assign(_primera_descarga="2026-10-01", _ultima_descarga="2026-10-01",
+                                      _en_ultima_descarga=[True, True, False])
+    sembradas = emp.iloc[[0]].assign(num_entrada="77", _primera_descarga=None, _ultima_descarga=None,
+                                     _en_ultima_descarga=False, _origen="release v2026.02")
+    emp = pd.concat([emp.assign(_origen=None), sembradas], ignore_index=True)
+    car = _cargos_privados().assign(_primera_descarga="2026-10-01", _ultima_descarga="2026-10-01",
+                                    _en_ultima_descarga=True, _origen=None, persona_hash=None)
+    car_sembrados = car.iloc[[0, 1]].assign(persona=None, persona_hash=["hash_a", None], _origen="release v2026.02",
+                                            _en_ultima_descarga=False)
+    return emp, pd.concat([car, car_sembrados], ignore_index=True)
+
+
+def test_anonimizar_da_lo_mismo_que_antes(monkeypatch, tmp_path):
+    src = tmp_path / "parse"
+    src.mkdir()
+    emp, car = _tablas_privadas_con_semilla()
+    emp.to_parquet(src / "borme_empresas.parquet", index=False)
+    car.to_parquet(src / "borme_cargos.parquet", index=False)
+    _anonimizar_anterior(src, tmp_path / "antes")
+    _run_cli(monkeypatch, "borme_anonymize.py", "--input", src, "--output", tmp_path / "despues")
+    for nombre in ("borme_empresas_pub.parquet", "borme_cargos_pub.parquet"):
+        antes, despues = tmp_path / "antes" / nombre, tmp_path / "despues" / nombre
+        pd.testing.assert_frame_equal(pd.read_parquet(despues), pd.read_parquet(antes))
+        assert despues.read_bytes() == antes.read_bytes(), nombre
+
+
+def test_anonimizar_no_modifica_las_tablas_de_entrada():
+    emp, car = _tablas_privadas_con_semilla()
+    copia_emp, copia_car = emp.copy(), car.copy()
+    anon.anonymize_empresas(emp)
+    pub = anon.anonymize_cargos(car)
+    pd.testing.assert_frame_equal(emp, copia_emp)
+    pd.testing.assert_frame_equal(car, copia_car)
+    assert pub["persona_hash"].iloc[-2] == "hash_a" and pub["persona_hash"].iloc[0] == anon.hash_persona(
+        "ZUTANO PERENGANO ANA")
+
+
+def test_anonimizar_escribe_una_tabla_antes_de_leer_la_otra(monkeypatch, tmp_path):
+    src, out = tmp_path / "parse", tmp_path / "pub"
+    src.mkdir()
+    emp, car = _tablas_privadas_con_semilla()
+    emp.to_parquet(src / "borme_empresas.parquet", index=False)
+    car.to_parquet(src / "borme_cargos.parquet", index=False)
+    leer = pd.read_parquet
+
+    def espia(ruta, *args, **kwargs):
+        if Path(ruta).name == "borme_cargos.parquet":
+            assert (out / "borme_empresas_pub.parquet").exists(), "las dos tablas a la vez en memoria"
+        return leer(ruta, *args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_parquet", espia)
+    _run_cli(monkeypatch, "borme_anonymize.py", "--input", src, "--output", out)
+    assert (out / "borme_cargos_pub.parquet").exists()
+
+
+def test_anonimizar_sin_tabla_de_cargos_no_escribe_nada(monkeypatch, tmp_path):
+    src, out = tmp_path / "parse", tmp_path / "pub"
+    src.mkdir()
+    _tablas_privadas_con_semilla()[0].to_parquet(src / "borme_empresas.parquet", index=False)
+    with pytest.raises(FileNotFoundError):
+        _run_cli(monkeypatch, "borme_anonymize.py", "--input", src, "--output", out)
+    assert not any(out.iterdir())
+
+
+def test_donde_es_where_con_cualquier_tipo(tmp_path):
+    rng = np.random.default_rng(3)
+    tabla = pd.DataFrame({"hash": rng.choice(np.array(["a", "b", ""], dtype=object), 60),
+                          "publicado": rng.choice(np.array(["x", None, "y"], dtype=object), 60)})
+    condicion = pd.Series(rng.random(60) < 0.5)
+    leida = _releer(tabla, tmp_path / "t.parquet")   # str en pandas 3, object en 2.2
+    casos = {"object": (tabla["hash"], tabla["publicado"]),
+             "parquet": (leida["hash"], leida["publicado"]),
+             "string[pyarrow]": (tabla["hash"].astype("string[pyarrow]"), tabla["publicado"].astype("string[pyarrow]")),
+             "tipos distintos": (leida["hash"], tabla["publicado"])}
+    for caso, (valores, otros) in casos.items():
+        pd.testing.assert_series_equal(anon._donde(condicion, valores, otros), valores.where(condicion, otros),
+                                       obj=caso)
