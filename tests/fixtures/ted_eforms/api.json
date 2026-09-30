@@ -1,0 +1,337 @@
+{
+ "notices": [
+  {
+   "place-of-performance": [
+    "ES112",
+    "ESP",
+    "ES112",
+    "ES112",
+    "ES112",
+    "ESP",
+    "ESP",
+    "ESP"
+   ],
+   "notice-identifier": "825041ed-71bf-43a1-8cdc-375da02d7bd1",
+   "title-proc": {
+    "spa": "Suministro de combustible para los vehículos, maquinaria e instalaciones municipales y el suministro de astilla para la caldera de biomasa de la piscina municipal"
+   },
+   "notice-type": "can-standard",
+   "publication-number": "646040-2026",
+   "buyer-profile": [
+    "https://contrataciondelestado.es/wps/poc?uri=deeplink:perfilContratante&idBp=Ty8yA16pfz0BPRBxZ4nJ%2Fg%3D%3D"
+   ],
+   "total-value-cur": [
+    "EUR"
+   ],
+   "buyer-legal-type": [
+    "la"
+   ],
+   "procedure-identifier": "eb0c062e-ecae-45f1-b48c-0fecbc8f6f27",
+   "total-value": 88844.72,
+   "buyer-country": [
+    "ESP"
+   ],
+   "procedure-type": "open",
+   "classification-cpv": [
+    "09100000",
+    "09111400",
+    "09122110",
+    "09132000",
+    "09134000",
+    "09100000",
+    "09100000",
+    "09100000",
+    "09132000",
+    "09134000",
+    "09111400",
+    "09132000",
+    "09134000"
+   ],
+   "notice-subtype": "29",
+   "publication-date": "2026-09-18+02:00",
+   "buyer-name": {
+    "spa": [
+     "Alcaldía del Ayuntamiento de Viveiro"
+    ]
+   },
+   "contract-nature-main-proc": "supplies",
+   "notice-version": 1,
+   "buyer-city": {
+    "mul": [
+     "Viveiro"
+    ]
+   },
+   "form-type": "result",
+   "buyer-identifier": [
+    "31210280164788",
+    "P2706700H"
+   ],
+   "internal-identifier-proc": "852/2026",
+   "description-proc": {
+    "spa": "La necesidad de esta contratación deriva de las necesidades de funcionamiento tanto de los vehículos y maquinaria para el correcto funcionamiento de los servicios municipales, así como de las necesidades de suministro de combustible para la generación de calor en las instalaciones municipales"
+   },
+   "winner-name": {
+    "spa": [
+     "SOLRED S.A.",
+     "ESTRUCTURAS MECANIZADAS DE ASTURIAS S.L.",
+     "GASOLEOS VIVEIRO S.L.",
+     "SOLRED S.A.",
+     "ESTRUCTURAS MECANIZADAS DE ASTURIAS S.L.",
+     "GASOLEOS VIVEIRO S.L.",
+     "SOLRED S.A.",
+     "ESTRUCTURAS MECANIZADAS DE ASTURIAS S.L.",
+     "GASOLEOS VIVEIRO S.L."
+    ]
+   },
+   "winner-identifier": [
+    "A79707345",
+    "B74281171",
+    "B27200104"
+   ],
+   "tender-value": [
+    "15119.62",
+    "62685",
+    "11040.1"
+   ],
+   "winner-decision-date": [
+    "2026-08-12+02:00"
+   ],
+   "result-lot-identifier": [
+    "LOT-0002",
+    "LOT-0004",
+    "LOT-0005"
+   ],
+   "identifier-lot": [
+    "LOT-0002",
+    "LOT-0004",
+    "LOT-0005"
+   ]
+  },
+  {
+   "place-of-performance": [
+    "ES425",
+    "ESP",
+    "ES425",
+    "ES425",
+    "ES425",
+    "ES425",
+    "ESP",
+    "ESP",
+    "ESP",
+    "ESP"
+   ],
+   "notice-identifier": "36642360-89a5-4b7a-8853-8b2365e2d304",
+   "title-proc": {
+    "spa": "Acuerdo Marco para la Selección de Proveedores del Equipamiento Hospitalario grupo V para las Gerencias del Sescam."
+   },
+   "notice-type": "can-standard",
+   "publication-number": "266280-2024",
+   "buyer-profile": [
+    "https://contrataciondelestado.es/wps/poc?uri=deeplink:perfilContratante&idBp=aLBOjUOO%2F58QK2TEfXGy%2BA%3D%3D"
+   ],
+   "total-value-cur": [
+    "EUR"
+   ],
+   "buyer-legal-type": [
+    "ra"
+   ],
+   "procedure-identifier": "52c0d51e-3f5e-4732-972b-6691a9bea20e",
+   "total-value": 140000,
+   "buyer-country": [
+    "ESP"
+   ],
+   "procedure-type": "open",
+   "classification-cpv": [
+    "33100000",
+    "33100000",
+    "33100000",
+    "33100000",
+    "33100000"
+   ],
+   "notice-subtype": "29",
+   "publication-date": "2024-05-06Z",
+   "buyer-name": {
+    "spa": [
+     "Secretaria General del Servicio de Salud de Castilla-La Mancha"
+    ]
+   },
+   "contract-nature-main-proc": "supplies",
+   "notice-version": 3,
+   "buyer-city": {
+    "mul": [
+     "Toledo"
+    ]
+   },
+   "form-type": "result",
+   "buyer-identifier": [
+    "20441610080661",
+    "Q4500146H"
+   ],
+   "internal-identifier-proc": "2023/015553",
+   "description-proc": {
+    "spa": "Acuerdo Marco para la Selección de Proveedores del Equipamiento Hospitalario grupo V para las Gerencias del Sescam."
+   }
+  },
+  {
+   "place-of-performance": [
+    "ES617",
+    "ESP",
+    "ES617",
+    "ESP"
+   ],
+   "notice-identifier": "2ecb5ad9-66c4-499f-a332-448e6e425b02",
+   "title-proc": {
+    "spa": "Limpieza y desbroce de parcelas municipales y zonas públicas mediante trabajos manuales y desbrozadora, y mantenimiento de los acantilados de El Cantal (dividido en 2 lotes)"
+   },
+   "notice-type": "can-standard",
+   "publication-number": "515290-2026",
+   "buyer-profile": [
+    "https://contrataciondelestado.es/wps/poc?uri=deeplink:perfilContratante&idBp=pz4zGAPYS4E%3D"
+   ],
+   "buyer-legal-type": [
+    "la"
+   ],
+   "procedure-identifier": "bd0ddf52-77df-4b83-95ad-bfb82551a539",
+   "buyer-country": [
+    "ESP"
+   ],
+   "procedure-type": "open",
+   "classification-cpv": [
+    "77312000",
+    "77312100",
+    "77314000",
+    "77312000",
+    "77312100",
+    "77314000"
+   ],
+   "notice-subtype": "29",
+   "publication-date": "2026-07-24+02:00",
+   "buyer-name": {
+    "spa": [
+     "Alcaldía del Ayuntamiento de Rincón de la Victoria"
+    ]
+   },
+   "contract-nature-main-proc": "services",
+   "notice-version": 1,
+   "buyer-city": {
+    "mul": [
+     "Rincón de la Victoria"
+    ]
+   },
+   "form-type": "result",
+   "buyer-identifier": [
+    "30000150000038",
+    "P2908200E"
+   ],
+   "internal-identifier-proc": "Contratación 30/26",
+   "description-proc": {
+    "spa": "El objeto del presente contrato es prestar los servicios con la finalidad de que la ciudadanía pueda disfrutar de las zonas incluidas en la presente licitación en óptimas condiciones de salubridad, limpieza y ornato."
+   }
+  },
+  {
+   "place-of-performance": [
+    "ES61",
+    "ES618"
+   ],
+   "notice-type": "can-modif",
+   "procedure-type": "open",
+   "publication-number": "20-2024",
+   "classification-cpv": [
+    "72000000",
+    "72221000",
+    "72330000",
+    "72500000",
+    "72510000"
+   ],
+   "publication-date": "2024-01-02+01:00",
+   "buyer-legal-type": [
+    "body-pl-la",
+    "body-pl-ra"
+   ],
+   "buyer-name": {
+    "spa": [
+     "Secretaría General de Medio Ambiente, Agua y Cambio Climático"
+    ]
+   },
+   "buyer-country": [
+    "ESP"
+   ],
+   "buyer-city": {
+    "swe": [
+     "Sevilla"
+    ],
+    "lav": [
+     "Seviļa"
+    ],
+    "hun": [
+     "Sevilla"
+    ],
+    "gle": [
+     "Sevilla"
+    ],
+    "ell": [
+     "Σεβίλη"
+    ],
+    "spa": [
+     "Sevilla"
+    ],
+    "nld": [
+     "Sevilla"
+    ],
+    "est": [
+     "Sevilla"
+    ],
+    "fin": [
+     "Sevilla"
+    ],
+    "pol": [
+     "Sewilla"
+    ],
+    "hrv": [
+     "Sevilla"
+    ],
+    "ron": [
+     "Sevilla"
+    ],
+    "dan": [
+     "Sevilla"
+    ],
+    "ces": [
+     "Sevilla"
+    ],
+    "por": [
+     "Sevilha"
+    ],
+    "slk": [
+     "Sevilla"
+    ],
+    "mlt": [
+     "Sevilla"
+    ],
+    "fra": [
+     "Séville"
+    ],
+    "deu": [
+     "Sevilla"
+    ],
+    "lit": [
+     "Sevilija"
+    ],
+    "ita": [
+     "Siviglia"
+    ],
+    "bul": [
+     "Севиля"
+    ],
+    "slv": [
+     "Sevilja"
+    ],
+    "eng": [
+     "Seville"
+    ]
+   },
+   "form-type": "cont-modif"
+  }
+ ],
+ "nota": "Respuesta de la API de búsqueda de TED (29-sep-2026) con los campos de ted_module.TEDConfig.API_FIELDS, sin links. En 646040-2026 se añaden las listas por posición que devolvía para los campos del parser anterior (winner-name repetido 3 veces, winner-decision-date deduplicada)."
+}
