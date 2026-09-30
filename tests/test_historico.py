@@ -30,6 +30,20 @@ def test_guardar_version_nuevo_sin_cambios_y_actualizado(tmp_path):
     assert not list(destino.parent.glob(".*"))         # sin temporales
 
 
+def test_versiones_con_caracteres_de_glob_en_el_nombre(tmp_path):
+    # Un nombre publicado con corchetes ('CM_2021[1].ods') no puede dejar invisibles sus versiones
+    # antiguas ni colarle las de otro fichero ('CM_20211.ods' casaría con el patrón sin escapar)
+    destino = tmp_path / "CM_2021[1].ods"
+    otro = tmp_path / "CM_20211.ods"
+    for ruta in (destino, otro):
+        assert h.guardar_version(ruta, b"v1") == "nuevo"
+        _mtime(ruta, 1_700_000_000)
+        assert h.guardar_version(ruta, b"v2") == "actualizado"
+    antigua = tmp_path / h.HISTORICO / "CM_2021[1]__20231114T221320Z.ods"
+    assert h.versiones(destino) == [antigua, destino]
+    assert [p.read_bytes() for p in h.versiones(otro)] == [b"v1", b"v2"]
+
+
 def test_guardar_version_desde_fichero_y_sellos_repetidos(tmp_path):
     destino = tmp_path / "x.zip"
     for i, contenido in enumerate([b"v1", b"v2", b"v3"]):

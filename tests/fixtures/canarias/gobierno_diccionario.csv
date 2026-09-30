@@ -1,0 +1,30 @@
+Campo,Nombre,Descripción,Tipo,Codificación (si procede),Observaciones
+objeto_contrato,Objeto del contrato,Objeto del contrato.,Texto,,
+entidad_adjudicadora,Entidad adjudicadora,Entidad adjudicadora del contrato.,Texto,,
+procedimiento_contratacion,Procedimiento de contratación,"Procedimiento de contratación: Abierto, Dialogo competitivo, Negociado con publicidad, Negociado sin publicidad, Restringido, etc.
+
+Los códigos para representar los tipos de procedimientos de contratación se pueden consultar en las listas de códigos publicadas en CODICE (Componentes y Documentos Interoperables para la Contratación Electrónica): https://contrataciondelestado.es/wps/portal/CODICEInfo",Texto,,
+tramitacion_tipo,Tipo de tramitación,"Tramitación ordinaria, urgente, etc.
+
+Los códigos para representar los tipos de tramitación se pueden consultar en las listas de códigos publicadas en CODICE (Componentes y Documentos Interoperables para la Contratación Electrónica): https://contrataciondelestado.es/wps/portal/CODICEInfo",Texto,,
+lote,Lote,"Indica el lote, dentro de la licitación, a la que se refiere el registro. ",Número,,"Tener en cuenta que el código ""_Z"" se usa para indicar que ese campo no es aplicable al registro al que se refiere."
+adjudicacion_fecha,Fecha de adjudicación,Fecha de adjudicación del contrato.,Fecha,,
+adjudicataria_nif,NIF de la persona o entidad adjudicataria,Número de identificación fiscal (NIF) de la persona o entidad adjudicataria.,Texto,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+importe_ofertado,Importe ofertado,Importe ofertado en los pliegos del contrato.,Número,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+expediente_numero,Número de expediente,Número de expediente del contrato.,Texto,,
+licitacion_enlace,Enlace a la licitación,Enlace a la licitación del contrato.,Texto,,
+licitacion_estado,Estado de la licitación,Estado de la licitación del contrato.,Texto,,
+clasificacion_cpv,Clasificación CPV,La clasificación CPV (Common Procurement Vocabulary) es un sistema de identificación y categorización de todas las actividades económicas susceptibles de ser contratadas mediante licitación o concurso público en la Unión Europea.,Número,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+contrato_tipo,Tipo de contrato,"Contratos de obras, servicios, suministros, concesión de obras, concesión de servicios, etc.
+
+Los códigos para representar los tipos de contratos se pueden consultar en las listas de códigos publicadas en CODICE (Componentes y Documentos Interoperables para la Contratación Electrónica): https://contrataciondelestado.es/wps/portal/CODICEInfo",Texto,,
+publicacion_fecha,Fecha de publicación,Fecha de publicación del contrato.,Fecha,,
+publicacion_medio,Medio de publicación,Medio a través del cual se publica el contrato.,Texto,,
+licitacion_resultado,Resultado de la licitación,Contiene la información relativa al resultado de la licitación.,Texto,,
+pliego_enlace,Enlace al pliego de cláusulas administrativas,Enlace al pliego de cláusulas administrativas.,Texto,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+perfil_contratante_enlace,Enlace al perfil del contratante,Enlace al perfil del contratante.,Texto,,
+financiacion_europea,Financiación europea,Indica si el contrato recibe o no recibe financiación europea.,Texto,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+fuente_financiacion_id,Identificador de la fuente de financiación,Identificador de la fuente de financiación.,Texto,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+fuente_financiacion ,Fuente de financiación,Fuente de financiación del contrato.,Texto,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+localizador_programa_ue,Localizador del programa de la UE,Indica el localizador del programa de la Unión Europea.,Texto,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."
+formula_revision_precios,Fórmula de revisión de precios,Indica si es posible o no la revisión de precios en el contrato.,Texto,,"Tener en cuenta que el código ""_U"" se usa para indicar que se trata de un dato desconocido o que no consta."

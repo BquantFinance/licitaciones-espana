@@ -40,6 +40,7 @@ compatible con el actual (si no, las mismas filas no casarían).
    _historico/ una salida que la ejecución nueva ya no produce.
 """
 
+import glob
 import hashlib
 import os
 from datetime import date, datetime, timezone
@@ -144,10 +145,13 @@ def archivar(destino):
 
 
 def versiones(destino):
-    """Versiones guardadas de `destino`, de la más antigua a la actual."""
+    """Versiones guardadas de `destino`, de la más antigua a la actual. El nombre se busca
+    escapado: unos corchetes en el nombre publicado ('CM_2021[1].ods') no pueden dejar
+    fuera sus versiones ni colar las de otro fichero."""
     destino = Path(destino)
     carpeta = destino.parent / HISTORICO
-    antiguas = sorted(carpeta.glob(f"{destino.stem}__*{destino.suffix}")) if carpeta.is_dir() else []
+    patron = f"{glob.escape(destino.stem)}__*{glob.escape(destino.suffix)}"
+    antiguas = sorted(carpeta.glob(patron)) if carpeta.is_dir() else []
     return antiguas + ([destino] if destino.exists() else [])
 
 

@@ -1,0 +1,167 @@
+{
+ "help": "https://datos.canarias.es/catalogos/general/api/3/action/help_show?name=package_show",
+ "success": true,
+ "result": {
+  "author": "",
+  "author_email": "",
+  "creator_user_id": "c6d2be28-3996-43a4-b26c-e1944e0eb9f3",
+  "id": "c915a5c5-a0da-4e3d-8a97-039f46add0ac",
+  "isopen": true,
+  "license_id": "gobcan-aviso-legal",
+  "license_title": "Aviso Legal del Gobierno de Canarias",
+  "license_url": "https://datos.canarias.es/portal/aviso-legal-y-condiciones-de-uso",
+  "maintainer": "",
+  "maintainer_email": "",
+  "metadata_created": "2020-12-03T12:22:44.445757",
+  "metadata_modified": "2026-09-01T04:02:22.897437",
+  "name": "contratos-adjudicados-y-formalizados-del-gobierno-de-canarias",
+  "notes": "Contratos, adjudicados y formalizados, por las entidades y órganos de contratación del Gobierno de Canarias, y publicados en la plataforma de contratación del sector público, desde el 1 de enero de 2020.",
+  "num_resources": 2,
+  "num_tags": 2,
+  "organization": {
+   "id": "af0edcfb-4be3-43bf-89f4-02ad33937774",
+   "name": "consejeria-de-hacienda",
+   "title": "Consejería de Hacienda y Relaciones con la Unión Europea",
+   "type": "organization",
+   "description": "",
+   "image_url": "2020-12-10-145232.761966logo-organizacion-gobcan.jpg",
+   "created": "2020-12-02T14:43:38.901642",
+   "is_organization": true,
+   "approval_status": "approved",
+   "state": "active"
+  },
+  "owner_org": "af0edcfb-4be3-43bf-89f4-02ad33937774",
+  "private": false,
+  "state": "active",
+  "title": "Contratos adjudicados y formalizados del Gobierno de Canarias",
+  "type": "dataset",
+  "url": "",
+  "version": "",
+  "extras": [
+   {
+    "key": "frequency",
+    "value": "Mensual"
+   },
+   {
+    "key": "identifier",
+    "value": "https://datos.canarias.es/catalogos/general/dataset/contratos-adjudicados-y-formalizados-del-gobierno-de-canarias"
+   },
+   {
+    "key": "language",
+    "value": "es"
+   },
+   {
+    "key": "publisher_name",
+    "value": "Gobierno de Canarias"
+   },
+   {
+    "key": "publisher_uri",
+    "value": "http://datos.gob.es/recurso/sector-publico/org/Organismo/A05003638"
+   },
+   {
+    "key": "spatial_uri",
+    "value": "http://datos.gob.es/recurso/sector-publico/territorio/Autonomia/Canarias"
+   },
+   {
+    "key": "theme",
+    "value": "http://datos.gob.es/kos/sector-publico/sector/sector-publico,http://datos.gob.es/kos/sector-publico/sector/hacienda"
+   }
+  ],
+  "groups": [
+   {
+    "description": "Tributos, fiscalidad...",
+    "display_name": "Hacienda",
+    "id": "7a728113-5dac-4817-b2a5-b026607a839f",
+    "image_display_url": "",
+    "name": "hacienda",
+    "title": "Hacienda"
+   },
+   {
+    "description": "Organigrama, oficinas de registro,...",
+    "display_name": "Sector Público",
+    "id": "4dd7385f-16ac-40a9-a5b9-5831edf5afa2",
+    "image_display_url": "",
+    "name": "sector-publico",
+    "title": "Sector Público"
+   }
+  ],
+  "resources": [
+   {
+    "cache_last_updated": null,
+    "cache_url": null,
+    "ckan_url": "https://datos.canarias.es",
+    "created": "2020-12-03T12:24:02.893900",
+    "datastore_active": true,
+    "datastore_contains_all_records_of_source_file": true,
+    "description": "Contratos, adjudicados y formalizados, por las entidades y órganos de contratación del Gobierno de Canarias, y publicados en la plataforma de contratación del sector público, desde el 1 de enero de 2020, en formato CSV.\r\n\r\nTener en cuenta que el código \"_U\" se usa para indicar que se trata de un dato desconocido o que no consta y el código \"_Z\" se usa para indicar que ese campo no es aplicable al registro al que se refiere.",
+    "format": "CSV",
+    "hash": "c35bf7e3aa44aa6cdd4298734c776ac6",
+    "id": "96154b4a-5212-46c7-8bd9-36599a8165b9",
+    "ignore_hash": false,
+    "last_modified": "2026-09-01T04:01:03.948110",
+    "metadata_modified": "2026-09-01T04:02:22.904578",
+    "mimetype": "text/csv",
+    "mimetype_inner": null,
+    "name": "Contratos adjudicados y formalizados del Gobierno de Canarias. (CSV)",
+    "original_url": "https://datos.canarias.es/catalogos/general/dataset/c915a5c5-a0da-4e3d-8a97-039f46add0ac/resource/96154b4a-5212-46c7-8bd9-36599a8165b9/download/contratos_desde_01_01_2020.csv",
+    "package_id": "c915a5c5-a0da-4e3d-8a97-039f46add0ac",
+    "position": 0,
+    "resource_id": "96154b4a-5212-46c7-8bd9-36599a8165b9",
+    "resource_type": null,
+    "set_url_type": false,
+    "size": 55918992,
+    "state": "active",
+    "task_created": "2026-09-01 04:01:04.077895",
+    "url": "https://datos.canarias.es/catalogos/general/dataset/c915a5c5-a0da-4e3d-8a97-039f46add0ac/resource/96154b4a-5212-46c7-8bd9-36599a8165b9/download/contratos_desde_01_01_2020.csv",
+    "url_type": "upload"
+   },
+   {
+    "cache_last_updated": null,
+    "cache_url": null,
+    "ckan_url": "https://datos.canarias.es",
+    "created": "2022-08-10T12:13:06.206347",
+    "datastore_active": true,
+    "datastore_contains_all_records_of_source_file": true,
+    "description": "Diccionario de datos que incorpora información de los nombres y descripciones de los campos, tipos de datos y listas de códigos o clasificaciones usadas (si procede).",
+    "format": "CSV",
+    "hash": "0514eed8a019e221afdfb76c1217c088",
+    "id": "ab26a39c-abaa-4289-ad8b-2b2fe60482c9",
+    "ignore_hash": true,
+    "last_modified": "2022-08-10T12:13:06.151672",
+    "metadata_modified": "2022-08-10T12:13:08.167990",
+    "mimetype": "text/csv",
+    "mimetype_inner": null,
+    "name": "Diccionario de datos",
+    "original_url": "https://datos.canarias.es/catalogos/general/dataset/c915a5c5-a0da-4e3d-8a97-039f46add0ac/resource/ab26a39c-abaa-4289-ad8b-2b2fe60482c9/download/diccionario_datos_contratos_adjudicados_y_formalizados_del_gobierno_de_canarias.csv",
+    "package_id": "c915a5c5-a0da-4e3d-8a97-039f46add0ac",
+    "position": 1,
+    "resource_id": "ab26a39c-abaa-4289-ad8b-2b2fe60482c9",
+    "resource_type": null,
+    "set_url_type": false,
+    "size": 4654,
+    "state": "active",
+    "task_created": "2024-07-16 11:12:12.420429",
+    "url": "https://datos.canarias.es/catalogos/general/dataset/c915a5c5-a0da-4e3d-8a97-039f46add0ac/resource/ab26a39c-abaa-4289-ad8b-2b2fe60482c9/download/diccionario_datos_contratos_adjudicados_y_formalizados_del_gobierno_de_canarias.csv",
+    "url_type": "upload"
+   }
+  ],
+  "tags": [
+   {
+    "display_name": "contratación",
+    "id": "c05b1a39-625a-4a6b-bbcd-4f8bd7b74202",
+    "name": "contratación",
+    "state": "active",
+    "vocabulary_id": null
+   },
+   {
+    "display_name": "contratos",
+    "id": "8411afce-85b8-4c35-add1-8b84f7b8457f",
+    "name": "contratos",
+    "state": "active",
+    "vocabulary_id": null
+   }
+  ],
+  "relationships_as_subject": [],
+  "relationships_as_object": []
+ }
+}
