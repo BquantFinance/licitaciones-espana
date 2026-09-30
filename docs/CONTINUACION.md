@@ -224,7 +224,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
 | `scripts/ccaa_murcia.py` | Cerrado | `10078e9` | Sí, con los crudos del VPS (2026-09-29): CSV del exportador JSON (comillas `\"`, decididas solo por su presencia; cortes `\n` cada 80 caracteres en `_<columna>_sin_cortes`, con el contador del exportador, que no se reinicia en los saltos del texto; y restos de la lista en `_resto_json`), mismas filas y ningún texto perdido; y la codificación cp850 de contratosOD 2014-2018 |
-| `scripts/ccaa_aragon.py` | Cerrado | `48e4d42` | Sí |
+| `scripts/ccaa_aragon.py` | Cerrado | `90978d2` | Sí (cabecera `<TH>` de los .xls del Gobierno, euro en 0xA4 y `_razon_social_es_pais` del Registro, con los crudos del VPS del 28-sep: +17 filas, 11 filas marcadas en mayores, 40 en menores y 19 en encargos, y el resto igual salvo 178 celdas por la codificación) |
 | `scripts/ccaa_castilla_leon.py` | Cerrado | `0263faf` | Sí |
 | `scripts/ccaa_extremadura.py` | Cerrado | `4163d85` | Sí |
 | `scripts/ccaa_la_rioja.py`, `scripts/ccaa_valencia_menores.py` | Cerrado | `9190268` | Sí |

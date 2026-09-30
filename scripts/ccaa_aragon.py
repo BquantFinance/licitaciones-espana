@@ -83,7 +83,12 @@ una serie tienen esquemas distintos se conservan todas las columnas (unión).
 No se deduplican filas. Columnas añadidas: _fuente, _dataset, _recurso,
 _recurso_id, _formato, _anio_recurso, _archivo_origen, _url_origen, _hoja,
 _fila_origen, _encabezado (títulos sobre la cabecera, si los hay),
-_fecha_descarga, _primera_descarga, _ultima_descarga, _en_ultima_descarga.
+_fecha_descarga, _primera_descarga, _ultima_descarga, _en_ultima_descarga y,
+en el Registro de Contratos, _razon_social_es_pais (booleana: el portal
+publica el código de país en lugar del nombre del adjudicatario; ver
+marcar_razon_social_pais). Los .xls del Gobierno de 2018-2025 son HTML con la
+cabecera en <TH> fuera de <TR>: se lee como cabecera (filas_html) y el euro
+escrito con el byte 0xA4 sale '€' (decodificar_html).
 
 Uso:
     python scripts/ccaa_aragon.py                  # descarga + parquet
@@ -174,6 +179,8 @@ METADATOS = ["_fuente", "_dataset", "_recurso", "_recurso_id", "_formato", "_ani
              "_archivo_origen", "_url_origen", "_hoja", "_fila_origen", "_linea", "_encabezado",
              "_fecha_descarga"]
 IGNORAR = ("_fecha_descarga", "_fila_origen", "_linea", "_encabezado")
+# Marcas sobre lo publicado (booleanas; van antes de METADATOS): no cambian ningún valor
+MARCAS = ["_razon_social_es_pais"]
 
 TABLAS_OCDS = ("awards", "contracts", "parties")
 MAX_FILAS_CABECERA = 30
@@ -566,22 +573,63 @@ def filas_spreadsheetml(ruta):
     return hojas
 
 
+# Bytes 0x80-0xFF de un HTML que no es UTF-8, como texto: los de cp1252 (0x80 '€', 0x93 '“'...; los que
+# cp1252 no define quedan como en latin-1) y 0xA4, que es '€' y no '¤'. Los .xls del Gobierno declaran
+# ISO-8859-1, pero escriben el euro como en ISO-8859-15: 203 bytes 0xA4 en los 17 ficheros de 2018-2025
+# (sept. 2026), todos importes ('35,00 ¤/ Tn', '1.250 ¤/mes'). Solo 0xA4: los demás bytes que cambian
+# de ISO-8859-1 a -15 (´ ½ ¼ ¾ ¦ ¨ ¸) no aparecen en esos ficheros, y leídos como ISO-8859-15 un '´'
+# usado como apóstrofo saldría 'Ž'.
+_HTML_8BIT = {i: bytes([i]).decode("cp1252") for i in range(0x80, 0xA0)
+              if i not in (0x81, 0x8D, 0x8F, 0x90, 0x9D)}
+_HTML_8BIT[0xA4] = "€"
+
+
+def decodificar_html(datos):
+    """Texto de un .xls HTML: como decodificar() si es UTF-8 (o UTF-16 con BOM) y, si no, cp1252 con el
+    byte 0xA4 como '€' (_HTML_8BIT). Antes 0xA4 salía '¤' y, en los ficheros con algún byte que cp1252
+    no define (0x8D de 'VEHÃ\\x8dCULOS'), 0x80 salía como el carácter de control U+0080 y no '€'."""
+    if datos.startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff")):
+        return decodificar(datos)
+    try:
+        return datos.decode("utf-8")
+    except UnicodeDecodeError:
+        return datos.decode("latin-1").translate(_HTML_8BIT)
+
+
+def _celdas_html(celdas):
+    """Textos de unas celdas <td>/<th>; una celda con colspan=N ocupa N columnas."""
+    fila = []
+    for celda in celdas:
+        fila.append(celda.get_text(" ", strip=True) or None)
+        try:
+            fila.extend([None] * (int(celda.get("colspan") or 1) - 1))
+        except ValueError:
+            pass
+    return fila
+
+
 def filas_html(ruta):
-    """Tablas de un .xls que en realidad es HTML."""
+    """Tablas de un .xls que en realidad es HTML, fila a fila en el orden del fichero.
+
+    Cada <tr> es una fila, y también las celdas <th>/<td> que están en la tabla fuera de todo <tr>:
+    las seguidas forman una fila. Los .xls del Gobierno de Aragón (contratos, menores y encargos,
+    2018-2025) traen así la cabecera, 12 <TH> sueltas antes del primer <TR>; antes no se veían, la
+    primera fila de datos hacía de cabecera (las columnas se llamaban como sus valores, distintos cada
+    año) y ese contrato se perdía: uno por fichero."""
     from bs4 import BeautifulSoup
-    sopa = BeautifulSoup(decodificar(Path(ruta).read_bytes()), "html.parser")
+    sopa = BeautifulSoup(decodificar_html(Path(ruta).read_bytes()), "html.parser")
     hojas = []
     for n, tabla in enumerate(sopa.find_all("table"), 1):
-        filas = []
-        for tr in tabla.find_all("tr"):
-            fila = []
-            for celda in tr.find_all(["td", "th"]):
-                fila.append(celda.get_text(" ", strip=True) or None)
-                try:
-                    fila.extend([None] * (int(celda.get("colspan") or 1) - 1))
-                except ValueError:
-                    pass
-            filas.append(fila)
+        filas, suelta = [], None
+        for elemento in tabla.find_all(["tr", "td", "th"]):
+            if elemento.name == "tr":
+                filas.append(_celdas_html(elemento.find_all(["td", "th"])))
+                suelta = None
+            elif elemento.parent.name != "tr" and elemento.find_parent(["tr", "table"]) is tabla:
+                if suelta is None:          # celdas sueltas seguidas: una fila
+                    suelta = []
+                    filas.append(suelta)
+                suelta.extend(_celdas_html([elemento]))
         hojas.append((f"tabla{n}", filas))
     return hojas
 
@@ -797,15 +845,64 @@ def acumular_versiones(destino, entrada, leer, meta, resumen, retirado=False):
     return acumulado
 
 
+# ISO 3166-1 alfa-2 (códigos de país)
+CODIGOS_PAIS = frozenset("""
+AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV
+BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES
+ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE
+IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY
+MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU
+NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM
+SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE
+VG VI VN VU WF WS YE YT ZA ZM ZW""".split())
+
+
+def marcar_razon_social_pais(df):
+    """Registro de Contratos: _razon_social_es_pais=True en las filas cuya razon_social_adjudicatario
+    es un código de país ('ES', 'AT', 'NL'...) o el prefijo de país del NIF-IVA del propio adjudicatario
+    ('ATU' con 'ATU65728938'), y no el nombre. Así lo publica el portal: 11 filas de mayores, 40 de
+    menores y 19 de encargos en sept. 2026, igual en el CSV que en el JSON del mismo recurso y con el
+    CSV bien formado (ningún registro con campos de más o de menos); a veces el nombre va en
+    nif_adjudicatario ('ANDREAGUARIDORAMO') o el país en su lugar ('ESPAÑA'). No hay lectura que
+    recupere el nombre: se marca la fila y no se toca ningún valor. Sin esa columna (otras tablas) no
+    se añade nada."""
+    if "razon_social_adjudicatario" not in df.columns:
+        return df
+    nif = df["nif_adjudicatario"] if "nif_adjudicatario" in df.columns else pd.Series(None, index=df.index)
+
+    def es_pais(nombre, nif_adj):
+        nombre = "" if _es_nulo(nombre) else str(nombre).strip()
+        nif_adj = "" if _es_nulo(nif_adj) else str(nif_adj).strip().upper()
+        if nombre in CODIGOS_PAIS:
+            return True
+        return (2 <= len(nombre) <= 3 and nombre.isalpha() and nombre.isupper()
+                and nif_adj.startswith(nombre) and len(nif_adj) > len(nombre))
+
+    df = df.copy()
+    df["_razon_social_es_pais"] = [es_pais(a, b) for a, b in zip(df["razon_social_adjudicatario"], nif)]
+    return df
+
+
+def _es_nulo(valor):
+    try:
+        return valor is None or bool(pd.isna(valor))
+    except (TypeError, ValueError):
+        return False
+
+
 def escribir_parquet(frames, ruta, resumen):
-    """Une los DataFrames (unión de columnas), pone los metadatos al final y
-    escribe el parquet (todo texto salvo _en_ultima_descarga) sin machacar la
-    versión anterior (guardar_version)."""
+    """Une los DataFrames (unión de columnas), pone las marcas y los metadatos al
+    final y escribe el parquet (todo texto salvo _en_ultima_descarga y las
+    MARCAS, booleanas) sin machacar la versión anterior (guardar_version)."""
     df = pd.concat(frames, ignore_index=True, sort=False)
-    finales = METADATOS + list(COLUMNAS_META)
+    finales = MARCAS + METADATOS + list(COLUMNAS_META)
     orden = [c for c in df.columns if c not in finales] + [c for c in finales if c in df.columns]
     df = df[orden]
-    esquema = pa.schema([pa.field(str(c), pa.bool_() if c == "_en_ultima_descarga" else pa.string())
+    for marca in MARCAS:
+        if marca in df.columns:     # filas de un fichero sin la columna marcada: False
+            df[marca] = df[marca].eq(True)
+    booleanas = {"_en_ultima_descarga", *MARCAS}
+    esquema = pa.schema([pa.field(str(c), pa.bool_() if c in booleanas else pa.string())
                          for c in df.columns])
     tabla = pa.Table.from_pandas(df, schema=esquema, preserve_index=False)
     ruta.parent.mkdir(parents=True, exist_ok=True)
@@ -1041,7 +1138,7 @@ def generar_parquets_ckan(salida, manifiesto, resumen):
                     "_archivo_origen": clave, "_url_origen": entrada.get("url")}
             tablas = acumular_versiones(salida / clave, entrada, leer_tabular, meta, resumen,
                                         retirado=entrada.get("estado") == "retirado")
-            frames.extend(tablas.values())
+            frames.extend(marcar_razon_social_pais(df) for df in tablas.values())
         if frames:
             escribir_parquet(frames, salida / f"{clave_dataset}__{serie}.parquet", resumen)
 
