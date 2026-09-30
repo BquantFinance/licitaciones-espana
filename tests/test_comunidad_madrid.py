@@ -12,11 +12,16 @@ interaction is simulated:
 * ``descarga_contratacion_comunidad_madrid_v1.py``
   (contratos-publicos.comunidad.madrid): ``FakePortalCAM`` implements the flow
   described in the script docstring (antibot key in drupal-settings, search
-  that stores the filters in the session, maths CAPTCHA, completion form, CSV
-  export with a row cap) and filters its own records by the search params.
+  that stores the filters in the session and shows its count, maths CAPTCHA,
+  completion form, CSV export with a row cap) and filters its own records by
+  the search params, the contract date as measured on the portal (30-9-2026).
+  The date route is also run on the pages recorded from the real portal that
+  day (``fixtures/comunidad_madrid/``): portada, search pages, CAPTCHA and
+  completion forms and 36 records of the export of 15-5-2019.
 """
 
 import csv
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -28,7 +33,7 @@ import sys
 import time
 import warnings
 from contextlib import contextmanager, redirect_stdout
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2347,6 +2352,19 @@ def _fecha(txt):
     return datetime.strptime(txt, "%d-%m-%Y").date()
 
 
+def _medianoche_utc(dia):
+    return datetime(dia.year, dia.month, dia.day, tzinfo=timezone.utc)
+
+
+def _instante_contrato(r):
+    """When the portal stores the contract date of a record: most at local midnight (22:00
+    UTC of the day before, in summer), some at 00:00 UTC (measured on 30-9-2026)."""
+    dia = r.get("_contrato")
+    if dia is None:
+        return None
+    return _medianoche_utc(dia) - (timedelta(0) if r.get("_utc") else timedelta(hours=2))
+
+
 class FakeResponse:
     def __init__(self, status=200, text="", content=None, headers=None):
         self.status_code = status
@@ -2392,6 +2410,10 @@ class FakePortalCAM:
         self.busquedas = []
         self.fallar = lambda params: False
         self.vaciar = lambda params: False     # answer with the header only
+        # the export leaves out a record that the search counts
+        self.omitir = lambda params, registro: False
+        # the search page comes without its count (portal down or changed)
+        self.sin_recuento = lambda params: False
         self.cortar_en = None                  # the process dies before serving the Nth CSV
         self.servidos = 0
         self.servidas = []                     # searches whose CSV was served
@@ -2410,7 +2432,13 @@ class FakePortalCAM:
                 return FakeResponse(status=403, text="antibot")
             self.busqueda = dict(params)
             self.busquedas.append(dict(params))
-            return FakeResponse(text="<html><body>Resultados</body></html>")
+            if self.sin_recuento(params):
+                return FakeResponse(text="<html><body>Mantenimiento</body></html>")
+            # the count of the real page (see the recorded pages in fixtures/comunidad_madrid/)
+            n = len(self._coinciden(params))
+            cuerpo = (f'<div class="view-header">Mostrando 1 - {min(n, 10)} de {n}</div>' if n else
+                      '<div class="view-empty">NO EXISTEN RESULTADOS PARA LA BÚSQUEDA ACTUAL EN ESTE PORTAL</div>')
+            return FakeResponse(text=f"<html><body>{cuerpo}</body></html>")
         if url == cam.CSV_URL:
             self.n_captcha += 1
             a, b = 7 + self.n_captcha, 3
@@ -2464,13 +2492,18 @@ class FakePortalCAM:
                 raise _Corte()
             self.servidos += 1
             self.servidas.append(dict(self.busqueda))
-            filas = [] if self.vaciar(self.busqueda) else self._filtrar(self.busqueda)
+            filas = [] if self.vaciar(self.busqueda) else [
+                r for r in self._filtrar(self.busqueda) if not self.omitir(self.busqueda, r)]
             return FakeResponse(content=self._csv(filas), headers={
                 "Content-Type": "text/csv; charset=utf-8",
                 "Content-Disposition": 'attachment; filename="contratos.csv"'})
         return FakeResponse(status=404)
 
     def _filtrar(self, p):
+        return self._coinciden(p)[:self.tope]
+
+    def _coinciden(self, p):
+        """Every record the search finds (the export stops at the cap)."""
         out = []
         for r in self.registros:
             faceta = p.get("f[0]", "")
@@ -2493,8 +2526,20 @@ class FakePortalCAM:
                     continue
                 if p.get("createddate_1") and pub > _fecha(p["createddate_1"]):
                     continue
+            if p.get("ds_fecha_encargo") or p.get("ds_fecha_encargo_1"):
+                # «Fecha del contrato o encargo»: [D1 00:00 UTC, D2+1 00:00 UTC], both ends
+                # included (measured on 30-9-2026: the menores stored at 00:00 UTC of a boundary
+                # come in the two windows)
+                instante = _instante_contrato(r)
+                if instante is None:
+                    continue
+                if p.get("ds_fecha_encargo") and instante < _medianoche_utc(_fecha(p["ds_fecha_encargo"])):
+                    continue
+                if p.get("ds_fecha_encargo_1") and \
+                        instante > _medianoche_utc(_fecha(p["ds_fecha_encargo_1"]) + timedelta(days=1)):
+                    continue
             out.append(r)
-        return out[:self.tope]
+        return out
 
     @staticmethod
     def _csv(filas):
@@ -3276,3 +3321,482 @@ def test_cam_the_parquet_bytes_do_not_depend_on_how_pandas_chunks_a_column(cam_d
     assert cam.escribir_salidas([("x.csv", troceada)], columnas) == {
         "contratacion_comunidad_madrid_completo.csv": "sin_cambios",
         "contratacion_comunidad_madrid_completo.parquet": "sin_cambios"}
+
+
+# =============================================================================
+# COMUNIDAD DE MADRID — date route: menores by contract-date windows, no entity
+# =============================================================================
+FIXTURES_CAM = REPO_ROOT / "tests" / "fixtures" / "comunidad_madrid"
+HOY_CAM = date(2026, 9, 30)
+MESES_CAM = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+             "octubre", "noviembre", "diciembre"]
+GREGORIO, SANIDAD, CANAL = (ENTIDADES_CAM[v][1] for v in ("38", "5", "120"))
+# Entities that are no longer in the dropdown (names seen in the export of 15-5-2019)
+HISTORICA = "Hospital Ramón y Cajal"
+HISTORICA2 = "Gerencia de Atención Primaria"
+MAYO_2019 = "menores_fecha_20190501_20190531.csv"
+DIA3 = DIA2 + 86400
+
+
+def _pagina_real(nombre):
+    return gzip.decompress((FIXTURES_CAM / nombre).read_bytes()).decode("utf-8")
+
+
+def _muestra_real():
+    """36 records of the real export of 15-5-2019 (bytes as the portal served them; gzip, because the
+    repo ignores *.csv)."""
+    return gzip.decompress((FIXTURES_CAM / "portal_menores_20190515_muestra.csv.gz").read_bytes())
+
+
+def _fecha_cam(dia):
+    return f"{dia.day:02d} de {MESES_CAM[dia.month - 1]} del {dia.year}"
+
+
+def _menor(entidad, ref, contrato, utc=False, presupuesto=100.0, **campos):
+    """A menor as the portal exports it ('Entidad Adjudicadora' is the text of the column: a
+    dropdown entity or a historical one), with the day its contract date is stored."""
+    importe = f"{presupuesto:.2f}".replace(".", ",")
+    registro = {
+        "Tipo de Publicación": "Contratos menores", "Estado": "Resuelto", "Entidad Adjudicadora": entidad,
+        "Nº Expediente": f"EXP-{ref}", "Referencia": ref, "Título del contrato": f"Menor {ref}",
+        "Tipo de contrato": "Suministros", "Procedimiento de adjudicación": "Contrato menor",
+        "Presupuesto de licitación": importe, "Nº de ofertas": "", "Resultado": "Formalizado",
+        "NIF del adjudicatario": "B00000000", "Adjudicatario": "EMPRESA SL", "Fecha del contrato": _fecha_cam(contrato),
+        "Importe de adjudicación": importe, "Importe de las modificaciones": "", "Importe de las prórrogas": "",
+        "Importe de la liquidación": "", "_presupuesto": presupuesto, "_publicado": "", "_contrato": contrato,
+        "_utc": utc}
+    registro.update(campos)
+    return registro
+
+
+def _registros_fecha():
+    """Menores of dropdown entities (both routes find them) and of historical entities (only the date
+    route does), with the cases measured on the real portal."""
+    return [
+        _menor(GREGORIO, "3280482", date(2019, 5, 15)),
+        _menor(GREGORIO, "3280483", date(2019, 5, 16), utc=True),
+        _menor(SANIDAD, "D1729_37", date(2026, 9, 10)),
+        _menor(CANAL, "", date(2024, 2, 1), **{"Nº Expediente": "", "Título del contrato": "Reparación bomba"}),
+        _menor(HISTORICA, "3280490", date(2019, 5, 15)),
+        _menor(HISTORICA, "3280482", date(2019, 5, 20)),        # same Referencia as a Gregorio one: another record
+        _menor(HISTORICA, "3280491", date(2019, 5, 31)),
+        _menor(HISTORICA2, "3290001", date(2019, 6, 1), utc=True),   # 00:00 UTC of 1-6: May and June windows
+        _menor(HISTORICA2, "2500001", date(2014, 3, 1)),
+        _menor(HISTORICA2, "1800001", date(1899, 12, 31)),
+        _menor(HISTORICA2, "", date(2020, 1, 15), **{"Nº Expediente": "", "Título del contrato": "Sin referencia"}),
+    ]
+
+
+def _historicos(registros):
+    return [r for r in registros if r["Entidad Adjudicadora"] in (HISTORICA, HISTORICA2)]
+
+
+@pytest.fixture
+def portal_fechas():
+    p = FakePortalCAM(_registros_fecha(), tope=50000)
+    with patch.object(cam.requests, "Session", p.session):
+        yield p
+
+
+def _dia_fecha(cam_dirs, dia, menores=True):
+    """A run on day `dia` of both menores routes that asks for everything again."""
+    with patch.object(cam, "VIGENCIA_HORAS", 0):
+        d = cam.DescargadorComunidadMadrid()
+        if menores:
+            d.descargar_menores()
+        entera = d.descargar_menores_por_fecha(HOY_CAM)
+    _sellar(cam_dirs / "csv_originales", dia)
+    _sellar(cam_dirs / "csv_originales" / cam.CARPETA_FECHA, dia)
+    return d, entera
+
+
+def _anotadas(cam_dirs):
+    return json.loads((cam_dirs / "csv_originales" / cam.CARPETA_FECHA / cam.COMPROBACIONES).read_text(encoding="utf-8"))
+
+
+def _de_la_ventana(busqueda):
+    return busqueda.get("ds_fecha_encargo"), busqueda.get("ds_fecha_encargo_1")
+
+
+def test_cam_date_windows_cover_every_day_once_and_in_order():
+    ventanas = cam.ventanas_fecha(HOY_CAM)
+    assert ventanas[0][:2] == (date(1800, 1, 1), date(2014, 12, 31))
+    assert ventanas[1] == (date(2015, 1, 1), date(2015, 1, 31), "menores_fecha_20150101_20150131.csv")
+    assert ventanas[-2][:2] == (date(2026, 9, 1), date(2026, 9, 30))
+    assert ventanas[-1] == (date(2026, 10, 1), date(2099, 12, 31), cam.VENTANA_POSTERIORES)
+    assert len(ventanas) == 1 + 11 * 12 + 9 + 1
+    for (_, hasta, _), (desde, _, _) in zip(ventanas, ventanas[1:]):
+        assert desde == hasta + timedelta(days=1)
+    assert cam.mitades_ventana(date(2019, 5, 1), date(2019, 5, 31)) == [
+        (date(2019, 5, 1), date(2019, 5, 16)), (date(2019, 5, 17), date(2019, 5, 31))]
+    assert cam.mitades_ventana(date(2019, 5, 14), date(2019, 5, 15)) == [
+        (date(2019, 5, 14), date(2019, 5, 14)), (date(2019, 5, 15), date(2019, 5, 15))]
+    assert cam.mitades_ventana(date(2019, 5, 14), date(2019, 5, 14)) is None
+    assert cam.rango_de_ventana(MAYO_2019) == (date(2019, 5, 1), date(2019, 5, 31))
+    assert cam.rango_de_ventana(cam.VENTANA_POSTERIORES) is None
+
+
+# --- the pages recorded from the real portal (30-9-2026) ---------------------------------------
+def test_cam_count_is_read_from_the_real_search_pages():
+    assert cam.recuento_portal(_pagina_real("portal_menores_contrato_2019.html.gz")) == 473356
+    assert cam.recuento_portal(_pagina_real("portal_un_resultado.html.gz")) == 1
+    assert cam.recuento_portal(_pagina_real("portal_sin_resultados.html.gz")) == 0
+    assert cam.recuento_portal(_pagina_real("portal_portada_20260930.html.gz")) == 4872085
+    # a page without count (the CAPTCHA form, or the portal down) is not a zero
+    assert cam.recuento_portal(_pagina_real("portal_exportar_captcha.html.gz")) is None
+    assert cam.recuento_portal("<html><body>Mantenimiento</body></html>") is None
+
+
+def test_cam_records_of_the_real_export_are_not_its_lines(tmp_path):
+    ruta = tmp_path / "menores_fecha_20190515_20190515.csv"
+    ruta.write_bytes(_muestra_real())
+    assert ruta.read_bytes().count(b"\n") == 42          # header + 36 records, 3 of them in several lines
+    assert cam.registros_de_csv(ruta) == 36
+    df, avisos = cam.leer_csv(ruta)
+    assert len(df) == 36 and set(df["Tipo de Publicación"]) == {"Contratos menores"} and avisos == []
+    assert int(df["Título del contrato"].str.contains("\n").sum()) == 3
+
+
+class _SesionReal:
+    """Serves the pages recorded from the real portal on 30-9-2026: the portada, the search page with
+    its count set to `recuento`, the CAPTCHA form ('3 + 2 ='), the completion form and `csv`."""
+
+    COMPLETION = cam.BASE_URL + "/buscador-contratos/csv/completion"
+
+    def __init__(self, recuento, csv_bytes):
+        self.headers, self.cookies = {}, _Cookies()
+        self.csv = csv_bytes
+        self.pedidas = []
+        self.busqueda = _pagina_real("portal_menores_contrato_2019.html.gz").replace(
+            "Mostrando 1 - 10 de 473356", f"Mostrando 1 - 10 de {recuento}")
+
+    def get(self, url, params=None, timeout=None):
+        self.pedidas.append(("GET", url, dict(params or {})))
+        if url == cam.BUSCAR_URL:
+            return FakeResponse(text=self.busqueda if params else _pagina_real("portal_portada_20260930.html.gz"))
+        if url == cam.CSV_URL:
+            return FakeResponse(text=_pagina_real("portal_exportar_captcha.html.gz"))
+        return FakeResponse(status=404)
+
+    def post(self, url, data=None, timeout=None):
+        self.pedidas.append(("POST", url, dict(data or {})))
+        if url == cam.CSV_URL:
+            return FakeResponse(text=_pagina_real("portal_exportar_completion.html.gz"))
+        if url == self.COMPLETION:
+            return FakeResponse(content=self.csv, headers={"Content-Type": "text/csv; charset=UTF-8",
+                                                           "Content-Disposition": 'attachment; filename="c.csv"'})
+        return FakeResponse(status=404)
+
+
+def test_cam_the_real_portada_gives_the_antibot_key_and_the_126_entities():
+    sesion = _SesionReal(36, b"")
+    with patch.object(cam.requests, "Session", lambda: sesion):
+        d = cam.DescargadorComunidadMadrid()
+        assert d._obtener_antibot_key() == "DtR_2MqPE2LmFYZrQ9G0agTdO_g7TdfklZBss7YIXKQ"
+    assert len(d.entidades) == 126
+    assert ("88", "---- Hospital Universitario Ramón y Cajal") in d.entidades
+    # the name of 2019 is not an option: its menores only come by the date route
+    assert HISTORICA not in {texto.lstrip("- ") for _, texto in d.entidades}
+
+
+@pytest.mark.parametrize("recuento", [36, 37], ids=["matches", "one_missing"])
+def test_cam_a_day_window_through_the_real_pages(cam_dirs, recuento):
+    muestra = _muestra_real()
+    sesion = _SesionReal(recuento, muestra)
+    nombre = cam.nombre_csv_ventana(date(2019, 5, 15), date(2019, 5, 15))
+    with patch.object(cam.requests, "Session", lambda: sesion):
+        d = cam.DescargadorComunidadMadrid()
+        assert d._ventana(date(2019, 5, 15), date(2019, 5, 15), nombre)
+
+    busquedas = [p for m, u, p in sesion.pedidas if m == "GET" and u == cam.BUSCAR_URL and p]
+    assert {(b["ds_fecha_encargo"], b["ds_fecha_encargo_1"], b["entidad_adjudicadora"], b["f[0]"],
+             b["antibot_key"]) for b in busquedas} == {
+        ("15-05-2019", "15-05-2019", "All", "tipo_publicacion:Contratos Menores",
+         "DtR_2MqPE2LmFYZrQ9G0agTdO_g7TdfklZBss7YIXKQ")}
+    captcha = [p for m, u, p in sesion.pedidas if m == "POST" and u == cam.CSV_URL]
+    assert {(p["captcha_response"], p["captcha_sid"], p["form_id"]) for p in captcha} == {
+        ("5", "230321", "pcon_contratos_menores_export_results_form")}
+    fp = cam_dirs / "csv_originales" / cam.CARPETA_FECHA / nombre
+    anotada = _anotadas(cam_dirs)[nombre]
+    assert (anotada["filas"], anotada["recuento"]) == (36, recuento)
+    # the first copy of a window can be kept even if incomplete: there is nothing it could withdraw
+    assert fp.read_bytes() == muestra
+    if recuento == 36:
+        assert len(busquedas) == 1 and anotada["resultado"] == "nuevo" and "comprobado" in anotada
+        assert d.hojas_fecha[nombre][0] == "completa"
+    else:
+        # asked MAX_REINTENTOS times, then marked incomplete: asked again in the next run
+        assert len(busquedas) == cam.MAX_REINTENTOS
+        assert anotada["resultado"] == "incompleta" and "comprobado" not in anotada
+        assert d.hojas_fecha[nombre][0] == "incompleta" and d.stats["incompletas"] == 1
+
+
+# --- the date route against the simulated portal -----------------------------------------------
+def test_cam_the_date_route_adds_only_what_the_entity_route_misses(cam_dirs, portal_fechas):
+    carpeta = cam_dirs / "csv_originales" / cam.CARPETA_FECHA
+    d = cam.DescargadorComunidadMadrid()
+    d.descargar_menores()
+    cam.unificar_csvs()
+    sin = _tabla(cam_dirs)
+    assert d.descargar_menores_por_fecha(HOY_CAM)
+    resumen = cam.unificar_csvs()
+    con = _tabla(cam_dirs)
+
+    # what the entity route downloads comes out identical (values, marks, dates and order)...
+    assert list(con.columns) == list(sin.columns)
+    assert con.iloc[:len(sin)].equals(sin)
+    # ...and each menor of the historical entities is added once, at the end, present
+    anadidas = con.iloc[len(sin):]
+    assert sorted(_filas(anadidas)) == _esperado(_historicos(portal_fechas.registros))
+    assert set(anadidas["_en_ultima_descarga"]) == {"True"}
+    assert set(anadidas["_archivo_fuente"]) <= {n for _, _, n in cam.ventanas_fecha(HOY_CAM)}
+    assert sorted(_filas(con)) == _esperado(portal_fechas.registros)      # every menor, once
+    presentes = con[(con["_en_ultima_descarga"] == "True") & (con["Referencia"] != "")]
+    assert not presentes.duplicated(["Referencia", "Entidad Adjudicadora"]).any()
+    assert resumen["via_fecha"] == {
+        "csv": 6, "filas_leidas": 12, "clave_en_via_entidad": 3, "contenido_en_via_entidad": 1, "repetidas": 1,
+        "sustituidas_en_via_entidad": 0, "versiones_anteriores": 0, "anadidas": 7}
+    # the menor stored at 00:00 UTC of 1-6-2019 came in the May and June windows
+    for nombre in (MAYO_2019, "menores_fecha_20190601_20190630.csv"):
+        assert "3290001" in (carpeta / nombre).read_text(encoding="utf-8-sig")
+    # the entity route neither sees nor archives the date route's files
+    assert not list((cam_dirs / "csv_originales").glob("menores_fecha_*"))
+    anotadas = _anotadas(cam_dirs)
+    assert (anotadas[MAYO_2019]["recuento"], anotadas[MAYO_2019]["filas"]) == (6, 6)
+    assert anotadas[cam.VENTANA_POSTERIORES]["resultado"] == "vacio"
+    assert d.hojas_fecha[MAYO_2019][0] == "completa"
+
+
+def test_cam_a_menor_changed_between_the_two_routes_is_still_one_row(cam_dirs, portal_fechas):
+    d = cam.DescargadorComunidadMadrid()
+    d.descargar_menores()
+    cam.unificar_csvs()
+    sin = _tabla(cam_dirs)
+    registro = next(r for r in portal_fechas.registros
+                    if r["Referencia"] == "3280482" and r["Entidad Adjudicadora"] == GREGORIO)
+    anterior = dict(registro)
+    registro["Importe de adjudicación"] = "999,99"      # the portal changes it between the two routes
+    d.descargar_menores_por_fecha(HOY_CAM)
+    cam.unificar_csvs()
+    con = _tabla(cam_dirs)
+
+    assert con.iloc[:len(sin)].equals(sin)
+    gregorio = con[(con["Referencia"] == "3280482") & (con["Entidad Adjudicadora"] == GREGORIO)]
+    assert _filas(gregorio) == [_fila(anterior)]          # the entity route's, once
+    assert "999,99" in (cam_dirs / "csv_originales" / cam.CARPETA_FECHA / MAYO_2019).read_text(encoding="utf-8-sig")
+
+
+def test_cam_a_window_that_does_not_match_the_count_withdraws_nothing(cam_dirs, portal_fechas):
+    carpeta = cam_dirs / "csv_originales" / cam.CARPETA_FECHA
+    _dia_fecha(cam_dirs, DIA1)
+    mayo = carpeta / MAYO_2019
+    # day 2: the export leaves out a menor that the search counts, and the portal withdraws another one
+    omitido = ("3280490", HISTORICA)
+    portal_fechas.omitir = lambda p, r: (r["Referencia"], r["Entidad Adjudicadora"]) == omitido
+    retirado = next(r for r in portal_fechas.registros if r["Referencia"] == "3280491")
+    portal_fechas.registros.remove(retirado)
+    _, entera = _dia_fecha(cam_dirs, DIA2)
+    cam.unificar_csvs()
+    df = _tabla(cam_dirs).set_index(["Referencia", "Entidad Adjudicadora"])
+
+    assert entera
+    anotadas = _anotadas(cam_dirs)
+    # May did not match: split down to the day of the omitted menor (stored at 22:00 UTC of 14-5)
+    assert (anotadas[MAYO_2019]["resultado"], anotadas[MAYO_2019]["motivo"]) == ("partido", "incompleta")
+    dia = "menores_fecha_20190514_20190514.csv"
+    assert anotadas[dia]["resultado"] == "incompleta" and "comprobado" not in anotadas[dia]
+    assert (anotadas[dia]["filas"], anotadas[dia]["recuento"]) == (1, 2)
+    # the May copy of day 1 is kept (a window that covers it is incomplete): nothing is withdrawn
+    assert mayo.exists()
+    assert df.loc[omitido, "_en_ultima_descarga"] == "True"
+    assert df.loc[("3280491", HISTORICA), "_en_ultima_descarga"] == "True"
+
+    # day 3: the export is whole again. May's copy is replaced by its windows, and only what the portal
+    # really withdrew is withdrawn
+    portal_fechas.omitir = lambda p, r: False
+    _dia_fecha(cam_dirs, DIA3)
+    cam.unificar_csvs()
+    df = _tabla(cam_dirs)
+    assert not mayo.exists()
+    assert [p.name for p in (carpeta / "_historico").glob("menores_fecha_20190501_20190531__*.csv")]
+    assert _anotadas(cam_dirs)[dia]["resultado"] == "nuevo" or _anotadas(cam_dirs)[dia]["resultado"] == "actualizado"
+    presentes = df[df["_en_ultima_descarga"] == "True"]
+    assert sorted(_filas(presentes)) == _esperado(portal_fechas.registros)
+    assert _filas(df[df["_en_ultima_descarga"] == "False"]) == [_fila(retirado)]
+    assert sorted(_filas(df)) == _esperado(portal_fechas.registros + [retirado])     # each once
+
+
+def test_cam_an_incomplete_day_never_replaces_a_copy_it_would_shrink(cam_dirs, portal_fechas):
+    carpeta = cam_dirs / "csv_originales" / cam.CARPETA_FECHA
+    nombre = "menores_fecha_20190514_20190514.csv"
+    dia = (date(2019, 5, 14), date(2019, 5, 14))
+    with patch.object(cam, "VIGENCIA_HORAS", 0):
+        d = cam.DescargadorComunidadMadrid()
+        assert d._ventana(*dia, nombre) and d.hojas_fecha[nombre][0] == "completa"
+        antes = (carpeta / nombre).read_bytes()
+        portal_fechas.omitir = lambda p, r: r["Referencia"] == "3280490"
+        d = cam.DescargadorComunidadMadrid()
+        d.comprobaciones_fecha = cam.leer_comprobaciones(carpeta)
+        assert d._ventana(*dia, nombre) and d.hojas_fecha[nombre][0] == "incompleta"
+    assert (carpeta / nombre).read_bytes() == antes
+    assert not (carpeta / "_historico").exists()
+
+
+def test_cam_a_window_at_the_cap_is_split_without_exporting_it(cam_dirs, portal_fechas):
+    # 6 menores in May 2019 and a (scaled-down) cap of 6: the count says it would be truncated
+    portal_fechas.tope = 6
+    with patch.object(cam, "UMBRAL_TRUNCADO", 6):
+        _dia_fecha(cam_dirs, DIA1)
+        cam.unificar_csvs()
+        servidas = [_de_la_ventana(b) for b in portal_fechas.servidas]
+        assert ("01-05-2019", "31-05-2019") not in servidas
+        assert ("01-05-2019", "16-05-2019") in servidas and ("17-05-2019", "31-05-2019") in servidas
+        anotadas = _anotadas(cam_dirs)
+        assert (anotadas[MAYO_2019]["resultado"], anotadas[MAYO_2019]["motivo"]) == ("partido", "tope")
+        assert anotadas[MAYO_2019]["recuento"] == 6
+        # the next run goes straight to the halves: May is not asked again
+        portal_fechas.busquedas = []
+        _dia_fecha(cam_dirs, DIA2, menores=False)
+        assert ("01-05-2019", "31-05-2019") not in {_de_la_ventana(b) for b in portal_fechas.busquedas}
+    assert sorted(_filas(_tabla(cam_dirs))) == _esperado(portal_fechas.registros)
+
+
+def test_cam_a_window_that_grows_past_the_cap_replaces_its_copy_by_its_halves(cam_dirs, portal_fechas):
+    carpeta = cam_dirs / "csv_originales" / cam.CARPETA_FECHA
+    portal_fechas.tope = 6
+    with patch.object(cam, "UMBRAL_TRUNCADO", 7):
+        _dia_fecha(cam_dirs, DIA1)            # May: 6 menores, one CSV
+        assert (carpeta / MAYO_2019).exists()
+        nuevo = _menor(HISTORICA, "3280499", date(2019, 5, 25))
+        portal_fechas.registros.append(nuevo)
+        _dia_fecha(cam_dirs, DIA2)            # 7: split; both halves arrive whole
+    cam.unificar_csvs()
+    df = _tabla(cam_dirs)
+    assert not (carpeta / MAYO_2019).exists()
+    assert sorted(_filas(df)) == _esperado(portal_fechas.registros)      # nothing lost, nothing twice
+    assert set(df["_en_ultima_descarga"]) == {"True"}
+    historico = df.set_index(["Referencia", "Entidad Adjudicadora"])
+    assert historico.loc[("3280490", HISTORICA), "_primera_descarga"] == _iso(DIA1)
+    assert historico.loc[("3280499", HISTORICA), "_primera_descarga"] == _iso(DIA2)
+
+
+def test_cam_the_date_route_resumes_where_it_was_cut(cam_dirs, portal_fechas):
+    d = cam.DescargadorComunidadMadrid()
+    d.descargar_menores()
+    portal_fechas.servidas, portal_fechas.servidos, portal_fechas.cortar_en = [], 0, 3
+    with pytest.raises(_Corte):
+        cam.DescargadorComunidadMadrid().descargar_menores_por_fecha(HOY_CAM)
+    antes = {_de_la_ventana(b) for b in portal_fechas.servidas}
+    assert len(antes) == 3
+    portal_fechas.busquedas, portal_fechas.servidas, portal_fechas.cortar_en = [], [], None
+    assert cam.DescargadorComunidadMadrid().descargar_menores_por_fecha(HOY_CAM)
+    buscadas = {_de_la_ventana(b) for b in portal_fechas.busquedas}
+    # what was checked before the cut is not asked again (also the windows without menores)
+    assert not antes & buscadas
+    assert ("01-01-1800", "31-12-2014") not in buscadas
+    cam.unificar_csvs()
+    assert sorted(_filas(_tabla(cam_dirs))) == _esperado(portal_fechas.registros)
+
+
+def test_cam_an_entity_row_withdrawn_by_its_route_but_present_by_date_is_one_present_row(cam_dirs, portal_fechas):
+    _dia_fecha(cam_dirs, DIA1)
+    # day 2: Sanidad leaves the dropdown (its CSV is archived), but the portal still publishes its menores
+    portal_fechas.entidades = {"38": ENTIDADES_CAM["38"], "120": ENTIDADES_CAM["120"]}
+    _dia_fecha(cam_dirs, DIA2)
+    assert not (cam_dirs / "csv_originales" / cam.nombre_csv_entidad(5, ENTIDADES_CAM["5"][0])).exists()
+    cam.unificar_csvs()
+    df = _tabla(cam_dirs)
+    sanidad = df[df["Entidad Adjudicadora"] == SANIDAD]
+    assert len(sanidad) == 1
+    # the present copy (the date route's; the same bytes on day 2 do not make a new version)
+    assert sanidad.iloc[0][["_archivo_fuente", "_en_ultima_descarga", "_primera_descarga", "_ultima_descarga"]
+                           ].tolist() == ["menores_fecha_20260901_20260930.csv", "True", _iso(DIA1), _iso(DIA1)]
+    assert sorted(_filas(df)) == _esperado(portal_fechas.registros)
+
+
+def test_cam_a_key_present_in_two_windows_with_different_content_is_present_once(cam_dirs):
+    csv_dir = cam_dirs / "csv_originales"
+    carpeta = csv_dir / cam.CARPETA_FECHA
+    carpeta.mkdir()
+    base = _menor(GREGORIO, "1", date(2019, 5, 15))
+    (csv_dir / "menores_ent038_gregorio.csv").write_bytes(FakePortalCAM._csv([base]))
+    viejo = _menor(HISTORICA, "7", date(2019, 5, 31))
+    nuevo = dict(viejo, **{"Importe de adjudicación": "5,00"})
+    igual = _menor(HISTORICA, "8", date(2019, 6, 1), utc=True)
+    (carpeta / MAYO_2019).write_bytes(FakePortalCAM._csv([viejo, igual]))
+    (carpeta / "menores_fecha_20190601_20190630.csv").write_bytes(FakePortalCAM._csv([nuevo, igual]))
+    os.utime(carpeta / MAYO_2019, (DIA1, DIA1))
+    os.utime(carpeta / "menores_fecha_20190601_20190630.csv", (DIA2, DIA2))
+    resumen = cam.unificar_csvs()
+    df = _tabla(cam_dirs)
+    siete = df[df["Referencia"] == "7"]
+    assert _filas(siete) == [_fila(viejo), _fila(nuevo)]
+    assert siete["_en_ultima_descarga"].tolist() == ["False", "True"]      # the most recent one stays
+    assert len(df[df["Referencia"] == "8"]) == 1
+    assert resumen["via_fecha"]["versiones_anteriores"] == 1 and resumen["via_fecha"]["repetidas"] == 1
+
+
+def test_cam_the_date_route_stops_when_the_portal_gives_no_count(cam_dirs, portal_fechas):
+    portal_fechas.sin_recuento = lambda p: "ds_fecha_encargo" in p
+    d = cam.DescargadorComunidadMadrid()
+    assert d.descargar_menores_por_fecha(HOY_CAM) is False
+    fechas = [b for b in portal_fechas.busquedas if "ds_fecha_encargo" in b]
+    assert len(fechas) == cam.FALLOS_SEGUIDOS_MAX * cam.MAX_REINTENTOS
+    assert d.stats["error"] == cam.FALLOS_SEGUIDOS_MAX and not portal_fechas.servidas
+    carpeta = cam_dirs / "csv_originales" / cam.CARPETA_FECHA
+    assert [p.name for p in carpeta.iterdir()] == [cam.COMPROBACIONES]
+    assert {e["resultado"] for e in _anotadas(cam_dirs).values()} == {"error"}
+
+
+def test_cam_without_date_route_files_the_table_is_the_same(cam_dirs, portal_fechas):
+    cam.DescargadorComunidadMadrid().descargar_menores()
+    cam.unificar_csvs()
+    salidas = cam_dirs / "contratacion_comunidad_madrid_completo.csv", cam_dirs / "contratacion_comunidad_madrid_completo.parquet"
+    antes = [p.read_bytes() for p in salidas]
+    carpeta = cam_dirs / "csv_originales" / cam.CARPETA_FECHA
+    carpeta.mkdir()
+    (carpeta / cam.COMPROBACIONES).write_text("{}", encoding="utf-8")
+    resumen = cam.unificar_csvs()
+    assert resumen["via_fecha"] is None
+    assert set(resumen["salidas"].values()) == {"sin_cambios"}
+    assert [p.read_bytes() for p in salidas] == antes
+
+
+def test_cam_cli_fechas_runs_only_the_date_route(tmp_path):
+    portal = FakePortalCAM(_registros_fecha(), tope=50000)
+    with _cli(tmp_path, portal, ["fechas"]) as carpeta:
+        pass
+    csv_dir = carpeta / "csv_originales"
+    assert not list(csv_dir.glob("menores_ent*"))
+    assert {b.get("entidad_adjudicadora") for b in portal.busquedas} == {"All"}
+    assert (csv_dir / cam.CARPETA_FECHA / MAYO_2019).exists()
+
+
+def test_cam_cli_todo_includes_the_date_route(tmp_path):
+    portal = FakePortalCAM(_registros_fecha(), tope=50000)
+    with _cli(tmp_path, portal, ["todo", "2024", "2024"]) as carpeta:
+        pass
+    with _cli(tmp_path, portal, ["unificar"]):
+        pass
+    df = _tabla(carpeta)
+    assert sorted(_filas(df)) == _esperado(portal.registros)
+
+
+def test_cam_an_incomplete_day_without_records_is_never_saved(cam_dirs, portal_fechas):
+    portal_fechas.vaciar = lambda p: True            # the portal counts menores but exports only the header
+    nombre = "menores_fecha_20190514_20190514.csv"
+    d = cam.DescargadorComunidadMadrid()
+    assert d._ventana(date(2019, 5, 14), date(2019, 5, 14), nombre)
+    assert d.hojas_fecha[nombre][0] == "incompleta"
+    assert not (cam_dirs / "csv_originales" / cam.CARPETA_FECHA / nombre).exists()
+    assert (_anotadas(cam_dirs)[nombre]["filas"], _anotadas(cam_dirs)[nombre]["recuento"]) == (0, 2)
+
+
+def test_cam_a_failure_of_the_date_route_does_not_stop_todo(cam_dirs, portal_fechas):
+    d = cam.DescargadorComunidadMadrid()
+    with patch.object(cam, "ventanas_fecha", side_effect=RuntimeError("fallo inesperado")):
+        d.descargar_todo(2024, 2024)
+    # the entity route and the other types ran; the error is counted
+    assert {b["entidad_adjudicadora"] for b in portal_fechas.busquedas} >= {"38", "5", "120"}
+    assert any(b.get("f[0]") == f"tipo_publicacion:{cam.TIPOS_NO_MENORES[0]}" for b in portal_fechas.busquedas)
+    assert d.stats["error"] == 1
