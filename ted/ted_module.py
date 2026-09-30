@@ -192,6 +192,11 @@ class TEDConfig:
     # ha cambiado) deja el año sin guardar: guardarlo todo sin XML sería peor
     XML_FALLOS_TOLERADOS = 20
     XML_FALLOS_FRACCION = 0.001
+    # Un 404 (el aviso no tiene XML) no cuenta para ese umbral, salvo que den 404 al menos tantos
+    # y más de la mitad de los pedidos: una URL que ha cambiado
+    XML_404_MASIVO_MIN = 50
+    # Espera máxima antes de un reintento, también con un Retry-After mayor (sin pasar del presupuesto)
+    XML_ESPERA_MAX_S = 120
     # Presupuesto de tiempo por ejecución para pedir XML: al agotarse se deja de pedir y la siguiente
     # ejecución sigue (lo descargado queda en disco). Con el listado de la API y el consolidado, la
     # ejecución no pasa de ~10,5 h: el cerrojo global de ejecutar_fuente.sh espera como mucho 12 h
@@ -1441,11 +1446,14 @@ def _extract_multilang_name(name_dict):
 # ganan no son filas (siguen en el XML guardado). Un grupo de empresas (UTE sin
 # constituir) va en una fila con los miembros unidos por '---' (el líder
 # primero), como en el CSV de 2006-2023.
-# Excepción medida (5 de 1.403 adjudicatarias en 525 avisos reales): un resultado
+# Excepción medida (4 de 1.402 adjudicatarias en 525 avisos reales): un resultado
 # 'selec-w' con una sola oferta descrita y su propio contrato, cuando ese
-# contrato cita otra oferta de la MISMA empresa (el publicador enlazó el
-# contrato del lote 8 con la oferta del lote 5: 536696-2026). Esa oferta es la
-# ganadora, con ganadora_por='contrato del resultado' (si no, 'contrato').
+# contrato solo cita ofertas de OTRO lote y alguna de la MISMA empresa (el
+# publicador enlazó el contrato del lote 8 con la oferta del lote 5:
+# 536696-2026). Esa oferta es la ganadora, con ganadora_por='contrato del
+# resultado' (si no, 'contrato'). Si el contrato cita una oferta del mismo lote,
+# la ganadora es esa y la otra no (543120-2026: dos resultados del lote 3 citan
+# el mismo contrato, que cita una sola oferta).
 
 _NS_EFORMS = {
     'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
@@ -1490,7 +1498,7 @@ _COLUMNAS_API = [
     'tender_id', 'ganadora_por', 'tender_reference', 'tender_rank', 'tender_value', 'tender_value_cur',
     'subcontracting_value', 'subcontracting_value_cur', 'paid_amount', 'paid_amount_cur',
     'penalties_amount', 'penalties_amount_cur', 'tendering_party_name',
-    'win_name', 'win_nationalid', 'win_country', 'win_town', 'win_size',
+    'win_name', 'win_nationalid', 'win_platform_id', 'win_country', 'win_town', 'win_size',
     # Contrato que cita la oferta (XML)
     'contract_id', 'dt_award', 'contract_award_dates', 'contract_conclusion_date', 'contract_title',
     'contract_framework',
@@ -1534,14 +1542,24 @@ def _en_castellano(e, ruta):
     return valores[0][1] if valores else ''
 
 
+def _es_id_plataforma(esquema):
+    """Identificador interno de la plataforma de contratación (schemeName ID_PLATAFORMA o
+    ID_UTE_TEMP_PLATAFORMA: la PLACSP numera así sus perfiles y las UTE sin NIF). No es un NIF."""
+    return 'PLATAFORMA' in (esquema or '').upper()
+
+
 def _id_organizacion(ids):
-    """Identificador de una organización (BT-501, puede haber varios: 'ID_PLATAFORMA' y 'NIF'):
-    el que tiene forma de NIF (9 caracteres con letra al principio o al final), si no el primero.
-    Nunca el identificador técnico del aviso (ORG-0001)."""
-    for v in ids:
+    """(identificador, ids de la plataforma) de una organización a partir de sus BT-501, que pueden
+    ser varios [(schemeName, valor)]: el que tiene forma de NIF (9 caracteres con letra al principio
+    o al final) o, si ninguno la tiene, el primero, sin contar los internos de la plataforma, que van
+    aparte (win_platform_id): una UTE con solo el número de la plataforma queda sin NIF. Nunca el
+    identificador técnico del aviso (ORG-0001)."""
+    propios = [v for esquema, v in ids if not _es_id_plataforma(esquema)]
+    plataforma = [v for esquema, v in ids if _es_id_plataforma(esquema)]
+    for v in propios:
         if len(v) == 9 and (v[0].isalpha() or v[-1].isalpha()):
-            return v
-    return ids[0] if ids else ''
+            return v, plataforma
+    return (propios[0] if propios else ''), plataforma
 
 
 def _parse_eforms(contenido):
@@ -1556,9 +1574,13 @@ def _parse_eforms(contenido):
         emp = org.find('efac:Company', _NS_EFORMS)
         if emp is None:
             continue
+        nif, de_plataforma = _id_organizacion(
+            [(x.get('schemeName', ''), x.text.strip())
+             for x in emp.findall('cac:PartyLegalEntity/cbc:CompanyID', _NS_EFORMS) if x.text and x.text.strip()])
         orgs[_txt(emp, 'cac:PartyIdentification/cbc:ID')] = {
             'name': _en_castellano(emp, 'cac:PartyName/cbc:Name'),
-            'id': _id_organizacion(_textos(emp, 'cac:PartyLegalEntity/cbc:CompanyID')),
+            'id': nif,
+            'platform_id': ';'.join(de_plataforma),
             'country': _txt(emp, 'cac:PostalAddress/cac:Country/cbc:IdentificationCode'),
             'town': _txt(emp, 'cac:PostalAddress/cbc:CityName'),
             'size': _txt(emp, 'efbc:CompanySizeCode'),
@@ -1604,6 +1626,7 @@ def _parse_eforms(contenido):
             **_importe('paid_amount', t, 'efac:AggregatedAmounts/cbc:PaidAmount'),
             **_importe('penalties_amount', t, 'efac:AggregatedAmounts/efbc:PenaltiesAmount'),
             '_parte': _txt(t, 'efac:TenderingParty/cbc:ID'),
+            '_lote': _txt(t, 'efac:TenderLot/cbc:ID'),
         }
     partes = {}
     for p in nr.findall('efac:TenderingParty', _NS_EFORMS):
@@ -1654,10 +1677,13 @@ def _parse_eforms(contenido):
         if estado not in _SIN_GANADOR:
             # La ganadora es la oferta que cita un contrato (BT-3202)
             ganadoras = [t for t in descritas if t in contratos_de_oferta]
-            if not ganadoras and estado == 'selec-w' and len(descritas) == 1 and empresas(descritas[0]) \
-                    and any(empresas(t) == empresas(descritas[0])
-                            for c in del_resultado for t in ofertas_de_contrato.get(c, [])):
-                ganadoras, por = descritas, 'contrato del resultado'
+            if not ganadoras and estado == 'selec-w' and len(descritas) == 1 and empresas(descritas[0]):
+                # Su propio contrato cita solo ofertas de otro lote (de un lote conocido) y alguna de la
+                # misma empresa. Si cita una del mismo lote, la ganadora es esa (543120-2026)
+                citadas = [t for c in del_resultado for t in ofertas_de_contrato.get(c, [])]
+                if citadas and all(ofertas.get(t, {}).get('_lote', '') not in ('', lote) for t in citadas) \
+                        and any(empresas(t) == empresas(descritas[0]) for t in citadas):
+                    ganadoras, por = descritas, 'contrato del resultado'
         if not ganadoras:
             filas.append(base)   # resultado sin oferta ganadora: desierto, sin adjudicar, sin contrato...
             continue
@@ -1678,6 +1704,8 @@ def _parse_eforms(contenido):
             for campo, clave in (('win_name', 'name'), ('win_nationalid', 'id'), ('win_country', 'country'),
                                  ('win_town', 'town'), ('win_size', 'size')):
                 fila[campo] = '---'.join(m.get(clave, '') for m in miembros)
+            de_plataforma = [m.get('platform_id', '') for m in miembros]
+            fila['win_platform_id'] = '---'.join(de_plataforma) if any(de_plataforma) else ''
             for campo in ('contract_id', 'contract_conclusion_date', 'contract_title', 'contract_framework'):
                 fila[campo] = '---'.join(dict.fromkeys(c[campo] for c in cs if c[campo]))
             fechas = list(dict.fromkeys(c['dt_award'] for c in cs if c['dt_award']))
@@ -1826,6 +1854,16 @@ def _presupuesto_agotado():
     return time.monotonic() - _INICIO[0] > TEDConfig.XML_PRESUPUESTO_S
 
 
+def _esperar_reintento(segundos):
+    """Espera antes de reintentar, como mucho XML_ESPERA_MAX_S (también con un Retry-After mayor).
+    False, sin esperar, si la espera pasaría del presupuesto de tiempo."""
+    segundos = min(segundos, TEDConfig.XML_ESPERA_MAX_S)
+    if time.monotonic() + segundos - _INICIO[0] > TEDConfig.XML_PRESUPUESTO_S:
+        return False
+    time.sleep(segundos)
+    return True
+
+
 class _Ritmo:
     """Ritmo máximo común a varios hilos: como mucho `por_segundo` peticiones por segundo."""
 
@@ -1857,12 +1895,14 @@ def _obtener_xml(numero, ritmo, forzar=False):
         if _presupuesto_agotado():
             return 'pendiente', 'presupuesto de tiempo agotado'
         ritmo.esperar()
+        ultimo = intento + 1 == TEDConfig.XML_REINTENTOS
         try:
             codigo, contenido, cabeceras = _descargar_xml(url)
         except requests.exceptions.RequestException as e:
             detalle = f'red: {type(e).__name__}'
             log.debug(f"  XML {numero}: {e}")
-            time.sleep(5 * (intento + 1))
+            if not ultimo and not _esperar_reintento(5 * (intento + 1)):
+                return 'pendiente', 'presupuesto de tiempo agotado'
             continue
         if codigo == 200 and contenido and _es_xml_de_aviso(contenido):
             guardar_version(_ruta_xml(numero), gzip.compress(contenido, mtime=0))
@@ -1879,7 +1919,8 @@ def _obtener_xml(numero, ritmo, forzar=False):
             except (TypeError, ValueError):
                 espera = max(espera, 30)
         log.debug(f"  XML {numero}: {detalle}; nuevo intento en {espera:.0f} s")
-        time.sleep(espera)
+        if not ultimo and not _esperar_reintento(espera):
+            return 'pendiente', 'presupuesto de tiempo agotado'
     return 'error', detalle
 
 
@@ -1889,10 +1930,11 @@ def _xml_avisos(numeros, forzar=False):
 
     Devuelve ({número: (estado, detalle)}, completo). Un aviso sin XML (404 o error) se guarda con
     una fila de los datos del aviso y el motivo en _xml_eforms, y se vuelve a pedir en la siguiente
-    ejecución: unos pocos no impiden guardar el año. completo=False (el año no se guarda; lo ya
-    descargado queda en disco y la siguiente ejecución sigue) si se agota el presupuesto de tiempo
-    o si fallan más de XML_FALLOS_TOLERADOS + XML_FALLOS_FRACCION de los avisos (TED caído o una
-    URL que ha cambiado: guardar todo sin XML sería peor)."""
+    ejecución: unos pocos no impiden guardar el año, y un 404 (el aviso no tiene XML) no cuenta.
+    completo=False (el año no se guarda; lo ya descargado queda en disco y la siguiente ejecución
+    sigue) si se agota el presupuesto de tiempo, si fallan por error más de XML_FALLOS_TOLERADOS +
+    XML_FALLOS_FRACCION de los avisos (TED caído) o si casi todos los pedidos dan 404 (una URL que ha
+    cambiado): guardar todo sin XML sería peor."""
     numeros = [n for n in dict.fromkeys(numeros) if n]
     estados, faltan, danados = {}, [], []
     for n in numeros:
@@ -1915,20 +1957,30 @@ def _xml_avisos(numeros, forzar=False):
                 if i % 2000 == 0:
                     log.info(f"    XML {i:,}/{len(faltan):,}")
     fallos = [n for n, (e, _) in estados.items() if e in ('no_disponible', 'error')]
+    errores = [n for n in fallos if estados[n][0] == 'error']
+    no_disponibles = [n for n in fallos if estados[n][0] == 'no_disponible']
     pendientes = [n for n, (e, _) in estados.items() if e == 'pendiente']
     tolerados = TEDConfig.XML_FALLOS_TOLERADOS + int(TEDConfig.XML_FALLOS_FRACCION * len(numeros))
+    # Un 404 que se repite es del aviso (TED no sirve su XML), no un fallo de TED: se anota y se
+    # vuelve a pedir, pero no cuenta para el umbral. Salvo que sean casi todos los pedidos (una URL
+    # que ha cambiado): entonces se guardaría el año entero sin XML
+    masivo_404 = len(no_disponibles) >= TEDConfig.XML_404_MASIVO_MIN and 2 * len(no_disponibles) > len(faltan)
     if fallos:
         motivos = Counter(estados[n][1] for n in fallos)
         log.warning(f"  XML eForms sin descargar: {len(fallos):,} avisos "
                     f"({', '.join(f'{v:,} {k}' for k, v in motivos.most_common())}; p.ej. "
                     f"{', '.join(fallos[:5])}): van con los datos del aviso y se vuelven a pedir en la siguiente "
                     f"ejecución")
-    if len(fallos) > tolerados:
-        log.error(f"  Demasiados avisos sin XML ({len(fallos):,}, se toleran {tolerados:,}): el año no se guarda")
+    if len(errores) > tolerados:
+        log.error(f"  Demasiados avisos sin XML por error ({len(errores):,}, se toleran {tolerados:,}): el año no "
+                  f"se guarda")
+    if masivo_404:
+        log.error(f"  TED responde 404 a {len(no_disponibles):,} de los {len(faltan):,} XML pedidos (¿ha cambiado "
+                  f"la URL?): el año no se guarda")
     if pendientes:
         log.warning(f"  Presupuesto de tiempo agotado ({TEDConfig.XML_PRESUPUESTO_S / 3600:g} h): faltan "
                     f"{len(pendientes):,} XML; el año no se guarda y la siguiente ejecución sigue")
-    return estados, not pendientes and len(fallos) <= tolerados
+    return estados, not pendientes and len(errores) <= tolerados and not masivo_404
 
 
 def _avisos_sin_xml(df):

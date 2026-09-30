@@ -190,14 +190,16 @@ def _parte(tpa, miembros, lider=None):
             + '</efac:TenderingParty>')
 
 
-def _organizacion(org, nombre, nif, tamano=None):
+def _organizacion(org, nombre, nif, tamano=None, ids=None):
+    """efac:Organization; ids: [(schemeName, valor)] de sus BT-501 (por defecto, el NIF)."""
+    ids = ids if ids is not None else ([("NIF", nif)] if nif else [])
     return ('<efac:Organization><efac:Company>'
             + (f'<efbc:CompanySizeCode listName="economic-operator-size">{tamano}</efbc:CompanySizeCode>'
                if tamano else '')
             + f'<cac:PartyIdentification><cbc:ID schemeName="organization">{org}</cbc:ID></cac:PartyIdentification>'
             f'<cac:PartyName><cbc:Name languageID="SPA">{nombre}</cbc:Name></cac:PartyName>'
-            + (f'<cac:PartyLegalEntity><cbc:CompanyID schemeName="NIF">{nif}</cbc:CompanyID></cac:PartyLegalEntity>'
-               if nif else '')
+            + ''.join(f'<cac:PartyLegalEntity><cbc:CompanyID schemeName="{e}">{v}</cbc:CompanyID></cac:PartyLegalEntity>'
+                      for e, v in ids)
             + '</efac:Company></efac:Organization>')
 
 
@@ -2178,6 +2180,64 @@ class TestTedEforms:
         assert [(f["lot_id"], f["tender_id"], f["win_name"]) for f in filas] == [
             ("LOT-0005", "TEN-0001", "PLATAFORMA FEMAR S.L."), ("LOT-0008", "", "")]
 
+    def test_543120_2026_dos_resultados_del_mismo_lote_con_un_contrato(self):
+        # Dos resultados del lote 3 citan el mismo contrato (CONTR-2023-989191 LOTE 2), que solo cita
+        # TEN-0001 (755.161,6 €, el valor del aviso). TEN-0002 (857.348,7 €), de la misma empresa y del
+        # mismo lote, no es adjudicataria: antes salían las dos y sumaban 1.612.510,3 €
+        filas = tm._parse_api_notice(_notice("543120-2026"), _xml_real("543120-2026"))
+        assert [(f["lot_result_id"], f["lot_id"], f["tender_id"], f["ganadora_por"]) for f in filas] == [
+            ("RES-0001", "LOT-0003", "", ""), ("RES-0003", "LOT-0003", "TEN-0001", "contrato")]
+        g, = _ganadoras(filas)
+        assert (g["tender_value"], g["contract_id"], g["notice_value"]) == (
+            "755161.6", "CONTR-2023-989191 LOTE 2", "755161.6")
+
+    def test_contrato_del_resultado_solo_con_una_oferta_descrita(self):
+        # La excepción exige una sola oferta descrita: con dos, no se sabe cuál ganó
+        xml = _eforms([_resultado("RES-0001", "LOT-0005", ["TEN-0001"], ["CON-0001"]),
+                       _resultado("RES-0002", "LOT-0008", ["TEN-0002", "TEN-0003"], ["CON-0002"])],
+                      [_oferta("TEN-0001", "TPA-0001", "LOT-0005", 10), _oferta("TEN-0002", "TPA-0001", "LOT-0008", 20),
+                       _oferta("TEN-0003", "TPA-0002", "LOT-0008", 30)],
+                      [_contrato("CON-0001", ["TEN-0001"], referencia="LOTE 5"),
+                       _contrato("CON-0002", ["TEN-0001"], referencia="LOTE 8")],
+                      [_parte("TPA-0001", ["ORG-0002"]), _parte("TPA-0002", ["ORG-0003"])],
+                      [_organizacion("ORG-0002", "MISMA SL", "B11111111"), _organizacion("ORG-0003", "OTRA SL", "B22222222")])
+        filas = tm._parse_api_notice(_notice("25-2024"), xml)
+        assert [(f["lot_id"], f["tender_id"], f["n_ofertas_descritas"]) for f in filas] == [
+            ("LOT-0005", "TEN-0001", "1"), ("LOT-0008", "", "2")]
+
+    def test_contrato_del_resultado_con_una_oferta_de_lote_desconocido(self):
+        # Si la oferta que cita el contrato del resultado no dice su lote (o el aviso no la describe),
+        # no se sabe si es de otro lote: no se aplica la excepción, aunque sea de la misma empresa
+        xml = _eforms([_resultado("RES-0001", "LOT-0008", ["TEN-0002"], ["CON-0002"])],
+                      [_oferta("TEN-0002", "TPA-0001", "LOT-0008", 20), _oferta("TEN-0009", "TPA-0001", "", 5)],
+                      [_contrato("CON-0002", ["TEN-0009"], referencia="LOTE 8")],
+                      [_parte("TPA-0001", ["ORG-0002"])], [_organizacion("ORG-0002", "MISMA SL", "B11111111")])
+        filas = tm._parse_api_notice(_notice("27-2024"), xml)
+        assert [(f["lot_id"], f["tender_id"]) for f in filas] == [("LOT-0008", "")]
+        sin_describir = _eforms([_resultado("RES-0001", "LOT-0008", ["TEN-0002"], ["CON-0002"])],
+                                [_oferta("TEN-0002", "TPA-0001", "LOT-0008", 20)],
+                                [_contrato("CON-0002", ["TEN-0009"], referencia="LOTE 8")],
+                                [_parte("TPA-0001", ["ORG-0002"])], [_organizacion("ORG-0002", "MISMA SL", "B11111111")])
+        assert [(f["lot_id"], f["tender_id"]) for f in tm._parse_api_notice(_notice("27-2024"), sin_describir)] == [
+            ("LOT-0008", "")]
+
+    def test_id_interno_de_la_plataforma_no_es_el_nif(self):
+        # 538782-2026: la UTE trae su número en la PLACSP (ID_UTE_TEMP_PLATAFORMA 329082) y, como OTROS,
+        # los NIF de los socios. El número de la plataforma va aparte y nunca como NIF
+        f, = tm._parse_api_notice(_notice("538782-2026"), _xml_real("538782-2026"))
+        assert (f["win_nationalid"], f["win_platform_id"]) == ("B91251082 - B82387770", "329082")
+        # Solo con el número de la plataforma: sin NIF; con ID_PLATAFORMA y NIF, el NIF
+        xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"]), _resultado("RES-0002", "LOT-0002", ["TEN-0002"])],
+                      [_oferta("TEN-0001", "TPA-0001", "LOT-0001", 10), _oferta("TEN-0002", "TPA-0002", "LOT-0002", 20)],
+                      [_contrato("CON-0001", ["TEN-0001", "TEN-0002"])],
+                      [_parte("TPA-0001", ["ORG-0002"]), _parte("TPA-0002", ["ORG-0003"])],
+                      [_organizacion("ORG-0002", "UTE SIN NIF", None, ids=[("ID_UTE_TEMP_PLATAFORMA", "333577")]),
+                       _organizacion("ORG-0003", "EMPRESA", None, ids=[("ID_PLATAFORMA", "31210280164788"),
+                                                                     ("NIF", "B27200104")])])
+        filas = tm._parse_api_notice(_notice("26-2024"), xml)
+        assert [(f["win_nationalid"], f["win_platform_id"]) for f in filas] == [
+            ("", "333577"), ("B27200104", "31210280164788")]
+
     def test_ofertas_repetidas_en_el_resultado_una_fila(self):
         partes, orgs = _org_simple()
         xml = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001", "TEN-0001"], ["CON-0001", "CON-0001"])],
@@ -2437,6 +2497,79 @@ class TestTedEforms:
         _fijar_fecha(tmp_path / "ted_can_2024_ES_api.parquet", "2024-06-01")
         _fijar_fecha(tmp_path / "ted_es_can.parquet", "2024-06-01")
         assert tm.download_ted_spain(years=[2024]) is None and not ted_2024.calls
+
+    def test_presupuesto_con_el_reloj(self, ted_2024, ted_xml, tmp_path, monkeypatch):
+        # El presupuesto se mide con el reloj desde que empieza download_ted_spain (reloj simulado: cada
+        # XML tarda 0,6 s y el presupuesto es de 1 s: el tercero ya no se pide)
+        reloj = [0.0]
+        monkeypatch.setattr(tm.time, "monotonic", lambda: reloj[0])
+        monkeypatch.setattr(tm.TEDConfig, "XML_WORKERS", 1)
+        monkeypatch.setattr(tm.TEDConfig, "XML_PRESUPUESTO_S", 1.0)
+        falso = tm._descargar_xml
+
+        def lento(url):
+            reloj[0] += 0.6
+            return falso(url)
+        monkeypatch.setattr(tm, "_descargar_xml", lento)
+        df = tm.download_ted_spain(years=[2024])
+        assert df.attrs.get("sin_guardar") and ted_xml.calls == ["1-2024", "2-2024"]
+        assert not (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+
+    def test_completar_la_cache_con_el_presupuesto_agotado_no_la_cambia(self, ted_2024, ted_xml, tmp_path,
+                                                                        monkeypatch):
+        # Año cerrado guardado con dos avisos sin XML; al reintentarlos se agota el presupuesto tras el
+        # primero: la caché no cambia (ni a medias) y la siguiente ejecución los vuelve a pedir
+        ted_xml.codigos.update({"2-2024": 503, "3-2024": 503})
+        tm.download_ted_spain(years=[2024])
+        cache = tmp_path / "ted_can_2024_ES_api.parquet"
+        _fijar_fecha(cache, "2025-01-10")
+        _fijar_fecha(tmp_path / "ted_es_can.parquet", "2024-06-01")
+        antes = _sha(cache)
+        ted_xml.codigos.clear()
+        ted_xml.calls.clear()
+        monkeypatch.setattr(tm.TEDConfig, "XML_WORKERS", 1)
+        llamadas = []
+        monkeypatch.setattr(tm, "_presupuesto_agotado", lambda: llamadas.append(1) or len(llamadas) > 2)
+        tm.download_ted_spain(years=[2024])
+        assert ted_xml.calls == ["2-2024"] and _sha(cache) == antes
+        assert not (tmp_path / "_historico" / "ted_can_2024_ES_api__20250110T000000Z.parquet").exists()
+
+    def test_un_404_no_cuenta_para_el_umbral(self, ted_2024, ted_xml, tmp_path, monkeypatch):
+        # Sin tolerancia para errores, un 404 (el aviso no tiene XML en TED) no impide guardar el año
+        monkeypatch.setattr(tm.TEDConfig, "XML_FALLOS_TOLERADOS", 0)
+        monkeypatch.setattr(tm.TEDConfig, "XML_FALLOS_FRACCION", 0.0)
+        ted_xml.codigos["2-2024"] = 404
+        df = tm.download_ted_spain(years=[2024])
+        assert not df.attrs.get("sin_guardar") and (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+        assert df.loc[df["ted_notice_id"] == "2-2024", "_xml_eforms"].tolist() == ["sin XML: TED responde 404"]
+
+    def test_404_en_casi_todos_los_pedidos_deja_el_anio_sin_guardar(self, ted_2024, ted_xml, tmp_path, monkeypatch):
+        # Casi todos los pedidos con 404 no son avisos sin XML sino una URL que ha cambiado
+        monkeypatch.setattr(tm.TEDConfig, "XML_404_MASIVO_MIN", 2)
+        ted_xml.codigos.update({"1-2024": 404, "2-2024": 404})
+        df = tm.download_ted_spain(years=[2024])
+        assert df.attrs.get("sin_guardar") and not (tmp_path / "ted_can_2024_ES_api.parquet").exists()
+
+    def test_retry_after_con_tope_y_sin_pasar_del_presupuesto(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        reloj, esperas = [0.0], []
+        monkeypatch.setattr(tm.time, "monotonic", lambda: reloj[0])
+
+        def dormir(s):
+            esperas.append(s)
+            reloj[0] += s
+        monkeypatch.setattr(tm.time, "sleep", dormir)
+        monkeypatch.setattr(tm, "_INICIO", [0.0])
+        monkeypatch.setattr(tm, "_descargar_xml", lambda url: (429, b"", {"Retry-After": "100000"}))
+        monkeypatch.setattr(tm.TEDConfig, "XML_PRESUPUESTO_S", 10_000)
+        assert tm._obtener_xml("1-2024", tm._Ritmo(1000))[0] == "error"
+        assert max(esperas) == tm.TEDConfig.XML_ESPERA_MAX_S and len(esperas) >= tm.TEDConfig.XML_REINTENTOS - 1
+        # Con poco presupuesto no espera más allá: queda pendiente para la siguiente ejecución
+        esperas.clear()
+        reloj[0] = 0.0
+        monkeypatch.setattr(tm.TEDConfig, "XML_PRESUPUESTO_S", 150)
+        assert tm._obtener_xml("1-2024", tm._Ritmo(1000)) == ("pendiente", "presupuesto de tiempo agotado")
+        assert sum(esperas) <= 150
 
     def test_ritmo_maximo_de_peticiones(self, ted_2024, ted_xml, tmp_path, monkeypatch):
         # Como mucho XML_MAX_POR_SEGUNDO peticiones por segundo (reloj simulado: solo avanza al esperar)
