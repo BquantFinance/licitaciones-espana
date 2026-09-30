@@ -40,10 +40,12 @@ Sesgo del superviviente (docs/CONTINUACION.md, regla 3; comun/historico.py)
   antes mas _primera_descarga, _ultima_descarga y _en_ultima_descarga. El parquet anterior
   pasa a _historico/ (guardar_version); los CSV se sustituyen: tienen los mismos datos.
 - Ambito de cada descarga (lo que se da por releido y puede quedar retirado): las filas
-  cuya idExpediente vuelve en ella y las que SEGURO caen dentro de su alcance y no PUEDEN
-  caer en ninguna consulta incompleta: tope de 10.000 aun con las 8 dimensiones y el
-  multi-sort, paginacion que se corta, rama sin valor omitida por MAX_EXCLUSIONS o
-  recuentos que no cubren el total. Se decide con los valores de la fila (_Coincidencias).
+  cuyo registro (portalGestor, idExpediente) vuelve en ella y las que SEGURO caen dentro
+  de su alcance y no PUEDEN caer en ninguna consulta incompleta: tope de 10.000 aun con
+  las 8 dimensiones y los tramos de id (o el multi-sort), paginacion que se corta tras
+  los reintentos, rama sin valor omitida por MAX_EXCLUSIONS o recuentos que no cubren el
+  total. Se decide con los valores de la fila (_Coincidencias, con los 'match' de las
+  dimensiones y los 'range' de idExpediente de los tramos).
   Asi una descarga parcial (--perfil, --anio, scrape-std o scrape-men solos) no retira
   nada fuera de su alcance. Una descarga vacia no se guarda y una que falla (el portal da
   error tras los reintentos) tampoco: no retiran nada y la ejecucion termina con codigo 1.
@@ -57,23 +59,73 @@ Sesgo del superviviente (docs/CONTINUACION.md, regla 3; comun/historico.py)
   valor en una dimension de particion (p. ej. de ADJ a RES) mientras se descarga y pasa a
   una rama ya recorrida, esa descarga no lo trae y su version anterior queda como
   retirada hasta la siguiente.
-- Pendiente: partir por mes de publicacion los segmentos del SAS que siguen por encima
-  del tope (docs/COBERTURA.md, 4.2). No se ha podido verificar en vivo: el portal corta la
-  conexion desde la nube de Claude Code.
-- Memoria, medida con pandas 3 y las 808.441 filas del publicado reconstruidas como
-  descargas: 2,4 GB al generar la salida desde una descarga, 3,2 GB al incorporar la
-  siguiente y 1,8 GB al sembrar (con pandas 2 el texto va en objetos: algo mas).
+- Memoria, medida con pandas 3.0.6 y la capa cruda real del 29-sep-2026 (900.929
+  expedientes): 4,1 GB al generar la salida desde las dos descargas, 5,5 GB al incorporar
+  una descarga nueva sobre ella y 3,5 GB al sembrar el publicado v2026.02 (el VPS da 10 GB).
+
+Registro: (portalGestor, idExpediente), no el idExpediente solo
+---------------------------------------------------------------
+El indice junta dos numeraciones de idExpediente que se solapan (ids 4.402-13.890 y
+400.000-425.471, de 2021-2022): la del gestor de expedientes (portalGestor=true) y la
+anterior (false; el SAS con n.o '+6.…' y la Junta con 'CONTR …'). portalGestor viene en
+todos los documentos (medido el 2026-09-29: 554.489 true + 370.648 false = los 925.137
+sin BRR) y el _id del indice es el id en la primera y el id con 12 cifras en la segunda
+('425471' / '000000425471'; 400 de 400 muestras): la pareja es el registro. Antes se
+deduplicaba por idExpediente: la primera descarga del VPS (29-sep) descarto sin avisar
+18.453 menores y 34 licitaciones (todas en esos rangos; dos hojas quedaron como
+«paginacion incompleta» por lo mismo) y dio por retiradas 5.030 licitaciones al
+incorporar los menores (el mismo id, en la otra numeracion). Ahora se deduplica por la
+pareja al paginar, al juntar consultas y al reanudar (clave_documento), y en la
+salida se da por releida una fila solo si vuelve su pareja (_claves_tabla, que lee
+portalGestor de campos_extra_json: no hay columna propia para no cambiar las de siempre).
+Las paginas se piden ordenadas por (idExpediente, portalGestor): un orden total.
+
+Consultas que no caben en la ventana de 10.000
+----------------------------------------------
+- Una consulta de hasta 10.000 documentos se pagina y, si no llegan todos (el indice
+  cambia mientras se pagina), se repite hasta REINTENTOS_PAGINACION veces (en orden
+  inverso y luego en el mismo), juntando lo nuevo; si aun faltan, queda incompleta.
+- Si tras las 8 dimensiones una consulta sigue por encima de 10.000 (los menores de
+  suministros del SAS sin tramitacion, forma de presentacion ni ano en el n.o: 4.901
+  documentos sin descargar el 29-sep), se parte por tramos de idExpediente ('range':
+  el proxy lo admite, medido el 2026-09-29) contando cada mitad hasta que cabe; como
+  mucho hay dos documentos por id. Si el proxy rechazara 'range' (HTTP 400) o no lo
+  aplicara (las dos mitades con el total), se vuelve al multi-sort de antes, que puede
+  quedarse corto (tope).
+
+Columnas planas de la adjudicacion (sin cambios: las lee asi el ETL de la web)
+-------------------------------------------------------------------------------
+adjudicatario_nif, importe_adjudicacion e importe_adjudicacion_iva son la PRIMERA
+adjudicacion de primer nivel tal como la sirve el portal, sea cual sea su resultado
+(codigoResultado AWARD, NOAWA -desierta-, RESIGN, MISES: una no adjudicada suele traer
+0 o el presupuesto) y sin mirar los lotes: en un expediente con lotes estan vacias (sus
+adjudicaciones van en lotes_json[].adjudicacion). todos_adjudicatarios_nif junta los NIF
+de primer nivel. Todas las adjudicaciones, con su lote, resultado, fechas y copia de
+formalizacion, van completas en adjudicaciones_json y lotes_json: para sumar lo
+adjudicado hay que leerlas (lo hace el ETL de buscalicitaciones, docs/etl_v2/grupo8.md).
+fecha_publicacion es el fechaPublicacion del indice, que a menudo es una publicacion
+posterior: la primera es anuncio_primera_fecha. url_detalle lleva solo el idExpediente,
+que en los ids compartidos no dice de que numeracion es.
 
 Semilla (--semilla; docs/CONTINUACION.md, regla 4)
 --------------------------------------------------
-Clave estable: id_expediente (idExpediente, el identificador interno del portal que usa
-url_detalle). En el publicado v2026.02 (andalucia.zip, licitaciones_andalucia.parquet) no
-tiene nulos y es unica en las 808.441 filas; el scraper deduplica por ella desde el
-principio. Del publicado solo se anaden las filas cuya clave no esta en la salida,
-marcadas con _origen='release v2026.02' y _en_ultima_descarga=False, y solo si una
-descarga de raw/ que cubria su alcance ya no las trae (el mismo ambito que al retirar);
-las demas se cuentan como fuera del ambito. Nunca se modifica ni se duplica una fila
-descargada. Una salida de este script como semilla necesita --origen-semilla.
+El publicado v2026.02 (andalucia.zip, licitaciones_andalucia.parquet) no trae
+portalGestor, y su id_expediente es unico porque el codigo que lo genero tambien
+deduplicaba por el id. Una fila de la semilla ya esta en la salida (que incluye lo
+retirado y las semillas anteriores; _semilla_presente) si alguna fila tiene su
+id_expediente, salvo en los ids que comparten las dos numeraciones (IDS_COMPARTIDOS): ahi,
+si coincide su registro (con portalGestor: una salida de este script), su id y n.o de
+expediente o la fila entera (clave presente), su id, perfil, titulo e importe (contenido
+presente: el n.o cambia a veces, y el publicado dejo 'nan' donde el portal pone 'N/A'), o
+si la salida tiene ese id en las dos numeraciones. Primero se mira si esta y despues el
+ambito: de las que faltan solo se anaden las que una descarga de raw/ que cubria su
+alcance ya no trae (el mismo ambito que al retirar; una descarga del codigo anterior no
+cubre los ids compartidos), marcadas con _origen='release v2026.02' y
+_en_ultima_descarga=False; las demas se cuentan como fuera del ambito (antes se contaban
+asi tambien las presentes: el 29-sep, 95.258 de las que 95.255 estaban). Asi entra un
+expediente del publicado que la descarga no tiene aunque otro de la otra numeracion ocupe
+su id. Nunca se modifica ni se duplica una fila descargada. Una salida de este script
+como semilla necesita --origen-semilla.
 Errores conocidos del publicado v2026.02 (el codigo de 5cd4854 escribia CSV y el parquet
 se hizo aparte desde el CSV):
 - Los vacios estan como el texto 'nan' (788.676 filas en todos_adjudicatarios_nif,
@@ -88,6 +140,8 @@ se hizo aparte desde el CSV):
 - Faltan unos 41K menores del SAS por encima del tope de 10.000 (segmentos PARTIAL de su
   scraper.log) y no trae universidades, diputaciones ni ayuntamientos (0 filas), aunque
   el README los cite.
+- Deduplicaba por idExpediente: de cada id compartido por las dos numeraciones solo
+  tiene uno de los dos expedientes.
 """
 
 import argparse
@@ -120,13 +174,17 @@ PERFILES_CACHE_PATH = DATA_DIR / "perfiles_cache.json"
 
 sys.path.insert(0, str(ROOT_DIR))
 from comun.historico import (  # noqa: E402
+    ANADIDA,
+    FUERA_AMBITO,
     HISTORICO,
     IGNORAR_POR_DEFECTO,
     ORIGEN_SEMILLA,
+    PRESENTE_CLAVE,
+    PRESENTE_CONTENIDO,
     acumular,
     guardar_version,
     imprimir_informe_semilla,
-    sembrar,
+    informe_semilla,
     versiones,
 )
 
@@ -150,6 +208,14 @@ MAX_RETRIES = 3
 # Maximo de clausulas must_not por consulta (ramas null y descubrimiento de perfiles)
 MAX_EXCLUSIONS = 900
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+# Orden de las paginas: (idExpediente, portalGestor) es el registro del indice (unico), asi
+# que el orden es total y from/size no repite ni salta documentos mientras el indice no cambia
+ORDEN_PAGINAS = [{"idExpediente": "asc"}, {"portalGestor": "asc"}]
+ORDEN_PAGINAS_INVERSO = [{"idExpediente": "desc"}, {"portalGestor": "desc"}]
+# Veces que se repite la paginacion de una consulta a la que le faltan documentos (primero en
+# orden inverso y luego en el mismo) y pausa antes de cada repeticion, en segundos
+REINTENTOS_PAGINACION = 2
+PAUSA_REINTENTO = 5
 COUNT_TIMEOUT = 60
 DEFAULT_TIMEOUT = 90
 INTEGER_DEFAULTS = {
@@ -179,7 +245,16 @@ CLAVE_METADATOS = b"ccaa_andalucia"
 COLUMNA_AMBITO = "_ambito_descarga"
 COLUMNA_POSICION = "_posicion_descarga"
 FILAS_POR_TROZO = 200_000
-CLAVE_SEMILLA = ["id_expediente"]
+# Columnas de la semilla con que se decide si una fila ya esta en la salida (_semilla_presente)
+COLUMNAS_PRESENCIA = ["id_expediente", "numero_expediente", "codigo_perfil", "titulo", "importe_licitacion",
+                      "campos_extra_json"]
+# Registro con que deduplica la descarga: va en la cabecera de la capa cruda. Una cabecera sin el
+# (codigo anterior, que deduplicaba por idExpediente) no da por releidos los ids que comparten las
+# dos numeraciones (IDS_COMPARTIDOS, medido el 2026-09-29: el gestor solo tiene ids 4.402-13.890 y
+# desde 400.000; la numeracion anterior, hasta 425.471 y 100000000001): pudo perder alli, sin
+# anotarlo, un expediente cuyo id ya habia visto en la otra numeracion.
+REGISTRO = ["portalGestor", "idExpediente"]
+IDS_COMPARTIDOS = ((4402, 13890), (400000, 425471))
 CONSULTAS = ("std", "menores")
 # Columnas con pocos valores distintos (se comparte cada cadena al construir la tabla)
 COLUMNAS_REPETIDAS = {
@@ -558,13 +633,36 @@ def build_unknown_standard_exclusions(base_must_not):
 
 def extract(data):
     """Documentos de una respuesta: el _source tal cual (va a la capa cruda) y su
-    idExpediente, con el que se deduplica. Las columnas las saca flatten() al generar
-    las salidas."""
+    registro (clave_documento), con el que se deduplica. Las columnas las saca flatten()
+    al generar las salidas."""
     return [_registro(hit.get("_source", {})) for hit in data.get("hits", {}).get("hits", [])]
 
 
+def clave_expediente(portal_gestor, id_expediente):
+    """Registro de un expediente del indice: (portalGestor, idExpediente) como texto
+    (_texto_campo: True/'True', 9/9.0/'9' son el mismo valor; sin valor, '').
+    idExpediente solo no basta: las dos numeraciones del indice comparten ids (ver la
+    cabecera del modulo)."""
+    return (_texto_campo(portal_gestor), _texto_campo(id_expediente))
+
+
+def clave_documento(source):
+    """Registro (clave_expediente) de un _source del indice."""
+    return clave_expediente(source.get("portalGestor"), source.get("idExpediente"))
+
+
 def _registro(source):
-    return {"id_expediente": source.get("idExpediente", ""), "_source": source}
+    return {"id_expediente": source.get("idExpediente", ""), "_clave": clave_documento(source), "_source": source}
+
+
+def _clave_registro(record):
+    """Registro de un documento de extract() (o de un registro sin _clave: el de su
+    _source, o solo su id si no lo trae)."""
+    clave = record.get("_clave")
+    if clave is None:
+        source = record.get("_source") or {}
+        clave = clave_expediente(source.get("portalGestor"), record.get("id_expediente", source.get("idExpediente")))
+    return clave
 
 
 def flatten(source):
@@ -683,9 +781,11 @@ def _dt(value):
 
 
 def paginate(must=None, must_not=None, sort=None, label=""):
+    """Las paginas de una consulta (hasta la ventana de MAX_FROM + PAGE_SIZE), sin repetir
+    registro (portalGestor, idExpediente). Devuelve (documentos, total que declara el portal)."""
     del label
     if sort is None:
-        sort = [{"idExpediente": "asc"}]
+        sort = ORDEN_PAGINAS
 
     records = []
     seen = set()
@@ -702,9 +802,9 @@ def paginate(must=None, must_not=None, sort=None, label=""):
             break
 
         for record in batch:
-            expediente_id = record["id_expediente"]
-            if expediente_id not in seen:
-                seen.add(expediente_id)
+            clave = _clave_registro(record)
+            if clave not in seen:
+                seen.add(clave)
                 records.append(record)
 
         if len(records) >= total_count:
@@ -712,6 +812,35 @@ def paginate(must=None, must_not=None, sort=None, label=""):
         time.sleep(DELAY)
 
     return records, total_count or 0
+
+
+def _paginar_hoja(must, must_not, total, label):
+    """paginate() de una consulta que cabe en la ventana. Si no llegan todos sus
+    documentos (el mayor de `total` y lo que declara el portal: el indice cambia mientras
+    se pagina), se repite hasta REINTENTOS_PAGINACION veces, en orden inverso y luego en el
+    mismo, juntando los registros nuevos. Antes una sola pagina perdida dejaba la consulta
+    entera fuera del ambito. Devuelve (documentos, total declarado)."""
+    registros, vistos, declarado = [], set(), total or 0
+    ordenes = (ORDEN_PAGINAS, ORDEN_PAGINAS_INVERSO)
+    for intento in range(REINTENTOS_PAGINACION + 1):
+        if intento:
+            log.warning(
+                "  %s: %s de %s documentos; se repite la paginacion (%s/%s)",
+                label,
+                f"{len(registros):,}",
+                f"{declarado:,}",
+                intento,
+                REINTENTOS_PAGINACION,
+            )
+            time.sleep(PAUSA_REINTENTO)
+        records, total_count = paginate(must=must, must_not=must_not, sort=ordenes[intento % 2], label=label)
+        declarado = max(declarado, total_count)
+        _anadir_nuevos(records, registros, vistos)
+        if len(registros) >= declarado:
+            if intento:
+                log.info("  %s: completa al repetir la paginacion (%s)", label, f"{len(registros):,}")
+            break
+    return registros, declarado
 
 
 def paginate_multisort(must=None, must_not=None, label="", target=None):
@@ -739,9 +868,9 @@ def paginate_multisort(must=None, must_not=None, label="", target=None):
                 break
 
             for record in batch:
-                expediente_id = record["id_expediente"]
-                if expediente_id not in seen:
-                    seen.add(expediente_id)
+                clave = _clave_registro(record)
+                if clave not in seen:
+                    seen.add(clave)
                     all_records.append(record)
                     new_this_sort += 1
 
@@ -794,11 +923,14 @@ def _anotar_incompleto(incompletos, etiqueta, must, must_not, total, descargados
 
 
 def _anadir_nuevos(records, all_records, seen_ids):
+    """Anade a `all_records` los documentos cuyo registro (portalGestor, idExpediente) no
+    esta en `seen_ids` (antes bastaba el idExpediente: se perdia el otro expediente de cada
+    id compartido por las dos numeraciones). Devuelve cuantos."""
     new_records = 0
     for record in records:
-        expediente_id = record["id_expediente"]
-        if expediente_id not in seen_ids:
-            seen_ids.add(expediente_id)
+        clave = _clave_registro(record)
+        if clave not in seen_ids:
+            seen_ids.add(clave)
             all_records.append(record)
             new_records += 1
     return new_records
@@ -807,18 +939,17 @@ def _anadir_nuevos(records, all_records, seen_ids):
 def scrape_recursive(must, must_not, label, all_records, seen_ids, dim_idx=0, known_total=None, *,
                      incompletos=None, fijas=()):
     """Descarga una consulta partiendola por DIMS hasta que cada trozo cabe en una ventana
-    de 10k (o por multi-sort si ya no quedan dimensiones). Anota en `incompletos` las
-    consultas que no se han podido releer enteras; `fijas` son los campos que fija el
-    alcance (--perfil, --anio), que no se parten."""
+    de 10k (y, si ya no quedan dimensiones, por tramos de idExpediente: _scrape_por_tramos).
+    Anota en `incompletos` las consultas que no se han podido releer enteras; `fijas` son
+    los campos que fija el alcance (--perfil, --anio), que no se parten."""
     total = known_total if known_total is not None else cnt(must=must, must_not=must_not)
     if total == 0:
         return 0
 
     if total <= MAX_FROM + PAGE_SIZE:
-        records, total_count = paginate(must=must, must_not=must_not, label=label)
-        if len(records) < max(total, total_count):
-            _anotar_incompleto(incompletos, label, must, must_not, max(total, total_count), len(records),
-                               "paginacion incompleta")
+        records, declarado = _paginar_hoja(must, must_not, total, label)
+        if len(records) < declarado:
+            _anotar_incompleto(incompletos, label, must, must_not, declarado, len(records), "paginacion incompleta")
         return _anadir_nuevos(records, all_records, seen_ids)
 
     # Partir por una dimension que fija el alcance solo daria su valor y 0 en los demas
@@ -895,6 +1026,94 @@ def scrape_recursive(must, must_not, label, all_records, seen_ids, dim_idx=0, kn
                 )
 
         return total_new
+
+    return _scrape_por_tramos(must, must_not, label, all_records, seen_ids, total, incompletos)
+
+
+class _RangoNoAplicado(ScraperError):
+    """El proxy no aplica las clausulas 'range' (las dos mitades de un tramo cuentan todo)."""
+
+
+def _rango_id(desde, hasta):
+    return {"range": {"idExpediente": {"gte": int(desde), "lte": int(hasta)}}}
+
+
+def _extremos_id(must, must_not):
+    """(menor, mayor) idExpediente de una consulta, con dos paginas de un documento; None
+    si no se pueden leer (un documento sin idExpediente va al final en los dos ordenes)."""
+    extremos = []
+    for orden in ("asc", "desc"):
+        data = es(build_query(must=must, must_not=must_not, size=1, sort=[{"idExpediente": orden}]))
+        hits = data.get("hits", {}).get("hits", [])
+        try:
+            extremos.append(int(hits[0]["_source"]["idExpediente"]))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return None
+    return tuple(extremos)
+
+
+def _scrape_tramo(must, must_not, label, all_records, seen_ids, desde, hasta, total, incompletos):
+    """Documentos de la consulta con idExpediente en [desde, hasta] (`total` segun el
+    portal): se pagina si caben en la ventana y si no se parte el tramo en dos mitades
+    (con su recuento) hasta que caben. Si las mitades no suman el total (documentos sin
+    idExpediente, o el indice cambia) el tramo queda incompleto; si las dos cuentan el
+    total, el proxy no aplica 'range' (_RangoNoAplicado)."""
+    tramo_must = list(must) + [_rango_id(desde, hasta)]
+    etiqueta = f"{label}/id_{desde}-{hasta}"
+    if total <= MAX_FROM + PAGE_SIZE or desde >= hasta:
+        records, declarado = _paginar_hoja(tramo_must, must_not, total, etiqueta)
+        if len(records) < declarado:
+            motivo = "paginacion incompleta" if declarado <= MAX_FROM + PAGE_SIZE else "tope de 10.000 resultados"
+            _anotar_incompleto(incompletos, etiqueta, tramo_must, must_not, declarado, len(records), motivo)
+        return _anadir_nuevos(records, all_records, seen_ids)
+
+    medio = (desde + hasta) // 2
+    mitades = [(desde, medio), (medio + 1, hasta)]
+    cuentas = [cnt(must=list(must) + [_rango_id(a, b)], must_not=must_not) for a, b in mitades]
+    if min(cuentas) >= total:
+        raise _RangoNoAplicado(f"{etiqueta}: las dos mitades cuentan {cuentas} de {total}")
+    if sum(cuentas) < total:
+        log.warning(
+            "  %s: los recuentos de las mitades (%s) no cubren el total (%s); no se retira nada de este tramo",
+            etiqueta,
+            f"{sum(cuentas):,}",
+            f"{total:,}",
+        )
+        _anotar_incompleto(incompletos, etiqueta, tramo_must, must_not, total, None, "recuentos que no cubren el total")
+    nuevos = 0
+    for (a, b), cuenta in zip(mitades, cuentas):
+        if cuenta:
+            nuevos += _scrape_tramo(must, must_not, label, all_records, seen_ids, a, b, cuenta, incompletos)
+    return nuevos
+
+
+def _scrape_por_tramos(must, must_not, label, all_records, seen_ids, total, incompletos):
+    """Una consulta que sigue por encima de la ventana tras las dimensiones: tramos de
+    idExpediente ('range', que el proxy admite: medido el 2026-09-29) partidos por la mitad
+    hasta que cada uno cabe (como mucho hay dos documentos por id, uno de cada
+    numeracion). Antes se usaba solo el multi-sort, que en los menores del SAS dejaba 4.901
+    documentos sin descargar; se vuelve a el si el proxy rechaza 'range' (HTTP 400) o no
+    lo aplica. Lo que no cubren los tramos (documentos sin idExpediente) queda incompleto."""
+    log.info("  %s (%s) -> tramos de idExpediente", label, f"{total:,}")
+    try:
+        extremos = _extremos_id(must, must_not)
+        if extremos is not None:
+            desde, hasta = extremos
+            cuenta = cnt(must=list(must) + [_rango_id(desde, hasta)], must_not=must_not)
+            if cuenta < total:
+                log.warning(
+                    "  %s: %s de %s documentos con idExpediente entre %s y %s; lo demas queda incompleto",
+                    label, f"{cuenta:,}", f"{total:,}", desde, hasta,
+                )
+                _anotar_incompleto(incompletos, label, must, must_not, total, None, "recuentos que no cubren el total")
+            return _scrape_tramo(must, must_not, label, all_records, seen_ids, desde, hasta, cuenta, incompletos)
+        log.warning("  %s: no se pudo leer el rango de idExpediente; se usa el multi-sort", label)
+    except _RangoNoAplicado as exc:
+        log.warning("  %s: el proxy no aplica 'range' (%s); se usa el multi-sort", label, exc)
+    except ScraperError as exc:
+        if exc.status_code != 400:
+            raise
+        log.warning("  %s: el proxy rechaza 'range' (%s); se usa el multi-sort", label, exc)
 
     log.info("  %s (%s) -> multi-sort", label, f"{total:,}")
     records = paginate_multisort(must=must, must_not=must_not, label=label, target=total)
@@ -1094,8 +1313,8 @@ def _escribir_json(path, datos):
 class _Trabajo:
     """Descarga en curso de un alcance (raw/_en_curso/<alcance>/): un fichero por bloque
     terminado y estado.json. Si la ejecucion se corta, la siguiente con el mismo alcance
-    sigue desde el primer bloque que falta (con los idExpediente ya vistos, para
-    deduplicar igual); al guardar la descarga entera en raw/ se borra."""
+    sigue desde el primer bloque que falta (con los registros (portalGestor, idExpediente)
+    ya vistos, para deduplicar igual); al guardar la descarga entera en raw/ se borra."""
 
     def __init__(self, carpeta, alcance):
         self.carpeta = Path(carpeta)
@@ -1112,7 +1331,7 @@ class _Trabajo:
             self.bloques = list(estado.get("bloques", []))
             for bloque in self.bloques:
                 for documento in _leer_jsonl(self.carpeta / bloque["archivo"]):
-                    self.vistos.add(documento.get("idExpediente", ""))
+                    self.vistos.add(clave_documento(documento))
             if self.bloques:
                 log.info(
                     "Reanudando %s: %s bloques ya descargados (%s expedientes)",
@@ -1267,6 +1486,7 @@ def descargar(consulta, perfil=None, anio=None):
     incompletos += trabajo.incompletos()
     cabecera = {
         "formato": FORMATO_CRUDO,
+        "registro": REGISTRO,
         "alcance": alcance,
         "total": total,
         "documentos": descargados,
@@ -1389,21 +1609,71 @@ def _clausulas(lista):
         yield campo, valor
 
 
+# Campos con un numero exacto por fila: un 'range' sobre ellos (los tramos de idExpediente)
+# se decide con el valor de la columna, con certeza; sobre otro campo nunca es seguro
+CAMPOS_RANGO = {"idExpediente"}
+
+
+def _rango(clausula):
+    """(campo, desde, hasta) de una clausula 'range' con gte y/o lte, o None."""
+    rango = clausula.get("range") if isinstance(clausula, dict) else None
+    if not isinstance(rango, dict) or len(rango) != 1:
+        return None
+    ((campo, limites),) = rango.items()
+    if not isinstance(limites, dict) or not limites or set(limites) - {"gte", "lte"}:
+        return None
+    return campo, limites.get("gte"), limites.get("lte")
+
+
 class _Coincidencias:
     """Si cada fila de una tabla cae dentro de una consulta del portal (bool must/must_not
-    de clausulas 'match'), con los valores de sus columnas y en dos grados:
+    de clausulas 'match' y, en must, 'range' de idExpediente), con los valores de sus
+    columnas y en dos grados:
     - seguro: el indice la devolveria con certeza. Codigos: el valor exacto (o un elemento
       de provinciasEjecucion); numeroExpediente: la palabra separada por espacios;
+      idExpediente en un tramo: el numero dentro de sus limites;
     - posible: podria devolverla. La misma palabra (letras y cifras) sin distinguir
-      mayusculas, sea el campo keyword, numerico o texto analizado.
-    Un campo sin columna nunca es seguro y siempre es posible. Una fila de una descarga
-    anterior solo se da por releida (y retirada si no esta) si SEGURO cae en el alcance y
-    no es POSIBLE que caiga en una consulta incompleta: si hay duda no se retira."""
+      mayusculas, sea el campo keyword, numerico o texto analizado; en un tramo, el numero
+      dentro de sus limites o una fila sin numero.
+    Un campo sin columna (o una clausula de otro tipo, o un 'range' en must_not) nunca es
+    seguro y siempre es posible. Una fila de una descarga anterior solo se da por releida
+    (y retirada si no esta) si SEGURO cae en el alcance y no es POSIBLE que caiga en una
+    consulta incompleta: si hay duda no se retira."""
 
     def __init__(self, tabla):
         self.tabla = tabla
         self.filas = len(tabla)
         self._campos = {}
+        self._numeros = {}
+
+    def _en_rango(self, campo, desde, hasta, grado):
+        """Filas cuyo numero en `campo` esta entre `desde` y `hasta` (incluidos)."""
+        columna = CAMPOS_COLUMNA.get(campo)
+        if campo not in CAMPOS_RANGO or columna is None or columna not in self.tabla.columns:
+            return np.full(self.filas, grado == "posible")
+        if campo not in self._numeros:
+            numeros = pd.to_numeric(pd.Series(self.tabla[columna].to_numpy(dtype=object)), errors="coerce")
+            self._numeros[campo] = numeros.to_numpy(dtype="float64")
+        numeros = self._numeros[campo]
+        sin_numero = np.isnan(numeros)
+        valores = np.where(sin_numero, 0.0, numeros)
+        dentro = ~sin_numero
+        if desde is not None:
+            dentro &= valores >= float(desde)
+        if hasta is not None:
+            dentro &= valores <= float(hasta)
+        return dentro | sin_numero if grado == "posible" else dentro
+
+    def _must(self, lista, grado):
+        filas = np.ones(self.filas, dtype=bool)
+        for clausula in lista or []:
+            rango = _rango(clausula)
+            if rango is not None:
+                filas &= self._en_rango(*rango, grado)
+                continue
+            for campo, valor in _clausulas([clausula]):
+                filas &= self._coinciden(campo, [valor], grado)
+        return filas
 
     def _valores(self, campo):
         """(codigo por fila, valores distintos como texto) de la columna del campo, o None."""
@@ -1454,45 +1724,81 @@ class _Coincidencias:
         return grupos
 
     def seguro(self, consulta):
-        filas = np.ones(self.filas, dtype=bool)
-        for campo, valor in _clausulas(consulta.get("must")):
-            filas &= self._coinciden(campo, [valor], "seguro")
+        filas = self._must(consulta.get("must"), "seguro")
         for campo, valores in self._por_campo(consulta.get("must_not")).items():
             filas &= ~self._coinciden(campo, valores, "posible")
         return filas
 
     def posible(self, consulta):
-        filas = np.ones(self.filas, dtype=bool)
-        for campo, valor in _clausulas(consulta.get("must")):
-            filas &= self._coinciden(campo, [valor], "posible")
+        filas = self._must(consulta.get("must"), "posible")
         for campo, valores in self._por_campo(consulta.get("must_not")).items():
             filas &= ~self._coinciden(campo, valores, "seguro")
         return filas
 
     def ambito(self, cabecera):
-        """Filas que una descarga (su cabecera) ha releido con certeza."""
+        """Filas que una descarga (su cabecera) ha releido con certeza. Una descarga del
+        codigo anterior (cabecera sin 'registro') no ha releido con certeza los ids que
+        comparten las dos numeraciones (IDS_COMPARTIDOS): deduplicaba por idExpediente."""
         filas = self.seguro(cabecera.get("alcance") or {})
-        for incompleto in cabecera.get("incompletos") or []:
+        incompletos = list(cabecera.get("incompletos") or [])
+        if cabecera.get("registro") != REGISTRO:
+            incompletos += [{"must": [_rango_id(desde, hasta)]} for desde, hasta in IDS_COMPARTIDOS]
+        for incompleto in incompletos:
             filas &= ~self.posible(incompleto)
         return filas
 
 
 def _trozos_por_expediente(ids, trozos):
-    """Trozo de cada fila por su id_expediente (como texto: 1 y '1' van al mismo)."""
+    """Trozo de cada fila por su id_expediente (como texto: 1 y '1' van al mismo). Los dos
+    registros de un id compartido caen en el mismo trozo: da igual, dos filas iguales
+    tienen siempre el mismo id."""
     return pd.util.hash_pandas_object(ids.astype(str), index=False).to_numpy() % trozos
+
+
+def _portal_gestor(extra):
+    """portalGestor de un campos_extra_json (texto JSON de flatten()) o None."""
+    if not isinstance(extra, str) or '"portalGestor"' not in extra:
+        return None
+    try:
+        valor = json.loads(extra)
+    except ValueError:
+        return None
+    return valor.get("portalGestor") if isinstance(valor, dict) else None
+
+
+def _gestores_tabla(tabla):
+    """portalGestor de cada fila de una tabla (de campos_extra_json; None si no lo trae:
+    filas del publicado, que no tiene la columna)."""
+    if "campos_extra_json" not in tabla.columns:
+        return [None] * len(tabla)
+    return [_portal_gestor(extra) for extra in tabla["campos_extra_json"].astype(object)]
+
+
+def _claves_tabla(tabla):
+    """Registro (clave_expediente) de cada fila de una tabla, como texto 'gestor|id'."""
+    return pd.Series(
+        [
+            "|".join(clave_expediente(gestor, expediente))
+            for gestor, expediente in zip(_gestores_tabla(tabla), tabla["id_expediente"].astype(object))
+        ],
+        index=tabla.index,
+        dtype=object,
+    )
 
 
 def _acumular_version(anterior, filas, fecha, cabecera):
     """acumular() de una version de la capa cruda sobre la tabla acumulada. Ambito: las
-    filas cuya idExpediente vuelve (una version antigua de un expediente que el portal
-    sirve cambiado) y las que la descarga ha releido con certeza (_Coincidencias.ambito).
+    filas cuyo registro (portalGestor, idExpediente) vuelve (una version antigua de un
+    expediente que el portal sirve cambiado) y las que la descarga ha releido con certeza
+    (_Coincidencias.ambito). Por el idExpediente solo, una licitacion con el id de un menor
+    de la otra numeracion quedaba retirada al incorporar los menores (5.030 el 29-sep).
 
     Con tablas grandes se llama a acumular() por trozos de id_expediente (dos filas solo
     son iguales si tienen el mismo) y se recompone el orden de una sola llamada: acumular
     compara cada celda como texto y con ~800K filas por lado pasaba de 5 GB."""
     if anterior is None or not len(anterior):
         return acumular(None, filas, fecha)
-    releidos = anterior["id_expediente"].astype(str).isin(set(filas["id_expediente"].astype(str))).to_numpy()
+    releidos = _claves_tabla(anterior).isin(set(_claves_tabla(filas))).to_numpy()
     en_ambito = releidos | _Coincidencias(anterior).ambito(cabecera)
     # Sin copias (las dos tablas son de esta ejecucion): con ~800K filas cada copia son GB
     anterior[COLUMNA_AMBITO] = np.where(en_ambito, "si", "no")
@@ -1573,48 +1879,137 @@ def _preparar_semilla(semilla):
     return semilla
 
 
-def _sembrar(salida, semillas, origen=None):
-    """Incorpora cada semilla por CLAVE_SEMILLA con comun.historico.sembrar: solo las filas
-    cuya clave no esta en la salida y que una descarga de raw/ que cubria su alcance ya no
-    trae (el ambito de cualquiera de sus versiones). Devuelve (salida, filas anadidas).
+def _textos(tabla, columna):
+    """Valores de una columna como texto sin espacios a los lados ('' si es nulo o no esta)."""
+    if columna not in tabla.columns:
+        return np.full(len(tabla), "", dtype=object)
+    return np.array([_texto_campo(valor).strip() for valor in tabla[columna].astype(object)], dtype=object)
 
-    A sembrar() se le pasan solo la clave de la salida y de la semilla (con la posicion de
-    cada fila): con las tablas enteras copiaba las dos (unos 5 GB con ~800K filas). Luego
-    se leen del parquet solo las filas que anade. La clave nunca es nula en el publicado;
-    una fila de la semilla sin clave se anadiria (no hay contenido con que compararla)."""
+
+def _id_compartido(texto):
+    """Si un id_expediente (texto) cae en los ids que comparten las dos numeraciones
+    (IDS_COMPARTIDOS); uno que no es un numero, tambien (no se sabe)."""
+    try:
+        numero = int(float(texto))
+    except (TypeError, ValueError):
+        return True
+    return any(desde <= numero <= hasta for desde, hasta in IDS_COMPARTIDOS)
+
+
+def _semilla_presente(salida, semilla):
+    """Filas de la semilla que ya estan en la salida (descarga, retiradas y semillas ya
+    incorporadas), con su motivo (None si no estan). Fuera de los ids que comparten las
+    dos numeraciones (IDS_COMPARTIDOS) cada id es de un solo expediente: esta si la salida
+    tiene su id (PRESENTE_CLAVE), como siempre, aunque haya cambiado su n.o y su titulo.
+    En los compartidos:
+    - PRESENTE_CLAVE: el mismo registro (portalGestor, idExpediente), si la fila lo trae
+      (una salida de este script); el mismo id_expediente y n.o de expediente; o la misma
+      fila (id, n.o, perfil y titulo iguales, tambien vacios: una fila sembrada antes);
+    - PRESENTE_CONTENIDO: el mismo id, perfil, titulo e importe de licitacion (el n.o
+      cambia: 3 renumerados entre febrero y septiembre de 2026; y el publicado tiene 'nan'
+      donde el portal 'N/A'; las 15 filas asi del publicado v2026.02 tienen el mismo
+      importe), o un id que la salida tiene en las dos numeraciones (la fila tiene que ser
+      una de ellas).
+    Una fila de la semilla con portalGestor solo se compara con filas de su numeracion o
+    sin ella. El id solo no basta: la semilla trae uno de los dos expedientes de cada id
+    compartido y puede ser justo el que falta."""
+    def claves(tabla):
+        ids, nums = _textos(tabla, "id_expediente"), _textos(tabla, "numero_expediente")
+        perfiles, titulos = _textos(tabla, "codigo_perfil"), _textos(tabla, "titulo")
+        importes = _textos(tabla, "importe_licitacion")
+        gestores = [_texto_campo(gestor) for gestor in _gestores_tabla(tabla)]
+        return list(zip(gestores, ids, nums, perfiles, titulos, importes))
+
+    registros, numeraciones, ids = set(), {}, set()
+    pares, exactas, trios = set(), set(), set()
+    for gestor, i, n, p, t, importe in claves(salida):
+        if not i:
+            continue
+        ids.add(i)
+        if gestor:
+            registros.add((gestor, i))
+            numeraciones.setdefault(i, set()).add(gestor)
+        if n:
+            pares.add((gestor, i, n))
+        exactas.add((gestor, i, n, p, t))
+        if t:
+            trios.add((gestor, i, p, t, importe))
+    dobles = {i for i, gestores in numeraciones.items() if len(gestores) > 1}
+    del numeraciones
+    # Sin numeracion en la fila de la semilla vale la de cualquier fila de la salida
+    pares_id = {clave[1:] for clave in pares}
+    exactas_id = {clave[1:] for clave in exactas}
+    trios_id = {clave[1:] for clave in trios}
+
+    def esta(gestor, clave, por_gestor, por_id):
+        if gestor:
+            return (gestor,) + clave in por_gestor or ("",) + clave in por_gestor
+        return clave in por_id
+
+    motivo = np.full(len(semilla), None, dtype=object)
+    for fila, (gestor, i, n, p, t, importe) in enumerate(claves(semilla)):
+        if not i:
+            continue
+        if not _id_compartido(i):
+            if i in ids:
+                motivo[fila] = PRESENTE_CLAVE
+            continue
+        if ((gestor and (gestor, i) in registros) or (n and esta(gestor, (i, n), pares, pares_id))
+                or esta(gestor, (i, n, p, t), exactas, exactas_id)):
+            motivo[fila] = PRESENTE_CLAVE
+        elif (t and esta(gestor, (i, p, t, importe), trios, trios_id)) or (not gestor and i in dobles):
+            motivo[fila] = PRESENTE_CONTENIDO
+    return motivo
+
+
+def _sembrar(salida, semillas, origen=None):
+    """Incorpora cada semilla: primero se mira que filas ya estan en la salida
+    (_semilla_presente) y solo de las que faltan, cuales ha dejado de traer una descarga
+    de raw/ que cubria su alcance (el ambito de cualquiera de sus versiones): esas se
+    anaden y las demas quedan fuera del ambito. Antes se miraba primero el ambito y las
+    filas de fuera no se comparaban (95.258 el 29-sep, de las que 95.255 estaban).
+    Devuelve (salida, filas anadidas).
+
+    De la semilla se leen primero solo las columnas con que se decide y luego, del parquet,
+    las filas que se anaden. Una fila de la semilla sin id_expediente se anade si esta en el
+    ambito (no hay con que compararla)."""
     cabeceras = [_cabecera_crudo(version) for actual in _ficheros_crudos() for version in versiones(actual)]
     origen = origen or ORIGEN_SEMILLA
     anadidas = 0
     for path in semillas:
         disponibles = pq.read_schema(path).names
-        columnas = [c for c in dict.fromkeys(CLAVE_SEMILLA + list(CAMPOS_COLUMNA.values())
+        columnas = [c for c in dict.fromkeys(COLUMNAS_PRESENCIA + list(CAMPOS_COLUMNA.values())
                                              + ["_origen", "_en_ultima_descarga"]) if c in disponibles]
         semilla = _preparar_semilla(pd.read_parquet(path, columns=columnas))
-        evaluador = _Coincidencias(semilla)
-        en_ambito = np.zeros(len(semilla), dtype=bool)
+        motivo = _semilla_presente(salida, semilla)
+        faltan = np.flatnonzero(np.array([m is None for m in motivo], dtype=bool))
+        evaluador = _Coincidencias(semilla.iloc[faltan].reset_index(drop=True))
+        en_ambito = np.zeros(len(faltan), dtype=bool)
         for cabecera in cabeceras:
             en_ambito |= evaluador.ambito(cabecera)
-        claves = semilla[[c for c in CLAVE_SEMILLA + ["_origen"] if c in semilla.columns]].copy()
-        claves[COLUMNA_POSICION] = np.arange(len(claves))
-        del semilla, evaluador
-        resultado, informe = sembrar(salida[CLAVE_SEMILLA], claves, CLAVE_SEMILLA, origen=origen, contenido=[],
-                                     en_ambito=en_ambito)
+        motivo[faltan[en_ambito]] = ANADIDA
+        motivo[faltan[~en_ambito]] = FUERA_AMBITO
+        informe = informe_semilla(motivo, origen,
+                                  semilla[[c for c in ("id_expediente", "numero_expediente") if c in semilla.columns]])
         informe["ruta"] = str(path)
+        del semilla, evaluador
         imprimir_informe_semilla(informe)
         log.info(
-            "Semilla %s: %s filas leidas, %s anadidas, %s con la clave presente, %s fuera del ambito",
+            "Semilla %s: %s filas leidas, %s anadidas; ya estan %s con la clave presente (id y n.o de expediente) y "
+            "%s con el contenido presente (id, perfil y titulo); %s que faltan, fuera del ambito",
             path,
             f"{informe['leidas']:,}",
             f"{informe['anadidas']:,}",
             f"{informe['descartadas_clave']:,}",
+            f"{informe['descartadas_contenido']:,}",
             f"{informe['fuera_ambito']:,}",
         )
-        marcas = resultado.iloc[len(salida):]
-        if not len(marcas):
+        posiciones = np.flatnonzero(np.array([m == ANADIDA for m in motivo], dtype=bool))
+        if not len(posiciones):
             continue
-        posiciones = marcas[COLUMNA_POSICION].to_numpy(dtype="int64")
         nuevas = _preparar_semilla(pq.read_table(path).take(pa.array(posiciones)).to_pandas())
-        nuevas["_origen"] = marcas["_origen"].to_numpy()
+        propio = nuevas["_origen"] if "_origen" in nuevas.columns else pd.Series(None, index=nuevas.index, dtype=object)
+        nuevas["_origen"] = propio.astype(object).where(propio.notna(), origen)
         nuevas["_en_ultima_descarga"] = False
         if "_origen" not in salida.columns:
             salida["_origen"] = pd.Series([None] * len(salida), dtype=object)
@@ -1785,7 +2180,11 @@ def main(argv=None):
                         help="descarga parcial: solo este ano del numero de expediente (dimension numeroExpediente)")
     parser.add_argument("--semilla", type=Path, action="append", default=[],
                         help="parquet publicado (p.ej. licitaciones_andalucia.parquet de v2026.02) que se incorpora "
-                             "por id_expediente como la instantanea mas antigua. Repetible")
+                             "como la instantanea mas antigua: se anaden las filas que no estan en la salida y ha "
+                             "dejado de traer una descarga que cubria su alcance. Esta si tiene su id_expediente; en "
+                             "los ids que comparten las dos numeraciones, si coincide su registro (portalGestor, id), "
+                             "su id y n.o de expediente, su id, perfil, titulo e importe, o la salida tiene el id en "
+                             "las dos numeraciones. Repetible")
     parser.add_argument("--origen-semilla", default=None,
                         help=f"_origen de las filas de --semilla (por defecto '{ORIGEN_SEMILLA}')")
     options = parser.parse_args(args)

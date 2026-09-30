@@ -731,12 +731,13 @@ scripts/
 **Sin sesgo del superviviente.**
 - Cada descarga se guarda tal cual en `raw/` (`guardar_version`).
 - El Parquet se construye con `acumular` sobre la salida anterior. Lo que el portal retira o cambia se conserva con `_en_ultima_descarga=False`. Solo se retira lo que seguro cae en una consulta completa: con el tope de 10.000 o una paginación cortada no se retira nada.
-- `--semilla <parquet publicado>` añade los `id_expediente` que ya no se sirven (el identificador del portal; en v2026.02 es único en las 808.441 filas).
+- **Registro = (`portalGestor`, `idExpediente`).** El índice junta dos numeraciones que comparten ids (4.402-13.890 y 400.000-425.471, de 2021-2022); `portalGestor` va en `campos_extra_json`. Deduplicar por el id solo perdió 18.453 menores y 34 licitaciones en la primera descarga del VPS (29-sep-2026) y dio por retiradas 5.030 licitaciones.
+- `--semilla <parquet publicado>` añade las filas del publicado que no están en la salida y que una descarga de su alcance ha dejado de traer. Primero se mira si están y después el ámbito. Fuera de los ids compartidos basta el `id_expediente`; en ellos, el mismo id y nº de expediente, la misma fila, o el mismo id, perfil, título e importe (el nº cambia a veces). Una descarga del código anterior no cuenta como releída en los ids compartidos.
 - `procesar` regenera las salidas sin red. `--perfil` y `--anio` descargan una parte, y solo esa parte puede marcar retiradas.
 - Si la salida por defecto es aún un puntero Git LFS sin descargar, el script se niega a sobrescribirla. En ese caso usa `--salida` o baja antes el fichero.
 - Los importes van siempre como `float64`.
 
-### Campos principales (34 columnas)
+### Campos principales (38 columnas, más las 3 de control)
 
 | Categoría | Campos |
 |-----------|--------|
@@ -747,6 +748,9 @@ scripts/
 | Adjudicación | adjudicatario_nif, todos_adjudicatarios_nif, num_adjudicaciones |
 | Fechas | fecha_publicacion, fecha_limite_presentacion, anuncio_primera_fecha, anuncio_ultima_fecha |
 | Otros | forma_presentacion, cofinanciado_ue, subasta_electronica, sistema_racionalizacion, cpv, medios_publicacion, num_lotes, num_anuncios |
+| Detalle completo (JSON) | adjudicaciones_json, lotes_json, anuncios_json, campos_extra_json (con `portalGestor`) |
+
+> **Columnas planas de la adjudicación.** `adjudicatario_nif`, `importe_adjudicacion` e `importe_adjudicacion_iva` son la **primera adjudicación de primer nivel tal como la sirve el portal**, sea cual sea su resultado (`codigoResultado` AWARD, NOAWA —desierta—, RESIGN, MISES; una no adjudicada suele traer 0 o el presupuesto), y no miran los lotes: en un expediente con lotes están vacías (sus adjudicaciones van en `lotes_json[].adjudicacion`). Para sumar lo adjudicado hay que leer `adjudicaciones_json` y `lotes_json` (resultado AWARD, sin la copia de formalización), como hace el ETL de buscalicitaciones. `fecha_publicacion` es a menudo una publicación posterior: la primera es `anuncio_primera_fecha`. `url_detalle` lleva solo el `idExpediente`, que en los ids compartidos no dice de qué numeración es.
 
 ### Estrategia de descarga
 
@@ -761,7 +765,7 @@ El portal de la Junta de Andalucía usa un proxy frontend que limita a 10.000 re
 7. **formaPresentacion**: 6 valores + null
 8. **numeroExpediente (año)**: match por texto "2018"-"2026" + null
 
-Para los chunks que aún superan 10K tras las 8 dimensiones (ej. SYBS03/Servicio Andaluz de Salud con 290K registros), se usa **multi-sort con 12 órdenes** distintas (idExpediente, importeLicitacion, numeroExpediente, titulo, fechaLimitePresentacion, adjudicaciones.importeAdjudicacion — cada una asc/desc) que acceden a ventanas diferentes de 10K registros con 0% de solapamiento.
+Para los chunks que aún superan 10K tras las 8 dimensiones (los menores de suministros del SAS sin tramitación, forma de presentación ni año en el nº), se parte la consulta en **tramos de `idExpediente`** (`range`), contando cada mitad hasta que cabe en la ventana: medido el 2026-09-29, las tres consultas del SAS con tope (39.797, 33.259 y 38.550 documentos) quedan en 6, 4 y 6 tramos de 9.874 como mucho, que suman el total. Antes se usaba un **multi-sort con 14 órdenes**, que dejaba 4.901 menores sin descargar; sigue como reserva si el proxy rechaza `range`. Las páginas se piden ordenadas por (`idExpediente`, `portalGestor`) y una consulta a la que le faltan documentos se repite (en orden inverso y otra vez en el mismo) antes de darla por incompleta.
 
 ### Perfiles incluidos (~400)
 

@@ -221,7 +221,7 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
 ### 4.2 Pendiente
 
 - **PLACSP.** Nº de entradas borradas por ZIP y hueco de `agregacion` del 17 al 22 de octubre de 2025. Salen del informe de procesado de la regeneración completa.
-- **Andalucía.** Partición por mes de publicación (o `search_after`) para los segmentos del SAS de más de 10K y nº de documentos BRR. Requiere una máquina que llegue a la Junta. Para los menores ya no hace falta: el CKAN trae el SAS entero (§5.2).
+- **Andalucía.** ~~Partición de los segmentos del SAS de más de 10K~~: **hecho** con tramos de `idExpediente` (`range`), medido desde el VPS el 2026-09-29: las tres consultas con tope quedan en 6, 4 y 6 tramos de 9.874 como mucho, que suman el total. Queda el nº de documentos BRR.
 - **Catalunya.** Filtro de fechas del portal de menores para segmentar ICS, UPF y UAB.
 - **Madrid Comunidad.** Filtros de fecha para menores sin entidad.
 - **Euskadi.** IDs de poder de REVASCON.
@@ -352,7 +352,7 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 
 | Fuente | Órganos | Formato | Periodo | Volumen/año | ¿La tenemos? | ¿En 1143? | Conf. | URL |
 |---|---|---|---|---|---|---|---|---|
-| Buscador ES de la Plataforma de la Junta | Junta, SAS, agencias, empresas. **Sin universidades, diputaciones ni ayuntamientos**: 0 filas en el publicado, contra lo que dice el README | JSON | 2016-2026 | 106-127K | Sí, `ccaa_andalucia.py` (faltan ~41K del SAS) | No | A (publicado) | `juntadeandalucia.es/haciendayadministracionpublica/apl/pdc-front-publico/` |
+| Buscador ES de la Plataforma de la Junta | Junta, SAS, agencias, empresas. **Sin universidades, diputaciones ni ayuntamientos**: 0 filas en el publicado, contra lo que dice el README | JSON | 2016-2026 | 106-127K | Sí, `ccaa_andalucia.py` (con el SAS entero desde los tramos de id y el registro por (`portalGestor`, `idExpediente`), 2026-09-29) | No | A (publicado) | `juntadeandalucia.es/haciendayadministracionpublica/apl/pdc-front-publico/` |
 | CKAN «Contratación Menor en {año}» (9 conjuntos) | Igual, con el SAS entero (71 % de las filas) | CSV con `\|` (2018-2023 en ZIP) y JSON; NIF y nombre del adjudicatario | 2018-2026 (año de adjudicación; 2026 hasta el 30 de junio) | 50-125K | **Sí**, `ccaa_andalucia_menores.py` (2026-09-29; ver abajo) | No | A (VPS) | `www.juntadeandalucia.es/datosabiertos/portal/dataset/00510697-…/download/menores_2025_v1_20260618.csv` |
 | Pestaña "Documentos" del perfil en PLACSP | UGR (desde 2020), Diputación de Granada | PDF/XLS | 2019- | ? | No | No | A (UGR) | `scgp.ugr.es/pages/contratos-menores/contratos-menores` |
 | Ayuntamiento de Sevilla | Ayuntamiento y organismos | PDF mensual | 2017- | ? | No | 320 | M | `sevilla.org/servicios/contratacion/contratos/{año}` |

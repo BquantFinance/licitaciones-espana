@@ -1,5 +1,8 @@
 import copy
 import gzip
+import itertools
+import json as json_module
+import shutil
 import importlib.util
 import io
 import json
@@ -43,15 +46,23 @@ class FakeElastic:
     """Emula el proxy Elasticsearch del portal sobre documentos en memoria.
 
     - bool must/must_not con `match` (tokens alfanumericos en minusculas, OR entre tokens,
-      campos con ruta "a.b" y valores multiples como provinciasEjecucion);
-    - sort de un campo con missing al final, min/max para multivaluados y desempate por
-      orden de indexacion;
+      campos con ruta "a.b" y valores multiples como provinciasEjecucion) y `range`
+      (gte/lte sobre el numero del campo);
+    - sort por uno o varios campos, cada uno con missing al final, min/max para
+      multivaluados y desempate por orden de indexacion;
     - from/size con ventana maxima: si from + size la supera responde HTTP 400 como ES.
+    rangos=False: como un proxy que rechaza 'range' (HTTP 400); 'ignorar' lo acepta sin
+    aplicarlo (cuenta todo). El portal real lo admite (medido el 2026-09-29).
+    empates_inestables: los documentos empatados en todos los campos del orden salen en el
+    orden inverso en las paginas impares (como ES entre shards o con el indice cambiando):
+    con un orden que no es total, una pagina repite documentos y otra se los salta.
     """
 
-    def __init__(self, docs, max_window):
+    def __init__(self, docs, max_window, rangos=True, empates_inestables=False):
         self.docs = docs
         self.max_window = max_window
+        self.rangos = rangos
+        self.empates_inestables = empates_inestables
         self.bodies = []
         self.post_urls = set()
         self.post_timeouts = set()
@@ -76,6 +87,23 @@ class FakeElastic:
         return values
 
     def _clause_matches(self, clause):
+        if "range" in clause:
+            ((path, limits),) = clause["range"].items()
+            key = ("range", path, limits.get("gte"), limits.get("lte"))
+            if key not in self._clause_cache:
+                def inside(value):
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        return False
+                    return ((limits.get("gte") is None or number >= limits["gte"])
+                            and (limits.get("lte") is None or number <= limits["lte"]))
+                self._clause_cache[key] = frozenset(
+                    index
+                    for index, doc in enumerate(self.docs)
+                    if self.rangos == "ignorar" or any(inside(value) for value in self._field_values(doc, path))
+                )
+            return self._clause_cache[key]
         ((path, query),) = clause["match"].items()
         if isinstance(query, dict):
             query = query["query"]
@@ -100,8 +128,9 @@ class FakeElastic:
         for clause in boolean.get("must_not", []):
             selected -= self._clause_matches(clause)
         hits = sorted(selected)
-        if body.get("sort"):
-            ((path, order),) = body["sort"][0].items()
+        # Varios campos: de atras adelante con ordenaciones estables (missing al final en cada uno)
+        for criterion in reversed(body.get("sort") or []):
+            ((path, order),) = criterion.items()
             present = [index for index in hits if self._field_values(self.docs[index], path)]
             missing = [index for index in hits if not self._field_values(self.docs[index], path)]
             if order == "asc":
@@ -111,6 +140,19 @@ class FakeElastic:
             hits = present + missing
         self._sorted_cache[cache_key] = hits
         return hits
+
+    def _desordenar_empates(self, hits, sort, invertir):
+        def clave(index):
+            valores = []
+            for criterion in sort:
+                ((path, order),) = criterion.items()
+                campo = self._field_values(self.docs[index], path)
+                valores.append(json_module.dumps((min(campo) if order == "asc" else max(campo)) if campo else None))
+            return tuple(valores)
+        salida = []
+        for _, grupo in itertools.groupby(hits, key=clave):
+            salida.extend(reversed(list(grupo)) if invertir else grupo)
+        return salida
 
     def post(self, url, json=None, timeout=None, **kwargs):
         self.post_urls.add(url)
@@ -123,7 +165,12 @@ class FakeElastic:
                 400,
                 {"error": {"type": "illegal_argument_exception", "reason": "Result window is too large"}},
             )
+        clauses = json["query"]["bool"].get("must", []) + json["query"]["bool"].get("must_not", [])
+        if not self.rangos and any("range" in clause for clause in clauses):
+            return FakeResponse(400, {"error": {"type": "parsing_exception", "reason": "[range] no permitido"}})
         hits = self._select(json)
+        if self.empates_inestables and json.get("sort"):
+            hits = self._desordenar_empates(hits, json["sort"], (offset // max(size, 1)) % 2)
         page = hits[offset : offset + size] if size else []
         return FakeResponse(
             200,
@@ -141,10 +188,12 @@ class FakeElastic:
 
 
 def make_doc(doc_id, *, proc="1", tipo="SERV", estado="ADJ", tram="O", perfil="CONS01", provs=("41",),
-             fp="E", anio="2023", importe=None, awarded=False, medios=None):
+             fp="E", anio="2023", importe=None, awarded=False, medios=None, gestor=None, id_expediente=None):
+    """Un _source del indice. gestor: portalGestor (sin el campo si es None);
+    id_expediente: otro idExpediente que doc_id (el de la otra numeracion)."""
     publicado = date(2018, 1, 1) + timedelta(days=doc_id // 4)
     doc = {
-        "idExpediente": doc_id,
+        "idExpediente": doc_id if id_expediente is None else id_expediente,
         "numeroExpediente": f"CONTR {anio} {doc_id:05d}",
         "titulo": f"Contrato {doc_id:05d}",
         "estado": {"codigo": estado, "nombre": f"Estado {estado}"},
@@ -167,6 +216,8 @@ def make_doc(doc_id, *, proc="1", tipo="SERV", estado="ADJ", tram="O", perfil="C
         doc["provinciasEjecucion"] = list(provs)
     if fp is not None:
         doc["formaPresentacion"] = fp
+    if gestor is not None:
+        doc["portalGestor"] = gestor
     if awarded:
         doc["adjudicaciones"] = [
             {
@@ -609,13 +660,18 @@ class AndaluciaScraperTests(unittest.TestCase):
 
     def test_scrape_recursive_records_a_page_run_that_stops_before_the_total(self):
         incompletos = []
-        with patch.object(ccaa_andalucia, "paginate", return_value=([{"id_expediente": 1}], 3)):
+        with patch.object(ccaa_andalucia, "paginate", return_value=([{"id_expediente": 1}], 3)) as paginas, \
+                patch.object(ccaa_andalucia.time, "sleep"):
             ccaa_andalucia.scrape_recursive([mm("a", 1)], [], "hoja", [], set(), known_total=2,
                                             incompletos=incompletos)
         self.assertEqual(
             [(i["etiqueta"], i["must"], i["total"], i["descargados"], i["motivo"]) for i in incompletos],
             [("hoja", [mm("a", 1)], 3, 1, "paginacion incompleta")],
         )
+        # Antes de darla por incompleta se repite la paginacion (orden inverso y otra vez el mismo)
+        self.assertEqual([llamada.kwargs["sort"] for llamada in paginas.call_args_list],
+                         [ccaa_andalucia.ORDEN_PAGINAS, ccaa_andalucia.ORDEN_PAGINAS_INVERSO,
+                          ccaa_andalucia.ORDEN_PAGINAS])
 
 
 @unittest.skipUnless(ccaa_andalucia.HAS_PANDAS, "pandas no disponible")
@@ -632,7 +688,8 @@ class AndaluciaEndToEndTests(unittest.TestCase):
         self.addCleanup(tmpdir.cleanup)
         self.data_dir = Path(tmpdir.name)
 
-    def run_cli(self, command):
+    def run_cli(self, command, avisos=()):
+        """El CLI contra self.fake; `avisos`: textos de los unicos avisos permitidos."""
         patches = [
             patch.object(ccaa_andalucia, "DATA_DIR", self.data_dir),
             patch.object(ccaa_andalucia, "PERFILES_CACHE_PATH", self.data_dir / "perfiles_cache.json"),
@@ -655,7 +712,8 @@ class AndaluciaEndToEndTests(unittest.TestCase):
                 active.stop()
 
         # Sin avisos: ni PARTIAL en multi-sort ni ramas omitidas
-        self.assertEqual([record.getMessage() for record in logs.records if record.levelname != "INFO"], [])
+        self.assertEqual([record.getMessage() for record in logs.records if record.levelname != "INFO"
+                          and not any(aviso in record.getMessage() for aviso in avisos)], [])
         self.assertEqual(rc, 0)
         self.assertEqual(self.fake.post_urls, {ccaa_andalucia.ES_URL})
         self.assertNotIn(None, self.fake.post_timeouts)
@@ -695,8 +753,51 @@ class AndaluciaEndToEndTests(unittest.TestCase):
         # expedientes de perfiles aun no vistos (antes solo salian por la rama null)
         cached = json.loads((self.data_dir / "perfiles_cache.json").read_text(encoding="utf-8"))
         self.assertEqual(cached, ["CONS01", "CONS02", "HIDDEN01", "SYBS03", "UNIV01"])
+        # El bloque inseparable de 2.350 se parte por tramos de idExpediente (cada pagina
+        # dentro de uno que cabe en la ventana), sin el multi-sort
+        sorts_used = {json.dumps(body.get("sort")) for body in self.fake.bodies}
+        self.assertNotIn(json.dumps([{"importeLicitacion": "asc"}]), sorts_used)
+        tramos = [body for body in self.fake.bodies if body.get("size") and "range" in json.dumps(body["query"])]
+        self.assertTrue(tramos)
+        cabecera = ccaa_andalucia._cabecera_crudo(self.data_dir / "raw" / "menores.jsonl.gz")
+        self.assertEqual(cabecera["incompletos"], [])
+
+    def test_cli_pages_in_total_order_do_not_repeat_or_skip_a_shared_id(self):
+        # Dos expedientes con el mismo idExpediente (las dos numeraciones) justo en el borde
+        # entre la 1.a y la 2.a pagina, con un indice que no da los empates siempre en el
+        # mismo orden: ordenando solo por idExpediente, la 2.a pagina repite uno y se salta
+        # el otro. Con (idExpediente, portalGestor) no hay empates: ni repeticiones ni avisos
+        docs = [make_doc(i, proc="9", tipo="SERV", estado="RES", perfil="PA", anio="2023", gestor=True)
+                for i in range(1, 151)]
+        docs.append(make_doc(151, proc="9", tipo="SERV", estado="RES", perfil="PA", anio="2023", gestor=False,
+                             id_expediente=100))
+        self.fake = FakeElastic(docs, max_window=self.MAX_FROM + ccaa_andalucia.PAGE_SIZE, empates_inestables=True)
+        self.run_cli("scrape-men")
+
+        frame = ccaa_andalucia.pd.read_parquet(self.data_dir / "licitaciones_andalucia.parquet")
+        self.assertEqual(len(frame), 151)
+        self.assertEqual(int((frame["id_expediente"] == 100).sum()), 2)
+        paginas = [body for body in self.fake.bodies if body.get("size", 0) > 1 and body.get("sort")]
+        self.assertEqual({json.dumps(body["sort"]) for body in paginas}, {json.dumps(ccaa_andalucia.ORDEN_PAGINAS)})
+
+    def test_cli_scrape_men_falls_back_to_multisort_when_the_proxy_rejects_range(self):
+        # Un proxy que rechaza 'range' (HTTP 400): el bloque de 2.350 vuelve al multi-sort
+        self.fake.rangos = False
+        self.run_cli("scrape-men", avisos=("rechaza 'range'",))
+
+        self.assertEqual(self.read_csv_ids("licitaciones_menores.csv"), self.men_ids)
         sorts_used = {json.dumps(body.get("sort")) for body in self.fake.bodies}
         self.assertIn(json.dumps([{"importeLicitacion": "asc"}]), sorts_used)
+
+    def test_cli_scrape_men_falls_back_to_multisort_when_the_proxy_ignores_range(self):
+        # Un proxy que acepta 'range' sin aplicarlo: las dos mitades cuentan todo; no se
+        # parte sin fin, se vuelve al multi-sort
+        self.fake.rangos = "ignorar"
+        self.run_cli("scrape-men", avisos=("no aplica 'range'",))
+
+        self.assertEqual(self.read_csv_ids("licitaciones_menores.csv"), self.men_ids)
+        recuentos = [body for body in self.fake.bodies if not body.get("size") and "range" in json.dumps(body["query"])]
+        self.assertLess(len(recuentos), 10)
 
     def test_cli_scrape_writes_documented_outputs_with_expected_mapping(self):
         self.run_cli("scrape")
@@ -813,16 +914,47 @@ class CoincidenciasTests(unittest.TestCase):
     def test_ambito_de_una_descarga_quita_lo_que_puede_estar_en_una_consulta_incompleta(self):
         alcance = {"must": [mm("codigoProcedimiento", 9)], "must_not": [mn("estado.codigo", "BRR")]}
         self.assertEqual(self.ev.seguro(alcance).tolist(), [True, True, False, False, False])
-        cabecera = {"alcance": alcance, "incompletos": [{"must": [mm("provinciasEjecucion", "29")], "must_not": []}]}
+        registro = ccaa_andalucia.REGISTRO  # cabeceras del codigo actual
+        cabecera = {"registro": registro, "alcance": alcance,
+                    "incompletos": [{"must": [mm("provinciasEjecucion", "29")], "must_not": []}]}
         self.assertEqual(self.ev.ambito(cabecera).tolist(), [False, True, False, False, False])
         # El alcance cuenta si es SEGURO ('sum' no lo es) y la consulta incompleta si es POSIBLE
-        por_tipo = {"alcance": {"must": [mm("tipoContrato.codigo", "SUM")]}, "incompletos": []}
+        por_tipo = {"registro": registro, "alcance": {"must": [mm("tipoContrato.codigo", "SUM")]}, "incompletos": []}
         self.assertEqual(self.ev.ambito(por_tipo).tolist(), [True, False, False, False, True])
-        cabecera = {"alcance": alcance, "incompletos": [{"must": [mm("tipoContrato.codigo", "SUM")]}]}
+        cabecera = {"registro": registro, "alcance": alcance, "incompletos": [{"must": [mm("tipoContrato.codigo", "SUM")]}]}
         self.assertEqual(self.ev.ambito(cabecera).tolist(), [False] * 5)
         # Sin la columna de un campo del alcance no se puede asegurar nada
         sin_estado = ccaa_andalucia._Coincidencias(self.tabla.drop(columns="estado_codigo"))
         self.assertEqual(sin_estado.seguro(alcance).tolist(), [False] * 5)
+
+    def test_tramo_de_idexpediente(self):
+        # Un tramo (los que parten una consulta por encima de la ventana) se decide con el
+        # numero: fuera de el ni es seguro ni posible; una fila sin id puede estar en cualquiera
+        tabla = pd.DataFrame({"id_expediente": pd.Series([5, 50, 500, None, "77", 100], dtype=object),
+                              "codigo_procedimiento": [9] * 6})
+        ev = ccaa_andalucia._Coincidencias(tabla)
+        tramo = {"must": [mm("codigoProcedimiento", 9), ccaa_andalucia._rango_id(10, 100)]}
+        self.assertEqual(ev.seguro(tramo).tolist(), [False, True, False, False, True, True])
+        self.assertEqual(ev.posible(tramo).tolist(), [False, True, False, True, True, True])
+        # Un tramo incompleto solo protege su rango, no toda la consulta
+        cabecera = {"alcance": {"must": [mm("codigoProcedimiento", 9)]}, "incompletos": [tramo]}
+        self.assertEqual(ev.ambito(cabecera).tolist(), [True, False, True, False, False, False])
+        # Un 'range' de otro campo nunca es seguro
+        otro = {"must": [{"range": {"importeLicitacion": {"gte": 1}}}]}
+        self.assertEqual(ev.seguro(otro).tolist(), [False] * 6)
+        self.assertEqual(ev.posible(otro).tolist(), [True] * 6)
+
+    def test_cabecera_del_codigo_anterior_no_da_por_releidos_los_ids_compartidos(self):
+        # El codigo anterior deduplicaba por idExpediente: en los ids que comparten las dos
+        # numeraciones pudo perder un expediente sin anotarlo (18.453 menores el 29-sep)
+        tabla = pd.DataFrame({"id_expediente": [4401, 4402, 13890, 13891, 399999, 400000, 425471, 425472, None],
+                              "codigo_procedimiento": [9] * 9})
+        ev = ccaa_andalucia._Coincidencias(tabla)
+        alcance = {"must": [mm("codigoProcedimiento", 9)]}
+        self.assertEqual(ev.ambito({"alcance": alcance, "incompletos": []}).tolist(),
+                         [True, False, False, True, True, False, False, True, False])
+        self.assertEqual(ev.ambito({"registro": ccaa_andalucia.REGISTRO, "alcance": alcance, "incompletos": []}).tolist(),
+                         [True] * 9)
 
 
 class AcumularPorTrozosTests(unittest.TestCase):
@@ -913,10 +1045,13 @@ def _con(body, campo, valor):
 
 class Portal(FakeElastic):
     """FakeElastic con fallos: HTTP 503 en las consultas de documentos que cumplen
-    `fallar(body)` y el recuento que devuelva `recuento(body)` (si no es None)."""
+    `fallar(body)` y el recuento que devuelva `recuento(body)` (si no es None). Por
+    defecto rechaza 'range' (rangos=False): la consulta de 250 iguales de PC se queda en el
+    tope del multi-sort, que es lo que prueban los tests del ambito; con rangos=True se
+    parte por tramos de idExpediente, como en el portal real."""
 
-    def __init__(self, docs, fallar=None, recuento=None):
-        super().__init__(docs, max_window=VENTANA)
+    def __init__(self, docs, fallar=None, recuento=None, rangos=False, empates_inestables=False):
+        super().__init__(docs, max_window=VENTANA, rangos=rangos, empates_inestables=empates_inestables)
         self.fallar = fallar
         self.recuento = recuento
 
@@ -928,6 +1063,57 @@ class Portal(FakeElastic):
             self.bodies.append(json)
             return FakeResponse(200, {"hits": {"total": {"value": self.recuento(json), "relation": "eq"}, "hits": []}})
         return super().post(url, json=json, timeout=timeout, **kwargs)
+
+
+def con_ids_compartidos(docs):
+    """portal_compacto mas expedientes de las dos numeraciones con el mismo idExpediente,
+    como en el indice real (ids 4.402-13.890 y 400.000-425.471, de 2021-2022; medido el
+    2026-09-29 con el _id y portalGestor). Devuelve (docs, grupos):
+    - std_y_menor: una licitacion (numeracion anterior) y un menor (gestor) con el id 400001
+      (el caso de las 5.030 licitaciones dadas por retiradas);
+    - misma_hoja: dos menores con el id 400002 en la misma consulta (SERV de PA en 2023: las
+      dos «paginaciones incompletas» del 29-sep);
+    - otra_hoja: dos menores con el id 400003, uno en SERV de PA y otro en SUM de PB, que
+      se descarga despues (los 18.451 menores descartados sin avisar)."""
+    docs = copy.deepcopy(docs)
+    n = max(doc["idExpediente"] for doc in docs)
+    menor = dict(proc="9", tipo="SERV", estado="RES", perfil="PA", anio="2023")
+    grupos = {
+        "std_y_menor": [make_doc(n + 1, proc="2", tipo="SERV", perfil="PA", gestor=False, id_expediente=400001),
+                        make_doc(n + 2, gestor=True, id_expediente=400001, **menor)],
+        "misma_hoja": [make_doc(n + 3, gestor=False, id_expediente=400002, **menor),
+                       make_doc(n + 4, gestor=True, id_expediente=400002, **menor)],
+        "otra_hoja": [make_doc(n + 5, gestor=True, id_expediente=400003, **menor),
+                      make_doc(n + 6, proc="9", tipo="SUM", estado="RES", perfil="PB", provs=("29",), fp="M",
+                               anio="2024", gestor=False, id_expediente=400003)],
+    }
+    for grupo in grupos.values():
+        docs.extend(grupo)
+    return docs, grupos
+
+
+class PortalInestable(Portal):
+    """Portal que se salta en las paginas de las consultas con `si(body)` los documentos
+    de `saltar` (idExpediente): una vez cada uno (el indice cambia mientras se pagina y un
+    documento pasa de una pagina a otra) o siempre (siempre=True). Las consultas de un
+    solo documento (los extremos de idExpediente de un tramo) no se tocan."""
+
+    def __init__(self, docs, saltar, si=lambda body: True, siempre=False, **kwargs):
+        super().__init__(docs, **kwargs)
+        self.saltar = set(saltar)
+        self.si = si
+        self.siempre = siempre
+
+    def post(self, url, json=None, timeout=None, **kwargs):
+        response = super().post(url, json=json, timeout=timeout, **kwargs)
+        if json.get("size", 0) > 1 and response.ok and self.saltar and self.si(json):
+            hits = response._payload["hits"]["hits"]
+            quedan = [hit for hit in hits if hit["_source"]["idExpediente"] not in self.saltar]
+            if len(quedan) < len(hits):
+                if not self.siempre:
+                    self.saltar -= {hit["_source"]["idExpediente"] for hit in hits}
+                response = FakeResponse(200, {"hits": {"total": response._payload["hits"]["total"], "hits": quedan}})
+        return response
 
 
 def publicado_antiguo(docs):
@@ -1481,6 +1667,244 @@ class HistoricoAndaluciaTests(unittest.TestCase):
 
     def test_anio_invalido(self):
         self.assertEqual(self.ejecutar("scrape-men", "--anio", "24"), 2)
+
+    # -- registro (portalGestor, idExpediente) --------------------------------------
+
+    def test_dos_numeraciones_con_el_mismo_id_se_descargan_y_no_se_retiran(self):
+        # Antes se deduplicaba por idExpediente: se perdia uno de cada id compartido (en la
+        # misma pagina, «paginacion incompleta»; entre consultas, sin avisar) y la licitacion
+        # quedaba retirada al incorporar el menor con su id
+        docs, grupos = con_ids_compartidos(self.docs)
+        self.assertEqual(self.ejecutar("scrape", docs=docs), 0)
+
+        tabla = self.tabla()
+        for nombre, grupo in grupos.items():
+            (expediente,) = {doc["idExpediente"] for doc in grupo}
+            filas = tabla[tabla["id_expediente"] == expediente]
+            self.assertEqual(sorted(filas["numero_expediente"]), sorted(doc["numeroExpediente"] for doc in grupo), nombre)
+            self.assertTrue(filas["_en_ultima_descarga"].all(), nombre)
+        for crudo in ("std.jsonl.gz", "menores.jsonl.gz"):
+            cabecera = ccaa_andalucia._cabecera_crudo(self.salida / "raw" / crudo)
+            self.assertEqual([i["etiqueta"] for i in cabecera["incompletos"] if i["motivo"] == "paginacion incompleta"],
+                             [])
+        self.assertEqual(int((~tabla["_en_ultima_descarga"]).sum()), 0)
+
+        # La licitacion que el portal retira de verdad si queda retirada; el menor con su id, no
+        licitacion, menor = grupos["std_y_menor"]
+        self.assertEqual(self.ejecutar("scrape", docs=[doc for doc in docs if doc is not licitacion]), 0)
+        filas = self.tabla().set_index("numero_expediente")
+        self.assertFalse(filas.loc[licitacion["numeroExpediente"], "_en_ultima_descarga"])
+        self.assertTrue(filas.loc[menor["numeroExpediente"], "_en_ultima_descarga"])
+
+    def test_reanudar_no_pierde_el_otro_expediente_de_un_id(self):
+        docs, grupos = con_ids_compartidos(self.docs)
+        otro = grupos["otra_hoja"][1]  # SUM de PB: su bloque va despues del de SERV
+        falla = Portal(
+            copy.deepcopy(docs),
+            fallar=lambda body: _con(body, "codigoProcedimiento", 9) and _con(body, "tipoContrato.codigo", "SUM"),
+        )
+        self.assertEqual(self.ejecutar("scrape-men", portal=falla), 1)
+
+        self.assertEqual(self.ejecutar("scrape-men", docs=docs), 0)
+
+        self.assertIn("Reanudando menores", "\n".join(mensaje for _, mensaje in self.mensajes))
+        filas = self.tabla().set_index("numero_expediente")
+        self.assertIn(otro["numeroExpediente"], filas.index)
+        self.assertEqual(filas.loc[otro["numeroExpediente"], "id_expediente"], 400003)
+
+    # -- paginacion que se corta y consultas por encima de la ventana ------------------
+
+    def test_documento_que_se_salta_una_pagina_se_recupera_al_repetirla(self):
+        # Una sola pagina perdida dejaba la consulta entera como incompleta (fuera del ambito)
+        saltado = self.grupos["men_serv_2023"][10]
+        portal = PortalInestable(
+            copy.deepcopy(self.docs), saltar={saltado},
+            si=lambda body: _con(body, "codigoProcedimiento", 9) and _con(body, "tipoContrato.codigo", "SERV"),
+        )
+        self.assertEqual(self.ejecutar("scrape-men", portal=portal), 0)
+
+        self.assertIn(saltado, set(self.tabla()["id_expediente"]))
+        cabecera = ccaa_andalucia._cabecera_crudo(self.salida / "raw" / "menores.jsonl.gz")
+        self.assertNotIn("men/SERV", [i["etiqueta"] for i in cabecera["incompletos"]])
+        self.assertTrue(any("se repite la paginacion" in aviso for aviso in self.avisos()))
+
+    def test_consulta_por_encima_de_la_ventana_se_parte_por_tramos_de_id(self):
+        # Los 250 iguales de PC en las 8 dimensiones: el multi-sort solo alcanzaba 200 (tope)
+        self.assertEqual(self.ejecutar("scrape-men", portal=Portal(copy.deepcopy(self.docs), rangos=True)), 0)
+
+        self.assertTrue(set(self.grupos["men_pc"]) <= set(self.tabla()["id_expediente"]))
+        cabecera = ccaa_andalucia._cabecera_crudo(self.salida / "raw" / "menores.jsonl.gz")
+        self.assertEqual((cabecera["total"], cabecera["documentos"], cabecera["incompletos"]), (400, 400, []))
+        self.assertFalse(any("PARTIAL" in aviso for aviso in self.avisos()))
+        paginas = [body for body in self.portal.bodies if body.get("size", 0) > 1]
+        self.assertFalse(any("importeLicitacion" in json.dumps(body.get("sort")) for body in paginas))
+
+    def test_documento_sin_id_en_una_consulta_por_tramos_la_deja_incompleta(self):
+        # Un documento sin idExpediente no cae en ningun tramo: no se descarga y la consulta
+        # queda incompleta (nada de ella se retira)
+        docs = copy.deepcopy(self.docs)
+        pc = self.grupos["men_pc"]
+        del next(doc for doc in docs if doc["idExpediente"] == pc[7])["idExpediente"]
+        self.assertEqual(self.ejecutar("scrape-men", portal=Portal(copy.deepcopy(docs), rangos=True)), 0)
+        retirado = pc[20]
+
+        quedan = [doc for doc in copy.deepcopy(docs) if doc.get("idExpediente") != retirado]
+        self.assertEqual(self.ejecutar("scrape-men", portal=Portal(quedan, rangos=True)), 0)
+
+        cabecera = ccaa_andalucia._cabecera_crudo(self.salida / "raw" / "menores.jsonl.gz")
+        self.assertIn("recuentos que no cubren el total", [i["motivo"] for i in cabecera["incompletos"]])
+        self.assertEqual(self.vigencia()[retirado], [True])
+
+    def test_tramo_incompleto_solo_protege_su_rango_de_id(self):
+        pc = self.grupos["men_pc"]
+        self.ejecutar("scrape-men", portal=Portal(copy.deepcopy(self.docs), rangos=True))
+        # pc[0] no llega nunca (su tramo queda incompleto) y pc[-1], de otro tramo de la misma
+        # consulta, se retira de verdad
+        portal = PortalInestable(copy.deepcopy(self.sin(pc[-1])), saltar={pc[0]}, siempre=True, rangos=True)
+        self.assertEqual(self.ejecutar("scrape-men", portal=portal), 0)
+
+        vigencia = self.vigencia()
+        self.assertEqual(vigencia[pc[0]], [True])
+        self.assertEqual(vigencia[pc[-1]], [False])
+        cabecera = ccaa_andalucia._cabecera_crudo(self.salida / "raw" / "menores.jsonl.gz")
+        (incompleto,) = cabecera["incompletos"]
+        self.assertEqual(incompleto["motivo"], "paginacion incompleta")
+        ((_, limites),) = next(c["range"] for c in incompleto["must"] if "range" in c).items()
+        self.assertTrue(limites["gte"] <= pc[0] <= limites["lte"] < pc[-1])
+
+    # -- semilla: primero si esta y despues el ambito ------------------------------------
+
+    def _sembrar(self, filas, *args):
+        ruta = self.tmp / f"publicado_{len(list(self.tmp.glob('publicado_*')))}.parquet"
+        publicado_antiguo(filas).to_parquet(ruta, index=False)
+        return self._sembrar_ruta(ruta, *args)
+
+    def _sembrar_ruta(self, ruta, *args):
+        informes = []
+        with patch.object(ccaa_andalucia, "imprimir_informe_semilla", side_effect=informes.append):
+            rc = self.ejecutar("procesar", "--semilla", str(ruta), *args)
+        self.assertEqual(rc, 0)
+        (informe,) = informes
+        return informe
+
+    def test_semilla_con_el_id_de_la_otra_numeracion_se_anade(self):
+        # El publicado (deduplicado por id) trae la licitacion; la descarga de hoy no la tiene
+        # y trae el menor de la otra numeracion con el mismo id: por el id solo, «presente»
+        docs, grupos = con_ids_compartidos(self.docs)
+        licitacion, menor = grupos["std_y_menor"]
+        self.ejecutar("scrape", docs=[doc for doc in docs if doc is not licitacion])
+
+        informe = self._sembrar([licitacion, menor])
+
+        self.assertEqual((informe["anadidas"], informe["descartadas_clave"]), (1, 1))
+        tabla = self.tabla()
+        sembrada = tabla[tabla["_origen"].notna()]
+        self.assertEqual(sembrada["numero_expediente"].tolist(), [licitacion["numeroExpediente"]])
+        self.assertFalse(sembrada["_en_ultima_descarga"].any())
+
+    def test_semilla_renumerada_o_con_nan_esta_por_perfil_titulo_e_importe(self):
+        # En los ids compartidos: el n.o cambia (3 renumerados entre febrero y septiembre de
+        # 2026) y el publicado dejo 'nan' donde el portal pone 'N/A': mismo id, perfil, titulo
+        # e importe es el mismo expediente
+        n = max(doc["idExpediente"] for doc in self.docs)
+        compartidos = [make_doc(n + k, proc="9", tipo="SERV", estado="RES", perfil="PA", anio="2023", gestor=True,
+                                id_expediente=410000 + k) for k in (1, 2)]
+        self.ejecutar("scrape-men", docs=self.docs + compartidos)
+        publicado = copy.deepcopy(compartidos)
+        for doc in publicado:
+            del doc["portalGestor"]
+        publicado[0]["numeroExpediente"] = "CONTR 2022 0000000001"
+        publicado[1]["numeroExpediente"] = ""  # 'nan' en el publicado
+
+        informe = self._sembrar(publicado)
+
+        self.assertEqual((informe["anadidas"], informe["descartadas_contenido"]), (0, 2))
+        self.assertNotIn("_origen", self.tabla().columns)
+
+    def test_semilla_fuera_de_los_ids_compartidos_esta_por_el_id(self):
+        # Fuera de los ids que comparten las dos numeraciones cada id es de un solo
+        # expediente: renumerado y con otro titulo sigue siendo el mismo (no se duplica)
+        self.ejecutar("scrape-men")
+        a = self.grupos["men_serv_2023"][0]
+        publicado = copy.deepcopy([doc for doc in self.docs if doc["idExpediente"] == a])
+        publicado[0].update(numeroExpediente="CONTR 2022 0000000009", titulo="Otro titulo de febrero")
+
+        informe = self._sembrar(publicado)
+
+        self.assertEqual((informe["anadidas"], informe["descartadas_clave"]), (0, 1))
+
+    def test_semilla_de_un_id_con_las_dos_numeraciones_en_la_salida_no_se_anade(self):
+        docs, grupos = con_ids_compartidos(self.docs)
+        self.ejecutar("scrape", docs=docs)
+        cambiado = copy.deepcopy(grupos["misma_hoja"][0])
+        cambiado.update(numeroExpediente="OTRO 1", titulo="Otro titulo")
+
+        informe = self._sembrar([cambiado])
+
+        self.assertEqual((informe["anadidas"], informe["descartadas_contenido"]), (0, 1))
+
+    def test_semilla_sin_numero_ni_titulo_no_se_duplica_al_resembrar(self):
+        # Sin n.o ni titulo no hay (id, n.o) ni (id, perfil, titulo) con que casarla: la
+        # misma fila sembrada antes se reconoce igual (id, n.o, perfil y titulo, vacios)
+        self.ejecutar("scrape-men")
+        sin_datos = make_doc(9001, proc="9", tipo="SUM", estado="RES", perfil="PB", provs=("29",), fp="M", anio="2024")
+        sin_datos.update(numeroExpediente="", titulo="")
+
+        primera = self._sembrar([sin_datos])
+        segunda = self._sembrar([sin_datos])
+
+        self.assertEqual(primera["anadidas"], 1)
+        self.assertEqual((segunda["anadidas"], segunda["descartadas_clave"]), (0, 1))
+        self.assertEqual(int((self.tabla()["id_expediente"] == 9001).sum()), 1)
+
+    def test_semilla_con_gestor_solo_casa_con_su_numeracion(self):
+        # Una salida de este script como semilla trae portalGestor: un expediente de una
+        # numeracion no esta porque otro de la otra, con su id, tenga su perfil, titulo e
+        # importe (un titulo generico del SAS)
+        docs, grupos = con_ids_compartidos(self.docs)
+        viejo, nuevo = grupos["misma_hoja"]
+        nuevo.update(titulo=viejo["titulo"], importeLicitacion=viejo["importeLicitacion"])
+        self.assertEqual(self.ejecutar("scrape-men", docs=docs), 0)
+        semilla = self.tmp / "salida_anterior.parquet"
+        semilla.write_bytes((self.salida / "licitaciones_andalucia.parquet").read_bytes())
+        shutil.rmtree(self.salida)
+        self.salida.mkdir()
+        # En otra salida, el portal ya no sirve el de la numeracion anterior
+        self.assertEqual(self.ejecutar("scrape-men", docs=[doc for doc in docs if doc is not viejo]), 0)
+
+        informe = self._sembrar_ruta(semilla, "--origen-semilla", "salida anterior")
+
+        self.assertEqual(informe["anadidas"], 1)
+        tabla = self.tabla()
+        sembrada = tabla[tabla["_origen"].notna()]
+        self.assertEqual(sembrada["numero_expediente"].tolist(), [viejo["numeroExpediente"]])
+
+    def test_semilla_por_contenido_exige_el_mismo_importe(self):
+        # El publicado no trae portalGestor: un expediente con el id, perfil y titulo (generico)
+        # de otro de la otra numeracion pero otro importe no es el mismo
+        docs, grupos = con_ids_compartidos(self.docs)
+        viejo, nuevo = grupos["misma_hoja"]
+        nuevo.update(titulo=viejo["titulo"])
+        self.assertEqual(self.ejecutar("scrape-men", docs=[doc for doc in docs if doc is not viejo]), 0)
+        publicado = copy.deepcopy(viejo)
+        del publicado["portalGestor"]
+
+        informe = self._sembrar([publicado])
+
+        self.assertEqual((informe["anadidas"], informe["descartadas_contenido"]), (1, 0))
+
+    def test_semilla_presente_cuenta_como_presente_aunque_este_fuera_del_ambito(self):
+        # Antes se decidia primero el ambito y las filas de fuera no se comparaban: el 29-sep,
+        # 95.258 «fuera del ambito», de las que 95.255 estaban en la descarga
+        self.ejecutar("scrape-men")  # los 250 de PC quedan en el tope (fuera del ambito)
+        publicado = [doc for doc in self.docs if doc["estado"]["codigo"] != "BRR" and doc["codigoProcedimiento"] == "9"]
+
+        informe = self._sembrar(publicado)
+
+        descargados = set(self.tabla()["id_expediente"])
+        self.assertEqual(informe["descartadas_clave"], len(descargados))
+        self.assertEqual(informe["fuera_ambito"], 50)  # los de PC que el tope no alcanza
+        self.assertEqual((informe["leidas"], informe["anadidas"]), (400, 0))
 
 
 if __name__ == "__main__":
