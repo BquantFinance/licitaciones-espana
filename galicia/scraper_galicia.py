@@ -12,10 +12,10 @@ Fases: base (listados JSON de LIC y CM por organismo) -> detail (ficha HTML de
 cada contrato, en caché SQLite) -> merge (tabla final contratos_galicia.csv y
 .parquet). Todo se puede repetir y reanudar (--resume). La ficha es la única
 fuente del adjudicatario y del importe adjudicado de las licitaciones (y de su
-procedimiento, tipo, CPV y fecha de formalización); el despliegue del VPS
-(despliegue/vps/fuentes/galicia.sh) aún no ejecuta 'detail'.
+procedimiento, tipo, CPV y fecha de formalización); el despliegue automático
+aún no ejecuta 'detail'.
 
-SESGO DEL SUPERVIVIENTE (comun/historico.py; docs/CONTINUACION.md §2)
+SESGO DEL SUPERVIVIENTE (comun/historico.py; docs/PRINCIPIOS.md)
 El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
 - Capa cruda: contratos_galicia_base.csv es la descarga en curso (se escribe
   organismo a organismo, como siempre). Una descarga nueva (sin --resume) no

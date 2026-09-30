@@ -20,7 +20,7 @@ deduplicaba por (id, descripcio) y se perdían los contratos distintos de una
 misma publicación agregada con la misma descripción (en el parquet publicado,
 1.781 grupos (id, descripcio) con expedientId distintos).
 
-Sesgo del superviviente (comun/historico.py; docs/CONTINUACION.md, regla 3):
+Sesgo del superviviente (comun/historico.py; docs/PRINCIPIOS.md, regla 3):
 - Capa cruda: el fichero de cada fase (_fase_<n>), el crudo (_raw) y el
   análisis se escriben con guardar_version: si cambian, la versión anterior
   pasa a _historico/. Una fase que ya no devuelve nada no borra su fichero:

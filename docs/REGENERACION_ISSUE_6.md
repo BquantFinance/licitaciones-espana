@@ -160,7 +160,7 @@ La tabla anterior es anterior a los dos. Medidos después sobre la misma PLACSP 
 
 - La calidad y el cruce TED se calculan sobre la **última versión** de cada licitación, como hace el módulo de calidad. Las versiones anteriores están en la principal, marcadas con `es_ultima_version = False`.
 - El snapshot de TED llega a 2025, y 2026 queda sin evaluar. El BORME es el del repo, así que las empresas inscritas después no cuentan.
-- **Reproducir en la máquina del propietario** con `herramientas/sesion_2026_09_27/regeneracion_placsp/` (el README de `herramientas/sesion_2026_09_27/` explica las variables `TRABAJO`, `PY` y `REPO`):
+- **Reproducir en la máquina del propietario** con los scripts de la sesión del 2026-09-27 (no publicados):
   1. `descargar.sh`: los 45 ZIP. Hay que comprobar los hashes del anexo; si la PLACSP ha actualizado algún ZIP, cambian y hay más entradas.
   2. `procesar.sh`: `nacional/licitaciones.py` con `--semilla` de `v2026.02`. Pide unos 6 GB de RAM y ~15 GB de disco con los ZIP.
   3. `cadena2.sh`:

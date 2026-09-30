@@ -597,7 +597,7 @@ Dataset nuevo con **3.024.000 filas** de contratos menores del sector público c
   - Contratación programada: 5.095.
 - Adjudicaciones de la Generalitat, COVID y el Tribunal coinciden con el publicado.
 
-**Solo algunas categorías (`--categorias`).** `ccaa_cataluna.py` y `ccaa_cataluna_parquet.py` aceptan `--categorias contratacion,subvenciones,...` (por defecto, todas). Open Data Barcelona va con `contratacion`. El VPS de buscalicitaciones.com solo pide `contratacion`: las concesiones RAISC pesan 19 GB por descarga.
+**Solo algunas categorías (`--categorias`).** `ccaa_cataluna.py` y `ccaa_cataluna_parquet.py` aceptan `--categorias contratacion,subvenciones,...` (por defecto, todas). Open Data Barcelona va con `contratacion`. buscalicitaciones.com solo usa `contratacion`: las concesiones RAISC pesan 19 GB por descarga.
 
 ---
 
@@ -773,7 +773,7 @@ scripts/
 | Otros | forma_presentacion, cofinanciado_ue, subasta_electronica, sistema_racionalizacion, cpv, medios_publicacion, num_lotes, num_anuncios |
 | Detalle completo (JSON) | adjudicaciones_json, lotes_json, anuncios_json, campos_extra_json (con `portalGestor`) |
 
-> **Columnas planas de la adjudicación.** `adjudicatario_nif`, `importe_adjudicacion` e `importe_adjudicacion_iva` son la **primera adjudicación de primer nivel tal como la sirve el portal**, sea cual sea su resultado (`codigoResultado` AWARD, NOAWA —desierta—, RESIGN, MISES; una no adjudicada suele traer 0 o el presupuesto), y no miran los lotes: en un expediente con lotes están vacías (sus adjudicaciones van en `lotes_json[].adjudicacion`). Para sumar lo adjudicado hay que leer `adjudicaciones_json` y `lotes_json` (resultado AWARD, sin la copia de formalización), como hace el ETL de buscalicitaciones. `fecha_publicacion` es a menudo una publicación posterior: la primera es `anuncio_primera_fecha`. `url_detalle` lleva solo el `idExpediente`, que en los ids compartidos no dice de qué numeración es.
+> **Columnas planas de la adjudicación.** `adjudicatario_nif`, `importe_adjudicacion` e `importe_adjudicacion_iva` son la **primera adjudicación de primer nivel tal como la sirve el portal**, sea cual sea su resultado (`codigoResultado` AWARD, NOAWA —desierta—, RESIGN, MISES; una no adjudicada suele traer 0 o el presupuesto), y no miran los lotes: en un expediente con lotes están vacías (sus adjudicaciones van en `lotes_json[].adjudicacion`). Para sumar lo adjudicado hay que leer `adjudicaciones_json` y `lotes_json` (resultado AWARD, sin la copia de formalización), como hace el ETL de buscalicitaciones.com. `fecha_publicacion` es a menudo una publicación posterior: la primera es `anuncio_primera_fecha`. `url_detalle` lleva solo el `idExpediente`, que en los ids compartidos no dice de qué numeración es.
 
 ### Estrategia de descarga
 
