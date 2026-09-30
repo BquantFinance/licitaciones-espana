@@ -141,7 +141,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
    - **Resto de fuentes**: no llevan enlace ni identificador de la PLACSP. Hay que casar por contenido: NIF del órgano, expediente, adjudicatario, importe y fecha.
 2. Armonizar el NIF, que cada fuente pone en su columna (Asturias, SMS…). Las personas físicas vienen enmascaradas (`***1234**`).
 3. Separar los datasets por factura (SESCAM, relaciones de Navarra) de los que van por contrato.
-4. Plan priorizado en `docs/CONTINUACION.md` §3.6. Inventario completo en §5.
+4. Inventario completo en §5.
 
 ## 1. Qué cubre ya PLACSP (`nacional/`)
 
@@ -230,7 +230,7 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
 
 ## 5. Contratos menores: inventario de fuentes por comunidad (2026-09-27)
 
-Inventario hecho con red completa desde la nube el 2026-09-27, en cuatro bloques independientes, cada uno con su método y su leyenda de confianza (**A** = verificada en vivo; **M** = fuente secundaria o portal inalcanzable desde la nube; **B** = inferida). "¿En 1143?" es cuántos menores de ese órgano trae el feed 1143 de la PLACSP. Las prioridades de cada bloque están resumidas y ordenadas en `docs/CONTINUACION.md` §3.6.
+Inventario hecho con red completa desde la nube el 2026-09-27, en cuatro bloques independientes, cada uno con su método y su leyenda de confianza (**A** = verificada en vivo; **M** = fuente secundaria o portal inalcanzable desde la nube; **B** = inferida). "¿En 1143?" es cuántos menores de ese órgano trae el feed 1143 de la PLACSP.
 
 ### 5.1 Catalunya, C. Valenciana, Illes Balears y Aragón
 

@@ -1393,7 +1393,7 @@ def published_seed(path, rows):
 
 
 class GaliciaHistoricoTests(unittest.TestCase):
-    """Nada de lo descargado alguna vez se pierde (docs/CONTINUACION.md §2 y §3.2)."""
+    """Nada de lo descargado alguna vez se pierde (docs/PRINCIPIOS.md, reglas 2 y 3)."""
 
     def test_withdrawn_contracts_stay_with_en_ultima_descarga_false(self):
         lic = fake_lic_records(3)
