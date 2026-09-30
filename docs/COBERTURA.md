@@ -63,6 +63,9 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | C. Valenciana | REGCON (adjudicación directa; aproximado) | 5.806 | 5.351 | 5.038 | 6.184 | 6.354 | 5.217 | 10.169 | 108 |
 | País Vasco | KontratazioA: **anuncios** de menores, sin importe ni adjudicatario | 4.728 | 59.854 | 63.172 | 59.144 | 91.149 | 99.620 | 92.883 | 86.809 |
 | País Vasco | KontratazioA API `/contracts` (A1), con importe y CIF: **descargada el 2026-09-27, sin publicar** | 31.627 | 69.025 | 68.585 | 66.597 | 87.371 | 92.348 | 84.814 | 83.905 |
+| Canarias | Gobierno, CKAN «Contratos adjudicados y formalizados» (menores; es la PLACSP del Gobierno: el 99,7 % está en el 1143; `ccaa_canarias.py`, 2026-09-30) | – | – | 7.310 | 10.415 | 10.157 | 11.207 | 11.106 | 12.491 |
+| Canarias | Ayuntamiento de Las Palmas de GC, API de transparencia (desde 2018, todos en el 1143; 2016: 1.643 y 2017: 1.640, no; `ccaa_canarias.py`) | 1.359 | 951 | 899 | 1.058 | 1.040 | 619 | 655 | 632 |
+| Canarias | Cabildo de Tenerife, API de transparencia (sin NIF; unos dos tercios no casan con el 1143 por el objeto; `ccaa_canarias.py`) | – | 40 | 7 | 50 | 22 | 1.823 | 2.425 | 2.629 |
 
 ### 0.1 Veredicto (2026-09-27, noche)
 
@@ -103,7 +106,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Castilla-La Mancha | 50-65 % | ~85 % (`scripts/ccaa_castilla_la_mancha.py`: UCLM 253.571 filas 2017-2026, Junta 2019-2026, caja pagadora y sector público 2015-2018; verificado en vivo) | Sí salvo SESCAM (por línea de factura) y 2019 (20,7 %) | SESCAM (por factura, sin NIF), 469 ayuntamientos |
 | Aragón | ~30 % | = (2024-2025 del Gobierno recuperados) | Registro 99,96 %; Gobierno sin NIF | Ayuntamiento de Zaragoza y DPZ (bloqueados desde la nube), SALUD pequeños, UZ |
 | C. Valenciana | ~35 % | ~50 % (`scripts/ccaa_valencia_menores.py`: UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV, verificado en vivo) | REGCON 93 %; UV 97,9 %; València 100 %; Diputación, UA y UPV sin NIF | Departamentos de salud, Elche, Castelló y Diputació de València (cortan la conexión desde la nube), UJI |
-| Canarias | ~30 % | = | — | **SCS: 89 mil/año sin fuente contrato a contrato** (solo totales; pedir por acceso a la información) |
+| Canarias | ~30 % | ~30-35 % (`scripts/ccaa_canarias.py`, verificado en vivo el 2026-09-30: CSV del Gobierno, que es su PLACSP; Las Palmas de GC 2016-2026; Cabildo de Tenerife 2019-2025; y los resúmenes del SCS y de los departamentos como denominador) | Gobierno 99,96 %; Las Palmas 100 % en 2025; Tenerife sin NIF | **SCS: 89.340 menores en 2025 según sus propios resúmenes y ~1.500 contrato a contrato (1,7 %)**: pedir el resto por acceso a la información. Los departamentos publican casi todo en la PLACSP |
 | Illes Balears | ~15 % | = | — | Govern e IB-Salut (la CAIB publica ~2 mil/año, copia de PLACSP), Palma (bloqueado), UIB (PDF) |
 | Cantabria | parcial | = | — | contratosdecantabria.es congelado en noviembre de 2023; cantabria.es bloqueado desde la nube |
 | Navarra | ~0 % contrato a contrato | = | — | **La ley foral (art. 102.3 LFCP) solo obliga a publicar la menor cuantía agregada por empresa y trimestre**: 519 documentos en 2024, el 84 % PDF |
@@ -185,7 +188,7 @@ Antes de raspar pliegos en HTML/PDF, el XML CODICE de cada entrada ATOM trae muc
 | **La Rioja** | CA por agregación (sin menores); ayuntamientos directos | Dato abierto opd-179 (licitaciones 2014-2025 a nivel de lote, NIF del adjudicatario) y menores por año (opd-979, opd-1151; 2021-2023 en datos.gob.es) (A) | Descarga directa — `scripts/ccaa_la_rioja.py` | 1-2 días |
 | **Castilla-La Mancha** | Perfiles en PLACSP desde 19-6-2018 | XLS/XLSX trimestrales de menores de la JCCM desde 2016 (A); Registro de Contratos (buscador) (M) | Descarga de enlaces + unión de columnas — `scripts/ccaa_castilla_la_mancha.py` | 1-2 días |
 | **Extremadura** | Perfiles en PLACSP desde 9-3-2018 | XLS trimestrales de la Intervención General (mayores, menores, incidencias; ~2016-2020), registro de contratos trimestral en juntaex.es (2022+; formato por confirmar); Cáceres CKAN (M) | Recorrido de páginas + XLS | 2-3 días |
-| **Canarias** | Perfiles en PLACSP | Menores del Servicio Canario de la Salud (ODS/CSV trimestral 2021-2025) (A); Las Palmas de GC CSV (A); perfil antiguo "apipublica" (histórico) (M); menores de los departamentos del Gobierno solo agregados | ODS/CSV | 2-3 días |
+| **Canarias** | Perfiles en PLACSP | Verificado el 2026-09-30 (A): los menores del SCS (ODS trimestral 2021-2026) y los de los departamentos del Gobierno (ODT trimestral, 3T 2023-) son **resúmenes agregados** (número e importe por órgano y tipo), no contratos. Contrato a contrato: el CSV «Contratos adjudicados y formalizados» del Gobierno en datos.canarias.es (copia de la PLACSP), la API de transparencia de Las Palmas de GC (2016-) y la del Cabildo de Tenerife (2019-). El perfil antiguo «apipublica» da 404 (el Wayback Machine solo guarda anuncios de licitación) | CSV + API JSON + ODS/ODT — `scripts/ccaa_canarias.py` (**hecho**, 2026-09-30; §5.2) | 1 día |
 | **Cantabria** | Perfiles en PLACSP desde 2018 | Transparencia "Consulta contratos Gobierno" desde 2015 con menores (buscador, sin descarga masiva) (A); CSV de contratosdecantabria.es (terceros, CC BY) (M) | Scraping del buscador; CSV de terceros como arranque | 2-3 días |
 | **Illes Balears** | Govern e IB-Salut en PLACSP desde 2017-18 | Socrata `anss-9wx4` (derivado de PLACSP, con modificaciones y prórrogas) (M); menores del Ajuntament de Palma (B) | Solo lo que no está en PLACSP | 1-3 días |
 | **Ceuta / Melilla** | Ceuta bien cubierta; Melilla sin menores | Relación de menores de Melilla (probablemente PDF) (B) | Prioridad baja | — |
@@ -214,6 +217,7 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
   - Murcia: `contratosOD2024.csv` y `CONTRA_ContratosMenores_2024.csv`, y el CKAN de la Región.
   - Aragón: CKAN en `/api/3` y `/ckan/api/3`.
   - Excepciones: el CSV antiguo de licitaciones de CyL devuelve 92 bytes y el listado `transparencia.carm.es/…/SMS/Contratos_menores/` da 403.
+- **Canarias (2026-09-30).** Responden `datos.canarias.es` (CKAN), `transparencia.laspalmasgc.es` (API `/api/proxy/obligaciones/...`), `webadmin.transparencia.tenerife.es` (API; sin la cabecera `Origin: https://transparencia.tenerife.es` da 400), `www3.gobiernodecanarias.org/sanidad/scs/` y `www.gobiernodecanarias.org/transparencia/`. `datosabiertos.laspalmasgc.es` tiene el certificado HTTPS caducado (por HTTP, 503 en la ficha); `elhierro.cloudtransparencia.es`, certificado autofirmado; `lagomera.cloudtransparencia.es` no resuelve y `www.arrecife.es` no presenta la cadena de certificados completa. El perfil antiguo `gobiernodecanarias.org/perfildelcontratante/apipublica/` da 404.
 - **Inalcanzables desde la nube de Claude Code.** No se pueden verificar ni regenerar desde allí:
   - `www.juntadeandalucia.es` (Andalucía) y `descargas.asturias.es` (Asturias): el túnel se corta en origen. Desde el VPS, `www.juntadeandalucia.es` sí responde (su CKAN, verificado el 2026-09-29).
   - `www.zaragoza.es`: conexión reiniciada.
@@ -422,18 +426,39 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 
 **Canarias**
 
+Verificado en vivo el 2026-09-30 (`scripts/ccaa_canarias.py`; confianza A salvo donde se dice).
+
 | Fuente | Órganos | Formato | Periodo | Volumen/año | ¿La tenemos? | ¿En 1143? | Conf. | URL |
 |---|---|---|---|---|---|---|---|---|
-| Buscador de contratos adjudicados y formalizados | Gobierno | CSV (POST) | 2020- | 12.465 (2025) | No | Sí: es copia de PLACSP | A | `gobiernodecanarias.org/transparencia/…/actividad-contractual/formalizados/` |
-| Contratos menores del SCS | SCS | ODS/PDF **agregado**, no contrato a contrato | 2021-2026 | **89.340** (2025) | No | ~1.700 | A | `www3.gobiernodecanarias.org/sanidad/scs/contenidoGenerico.jsp?idDocument=ecd71051-…` |
+| «Contratos adjudicados y formalizados del Gobierno de Canarias» (CKAN; el «buscador de contratos menores» del portal de transparencia y de la página del SCS da lo mismo) | Gobierno, organismos, empresas y fundaciones públicas y SCS | CSV mensual, contrato a contrato, todos los procedimientos: NIF (sin nombre del adjudicatario), importe sin IVA, fecha, CPV (en el 23 % de los menores) y enlace a la PLACSP | 2020- | 12.491 menores (2025) | **Sí** (`gobierno_contratos`) | 99,7 % (por el idEvl del enlace) | A | `datos.canarias.es/catalogos/general/dataset/contratos-adjudicados-y-formalizados-del-gobierno-de-canarias` |
+| Contratos menores trimestrales del SCS | SCS: hospitales, gerencias, áreas de salud | ODS (y PDF) **agregado**: número, importe y % por órgano y tipo de contrato | 2021-2026 | **89.340** (2025) | **Sí, como resumen** (`scs_resumen`) | ~1.500 al año (1,7 %) | A | `www3.gobiernodecanarias.org/sanidad/scs/contenidoGenerico.jsp?idDocument=ecd71051-…` |
+| Contratos menores de cada departamento y organismo (portal de transparencia) | 13 departamentos y 16 organismos, SCS incluido | ODT (y PDF) **agregado** por órgano y tipo, trimestral | 3T 2023-2T 2026 (284 ODT) | 2T 2026: 18.149, de ellos 16.906 del SCS | **Sí, como resumen** (`gobierno_resumen`) | Departamentos, casi todo; SCS, ~1-2 % | A | `gobiernodecanarias.org/transparencia/…/actividad-contractual/menores/` |
+| Perfil del contratante antiguo («apipublica») | Gobierno | HTML | hasta ~2019 | — | No: da 404; el Wayback Machine guarda 237 páginas, anuncios de licitación y no relaciones de menores | — | A | `gobiernodecanarias.org/perfildelcontratante/apipublica/` |
+| Ayuntamiento de Las Palmas de GC: relación de contratos menores | Ayuntamiento | API JSON de su portal de transparencia (plataforma «cloudtransparencia»): expediente, objeto, tipo, NIF y nombre del adjudicatario, órgano, importe y enlace a la PLACSP; sin fecha ni CPV | 2016-2026 | 632 (2025) | **Sí** (`las_palmas_gc`) | 2018-2026: todos (por el idEvl); 2016-2017 (3.283), no | A | `transparencia.laspalmasgc.es/contratos/relacion-contratos-menores` |
+| Cabildo de Tenerife: relación de contratos menores | Cabildo y su sector público | API JSON (la misma plataforma): fecha, objeto, duración, importes de licitación y adjudicación (sin IVA), licitadores, adjudicatario; sin NIF, órgano ni expediente | 2019-2025 | 2.629 (2025) | **Sí** (`cabildo_tenerife`) | ~1/3 por el objeto | A | `transparencia.tenerife.es/contratos/contratos-menores` |
 | Ayuntamiento de Santa Cruz de Tenerife | Ayuntamiento | CSV 2023-2024; PDF 2025 | 2020-2025 | ~1,2K | **Sí**, `municipios_menores.py` | Sí | A | `santacruzdetenerife.es/gobiernoabierto/transparencia/contratos` |
-| Ayuntamiento de Las Palmas de Gran Canaria | Ayuntamiento | CSV y perfil propio | ? | ? | No | ~2K | M (TLS) | `datosabiertos.laspalmasgc.es` |
+| Cabildo de Gran Canaria | Cabildo, por servicio | 632 documentos XLS/XLSX/ODS (casi todos en pareja): bimestrales por servicio desde 2023, con enlace a la PLACSP; en 2018-2019, la plantilla anual de la Audiencia de Cuentas (15 y 7 filas en dos muestras) | 2018-2026 | 3.413 en el 1143 (2024) | No (pendiente: plantillas distintas por año) | Sí: 10 de 10 en una muestra de 2026 | A | `transparencia.grancanaria.com/gestor-documental?154266=154443` |
+| Cabildo de La Palma | Cabildo | ODS/XLSX anual 2020-2025, CSV 2018-2019, PDF 2017 | 2017-2025 | 232 (2025) | No: la hoja de 2025 es una exportación de la PLACSP (enlace al perfil y NIF enmascarado, también de sociedades) | Sí | A | `transparencia.cabildodelapalma.es/contratos/contratos-menores/` |
+| Parlamento de Canarias | Parlamento | Tabla HTML por año: adjudicatario, fecha, objeto, importe; sin NIF | 2022-2026 | ~360 | No (pendiente; poco volumen) | ? | A | `parcan.es/transparencia/contratos/menores/<año>/` |
+| Universidad de La Laguna | ULL | API JSON (cloudtransparencia) | 2024-2026 | 385 (2025) | No: 676 de 679 registros son importados de la PLACSP | Sí | A | `ull2.cloudtransparencia.es/transparencia/contratos/contratos-menores` |
+| Ayuntamientos de La Laguna y Granadilla de Abona | Ayuntamientos | La Laguna, PDF; Granadilla, agregado (número e importe global) | — | — | No | Parcial | M | `aytolalaguna.es`, `sede.granadilladeabona.es` |
+| Datos abiertos de Las Palmas de GC | Ayuntamiento | CSV «Contratos Menores 2017» | 2017 | 1.640 | No: lo mismo que la API; HTTPS con el certificado caducado | No | A | `datosabiertos.laspalmasgc.es` |
+
+**Canarias, medido en vivo el 2026-09-30** (`scripts/ccaa_canarias.py`: prueba de 2025 y 2026; la salida es idéntica al original celda a celda).
+- **No hay fuente pública contrato a contrato de los menores del SCS.** Sus propios resúmenes dan 89.340 en 2025 (34.025, 24.203, 13.908 y 17.204 por trimestre) y 16.906 en el 2T 2026. Contrato a contrato, en el CSV del Gobierno (igual que en el 1143), solo hay unos 1.500 al año del ámbito sanitario (1.540 en 2025; 301 en el 2T 2026): el 1,7 %. En el 2T 2026, por ejemplo, la Gerencia de Servicios Sanitarios de Fuerteventura declara 4.608 menores y el CSV trae 9; el Hospital Universitario de Canarias, 3.061 y 10; Lanzarote, 2.467 y 12; el Dr. Negrín, 2.241 y 2. La excepción es la Gerencia de Atención Primaria de Tenerife: 158 en el resumen y 203 en el CSV (¿el CSV cuenta por fecha de adjudicación y el resumen por la de registro? sin comprobar). Hay que pedirlo por acceso a la información.
+- **El 1T 2026 del SCS no casa**: 728 menores en el ODS y en el ODT, frente a 13.908-34.025 en los trimestres de 2025 (los hospitales, con 1-232 cada uno). ¿Una extracción incompleta de RECO/SEFLOGIC? Revisar con la próxima publicación.
+- **Los departamentos sí publican casi todo en la PLACSP.** 2T 2026, resumen frente al CSV: DG de Protección a la Infancia y la Familia, 81 y 81; DG de Relaciones con la Administración de Justicia, 47 y 46; DG de Agricultura, 51 y 42. Sin el SCS, los resúmenes suman 1.178 menores en el 1T 2026 (25 documentos) y 1.243 en el 2T (22 documentos: faltan algunos departamentos). Las empresas y fundaciones públicas (Instituto Tecnológico de Canarias, GESPLAN...) no están en los resúmenes y sí en el CSV: 15.593 menores del ITC en 2020-2026.
+- **Denominador:** el RCSP «Directo» autonómico de Canarias da 147,6 mil en 2024 (§5.4); los resúmenes, unos 95 mil al año (89 mil del SCS y ~5 mil de los departamentos, estimado con 2026), sin las empresas y fundaciones públicas ni los anticipos de caja fija.
+- **Las Palmas de GC:** la página dice «importe de adjudicación (incluyendo el IVA)», pero frente a la PLACSP es sin IVA en 2018-2021 y 2025-2026, con IVA en 2023-2024 y mezclado en 2022 (635 con IVA y 204 sin él). El NIF coincide con el de la PLACSP en el 74,7 % de los que casan: viene vacío en 390, 261, 218, 120 y 168 menores de 2018, 2019, 2020, 2023 y 2024, y como '-' en 368, 413, 294 y 248 de 2016, 2017, 2021 y 2022; en 2025-2026, todos lo traen.
+- **Cabildo de Tenerife:** 2019-2022 casi vacíos (40, 7, 50 y 22); 466 menores de 2023 y 197 de 2024 con la fecha '0001-01-01T00:00:00'. Unos 1.200-1.900 al año de 2023-2025 no casan por el objeto con el 1143: menores de poco importe del Cabildo y su sector público.
+- **CSV del Gobierno:** '_U' («no consta») y '_Z' («no aplica») se quedan como texto (574.014 celdas); 2.250 registros llevan un LF y 873 un CRLF dentro de un campo. Mismo expediente, NIF (99,8 %), fecha (99,95 %) e importe sin IVA (99,8 %) que la PLACSP.
+- **Resúmenes, tal como se publican:** en 6 ODT de 2026 hay 19 tablas con «Órgano de contratación: » sin nombre; las cabeceras cambian entre ficheros («Importe (Eur)» e «Importe », «Importe (EUR) » con espacio en el ICCA y el ICIA), así que el mismo dato queda en columnas distintas; y el ODS del SCS de 2025 guarda un importe como texto «2.972.340.35».
 
 **Melilla**: desde 2019 publica los menores en PDF en la pestaña "Documentos" del perfil de Hacienda en PLACSP, no en el 1143 (A, `melilla.es/…contenido=29689`). **Ceuta**: solo el 1143.
 
 #### Huecos (estimación de lo que no tenemos hoy)
 
-- **Canarias, ~65 %.** El SCS solo publica totales (89K al año). No hay fuente pública contrato a contrato.
+- **Canarias, ~65 %.** El SCS solo publica totales: 89.340 menores en 2025, de los que ~1.500 (1,7 %) están contrato a contrato. `scripts/ccaa_canarias.py` baja esos totales (el denominador) y lo poco que hay fuera del 1143: Las Palmas de GC 2016-2017 (3.283) y unos 1.200-1.900 menores al año del Cabildo de Tenerife, sin NIF. El resto solo se puede pedir por acceso a la información.
 - **Extremadura, ~70 %.** Sobre todo el SES (26-63K al año que solo están en el registro), más la UEx y 173 ayuntamientos.
 - **Murcia, ~55 %.** Sobre todo el SMS de 2019 y 2021-2025, por el fallo de nombres del scraper; también la UPCT y 14 ayuntamientos.
 - **Castilla-La Mancha, 35-50 %.** La UCLM (~27K), la caja pagadora (~33K), el SESCAM y 469 ayuntamientos.
@@ -441,7 +466,7 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 - **Melilla**: casi todo.
 - **Patrón común:** muchos órganos cumplen el art. 63.4 con listados en la pestaña "Documentos" de PLACSP, que no llegan al 1143.
 
-Correcciones: los menores del SCS son agregados; el registro de Extremadura es XLSX; la Plataforma de la Junta no incluye universidades ni diputaciones.
+Correcciones: los menores del SCS son agregados (también los de §3, que decían «ODS/CSV trimestral»); el registro de Extremadura es XLSX; la Plataforma de la Junta no incluye universidades ni diputaciones.
 
 #### Prioridades
 
@@ -454,7 +479,7 @@ Correcciones: los menores del SCS son agregados; el registro de Extremadura es X
 5. ~~**CKAN de menores de la Junta de Andalucía**~~: hecho (`scripts/ccaa_andalucia_menores.py`, verificado desde el VPS el 2026-09-29; medición arriba).
 6. **Pestaña "Documentos" de PLACSP** (UGR, Diputación de Granada, Melilla): navegar el portal WPS y extraer tablas de PDF. **3-5 días.**
 7. **Portales municipales**: Málaga, Córdoba, Santa Cruz de Tenerife, Lorca y Cáceres. Poco volumen, sirven para el histórico. **0,5 día cada uno.**
-8. **SCS**: solicitud de acceso a la información.
+8. **SCS**: solicitud de acceso a la información, con el total por órgano y trimestre que ya publica (`scs_resumen` de `scripts/ccaa_canarias.py`) para comprobar que llega entero.
 
 ### 5.3 Madrid, Castilla y León, Galicia, Asturias y Cantabria
 

@@ -1224,6 +1224,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `nacional/normalizar_placsp.py` | — | Corrige parquets PLACSP ya generados sin eliminar filas: marca versiones, semántica de importes, etiquetas y CPV |
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D + multi-sort 12x + salida reproducible |
 | `scripts/ccaa_andalucia_menores.py` | CKAN de datos abiertos de la Junta de Andalucía | Contratos menores «Contratación Menor en {año}» (2018-), con el SAS entero; CSV tal cual con versiones y Parquet acumulado |
+| `scripts/ccaa_canarias.py` | datos.canarias.es y portales de transparencia de Canarias | Contratos menores de Canarias: CSV de contratos del Gobierno (2020-, copia de la PLACSP), API de Las Palmas de GC (2016-) y del Cabildo de Tenerife (2019-), y los resúmenes agregados del SCS (ODS) y de los departamentos (ODT); ficheros tal cual con versiones y un Parquet acumulado por serie |
 | `Euskadi/ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4 (solo descarga): API REST + XLSX anuales + portales municipales |
 | `Euskadi/consolidacion_euskadi.py` | — | Consolida JSON/XLSX/CSV → 5 Parquets normalizados |
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
@@ -1307,6 +1308,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 | Valencia | https://dadesobertes.gva.es/ |
 | Galicia | https://www.contratosdegalicia.gal/ |
 | Asturias | https://sede.asturias.es/ |
+| Canarias | https://datos.canarias.es/ · https://www.gobiernodecanarias.org/transparencia/ |
 | BORME | https://www.boe.es/diario_borme/ |
 | BQuant Finance | https://bquantfinance.com |
 
@@ -1322,7 +1324,8 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 - [x] Menores de 8 ayuntamientos grandes con poco o nada en el 1143: `scripts/municipios_menores.py` (Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife; 289.401 filas 2015-2026), verificado en vivo el 2026-09-28
 - [x] Andalucía, menores de la Junta con el SAS entero: `scripts/ccaa_andalucia_menores.py`, los CSV «Contratación Menor en {año}» del CKAN de la Junta (2018-2026, 768.647 registros, 544.898 del SAS, NIF válido en el 98,4 %), verificado desde el VPS el 2026-09-29. Cubre los ~41K menores del SAS que el buscador no alcanza; las dos fuentes se complementan (docs/COBERTURA.md §5.2)
 - [x] Castilla-La Mancha: `scripts/ccaa_castilla_la_mancha.py`, los ficheros de transparencia de la Junta (menores, caja pagadora, SESCAM por línea de factura, sector público 2015-2018) y la UCLM 2017-2026, verificado en vivo el 2026-09-28. Los RAR necesitan `rarfile` con `unrar` o `libarchive-c` (Universitat de València, Ajuntament de València, Diputación de Alicante): scrapers en desarrollo
-- [ ] Canarias, Cantabria, Illes Balears, Ceuta y Melilla
+- [x] Canarias: `scripts/ccaa_canarias.py` (CSV de contratos del Gobierno, que es su PLACSP; Las Palmas de GC 2016-2026 y Cabildo de Tenerife 2019-2025 por las API de sus portales; resúmenes del SCS y de los departamentos), verificado en vivo el 2026-09-30. El SCS solo publica totales: 89.340 menores en 2025 y ~1.500 contrato a contrato (docs/COBERTURA.md §5.2)
+- [ ] Cantabria, Illes Balears, Ceuta y Melilla
 - Navarra: su ley foral de contratos (art. 102.3) solo obliga a publicar la menor cuantía agregada por empresa y trimestre; no hay fuente contrato a contrato
 
 **Contratos menores:** no hay cobertura del 100 %. Estimamos el 55-65 % de los menores publicados y no existe un denominador oficial completo (el RCSP es una cota inferior). Veredicto por comunidad, inventario de fuentes y plan: [docs/COBERTURA.md](docs/COBERTURA.md) (§0.1 y §5).
