@@ -468,7 +468,17 @@ nacional/
 └── licitaciones_completo_2012_2026.parquet  # v2026.02: 4,7M filas, una por licitación, no siempre la más reciente (762 MB)
 ```
 
-El scraper escribe `licitaciones_completo.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**. Además escribe `_adjudicatarios` (cada `WinningParty`), `_lotes`, `_criterios`, `_modificaciones`, `_borrados` (entradas `at:deleted-entry`) y, con `--semilla`, `_semilla_contenido`: se cruzan con la principal por `id` + `fecha_updated`. Con el rango completo (`--anos` del 2012 al año en curso, el de por defecto) el nombre es fijo; el nombre con años de cada ejecución (`licitaciones_completo_2012_<año>...`, el de antes) queda como enlace simbólico a cada tabla. Con un rango parcial, `licitaciones_completo_{inicio}_{fin}`.
+El scraper escribe `licitaciones_completo.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**. Además escribe `_adjudicatarios` (cada `WinningParty`), `_lotes`, `_criterios`, `_modificaciones`, `_borrados` (entradas `at:deleted-entry`) y, con `--semilla`, `_semilla_contenido`: se cruzan con la principal por `id` + `fecha_updated`. Con el rango completo (`--anos` del 2012 al año en curso, el de por defecto) el nombre es fijo; el nombre con años de cada año (`licitaciones_completo_2012_<año>...`, el de antes) es un enlace simbólico a cada tabla. La primera ejecución con el nombre fijo le pasa la salida con años más reciente, sea del año que sea, sin copiarla y con su historia de `_historico/`; las de otros años van a `_historico/` (no se borra nada). Con un rango parcial, `licitaciones_completo_{inicio}_{fin}`; si ese nombre es uno de los enlaces (p.ej. `--anos 2012-2026` lanzado en 2027), el script se para sin escribir nada: nunca escribe a través de un enlace.
+
+**No leas la salida por patrón.** Los nombres con años son enlaces al mismo fichero: un glob lee cada tabla varias veces. En 2027, `*_resultados.parquet` casa con `licitaciones_completo_resultados`, `licitaciones_completo_2012_2026_resultados` y `licitaciones_completo_2012_2027_resultados`: el triple de filas (medido con DuckDB en una muestra: 180.309 filas frente a 60.103). Léela por el nombre fijo: `licitaciones_completo.parquet`, `licitaciones_completo_resultados.parquet`...
+
+**Volver al código sin nombre fijo sin romper nada.** Ese código escribe `licitaciones_completo_2012_<año>` con `guardar_version`, que va por ruta y no sabe de enlaces: escribiría a través de ellos, los movería rotos a `_historico/` y dejaría ficheros reales solo en las tablas que cambian, mezclados con enlaces al fijo. Antes de desplegarlo, con este código y sin ninguna ejecución en marcha:
+
+```bash
+python nacional/licitaciones.py --output-dir <salida> --deshacer-nombre-fijo
+```
+
+Cada tabla vuelve a `licitaciones_completo_2012_<año en curso>`, sin copiarla y con su historia de `_historico/` (el código anterior sigue la misma cadena de versiones), y se quitan los enlaces con años. Si algo lee ya el nombre fijo (p.ej. el ETL de la web), hay que volver a apuntarlo al nombre con años.
 
 ### Campos principales
 

@@ -2006,3 +2006,151 @@ class TestNombreFijo:
         with pytest.raises(SystemExit) as error:
             lic.main()
         assert error.value.code == 2
+        # Y el de otro año (la migración lo pasaría al fijo o a _historico/)
+        shutil.copy(salida / "licitaciones_completo.parquet", salida / f"licitaciones_completo_2012_{ano - 1}.parquet")
+        monkeypatch.setattr(sys, "argv", argv + ["--semilla", str(salida / f"licitaciones_completo_2012_{ano - 1}.parquet")])
+        with pytest.raises(SystemExit) as error:
+            lic.main()
+        assert error.value.code == 2
+
+    # --- Revisión de la PR #44 ----------------------------------------------------------------------
+
+    def _versiones(self, ruta):
+        """ids de cada versión de `ruta` (historico.versiones: de la más antigua a la vigente)."""
+        return [self._ids(v) for v in historico.versiones(ruta)]
+
+    @staticmethod
+    def _envejecer(salida, segundos):
+        """Retrasa el mtime de los parquet reales (el sello con que guardar_version los archiva)."""
+        for f in salida.glob("*.parquet"):
+            if not f.is_symlink():
+                os.utime(f, (f.stat().st_mtime - segundos,) * 2)
+
+    def test_la_salida_de_un_ano_anterior_pasa_al_nombre_fijo_con_su_historia(self, base):
+        """La primera ejecución con el nombre fijo llega en enero de 2027: antes solo se miraba el nombre
+        con años del año en curso (2012_2027), el fijo empezaba como «nuevo», la cadena de versiones se
+        cortaba y los 8 ficheros reales de 2012_2026 se quedaban congelados (en el VPS, 6,2 GB duplicados)
+        mientras el ETL de la web seguía leyéndolos. Ahora el más reciente de cualquier año pasa al fijo con
+        su historia de _historico/ y todos los nombres con años son enlaces."""
+        salida = base / "salida"
+        self._zip(base, [self.L1])
+        self._exportar(base, "licitaciones_completo_2012_2026")
+        self._envejecer(salida, 7 * 86400)
+        self._zip(base, [self.L1, self.L2])
+        self._exportar(base, "licitaciones_completo_2012_2026")          # la salida de 2026, con una versión anterior
+        self._envejecer(salida, 3 * 86400)
+        antes = self._versiones(salida / "licitaciones_completo_2012_2026.parquet")
+        assert antes == [["urn:L1"], ["urn:L1", "urn:L2"]]
+        # Enero de 2027, sin cambios en los datos: el mismo fichero, sin copia ni versión nueva
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2027")
+        assert self._versiones(salida / "licitaciones_completo.parquet") == antes
+        assert not list((salida / "_historico").glob("licitaciones_completo_2012_2026__*"))   # su historia, movida
+        for anos in ("2012_2026", "2012_2027"):
+            for tabla in ("", "_lotes"):
+                enlace = salida / f"licitaciones_completo_{anos}{tabla}.parquet"
+                assert enlace.is_symlink() and os.readlink(enlace) == f"licitaciones_completo{tabla}.parquet"
+        assert not [f.name for f in salida.glob("licitaciones_completo_2*") if not f.is_symlink()]
+        # Con datos nuevos, la cadena sigue: el fichero de 2026 es la versión anterior del fijo
+        self._zip(base, [self.L1, self.L2, self.L3])
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2027")
+        assert self._versiones(salida / "licitaciones_completo.parquet") == antes + [["urn:L1", "urn:L2", "urn:L3"]]
+        assert self._ids(salida / "licitaciones_completo_2012_2026.parquet") == ["urn:L1", "urn:L2", "urn:L3"]
+        assert self._versiones(salida / "licitaciones_completo_lotes.parquet") == antes + [["urn:L1", "urn:L2", "urn:L3"]]
+
+    def test_dos_salidas_reales_de_anos_distintos_la_vieja_queda_en_historico(self, base):
+        """Nunca se borra un dato: con ficheros reales de dos años, el más reciente pasa al fijo y el otro
+        queda en _historico/ con su nombre; los dos nombres, como enlaces."""
+        salida = base / "salida"
+        self._zip(base, [self.L1])
+        self._exportar(base, "licitaciones_completo_2012_2025")
+        self._envejecer(salida, 400 * 86400)
+        self._zip(base, [self.L1, self.L2])
+        self._exportar(base, "licitaciones_completo_2012_2026")
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2027")
+        assert self._versiones(salida / "licitaciones_completo.parquet") == [["urn:L1", "urn:L2"]]   # sin cambios
+        viejas = list((salida / "_historico").glob("licitaciones_completo_2012_2025__*.parquet"))
+        assert len(viejas) == 1 and self._ids(viejas[0]) == ["urn:L1"]
+        assert len(list((salida / "_historico").glob("licitaciones_completo_2012_2025_lotes__*.parquet"))) == 1
+        for anos in ("2012_2025", "2012_2026", "2012_2027"):
+            assert os.readlink(salida / f"licitaciones_completo_{anos}.parquet") == "licitaciones_completo.parquet"
+        # Un fichero real con años que aparece después (p.ej. de un código anterior) con un fijo ya
+        # publicado: a _historico/ con su nombre, y en su lugar el enlace. Y un enlace con años que apunta
+        # a otro sitio (a otro enlace) pasa a apuntar al fijo
+        (salida / "licitaciones_completo_2012_2025.parquet").unlink()
+        pq.write_table(pa.table({"id": ["urn:VIEJA"]}), salida / "licitaciones_completo_2012_2025.parquet")
+        (salida / "licitaciones_completo_2012_2024.parquet").symlink_to("licitaciones_completo_2012_2026.parquet")
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2027")
+        viejas = sorted((salida / "_historico").glob("licitaciones_completo_2012_2025__*.parquet"))
+        assert [self._ids(v) for v in viejas] == [["urn:L1"], ["urn:VIEJA"]]
+        for anos in ("2012_2024", "2012_2025"):
+            assert os.readlink(salida / f"licitaciones_completo_{anos}.parquet") == "licitaciones_completo.parquet"
+
+    def test_nunca_se_escribe_a_traves_de_un_enlace(self, base, monkeypatch, capsys):
+        """Un rango parcial cuyo nombre es el enlace de otro año (--anos 2012-2026 lanzado en 2027)
+        escribía a través de él: guardar_version movía el enlace a _historico/ (roto) y solo las tablas
+        que cambiaban quedaban como ficheros reales (medido: 3 reales, 5 enlaces y 3 enlaces rotos). Ahora
+        se para antes de procesar nada, con un mensaje claro, y no se toca nada."""
+        salida = base / "salida"
+        self._zip(base, [self.L1])
+        self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026")
+        antes = sorted((f.name, os.readlink(f) if f.is_symlink() else f.stat().st_size) for f in salida.iterdir())
+        with pytest.raises(ValueError, match="licitaciones_completo_2012_2026.parquet es un enlace simbólico"):
+            lic.ExportacionPlacsp("licitaciones_completo_2012_2026", salida)
+        ano = datetime.now().year
+        (salida / f"licitaciones_completo_2012_{ano - 1}.parquet").symlink_to("licitaciones_completo.parquet")
+        monkeypatch.setattr(sys, "argv", ["licitaciones.py", "--solo-procesar", "--conjunto", "licitaciones",
+                                          "--anos", f"2012-{ano - 1}", "--data-dir", str(base / "zips"),
+                                          "--output-dir", str(salida), "--sin-csv"])
+        with pytest.raises(SystemExit) as error:
+            lic.main()
+        assert error.value.code == 2
+        err = capsys.readouterr().err
+        assert f"licitaciones_completo_2012_{ano - 1}.parquet es un enlace simbólico" in err and "No se ha escrito nada" in err
+        (salida / f"licitaciones_completo_2012_{ano - 1}.parquet").unlink()
+        assert sorted((f.name, os.readlink(f) if f.is_symlink() else f.stat().st_size) for f in salida.iterdir()) == antes
+        assert not (salida / "_historico").exists()
+        # Un enlace que aparece durante la ejecución: no se publica nada
+        self._zip(base, [self.L1, self.L2])
+        copias = [("licitaciones", c, o) for c, o in lic.copias_conjunto("licitaciones", 2024, 2024)]
+        with lic.ExportacionPlacsp("licitaciones_completo_2024_2024", salida, lote=2, csv=False) as exportacion:
+            lic.procesar_copias(copias, exportacion)
+            (salida / "licitaciones_completo_2024_2024_lotes.parquet").symlink_to("licitaciones_completo_lotes.parquet")
+            with pytest.raises(ValueError, match="enlace simbólico"):
+                exportacion.cerrar()
+        assert not (salida / "licitaciones_completo_2024_2024.parquet").exists()
+        assert self._ids(salida / "licitaciones_completo.parquet") == ["urn:L1"] and not (salida / "_historico").exists()
+
+    def test_deshacer_el_nombre_fijo_y_el_codigo_anterior_sigue_la_cadena(self, base, monkeypatch):
+        """Revertir el cambio sin romper nada: --deshacer-nombre-fijo, con este código y antes de volver al
+        anterior, pasa cada tabla al nombre con años del año en curso con su historia y quita los enlaces.
+        El código anterior (una exportación con ese nombre y sin alias) sigue entonces la cadena de
+        versiones, sin enlaces que mover a _historico/."""
+        salida, ano = base / "salida", datetime.now().year
+        con_anos = f"licitaciones_completo_2012_{ano}"
+        self._zip(base, [self.L1])
+        self._exportar(base, con_anos)
+        self._envejecer(salida, 3 * 86400)
+        self._zip(base, [self.L1, self.L2])
+        self._exportar(base, "licitaciones_completo", alias=con_anos)
+        (salida / f"licitaciones_completo_2012_{ano - 1}.parquet").symlink_to("licitaciones_completo.parquet")
+        cadena = self._versiones(salida / "licitaciones_completo.parquet")
+        assert cadena == [["urn:L1"], ["urn:L1", "urn:L2"]]
+        # Con un fichero real con años junto al fijo no se toca nada
+        (salida / f"{con_anos}_lotes.parquet").unlink()
+        shutil.copy(salida / "licitaciones_completo_lotes.parquet", salida / f"{con_anos}_lotes.parquet")
+        argv = ["licitaciones.py", "--output-dir", str(salida), "--deshacer-nombre-fijo"]
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit) as error:
+            lic.main()
+        assert error.value.code == 2 and (salida / "licitaciones_completo.parquet").is_file()
+        (salida / f"{con_anos}_lotes.parquet").unlink()
+        lic.main()
+        assert not [f.name for f in salida.iterdir() if f.is_symlink()]
+        assert not list(salida.glob("licitaciones_completo.*")) and not list(salida.glob("licitaciones_completo_lotes.*"))
+        assert self._versiones(salida / f"{con_anos}.parquet") == cadena
+        assert self._versiones(salida / f"{con_anos}_lotes.parquet") == cadena
+        # El código anterior: la misma exportación con el nombre con años y sin alias
+        self._zip(base, [self.L1, self.L2, self.L3])
+        self._exportar(base, con_anos)
+        assert self._versiones(salida / f"{con_anos}.parquet") == cadena + [["urn:L1", "urn:L2", "urn:L3"]]
+        assert not [f for f in (salida / "_historico").iterdir() if f.is_symlink()]
