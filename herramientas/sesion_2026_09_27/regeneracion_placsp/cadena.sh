@@ -9,7 +9,10 @@ MED=$REPO/herramientas/sesion_2026_09_27/regeneracion_placsp/medir.py
 cd "$REPO"
 until grep -q "procesado exit=" $R/logs/procesado.log 2>/dev/null; do sleep 60; done
 if ! grep -q "procesado exit=0" $R/logs/procesado.log; then echo "EL PROCESADO FALLÓ: no se sigue"; exit 1; fi
+# Nombre con años: desde el nombre fijo es un enlace (nacional/licitaciones.py, nombres_salida); sin
+# enlaces (p.ej. Windows sin el modo de desarrollador), el nombre fijo
 P=$R/salida/licitaciones_completo_2012_2026.parquet
+[ -e "$P" ] || P=$R/salida/licitaciones_completo.parquet
 [ -f "$P" ] || { echo "no está $P"; ls -la $R/salida; exit 1; }
 mkdir -p $R/entrega
 echo "$(date -u +%T) reducir"; $PY $MED $PY $R/reducir.py $P $R/entrega/nacional.parquet > $R/logs/reducir.log 2>&1 || { echo "reducir falló"; tail -20 $R/logs/reducir.log; exit 1; }

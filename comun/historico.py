@@ -90,11 +90,13 @@ def guardar_version(destino, contenido=None, *, desde=None):
     Recibe el contenido en bytes (`contenido`) o la ruta de un fichero ya
     descargado (`desde`, p.ej. un .part escrito en streaming), que se mueve.
     Devuelve 'nuevo', 'sin_cambios' (idéntico al actual: no se toca) o
-    'actualizado' (la versión anterior queda en _historico/).
+    'actualizado' (la versión anterior queda en _historico/). Un `destino`
+    que es un enlace simbólico da ValueError sin escribir nada (_sin_enlace).
     """
     destino = Path(destino)
     if (contenido is None) == (desde is None):
         raise ValueError("Indica contenido o desde, no ambos")
+    _sin_enlace(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
     if contenido is not None:
         desde = destino.with_name(f".{destino.name}.nuevo")
@@ -113,11 +115,23 @@ def guardar_version(destino, contenido=None, *, desde=None):
     return "actualizado"
 
 
+def _sin_enlace(destino):
+    """Nunca se escribe a través de un enlace simbólico ni se mueve uno a
+    _historico/: guardar_version sustituiría el enlace por un fichero real
+    (y solo cuando el contenido cambia) y archivar lo movería a _historico/,
+    donde un enlace relativo queda roto. ValueError si `destino` lo es."""
+    if Path(destino).is_symlink():
+        raise ValueError(f"{destino} es un enlace simbólico (→ {os.readlink(destino)}): no se escribe a "
+                         "través de él ni se mueve a _historico/")
+
+
 def archivar(destino):
     """Mueve la copia actual de `destino` a _historico/ con el sello de su fecha
     (ruta_historica) sin poner nada en su lugar, p.ej. una salida que una
-    ejecución nueva ya no produce. Devuelve la ruta en _historico/."""
+    ejecución nueva ya no produce. Devuelve la ruta en _historico/. Un
+    enlace simbólico da ValueError (_sin_enlace)."""
     destino = Path(destino)
+    _sin_enlace(destino)
     previo = datetime.fromtimestamp(destino.stat().st_mtime, timezone.utc)
     archivo = ruta_historica(destino, previo)
     archivo.parent.mkdir(exist_ok=True)
@@ -173,6 +187,10 @@ def acumular(anterior, nuevos, fecha, ambito=None, ignorar=IGNORAR_POR_DEFECTO,
       delimitan lo que se ha vuelto a descargar (p.ej. ['_archivo_origen'] o
       ['anio']); fuera de él no se sabe si siguen publicadas y no cambian.
     - Columnas nuevas se añaden (nulas en las filas que no las tenían).
+    - Sin ninguna columna en común (salvo COLUMNAS_META e `ignorar`) no hay
+      nada que comparar: ninguna fila casa (las de `anterior` del ámbito
+      quedan con _en_ultima_descarga=False y las de `nuevos` entran como
+      altas). Nunca se emparejan por posición.
     - Una descarga vacía es casi siempre un fallo (no que la administración lo
       haya retirado todo): da error salvo permitir_vacio=True.
     """
@@ -190,14 +208,20 @@ def acumular(anterior, nuevos, fecha, ambito=None, ignorar=IGNORAR_POR_DEFECTO,
     excluir = set(COLUMNAS_META) | set(ignorar or ())
     comunes = [c for c in nuevos.columns if c in anterior.columns and c not in excluir]
 
-    k_ant = _claves(anterior, comunes)
-    k_nue = _claves(nuevos, comunes)
-    pos_ant = pd.Series(anterior.index.to_numpy(), index=pd.MultiIndex.from_arrays(
-        [k_ant.to_numpy(), k_ant.groupby(k_ant).cumcount().to_numpy()]))
-    pos = pos_ant.reindex(pd.MultiIndex.from_arrays(
-        [k_nue.to_numpy(), k_nue.groupby(k_nue).cumcount().to_numpy()]))
-    casada = pos.notna().to_numpy()
-    i_ant = pos.to_numpy()[casada].astype("int64")
+    if comunes:
+        k_ant = _claves(anterior, comunes)
+        k_nue = _claves(nuevos, comunes)
+        pos_ant = pd.Series(anterior.index.to_numpy(), index=pd.MultiIndex.from_arrays(
+            [k_ant.to_numpy(), k_ant.groupby(k_ant).cumcount().to_numpy()]))
+        pos = pos_ant.reindex(pd.MultiIndex.from_arrays(
+            [k_nue.to_numpy(), k_nue.groupby(k_nue).cumcount().to_numpy()]))
+        casada = pos.notna().to_numpy()
+        i_ant = pos.to_numpy()[casada].astype("int64")
+    else:
+        # Nada que comparar: antes _claves daba la misma clave a todas las filas y el multiconjunto
+        # las emparejaba por posición (la fila A/X/100 se fundía con C/Z/300 y quedaba como vigente)
+        casada = np.zeros(len(nuevos), dtype=bool)
+        i_ant = np.zeros(0, dtype="int64")
 
     if ambito:
         vistos = set(map(tuple, nuevos[ambito].astype(str).to_numpy()))

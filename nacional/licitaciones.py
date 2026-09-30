@@ -110,18 +110,29 @@ Procedencia (tabla principal, detrás de COLUMNAS_NUEVAS; después solo las que 
 
 Salida (todas las entradas de los ATOM, tal como las publica la PLACSP: cada
 actualización de una licitación es una entrada con el mismo id; n_versiones y
-es_ultima_version permiten contar licitaciones distintas):
-    licitaciones_completo_{inicio}_{fin}.parquet/.csv
-    licitaciones_completo_{inicio}_{fin}_resultados.parquet/.csv      (una fila por cac:TenderResult / lote)
-    licitaciones_completo_{inicio}_{fin}_adjudicatarios.parquet/.csv  (una por cac:WinningParty de cada resultado; una UTE
-                                                                       suele venir como uno solo, con id de tipo 'UTE')
-    licitaciones_completo_{inicio}_{fin}_lotes.parquet/.csv           (una por cac:ProcurementProjectLot)
-    licitaciones_completo_{inicio}_{fin}_criterios.parquet/.csv       (una por criterio de adjudicación, del expediente o de un lote)
-    licitaciones_completo_{inicio}_{fin}_modificaciones.parquet/.csv  (una por ContractModification)
-    licitaciones_completo_{inicio}_{fin}_borrados.parquet/.csv        (una por entrada borrada, at:deleted-entry; al final
-                                                                       textos_originales: el @when que no es un instante)
-    licitaciones_completo_{inicio}_{fin}_semilla_contenido.parquet/.csv (solo con --semilla: filas sin fecha de la
-                                                                       semilla con el contenido de una fila de la descarga)
+es_ultima_version permiten contar licitaciones distintas). <nombre> (nombres_salida):
+licitaciones_completo con el rango completo (--anos del primer año de la PLACSP al año
+en curso, el de por defecto), y el nombre con años de la ejecución
+(licitaciones_completo_2012_<año>, el de antes) queda como enlace simbólico a cada
+tabla; los de años anteriores siguen apuntando a la vigente. La primera ejecución con
+el nombre fijo le pasa la salida con años más reciente, de cualquier año, con su
+historia de _historico/ (las de otros años van a _historico/). Con un rango parcial,
+licitaciones_completo_<inicio>_<fin>; si ese nombre es uno de los enlaces, el script se
+para sin escribir nada (nunca escribe a través de un enlace). La salida se lee por el
+nombre fijo, nunca por patrón (un glob lee también los enlaces: cada tabla dos o tres
+veces). Para volver a un código sin nombre fijo: --deshacer-nombre-fijo antes
+(deshacer_nombre_fijo).
+    <nombre>.parquet/.csv
+    <nombre>_resultados.parquet/.csv      (una fila por cac:TenderResult / lote)
+    <nombre>_adjudicatarios.parquet/.csv  (una por cac:WinningParty de cada resultado; una UTE
+                                           suele venir como uno solo, con id de tipo 'UTE')
+    <nombre>_lotes.parquet/.csv           (una por cac:ProcurementProjectLot)
+    <nombre>_criterios.parquet/.csv       (una por criterio de adjudicación, del expediente o de un lote)
+    <nombre>_modificaciones.parquet/.csv  (una por ContractModification)
+    <nombre>_borrados.parquet/.csv        (una por entrada borrada, at:deleted-entry; al final
+                                           textos_originales: el @when que no es un instante)
+    <nombre>_semilla_contenido.parquet/.csv (solo con --semilla: filas sin fecha de la
+                                           semilla con el contenido de una fila de la descarga)
     Las tablas de detalle llevan id, expediente y conjunto de su entrada y, al
     final, su fecha_updated / es_ultima_version / entrada_repetida: se cruzan
     con la principal por id + fecha_updated.
@@ -1498,6 +1509,129 @@ TABLAS_DETALLE = ('resultados', 'adjudicatarios', 'lotes', 'criterios', 'modific
 # Todas las tablas que escribe la exportación (_semilla_contenido: ver --semilla)
 TABLAS_SALIDA = ('principal',) + TABLAS_DETALLE + ('borrados', 'semilla_contenido')
 
+# Nombre de la salida. Con el rango completo (del primer año de la PLACSP al año en curso, el de por
+# defecto y el del VPS) es fijo: licitaciones_completo.parquet, licitaciones_completo_resultados.parquet...
+# Antes llevaba el año en curso (licitaciones_completo_2012_2026): en enero cambiaba el nombre, la
+# ejecución escribía ficheros nuevos, la cadena de versiones de _historico/ se cortaba (guardar_version
+# va por ruta), la salida del año anterior se quedaba en la carpeta congelada y quien la leía por su
+# nombre (el ETL de la web) seguía con ella sin saberlo. El nombre con años de cada ejecución
+# (licitaciones_completo_<inicio>_<fin>...) queda como enlace simbólico al fijo: los de años
+# anteriores siguen apuntando a la salida vigente. Un rango parcial (--anos 2024-2024) no cambia: su
+# nombre con años no se mueve.
+NOMBRE_SALIDA = 'licitaciones_completo'
+PRIMER_ANO_PLACSP = 2012
+
+
+def nombres_salida(ano_inicio, ano_fin, ano_actual=None):
+    """(nombre base de la salida, nombre con años que queda como enlace o None) para --anos
+    ano_inicio-ano_fin: el fijo (NOMBRE_SALIDA) si el rango va del primer año de la PLACSP al año en
+    curso; si no, licitaciones_completo_<inicio>_<fin> y ningún enlace."""
+    ano_actual = ano_actual or datetime.now().year
+    con_anos = f'{NOMBRE_SALIDA}_{ano_inicio}_{ano_fin}'
+    if ano_inicio <= PRIMER_ANO_PLACSP and ano_fin >= ano_actual:
+        return NOMBRE_SALIDA, con_anos
+    return con_anos, None
+
+
+SUFIJOS_SALIDA = ('.parquet', '.csv')
+
+
+def _nombre_tabla(base, tabla):
+    """Nombre (sin extensión) de `tabla` en una salida de nombre base `base`."""
+    return base if tabla == 'principal' else f'{base}_{tabla}'
+
+
+def rutas_con_anos(dir_salida, tabla, sufijo):
+    """[(ruta, año de inicio, año de fin)] de los nombres con años del rango completo de `tabla`
+    (licitaciones_completo_<inicio>_<fin>..., inicio <= PRIMER_ANO_PLACSP, de cualquier año) que hay en
+    `dir_salida`, ficheros reales y enlaces, del año de fin más reciente al más antiguo."""
+    dir_salida = Path(dir_salida)
+    if not dir_salida.is_dir():
+        return []
+    cola = '' if tabla == 'principal' else f'_{tabla}'
+    patron = re.compile(rf'{re.escape(NOMBRE_SALIDA)}_(\d{{4}})_(\d{{4}}){re.escape(cola + sufijo)}')
+    rutas = []
+    for ruta in dir_salida.iterdir():
+        m = patron.fullmatch(ruta.name)
+        if m and int(m.group(1)) <= PRIMER_ANO_PLACSP:
+            rutas.append((ruta, int(m.group(1)), int(m.group(2))))
+    return sorted(rutas, key=lambda r: (-r[2], r[1], r[0].name))
+
+
+def enlaces_en_salida(dir_salida, nombre_base):
+    """Rutas de salida de una ejecución de nombre base `nombre_base` (parquet y CSV de cada tabla) que son
+    enlaces simbólicos: escribir en ellas sería escribir a través del enlace (ver mensaje_enlaces)."""
+    dir_salida = Path(dir_salida)
+    return [ruta for tabla in TABLAS_SALIDA for sufijo in SUFIJOS_SALIDA
+            for ruta in [dir_salida / f'{_nombre_tabla(nombre_base, tabla)}{sufijo}'] if ruta.is_symlink()]
+
+
+def mensaje_enlaces(enlaces):
+    """Por qué no se escribe una salida cuyo nombre es un enlace simbólico (enlaces_en_salida)."""
+    enlace = enlaces[0]
+    return (f"{enlace.name} es un enlace simbólico (→ {os.readlink(enlace)})"
+            + (f", y {len(enlaces) - 1} tablas más" if len(enlaces) > 1 else "")
+            + ": esta ejecución escribiría a través de él. guardar_version movería el enlace a _historico/ "
+              "(roto) y solo las tablas que cambian serían ficheros reales, mezcladas con enlaces a otra "
+              "ejecución. Con el nombre fijo, el nombre con años de cada año es un enlace a la salida del "
+              f"rango completo: para actualizarla, --anos {PRIMER_ANO_PLACSP}-<año en curso> (el de por "
+              "defecto); para un rango parcial, otro --output-dir. No se ha escrito nada.")
+
+
+def mover_historia(origen, destino):
+    """Las versiones de `origen` en _historico/ (<nombre>__<sello>, las de guardar_version) pasan a ser
+    las de `destino`, con el mismo sello y sin pisar ninguna: historico.versiones(destino) las da en
+    orden. Los enlaces de _historico/ no se tocan (no son datos). Devuelve cuántas se han movido."""
+    origen, destino = Path(origen), Path(destino)
+    carpeta = origen.parent / _historico().HISTORICO
+    if not carpeta.is_dir():
+        return 0
+    patron = re.compile(rf'{re.escape(origen.stem)}__(.+){re.escape(origen.suffix)}')
+    movidas = 0
+    for version in sorted(carpeta.iterdir()):
+        m = patron.fullmatch(version.name)
+        if not m or version.is_symlink() or not version.is_file():
+            continue
+        nueva, n = carpeta / f'{destino.stem}__{m.group(1)}{destino.suffix}', 1
+        while nueva.exists() or nueva.is_symlink():
+            nueva = carpeta / f'{destino.stem}__{m.group(1)}_{n}{destino.suffix}'
+            n += 1
+        os.replace(version, nueva)
+        movidas += 1
+    return movidas
+
+
+def deshacer_nombre_fijo(dir_salida, con_anos):
+    """Para volver a un código sin nombre fijo (revertir el cambio) sin romper nada. Ese código escribe
+    `con_anos` (licitaciones_completo_2012_<año en curso>) con guardar_version, que va por ruta y no sabe
+    de enlaces: escribiría a través de ellos, los movería rotos a _historico/ y dejaría ficheros reales
+    solo en las tablas que cambian. Aquí cada tabla con el nombre fijo pasa a `con_anos`, sin copiarla
+    y con su historia de _historico/ (la cadena de versiones sigue con ese nombre), y se quitan los
+    enlaces con años de la carpeta (no son datos). Si para alguna tabla ya hay un fichero real con
+    `con_anos` junto al fijo, no se toca nada (ValueError): hay que decidir a mano cuál es la vigente.
+    Devuelve [(nombre fijo, con_anos, versiones de _historico/ movidas)]."""
+    dir_salida = Path(dir_salida)
+    pares = [(dir_salida / f'{_nombre_tabla(NOMBRE_SALIDA, tabla)}{sufijo}',
+              dir_salida / f'{_nombre_tabla(con_anos, tabla)}{sufijo}', tabla, sufijo)
+             for tabla in TABLAS_SALIDA for sufijo in SUFIJOS_SALIDA]
+    conflictos = [destino.name for fijo, destino, _, _ in pares if fijo.is_file() and not fijo.is_symlink()
+                  and destino.is_file() and not destino.is_symlink()]
+    if conflictos:
+        raise ValueError(f"ya hay ficheros reales con el nombre con años junto al fijo ({', '.join(conflictos)}): "
+                         "no se toca nada; decide a mano cuál es la salida vigente")
+    movidas = []
+    for fijo, destino, tabla, sufijo in pares:
+        movida = fijo.is_file() and not fijo.is_symlink()
+        if movida:
+            os.replace(fijo, destino)            # sustituye el enlace que hubiera con ese nombre
+        historia = mover_historia(fijo, destino)
+        if movida or historia:
+            movidas.append((fijo.name, destino.name, historia))
+        for enlace, _, _ in rutas_con_anos(dir_salida, tabla, sufijo):
+            if enlace.is_symlink():
+                enlace.unlink()
+    return movidas
+
 # Rango de datetime64[ns] (1677-09-21 a 2262-04-11). Fuera de él (años mal
 # escritos como '0202-07-03' o '24-12-27') pandas 2 da NaT y pandas 3 lee la
 # fecha tal cual (año 202, con otra resolución): para que las dos versiones
@@ -2199,13 +2333,16 @@ class ExportacionPlacsp:
     """
 
     def __init__(self, nombre_base='licitaciones_completo', dir_salida=None, csv=True,
-                 lote=TAM_LOTE, filas_grupo=FILAS_GRUPO):
+                 lote=TAM_LOTE, filas_grupo=FILAS_GRUPO, alias=None):
         if lote is not None and lote < 0:
             raise ValueError(f'lote debe ser positivo: {lote}')
         self.nombre_base = nombre_base
+        # Nombre con años que queda como enlace simbólico a cada tabla (ver nombres_salida)
+        self.alias = alias if alias != nombre_base else None
         self.dir_salida = Path(dir_salida if dir_salida is not None else OUTPUT_DIR)
         self.csv, self.lote, self.filas_grupo = csv, lote or TAM_LOTE, filas_grupo
         self.dir_salida.mkdir(parents=True, exist_ok=True)
+        self._comprobar_destinos()
         self._limpiar_huerfanas()
         self.dir_partes = Path(tempfile.mkdtemp(prefix=f'.{nombre_base}.partes-', dir=self.dir_salida))
         (self.dir_partes / 'pid').write_text(f'{socket.gethostname()} {os.getpid()}')
@@ -2474,8 +2611,94 @@ class ExportacionPlacsp:
 
     # --- Cierre ------------------------------------------------------------
 
-    def _nombre(self, tabla):
-        return self.nombre_base if tabla == 'principal' else f'{self.nombre_base}_{tabla}'
+    def _nombre(self, tabla, base=None):
+        base = base or self.nombre_base
+        return base if tabla == 'principal' else f'{base}_{tabla}'
+
+    # --- Nombre con años (alias) -----------------------------------------------
+
+    def _comprobar_destinos(self):
+        """Nunca se escribe a través de un enlace: ValueError (mensaje_enlaces) si alguna ruta de salida
+        de esta ejecución lo es (p.ej. --anos 2012-2026 lanzado en 2027: licitaciones_completo_2012_2026
+        es el enlace a la salida del rango completo)."""
+        enlaces = enlaces_en_salida(self.dir_salida, self.nombre_base)
+        if enlaces:
+            raise ValueError(mensaje_enlaces(enlaces))
+
+    @staticmethod
+    def _enlazar(enlace, destino):
+        """Enlace simbólico relativo `enlace` -> `destino` (misma carpeta), sustituido de golpe
+        (os.replace): quien lee el nombre con años nunca lo encuentra a medias. Sin permiso para
+        crear enlaces (p.ej. Windows sin el modo de desarrollador) se avisa y la salida sigue con
+        el nombre fijo."""
+        temporal = enlace.with_name(f'.{enlace.name}.enlace')
+        try:
+            temporal.unlink(missing_ok=True)
+            os.symlink(destino.name, temporal)
+            os.replace(temporal, enlace)
+            return True
+        except OSError as e:
+            temporal.unlink(missing_ok=True)
+            print(f"   ⚠ No se pudo enlazar {enlace.name} → {destino.name} ({e}): la salida está en {destino.name}")
+            return False
+
+    def _migrar_alias(self):
+        """Salidas escritas con el nombre con años (hasta sept. 2026, o por un código sin nombre fijo):
+        cada fichero real licitaciones_completo_<inicio>_<fin>... del rango completo, de CUALQUIER año,
+        no solo el de esta ejecución (la primera ejecución con el nombre fijo puede llegar en enero, con
+        la salida del año anterior). Si no hay fichero con el nombre fijo, el más reciente (el de año de
+        fin mayor) pasa a tenerlo, sin copiarlo y con su historia de _historico/ (mover_historia): es la
+        versión anterior de la salida nueva y la cadena de versiones sigue (si la nueva cambia,
+        guardar_version lo lleva a _historico/ como siempre). Los demás, y todos si ya hay un fichero con
+        el nombre fijo, pasan a _historico/ con su nombre: nunca se pierde un dato. En el lugar de cada
+        uno queda un enlace al fijo."""
+        hist = _historico()
+        for tabla in TABLAS_SALIDA:
+            for sufijo in SUFIJOS_SALIDA:
+                fijo = self.dir_salida / f'{self._nombre(tabla)}{sufijo}'
+                reales = [ruta for ruta, _, _ in rutas_con_anos(self.dir_salida, tabla, sufijo)
+                          if ruta.is_file() and not ruta.is_symlink()]
+                if not reales:
+                    continue
+                pendientes = reales
+                if not (fijo.exists() or fijo.is_symlink()):
+                    reciente, pendientes = reales[0], reales[1:]
+                    os.replace(reciente, fijo)
+                    movidas = mover_historia(reciente, fijo)
+                    print(f"   ℹ {reciente.name} → {fijo.name} (nombre fijo; el de años queda como enlace"
+                          + (f"; sus {movidas} versiones de _historico/ pasan a ser las de {fijo.name}" if movidas else "")
+                          + ")")
+                for viejo in pendientes:
+                    archivado = hist.archivar(viejo)
+                    print(f"   ℹ {viejo.name}: ya hay {fijo.name}; el de años pasa a {archivado.parent.name}/"
+                          f"{archivado.name} (no se pierde) y queda como enlace")
+                for viejo in reales:
+                    self._enlazar(viejo, fijo)
+
+    def _enlazar_alias(self):
+        """Tras publicar: todos los nombres con años del rango completo de cada tabla (el de esta
+        ejecución y los de otros años) son un enlace a la del nombre fijo. Los enlaces con años de una
+        tabla que esta ejecución no tiene (su fijo pasó a _historico/) se quitan: se quedarían sin
+        destino y no son datos. Un fichero real con ese nombre (tras _migrar_alias no queda ninguno)
+        pasa antes a _historico/: no se pierde. Los nombres que este script no crea (otro rango, otra
+        tabla) no se tocan."""
+        hist = _historico()
+        for tabla in TABLAS_SALIDA:
+            for sufijo in SUFIJOS_SALIDA:
+                fijo = self.dir_salida / f'{self._nombre(tabla)}{sufijo}'
+                rutas = {ruta for ruta, _, _ in rutas_con_anos(self.dir_salida, tabla, sufijo)}
+                if not fijo.exists():
+                    for ruta in rutas:
+                        if ruta.is_symlink():
+                            ruta.unlink()
+                    continue
+                rutas.add(self.dir_salida / f'{self._nombre(tabla, self.alias)}{sufijo}')
+                for ruta in sorted(rutas):
+                    if ruta.is_symlink() and os.readlink(ruta) == fijo.name:
+                        continue
+                    if ruta.exists() and not ruta.is_symlink():
+                        hist.archivar(ruta)
+                    self._enlazar(ruta, fijo)
 
     def cerrar(self, semillas=(), origen_semilla=None, contenido_semilla=None):
         """Incorpora las semillas, calcula las marcas sobre todas las filas, escribe
@@ -2711,8 +2934,14 @@ class ExportacionPlacsp:
         parquet con guardar_version (la versión anterior, si cambió, pasa a
         _historico/) y el CSV sustituyendo al anterior. Una tabla de una
         ejecución anterior que esta ya no produce se archiva en _historico/
-        (solo si esta ha escrito la tabla principal)."""
+        (solo si esta ha escrito la tabla principal). Con alias (nombres_salida), el nombre con años
+        de cada tabla queda como enlace a la del nombre fijo (_migrar_alias, _enlazar_alias). Antes de
+        mover nada se comprueba que ninguna ruta de salida sea un enlace (_comprobar_destinos): nunca se
+        escribe a través de uno ni se mueve uno a _historico/."""
         hist = _historico()
+        self._comprobar_destinos()
+        if self.alias:
+            self._migrar_alias()
         for tabla in TABLAS_SALIDA:
             destino = self.dir_salida / f'{self._nombre(tabla)}.parquet'
             destino_csv = destino.with_suffix('.csv')
@@ -2748,6 +2977,8 @@ class ExportacionPlacsp:
                     destino_csv.unlink()
                 print(f"   ℹ {destino.name}: esta ejecución no tiene filas para esta tabla; "
                       f"la de la ejecución anterior pasa a {archivado.parent.name}/{archivado.name}")
+        if self.alias:
+            self._enlazar_alias()
 
     def _imprimir_resumen(self, resumen):
         cuentas = resumen['cuentas']
@@ -2850,6 +3081,11 @@ def main():
                              'con algún ZIP leído en esta ejecución. Repetible; el orden es la prioridad')
     parser.add_argument('--origen-semilla', type=str, default=None,
                         help="_origen de las filas añadidas desde --semilla (por defecto 'release v2026.02')")
+    parser.add_argument('--deshacer-nombre-fijo', action='store_true',
+                        help=f'Solo para volver a un código sin nombre fijo (revertir el cambio) sin romper nada: la '
+                             f'salida del rango completo de --output-dir vuelve a {NOMBRE_SALIDA}_{PRIMER_ANO_PLACSP}'
+                             f'_<año en curso>, con su historia de _historico/, y se quitan los enlaces con años. '
+                             f'No descarga ni procesa nada (ver deshacer_nombre_fijo)')
 
     args = parser.parse_args()
 
@@ -2861,10 +3097,32 @@ def main():
     partes = args.anos.split('-')
     ano_inicio = int(partes[0])
     ano_fin = int(partes[1]) if len(partes) > 1 else ano_inicio
-    nombre_base = f'licitaciones_completo_{ano_inicio}_{ano_fin}'
+    nombre_base, alias = nombres_salida(ano_inicio, ano_fin, ano_actual)
 
-    salidas = {(OUTPUT_DIR / f"{nombre_base if tabla == 'principal' else f'{nombre_base}_{tabla}'}.parquet").resolve()
-               for tabla in TABLAS_SALIDA}
+    if args.deshacer_nombre_fijo:
+        con_anos = f'{NOMBRE_SALIDA}_{PRIMER_ANO_PLACSP}_{ano_actual}'
+        try:
+            movidas = deshacer_nombre_fijo(OUTPUT_DIR, con_anos)
+        except ValueError as e:
+            parser.error(str(e))
+        for fijo, destino, historia in movidas:
+            print(f"   ✓ {fijo} → {destino}" + (f" (y sus {historia} versiones de _historico/)" if historia else ""))
+        print(f"✅ Salida de {OUTPUT_DIR} con el nombre {con_anos} ({len(movidas)} ficheros) y sin enlaces con años: "
+              "ya se puede volver al código sin nombre fijo")
+        return
+
+    # Nunca se escribe a través de un enlace (p.ej. --anos 2012-2026 lanzado en 2027: ese nombre es el enlace a
+    # la salida del rango completo). Se comprueba antes de descargar o procesar nada
+    enlaces = enlaces_en_salida(OUTPUT_DIR, nombre_base)
+    if enlaces and not args.solo_descargar:
+        parser.error(mensaje_enlaces(enlaces))
+
+    # Las tablas de salida y, con el rango completo, las de todos los nombres con años: el de esta ejecución y
+    # los de otros años (enlaces al fijo, o aún el fichero real de antes, que _migrar_alias pasa al fijo o a
+    # _historico/)
+    salidas = {(OUTPUT_DIR / f"{_nombre_tabla(nombre_base, tabla)}.parquet").resolve() for tabla in TABLAS_SALIDA}
+    if alias:
+        salidas |= {ruta.resolve() for tabla in TABLAS_SALIDA for ruta, _, _ in rutas_con_anos(OUTPUT_DIR, tabla, '.parquet')}
     for semilla in args.semilla:
         if not semilla.is_file():
             parser.error(f'No existe la semilla {semilla}')
@@ -2888,6 +3146,7 @@ def main():
     print("=" * 60)
     print(f"   Años: {ano_inicio} - {ano_fin}")
     print(f"   Conjuntos: {', '.join(conjuntos)}")
+    print(f"   Salida: {nombre_base}" + (f" (y {alias}, como enlace)" if alias else ""))
 
     crear_directorios()
     session = get_session()
@@ -2913,7 +3172,7 @@ def main():
     for conjunto_id in conjuntos:
         copias += [(conjunto_id, copia, origen)
                    for copia, origen in copias_conjunto(conjunto_id, ano_inicio, ano_fin, avisos)]
-    with ExportacionPlacsp(nombre_base, OUTPUT_DIR, csv=not args.sin_csv, lote=args.lote) as exportacion:
+    with ExportacionPlacsp(nombre_base, OUTPUT_DIR, csv=not args.sin_csv, lote=args.lote, alias=alias) as exportacion:
         procesar_copias(copias, exportacion, informes, procesos=args.procesos)
         imprimir_informe_procesado(informes, avisos)
         resumen = exportacion.cerrar(args.semilla, args.origen_semilla)

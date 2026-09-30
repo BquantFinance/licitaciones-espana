@@ -216,20 +216,20 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 
 | Script | Estado | Commit de cierre | Verificado en vivo |
 |---|---|---|---|
-| `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `de70485` | Sí (regeneración del 2026-09-27) |
+| `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `93b840d` | Sí (regeneración del 2026-09-27; nombre fijo con los ZIP reales de encargos del VPS: tablas iguales byte a byte y enlaces leídos con DuckDB 1.1.3; migración de la salida con años de cualquier año y nunca a través de un enlace, simulado en enero de 2027 con el ETL de la web igual) |
 | `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
 | `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `b8c6709` | Sí (y el lector nuevo del CSV, con los CSV reales de 2019 y 2021) |
-| `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `95815b3` | Sí (la semilla, con la primera descarga del VPS) |
+| `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `dcd6d54` | Sí (la semilla, con la primera descarga del VPS; Barcelona: versiones, CP1252 en las secuencias que no son UTF-8 y semilla del perfil, con los crudos del VPS del 29-sep; una cabecera cambiada es un caso a revisar, código 1) |
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`) | `95815b3` | Sí (primera descarga del VPS, 2026-09-28) |
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
-| `scripts/ccaa_murcia.py` | Cerrado | `83e49b2` | Sí (codificación cp850 de contratosOD 2014-2018, con los ficheros del VPS) |
+| `scripts/ccaa_murcia.py` | Cerrado | `10078e9` | Sí, con los crudos del VPS (2026-09-29): CSV del exportador JSON (comillas `\"`, decididas solo por su presencia; cortes `\n` cada 80 caracteres en `_<columna>_sin_cortes`, con el contador del exportador, que no se reinicia en los saltos del texto; y restos de la lista en `_resto_json`), mismas filas y ningún texto perdido; y la codificación cp850 de contratosOD 2014-2018 |
 | `scripts/ccaa_aragon.py` | Cerrado | `90978d2` | Sí (cabecera `<TH>` de los .xls del Gobierno, euro en 0xA4 y `_razon_social_es_pais` del Registro, con los crudos del VPS del 28-sep: +17 filas, 11 filas marcadas en mayores, 40 en menores y 19 en encargos, y el resto igual salvo 178 celdas por la codificación) |
 | `scripts/ccaa_castilla_leon.py` | Cerrado | `0263faf` | Sí |
 | `scripts/ccaa_extremadura.py` | Cerrado | `4163d85` | Sí |
 | `scripts/ccaa_la_rioja.py`, `scripts/ccaa_valencia_menores.py` | Cerrado | `9190268` | Sí |
 | `scripts/ccaa_castilla_la_mancha.py` | Cerrado | `d015194` | Sí |
-| `scripts/municipios_menores.py` | Cerrado | `1361abd` | Sí |
+| `scripts/municipios_menores.py` | Cerrado | `0f4f89e` | Sí (errores de origen permanentes en `raw/_fallos_origen.json`: Leganés y Málaga siguen fallando igual el 29-sep; con los datos del VPS, los 8 Parquet idénticos byte a byte con el código anterior; Valladolid ya leía su cabecera, los avisos eran de hojas auxiliares; una entrada del registro que no es un objeto se descarta con aviso) |
 | `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | Sí, desde el VPS (2026-09-28): 2019-2024, 375.380 filas; la semilla no añade ninguna; 2025 y 2026 dan 404 en `dataset-contratacion-centralizada-<año>.csv` |
 | `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
 | `scripts/ccaa_andalucia_menores.py` | Cerrado | `6f2f73c` | Sí, desde el VPS (2026-09-29): 9 CSV del CKAN de la Junta (2018-2026), 768.647 registros, 544.898 del SAS; la salida es idéntica al original celda a celda |
@@ -299,7 +299,7 @@ Avisos de la sesión del VPS (2026-09-28):
      - El aviso "No existen datos asociados" del histórico ya no se convierte en tabla.
      - `licitacion-de-obras-publicas` es una estadística agregada con una fila `</HTML>`, basura del portal: excluirla del descubrimiento o dejarla documentada.
    - **Murcia**: 15.399 contratos, 244.185 menores CARM y 748.984 líneas de menores del SMS 2019-2025 (`8791825`; antes solo 2020, con 155.085).
-     - Los `contratosOD2019`-`2023.csv` tienen entre 3 y 10 filas con campos de más, que van a `_columna_extra_N` (columnas corridas por separadores sin comillas).
+     - Los `contratosOD2019`-`2023.csv` escapan las comillas con barra (`\"`): 44 contratos se corrían (38 a `_columna_extra_N` y 6 a la izquierda sin marca). Arreglado en `e0053fa`, con los cortes `\n` y los restos de JSON de los menores. En `10078e9`, tras la revisión: el texto sin cortes cuenta como el exportador, que no reinicia el contador en los saltos del texto (la regla por línea metía 2.291 espacios de más en 1.289 textos: 'Dichos ma teriales'), y la barra se decide solo por `\"` (una barra suelta devolvía el fichero al lector normal y duplicaba contratos en el histórico).
    - **Aragón**: 9 tablas (106.146 contratos y 84.436 menores del Gobierno, Registro de Contratos, encargos, anuncios).
      - ~~Los 4 `.xls` de 2024-2025 del Gobierno dan HTTP 403~~: el CKAN los da con `http://` y el proxy rechaza HTTP plano. Arreglado en `48e4d42` (primero `https://`): 3.139 filas de 2025.
      - Revisar los ZIP "Contratos del Sector Público de Aragón 2014/2015", que se omiten como no tabulares.
@@ -359,8 +359,12 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   - Lo que la ventana móvil sacó antes de la primera descarga del VPS solo estaba en el release.
   - Medido: RPC +751.187 filas (2021, sobre todo), PSCP +85.397, fase de ejecución +9.047 y contratación programada +5.095.
   - La clave de la PSCP es el uuid del procedimiento en la URL. Con la URL entera eran +187.577: cambia con cada fase y entre `/ca/` y `/es/`, y se colaban 102.180 fases antiguas de procedimientos que siguen publicados.
-  - Pendiente: **Barcelona** (`consolidar_bcn`) no acumula versiones ni siembra. El crudo sí guarda versiones.
-    - Medirlo cuando el VPS descargue Barcelona por primera vez: la primera descarga murió por memoria en RAISC antes de llegar.
+  - ~~Pendiente: **Barcelona** (`consolidar_bcn`) no acumula versiones ni siembra~~: **hecho** (`511e88e` y `dcd6d54`, medido con la primera descarga del VPS del 29-sep).
+    - Cada recurso se construye con todas sus versiones (`acumular`, ámbito el recurso); una versión vacía o ilegible no retira nada.
+    - Los CSV que no son UTF-8 se leen en CP1252: 37.721 celdas con '€' (36.728) y comillas o rayas que llegaban como controles C1.
+    - CP1252 solo en las secuencias que no son UTF-8 válido (`dcd6d54`): con el fichero entero en CP1252, un solo byte mal codificado cambiaba las cabeceras y la acumulación duplicaba el fichero (simulado en 2018: 26.115 filas retiradas y vueltas a añadir, 140,6 → 251,4 M€ en el ETL). En los 50 CSV del VPS da los mismos caracteres que antes.
+    - Una versión cuya cabecera pierde columnas no se acumula: se avisa como caso a revisar y la ejecución acaba con código 1. `acumular` ya no empareja por posición dos versiones sin columnas comunes.
+    - Semilla del perfil de contratante por el uuid del procedimiento: +7.411 filas de 6.120 publicaciones que el portal ya no sirve. Las otras 4 tablas del release coinciden con la descarga.
 - **Solo contratación en el VPS** (`--categorias contratacion`, `95815b3`), por decisión del propietario.
   - Las subvenciones, presupuestos, RRHH… de Catalunya y Valencia no se usan.
   - Las subvenciones se harán a nivel estatal.
