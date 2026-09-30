@@ -12,11 +12,15 @@ construye con TODAS sus versiones, de la más antigua a la vigente, con
 comun.historico.acumular: lo que la administración retira o modifica sigue con
 _en_ultima_descarga=False, y cada fila lleva _primera_descarga/_ultima_descarga
 (sello de la versión en _historico/, o el mtime del CSV vigente). Con una sola
-versión la salida es la de siempre más esas 3 columnas.
+versión la salida es la de siempre más esas 3 columnas. Las consolidaciones de
+Open Data Barcelona (varios recursos → 1 parquet) hacen lo mismo recurso a
+recurso (registros_bcn).
 ================================================================================
 """
 
 import argparse
+import codecs
+import encodings.cp1252
 import sys
 import pandas as pd
 from pathlib import Path
@@ -211,6 +215,22 @@ SEMILLAS = {
     'contratacion/contratacion_programada.parquet': [
         'Any', 'Trimestre', 'Departament/Ens', 'Descripció del contracte', 'Agrupació', 'Tipus de contracte'],
 }
+# Consolidaciones de Open Data Barcelona con semilla (parquet de destino → clave, como en SEMILLAS).
+# Medido el 29-sep-2026 contra la primera descarga del VPS: menores, contratistas, modificaciones y
+# resumen trimestral del release coinciden fila a fila con la descarga (0 filas que falten). El perfil
+# de contratante no: su CSV de la PSCP es una ventana que el portal va cerrando y el release trae
+# 6.120 publicaciones (7.411 filas, casi todas de 2018-2021) que ya no sirve. Se casan por el uuid del
+# procedimiento; las filas sin uuid (el fichero estático anterior a junio de 2016, igual celda a celda
+# en la descarga) no se siembran.
+SEMILLAS_BCN = {
+    'perfil_contratante_bcn.parquet': (['ENLLAC_PUBLICACIO'], 'uuid_publicacio_bcn'),
+}
+# Carpeta de Catalunya del release (--semilla) para las consolidaciones de Barcelona; la fija main()
+SEMILLA = None
+# Casos a revisar de la ejecución (acumular_versiones: una versión cuya cabecera cambia); con alguno,
+# main() acaba con código 1
+REVISAR = []
+
 # Columnas nuestras: sus nulos no pasan a '' (en las filas sembradas no hay fechas de descarga, y
 # _origen es nulo en las descargadas)
 COLUMNAS_CONTROL = set(COLUMNAS_META) | {'_origen'}
@@ -219,6 +239,34 @@ COLUMNAS_CONTROL = set(COLUMNAS_META) | {'_origen'}
 # =============================================================================
 # FUNCIONES
 # =============================================================================
+
+# Lectura de los CSV: UTF-8 y, solo en las secuencias que no son UTF-8 válido, CP1252 byte a byte
+# (_recurso_cp1252, manejador de errores de la decodificación). Los CSV de Open Data Barcelona que no son
+# UTF-8 (contratistas 2012-2013, menores 2015 y modificaciones 2013-2014) están en CP1252: leídos como
+# latin-1, el '€' (0x80) llegaba como chr(128) y la '’' (0x92) como chr(146) en 37.721 celdas (medido el
+# 29-sep-2026: 36.728 '€' y 1.758 comillas, rayas, viñetas y puntos suspensivos). Y un solo byte
+# inválido ya no cambia la lectura del resto del fichero: antes (UTF-8 y, si fallaba, el fichero entero
+# en CP1252) un UTF-8 con un carácter mal codificado se leía entero en CP1252, sus cabeceras cambiaban
+# ('Òrgan contractant' → 'Ã’rgan contractant') y la acumulación de versiones lo duplicaba (revisión de
+# la PR #40: 26.115 de las 39.192 filas de 2018 como retiradas y otra vez con mojibake). Medido en los 50
+# CSV del crudo del VPS (29-sep-2026): 45 son UTF-8 válido y en los 5 en CP1252 esta lectura da los
+# mismos caracteres que la del fichero entero en CP1252. Los 5 bytes que CP1252 deja sin asignar (0x81,
+# 0x8D, 0x8F, 0x90 y 0x9D) dan el carácter de control C1 del mismo valor, como en latin-1 y en el
+# 'windows-1252' de los navegadores (WHATWG): no se pierde ninguno.
+_TABLA_CP1252 = ''.join(chr(i) if c == '\ufffe' else c for i, c in enumerate(encodings.cp1252.decoding_table))
+ERRORES_UTF8 = 'ccaa_cataluna_recurso_cp1252'
+
+
+def _recurso_cp1252(error):
+    """Manejador de errores de la lectura UTF-8 (ERRORES_UTF8): cada byte de la secuencia inválida,
+    como su carácter CP1252."""
+    if not isinstance(error, UnicodeDecodeError):
+        raise error
+    return ''.join(_TABLA_CP1252[b] for b in error.object[error.start:error.end]), error.end
+
+
+codecs.register_error(ERRORES_UTF8, _recurso_cp1252)
+
 
 def load_csv(path):
     """Carga CSV con detección de encoding y separador"""
@@ -233,8 +281,8 @@ def leer_texto(path):
 
 
 def _leer_csv(path, **kwargs):
-    """(DataFrame, encoding, separador) del primer par que da más de una columna."""
-    encodings = ['utf-8', 'latin-1', 'cp1252']
+    """(DataFrame, encoding, separador) del primer separador que da más de una columna. UTF-8 y, solo
+    en las secuencias que no lo son, CP1252 (ERRORES_UTF8)."""
     separators = [',', ';', '\t']
     
     # Probar primero el separador más frecuente en la cabecera: un CSV con ';' y una coma
@@ -246,24 +294,24 @@ def _leer_csv(path, **kwargs):
     except OSError:
         pass
     
-    for enc in encodings:
-        for sep in separators:
-            try:
-                # Las líneas mal formadas se descartan, pero se cuentan y se avisa
-                # (antes se perdían en silencio)
-                with warnings.catch_warnings(record=True) as avisos:
-                    warnings.simplefilter("always", pd.errors.ParserWarning)
-                    df = pd.read_csv(path, encoding=enc, sep=sep, low_memory=False, on_bad_lines='warn', **kwargs)
-            except Exception:
-                continue
-            if len(df.columns) > 1:
-                descartadas = sum(
-                    str(a.message).count("Skipping line")
-                    for a in avisos if issubclass(a.category, pd.errors.ParserWarning)
-                )
-                if descartadas:
-                    log(f"   ⚠️ {Path(path).name}: {descartadas:,} líneas mal formadas descartadas")
-                return df, enc, sep
+    for sep in separators:
+        try:
+            # Las líneas mal formadas se descartan, pero se cuentan y se avisa
+            # (antes se perdían en silencio)
+            with warnings.catch_warnings(record=True) as avisos:
+                warnings.simplefilter("always", pd.errors.ParserWarning)
+                df = pd.read_csv(path, encoding='utf-8', encoding_errors=ERRORES_UTF8, sep=sep, low_memory=False,
+                                 on_bad_lines='warn', **kwargs)
+        except Exception:
+            continue
+        if len(df.columns) > 1:
+            descartadas = sum(
+                str(a.message).count("Skipping line")
+                for a in avisos if issubclass(a.category, pd.errors.ParserWarning)
+            )
+            if descartadas:
+                log(f"   ⚠️ {Path(path).name}: {descartadas:,} líneas mal formadas descartadas")
+            return df, 'utf-8', sep
     
     raise ValueError(f"No se pudo cargar: {path}")
 
@@ -296,15 +344,46 @@ def construir_registros(csv_path, tmp_csv):
     if len(vers) == 1:
         # Una sola versión: exactamente la lectura de siempre + columnas meta
         return acumular(None, load_csv(csv_path), vers[0][1], permitir_vacio=True), 1
+    return tipos_como_csv(acumular_versiones(vers, leer_texto), tmp_csv), len(vers)
 
-    acumulado = None
+
+def acumular_versiones(vers, leer, saltar_ilegibles=False):
+    """Registros de las versiones [(ruta, fecha)], de la más antigua a la vigente, leídas con `leer`
+    y acumuladas con comun.historico.acumular. Una versión vacía (salvo la primera) no retira nada:
+    se ignora. Con saltar_ilegibles, una versión que no se puede leer tampoco (se avisa); sin él, el
+    error sube. Una versión cuya cabecera pierde alguna columna de la anterior (renombrada, quitada o
+    leída de otra forma) no se acumula a ciegas: acumular solo compararía las columnas comunes y
+    daría el fichero entero por retirado y vuelto a publicar (o casaría filas distintas). Se avisa,
+    se anota en REVISAR (main() acaba con código 1) y no se retira ni se duplica nada. Las columnas
+    nuevas sí se aceptan: se siguen comparando todas las de antes. None si no se ha podido leer
+    ninguna."""
+    acumulado = cabecera = None
     for ruta, fecha in vers:
-        texto = leer_texto(ruta)
+        try:
+            texto = leer(ruta)
+        except Exception as e:
+            if not saltar_ilegibles:
+                raise
+            log(f"   ⚠️ Versión ilegible ignorada (no se marca nada como retirado): {ruta.name} ({e})")
+            continue
         if len(texto) == 0 and acumulado is not None:
             log(f"   ⚠️ Versión vacía ignorada (no se marca nada como retirado): {ruta.name}")
             continue
+        faltan = [c for c in cabecera if c not in texto.columns] if cabecera is not None else []
+        if faltan:
+            nuevas = [c for c in texto.columns if c not in cabecera]
+            aviso = (f"{ruta.parent.name}/{ruta.name}: la cabecera cambia respecto a la versión anterior "
+                     f"(faltan {faltan}; nuevas {nuevas}); no se acumula: no se retira ni se duplica nada")
+            log(f"   ⚠️ REVISAR {aviso}")
+            REVISAR.append(aviso)
+            continue
         acumulado = acumular(acumulado, texto, fecha, permitir_vacio=acumulado is None)
+        cabecera = list(texto.columns)
+    return acumulado
 
+
+def tipos_como_csv(acumulado, tmp_csv):
+    """Registros acumulados como texto con los tipos de una lectura suelta del CSV."""
     # Tipos: se vuelve a leer el texto acumulado con la misma lectura que un CSV
     # suelto (misma inferencia de tipos y de ceros a la izquierda)
     datos = acumulado.drop(columns=list(COLUMNAS_META))
@@ -319,7 +398,7 @@ def construir_registros(csv_path, tmp_csv):
         df = datos
     for c in COLUMNAS_META:
         df[c] = acumulado[c].to_numpy()
-    return df, len(vers)
+    return df
 
 
 # Texto numérico con ceros a la izquierda: '08002', '0801930008', '-01' (no '0', '0.5')
@@ -350,8 +429,8 @@ def restaurar_ceros_iniciales(df, path, encoding, sep):
 
     def trozos():
         # Misma lectura (mismas líneas descartadas) pero todo como texto y por trozos
-        return pd.read_csv(path, encoding=encoding, sep=sep, dtype=str, on_bad_lines='skip',
-                           chunksize=FILAS_POR_TROZO)
+        return pd.read_csv(path, encoding=encoding, encoding_errors=ERRORES_UTF8, sep=sep, dtype=str,
+                           on_bad_lines='skip', chunksize=FILAS_POR_TROZO)
 
     try:
         con_ceros = set()
@@ -410,21 +489,28 @@ def clave_texto(df, columnas):
     return pd.Series(valores, index=df.index, dtype=object)
 
 
-def uuid_publicacio(df):
+def uuid_publicacio(df, columna='enllac_publicacio'):
     """Clave de la PSCP: el uuid del procedimiento en la URL de la publicación
     (.../detall-publicacio/<uuid>/<id>). La URL entera cambia con cada fase (el <id>) y entre /ca/ y
     /es/; el uuid no. Sin uuid, nula (sembrar compara por contenido)."""
-    url = df['enllac_publicacio'].astype(object).where(df['enllac_publicacio'].notna(), '').astype(str)
+    url = df[columna].astype(object).where(df[columna].notna(), '').astype(str)
     uuid = url.str.extract(r'detall-publicacio/([0-9a-fA-F-]{36})', expand=False).str.lower()
     valores = uuid.to_numpy(dtype=object)
     valores[uuid.isna().to_numpy()] = None
     return pd.Series(valores, index=df.index, dtype=object)
 
 
-def sembrar_release(df, ruta, columnas):
+def uuid_publicacio_bcn(df):
+    """Clave del perfil de contratante de Barcelona: la misma que la PSCP (es su extracto), en la
+    columna ENLLAC_PUBLICACIO del CSV del Ayuntamiento."""
+    return uuid_publicacio(df, 'ENLLAC_PUBLICACIO')
+
+
+def sembrar_release(df, ruta, columnas, solo_con_clave=False):
     """Añade a `df` las filas del Parquet publicado `ruta` cuya clave (ver SEMILLAS: columnas, que se
     comparan con clave_texto, o (columnas, nombre de la función que da la clave)) no está en la
-    descarga. Sin el fichero, `df` tal cual (con un aviso)."""
+    descarga. Sin el fichero, `df` tal cual (con un aviso). Con solo_con_clave, las filas del
+    publicado sin clave no se siembran (sembrar las compararía por contenido)."""
     columnas, funcion = (columnas, None) if isinstance(columnas, list) else columnas
     clave = globals()[funcion] if funcion else (lambda d: clave_texto(d, columnas))
     ruta = Path(ruta)
@@ -436,8 +522,13 @@ def sembrar_release(df, ruta, columnas):
     if faltan:
         log(f"   ⚠️ Semilla {ruta.name} sin sembrar: faltan columnas de la clave ({', '.join(faltan)})")
         return df
-    out, informe = sembrar(df.assign(_clave_semilla=clave(df)),
-                           publicado.assign(_clave_semilla=clave(publicado)), '_clave_semilla')
+    publicado = publicado.assign(_clave_semilla=clave(publicado))
+    if solo_con_clave:
+        sin_clave = publicado['_clave_semilla'].isna()
+        if sin_clave.any():
+            log(f"   ℹ️ Semilla {ruta.name}: {int(sin_clave.sum()):,} filas sin clave no se siembran")
+            publicado = publicado[~sin_clave.to_numpy()]
+    out, informe = sembrar(df.assign(_clave_semilla=clave(df)), publicado, '_clave_semilla')
     informe['ruta'] = str(ruta)
     imprimir_informe_semilla(informe)
     return out.drop(columns='_clave_semilla')
@@ -520,49 +611,80 @@ def cargar_tabla(path):
     raise ValueError(f"Formato no soportado: {path.name}")
 
 
+def registros_bcn(archivo, tmp_csv):
+    """Registros de todas las versiones de un recurso de Open Data BCN (ccaa_cataluna.py guarda la
+    anterior en _historico/ con guardar_version), de la más antigua a la vigente, acumulados con
+    comun.historico.acumular: lo que el portal retira o cambia sigue con _en_ultima_descarga=False.
+    El ámbito es el recurso: cada versión es el fichero entero. Con una sola versión, la lectura de
+    siempre más las columnas meta. Con varias, los CSV se comparan como texto (como construir_registros)
+    y los Excel/JSON con su lectura. Una versión vacía o ilegible no retira nada: se avisa y se salta
+    (antes, un recurso que no se podía leer desaparecía entero del parquet). Devuelve (DataFrame con
+    COLUMNAS_META, nº de versiones); ValueError si no se puede leer ninguna versión."""
+    vers = versiones_csv(archivo)
+    if len(vers) == 1:
+        return acumular(None, cargar_tabla(archivo), vers[0][1], permitir_vacio=True), 1
+    es_csv = archivo.suffix.lower() == '.csv'
+    acumulado = acumular_versiones(vers, leer_texto if es_csv else cargar_tabla, saltar_ilegibles=True)
+    if acumulado is None:
+        raise ValueError(f"ninguna de sus {len(vers)} versiones se puede leer")
+    return (tipos_como_csv(acumulado, tmp_csv) if es_csv else acumulado), len(vers)
+
+
 def consolidar_bcn(input_dir, output_dir, carpeta, destino, titulo, origen='_año'):
     """Consolida todos los recursos de un dataset de Open Data BCN en un parquet.
 
     origen='_año': año sacado del nombre del archivo; '_archivo_origen': nombre del archivo.
+    Cada recurso con todas sus versiones (registros_bcn); columnas COLUMNAS_META al final y, si hay
+    semilla (SEMILLA y SEMILLAS_BCN), las filas del release que la descarga ya no trae (_origen).
     """
     log("\n" + "="*60)
     log(f"📦 CONSOLIDANDO: {titulo}")
-    
+
     dir_path = input_dir / '02_barcelona' / carpeta
     if not dir_path.exists():
         log("   ⚠️ No encontrado")
         return 0, 0
-    
+
+    output_path = output_dir / 'contratacion' / destino
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     dfs = []
     for archivo in archivos_bcn(dir_path):
         try:
-            df = cargar_tabla(archivo)
+            df, n_versiones = registros_bcn(archivo, output_path.with_name(output_path.name + '.csv.tmp'))
             if origen == '_archivo_origen':
                 df['_archivo_origen'] = archivo.name
             else:
                 df['_año'] = anio_de_nombre(archivo.stem)
             dfs.append(df)
-            log(f"   ✅ {archivo.name}: {len(df):,} registros")
+            detalle = ""
+            if n_versiones > 1:
+                retirados = int((~df['_en_ultima_descarga'].astype(bool)).sum())
+                detalle = f" ({n_versiones} versiones; {retirados:,} ya no servidos, conservados)"
+            log(f"   ✅ {archivo.name}: {len(df):,} registros{detalle}")
         except Exception as e:
             log(f"   ❌ {archivo.name}: {e}")
-    
+
     if not dfs:
         return 0, 0
-    
+
     df_all = pd.concat(dfs, ignore_index=True)
-    
-    # Convertir columnas object a string para evitar errores de tipos mixtos
+    meta = [c for c in COLUMNAS_META if c in df_all.columns]
+    df_all = df_all[[c for c in df_all.columns if c not in meta] + meta]
+    if SEMILLA is not None and destino in SEMILLAS_BCN:
+        df_all = sembrar_release(df_all, Path(SEMILLA) / 'contratacion' / destino, SEMILLAS_BCN[destino],
+                                 solo_con_clave=True)
+
+    # Convertir columnas object a string para evitar errores de tipos mixtos (las nuestras no: sus
+    # nulos son nulos)
     for col in df_all.columns:
-        if es_texto(df_all[col]):
+        if es_texto(df_all[col]) and col not in COLUMNAS_CONTROL:
             df_all[col] = texto_sin_nulos(df_all[col])
-    
-    output_path = output_dir / 'contratacion' / destino
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     df_all.to_parquet(output_path, index=False, compression='snappy')
-    
+
     size = output_path.stat().st_size / 1024 / 1024
     log(f"   💾 CONSOLIDADO: {len(df_all):,} registros, {size:.1f}MB")
-    
+
     return len(df_all), size
 
 
@@ -630,17 +752,19 @@ def argumentos(argv):
                              "Barcelona va con 'contratacion'. Por defecto, todas")
     parser.add_argument("--semilla", default=None,
                         help="carpeta de Catalunya del release v2026.02 (p.ej. .../extraido/catalunya): añade las filas "
-                             "del publicado que ya no están en la descarga (ver SEMILLAS)")
+                             "del publicado que ya no están en la descarga (ver SEMILLAS y SEMILLAS_BCN)")
     return parser.parse_args(list(argv))
 
 
 def main(argv=()):
-    global INPUT_DIR, OUTPUT_DIR, CATEGORIAS
+    global INPUT_DIR, OUTPUT_DIR, CATEGORIAS, SEMILLA
     args = argumentos(argv)
     CATEGORIAS = args.categorias
     if args.semilla is not None and not Path(args.semilla).is_dir():
         log(f"❌ No existe la carpeta de la semilla: {args.semilla}")
         return 1
+    SEMILLA = args.semilla   # también la usan las consolidaciones de Barcelona (SEMILLAS_BCN)
+    REVISAR.clear()
     if args.entrada is not None:
         INPUT_DIR = str(args.entrada)
     if args.salida is not None:
@@ -747,6 +871,10 @@ def main(argv=()):
     print("="*70)
     log(f"✅ Archivos convertidos: {stats['convertidos']}")
     log(f"❌ Errores: {stats['errores']}")
+    if REVISAR:
+        log(f"⚠️ Casos a revisar: {len(REVISAR)} (versiones que no se han acumulado)")
+        for aviso in REVISAR:
+            log(f"   - {aviso}")
     log(f"📝 Registros totales: {stats['registros_total']:,}")
     log(f"💾 Tamaño total Parquet: {stats['tamaño_total_mb']:.1f} MB")
     log(f"⏱️ Tiempo: {elapsed:.1f} segundos")
@@ -846,7 +974,7 @@ df_2024 = df[df['año'] == 2024]
 """)
     
     log(f"\n📄 README: {output_dir}/README.md")
-    return 1 if stats['errores'] else 0
+    return 1 if stats['errores'] or REVISAR else 0
 
 
 if __name__ == "__main__":

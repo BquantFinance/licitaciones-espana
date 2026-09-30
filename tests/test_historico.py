@@ -130,6 +130,25 @@ def test_columnas_nuevas_ignoradas_y_tipos():
     assert t2["_fecha_descarga"].tolist() == ["d1", "d1"] # no rompe la igualdad
 
 
+def test_sin_columnas_en_comun_no_se_empareja_por_posicion():
+    """Dos versiones sin ninguna columna en común (p.ej. el portal cambia todas las cabeceras): antes
+    _claves daba la misma clave a todas las filas y el multiconjunto las emparejaba por posición: la
+    fila A/X/100 se fundía con C/Z/300 y quedaba como vigente. Sin nada que comparar, ninguna casa."""
+    t1 = h.acumular(None, _df([["A", "X", "100"], ["B", "Y", "200"]], ("a", "b", "c")), "d1")
+    t2 = h.acumular(t1, _df([["C", "Z", "300"]], ("d", "e", "f")), "d2")
+    filas = t2[["a", "b", "c", "d", "e", "f", "_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]]
+    assert [[None if pd.isna(v) else v for v in fila] for fila in filas.values.tolist()] == [
+        ["A", "X", "100", None, None, None, "d1", "d1", False],     # retirada: se conserva, sin fundirse
+        ["B", "Y", "200", None, None, None, "d1", "d1", False],
+        [None, None, None, "C", "Z", "300", "d2", "d2", True],      # la nueva, como alta
+    ]
+    # Tampoco si lo único en común son las columnas que no se comparan (las meta y `ignorar`)
+    t1 = h.acumular(None, pd.DataFrame({"a": ["A"], "_fecha_descarga": ["d1"]}), "d1")
+    t2 = h.acumular(t1, pd.DataFrame({"d": ["C"], "_fecha_descarga": ["d2"]}), "d2")
+    assert t2["a"].tolist()[0] == "A" and pd.isna(t2["d"].tolist()[0]) and len(t2) == 2
+    assert t2["_en_ultima_descarga"].tolist() == [False, True]
+
+
 def test_descarga_vacia_no_retira_nada():
     t1 = h.acumular(None, _df([["1", "10"]]), "d1")
     with pytest.raises(ValueError):

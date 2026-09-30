@@ -219,7 +219,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `nacional/licitaciones.py`, `nacional/normalizar_placsp.py` | Cerrado | `93b840d` | Sí (regeneración del 2026-09-27; nombre fijo con los ZIP reales de encargos del VPS: tablas iguales byte a byte y enlaces leídos con DuckDB 1.1.3; migración de la salida con años de cualquier año y nunca a través de un enlace, simulado en enero de 2027 con el ETL de la web igual) |
 | `calidad/calidad_licitaciones.py`, `calidad/correcciones.py` | Cerrado | `ba5a46e` | Sí (regeneración del 2026-09-27; URDINBERRI contra la API de Euskadi) |
 | `ted/ted_module.py`, `ted/run_ted_crossvalidation.py` | Cerrado | `b8c6709` | Sí (y el lector nuevo del CSV, con los CSV reales de 2019 y 2021) |
-| `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `95815b3` | Sí (la semilla, con la primera descarga del VPS) |
+| `scripts/ccaa_cataluna.py`, `scripts/ccaa_cataluna_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`, `--semilla`) | `dcd6d54` | Sí (la semilla, con la primera descarga del VPS; Barcelona: versiones, CP1252 en las secuencias que no son UTF-8 y semilla del perfil, con los crudos del VPS del 29-sep; una cabecera cambiada es un caso a revisar, código 1) |
 | `scripts/ccaa_valencia.py`, `scripts/ccaa_valencia_parquet.py` | Cerrado (`--salida`, `--entrada`, `--categorias`) | `95815b3` | Sí (primera descarga del VPS, 2026-09-28) |
 | `Euskadi/ccaa_euskadi.py`, `Euskadi/consolidacion_euskadi.py` | Cerrado (`--salida`, `--entrada`) | `7953621` | Sí (API completa; con `--salida` el log va a la carpeta de salida, comprobado en el VPS) |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | Cerrado | `73d6e80` | Sí |
@@ -359,8 +359,12 @@ Hoy varios **sobrescriben al refrescar**. Hay que aplicar la regla 3, con la sem
   - Lo que la ventana móvil sacó antes de la primera descarga del VPS solo estaba en el release.
   - Medido: RPC +751.187 filas (2021, sobre todo), PSCP +85.397, fase de ejecución +9.047 y contratación programada +5.095.
   - La clave de la PSCP es el uuid del procedimiento en la URL. Con la URL entera eran +187.577: cambia con cada fase y entre `/ca/` y `/es/`, y se colaban 102.180 fases antiguas de procedimientos que siguen publicados.
-  - Pendiente: **Barcelona** (`consolidar_bcn`) no acumula versiones ni siembra. El crudo sí guarda versiones.
-    - Medirlo cuando el VPS descargue Barcelona por primera vez: la primera descarga murió por memoria en RAISC antes de llegar.
+  - ~~Pendiente: **Barcelona** (`consolidar_bcn`) no acumula versiones ni siembra~~: **hecho** (`511e88e` y `dcd6d54`, medido con la primera descarga del VPS del 29-sep).
+    - Cada recurso se construye con todas sus versiones (`acumular`, ámbito el recurso); una versión vacía o ilegible no retira nada.
+    - Los CSV que no son UTF-8 se leen en CP1252: 37.721 celdas con '€' (36.728) y comillas o rayas que llegaban como controles C1.
+    - CP1252 solo en las secuencias que no son UTF-8 válido (`dcd6d54`): con el fichero entero en CP1252, un solo byte mal codificado cambiaba las cabeceras y la acumulación duplicaba el fichero (simulado en 2018: 26.115 filas retiradas y vueltas a añadir, 140,6 → 251,4 M€ en el ETL). En los 50 CSV del VPS da los mismos caracteres que antes.
+    - Una versión cuya cabecera pierde columnas no se acumula: se avisa como caso a revisar y la ejecución acaba con código 1. `acumular` ya no empareja por posición dos versiones sin columnas comunes.
+    - Semilla del perfil de contratante por el uuid del procedimiento: +7.411 filas de 6.120 publicaciones que el portal ya no sirve. Las otras 4 tablas del release coinciden con la descarga.
 - **Solo contratación en el VPS** (`--categorias contratacion`, `95815b3`), por decisión del propietario.
   - Las subvenciones, presupuestos, RRHH… de Catalunya y Valencia no se usan.
   - Las subvenciones se harán a nivel estatal.
