@@ -50,6 +50,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Catalunya | PSCP (`contractacio_menors`) | 1.424 | 1.913 | 2.387 | 20.550 | 24.107 | 27.085 | 34.079 | 49.207 |
 | Madrid | Comunidad (portal de contratación) | 206.629 | 174.992 | 171.760 | 164.473 | 320.026 | 439.322 | 384.677 | 215.353 |
 | Madrid | Comunidad, descarga del 2026-09-28 (sin publicar): 126 entidades, 2,79 M filas, NIF 99,999 % | 206.630 | 174.992 | 171.759 | 164.473 | 320.027 | 439.418 | 384.812 | 348.704 |
+| Madrid | Comunidad, recuento del portal sin entidad por «Fecha del contrato o encargo» (2026-09-30; lo que trae la vía por fecha) | 505.580 | 473.356 | 448.316 | 450.747 | 405.235 | 443.460 | 387.866 | 349.025 |
 | Madrid | Ayuntamiento (datos.madrid.es) | 7.857 | 8.772 | 6.152 | 6.753 | 6.566 | 5.719 | 5.535 | 4.730 |
 | Galicia | Xunta (contratosdegalicia) | 156.608 | 186.075 | 181.151 | 204.315 | 200.331 | 191.457 | 221.827 | 251.968 |
 | Andalucía | Junta (buscador; faltan ~41K del SAS) | 30.786 | 77.237 | 59.366 | 96.777 | 64.945 | 106.580 | 126.517 | 115.696 |
@@ -169,7 +170,7 @@ Antes de raspar pliegos en HTML/PDF, el XML CODICE de cada entrada ATOM trae muc
 | **Andalucía** | Buscador ES de la Junta (licitaciones y menores) | ~41K menores del SAS por encima del límite de 10K | ~~CSV oficial anual "Contratación menor en {año}" del CKAN de la Junta, con NIF y nombre del adjudicatario (A)~~: **hecho** (`scripts/ccaa_andalucia_menores.py`, 2026-09-29; §5.2); "Licitaciones publicadas {año}" como control (A); Registro de Contratos 2023+ (modificaciones y prórrogas) (M); menores municipales: Málaga (CKAN), Córdoba (CKAN), Diputación de Cádiz (A) |
 | **Asturias** | CSV de contratación centralizada 2019+ | Años posteriores a 2024 (corregido); menores anteriores a 2019 | Menores 2016-2020 del dataset de datos.gob.es (M); relaciones trimestrales de menores por consejería 2024-2025 (A); Gijón datos abiertos (A); Oviedo perfil propio y BI (M) |
 | **Galicia** | API de contratosdegalicia.gal (licitaciones 2007+, menores 2018+) | Licitaciones completas (99,95 % frente a PLACSP 1044); huecos puntuales de menores por errores HTTP del scraper antiguo | RSS de novedades para actualizaciones incrementales (A); menores de concellos y Deputacións vía 1143 filtrado por NUTS ES11 |
-| **Madrid (Comunidad)** | Buscador del portal (CSV con CAPTCHA) | Menores de entidades históricas que ya no aparecen en el desplegable (consejerías de legislaturas anteriores) | Menores por ventanas de fecha sin entidad (M); feed Atom `feed/licitaciones2` para incrementales (A) |
+| **Madrid (Comunidad)** | Buscador del portal (CSV con CAPTCHA) | Menores de entidades históricas que ya no aparecen en el desplegable (consejerías de legislaturas anteriores): ~2,04 M, casi todos de 2015-2022 (medido el 2026-09-30) | ~~Menores por ventanas de fecha sin entidad (M)~~: **hecho** (vía por fecha, «Fecha del contrato o encargo», 2026-09-30); el feed Atom `feed/licitaciones2` solo trae licitaciones, ningún menor |
 | **Madrid (Ayuntamiento)** | CKAN datos.madrid.es | Solo ~3.400 de ~71.500 menores están en PLACSP | Ya cubierto por los dos datasets CKAN |
 | **C. Valenciana** | CKAN dadesobertes.gva.es (REGCON) | 2025 congelado (corregido) | Comprobar si REGCON incluye menores comparando con el 1143 filtrado a la Generalitat; GVA Oberta (B); portal del Ajuntament de València (B) |
 
@@ -223,7 +224,7 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
 - **PLACSP.** Nº de entradas borradas por ZIP y hueco de `agregacion` del 17 al 22 de octubre de 2025. Salen del informe de procesado de la regeneración completa.
 - **Andalucía.** ~~Partición de los segmentos del SAS de más de 10K~~: **hecho** con tramos de `idExpediente` (`range`), medido desde el VPS el 2026-09-29: las tres consultas con tope quedan en 6, 4 y 6 tramos de 9.874 como mucho, que suman el total. Queda el nº de documentos BRR.
 - **Catalunya.** Filtro de fechas del portal de menores para segmentar ICS, UPF y UAB.
-- **Madrid Comunidad.** Filtros de fecha para menores sin entidad.
+- ~~**Madrid Comunidad.** Filtros de fecha para menores sin entidad.~~ Medido el 2026-09-30: «Fecha del contrato o encargo» (`ds_fecha_encargo`) sin entidad cuadra con la faceta (4.832.621 con fecha de 1900 a 2099 y 2 de 1899). Las ventanas son intervalos cerrados en UTC y se solapan en la frontera. Es la vía por fecha del script.
 - **Euskadi.** IDs de poder de REVASCON.
 - **Scrapers nuevos.** Ejecución completa en vivo de Castilla y León, Murcia y Aragón.
 
@@ -491,7 +492,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 
 | Fuente | Órganos | Formato | Periodo | Vol./año | ¿Tenemos? | 1143 | Conf. | URL |
 |---|---|---|---|---|---|---|---|---|
-| Portal de Contratación CM | 125 entidades: consejerías, OOAA, SERMAS, Canal, Metro, RTVM, fundaciones | CSV de 18 col. con NIF (CAPTCHA) | ≤2017- | 340-440 mil (4.832.623 en total según el portal) | Sí: el publicado tiene 2,56 M; la descarga del 2026-09-28, 2,79 M (2015-2024 casi idénticos: difieren como mucho 135 filas al año; 2025 y 2026, nuevos). **Pendiente**: explicar la diferencia con los 4,83 M del portal (¿otros tipos de publicación o menores sin entidad?, §3.3) | No | A | contratos-publicos.comunidad.madrid/contratos |
+| Portal de Contratación CM | 125 entidades: consejerías, OOAA, SERMAS, Canal, Metro, RTVM, fundaciones | CSV de 18 col. con NIF (CAPTCHA) | ≤2017- | 340-440 mil (4.832.623 en total según el portal) | Sí: el publicado tiene 2,56 M; la descarga del 2026-09-28, 2,79 M (2015-2024 casi idénticos: difieren como mucho 135 filas al año; 2025 y 2026, nuevos). ~~**Pendiente**: explicar la diferencia con los 4,83 M del portal~~ Explicada el 2026-09-30: son menores de entidades que ya no están en el desplegable (el 53 % de los del 15-5-2019); los recoge la vía por fecha (§2) | No | A | contratos-publicos.comunidad.madrid/contratos |
 | datos.madrid.es | Ayuntamiento y OOAA | CSV/XLSX | 2015- | ~7 mil | Sí | 3,1 mil | A | datos.madrid.es |
 | PLACSP 1143 | 113 entes locales, fundaciones hospitalarias, empresas municipales | ATOM | 2018- | 23 mil | Sí (nacional) | — | A | sindicacion_1143 |
 | Alcalá, CKAN | Ayuntamiento | XLSX trimestral: informe contable ADO pasado de PDF (408 hojas), con NIF | 2024 | ~4,5 mil operaciones | No | 0 | A | opendata.ayto-alcaladehenares.es/dataset/contratos-menores |
@@ -555,7 +556,8 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 
 - **CAM.**
   - `createddate` (desde) funciona sin entidad. Por año: 2018: 596 mil; 2019: 524 mil; 2020: 448 mil; 2021: 453 mil; 2022: 420 mil; 2023: 440 mil; 2024: 374 mil; 2025: 342 mil; 2026: 266 mil.
-  - Con fecha hasta no devuelve resultados.
+  - ~~Con fecha hasta no devuelve resultados.~~ Corregido el 2026-09-30: con desde y hasta juntos sí filtra (2019: 523.788 por fecha de publicación).
+  - Por «Fecha del contrato o encargo» (`ds_fecha_encargo`), sin entidad (2026-09-30): 2015: 124.070; 2016: 494.836; 2017: 628.128; 2018: 505.580; 2019: 473.356; 2020: 448.316; 2021: 450.747; 2022: 405.235; 2023: 443.460; 2024: 387.866; 2025: 349.025; 2026: 127.001; antes de 2015: 49. Es la vía por fecha del script.
 - **CyL ODS:**
   - 2019-2026: 128.119 filas de la Junta y 15.450 de SACYL.
   - 2025: 17.072 de la Junta y 2.444 de SACYL.
@@ -570,7 +572,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 #### Huecos (estimación)
 
 - **Madrid.**
-  - Lo principal es regenerar la CM: faltan unos 2,3 M de filas (4,83 M en el portal frente a 2,53 M publicados).
+  - Lo principal es regenerar la CM: faltan unos 2,3 M de filas (4,83 M en el portal frente a 2,53 M publicados). La descarga del 2026-09-28 trae 2,79 M; los ~2,04 M que faltan (entidades que ya no están en el desplegable) los recoge la vía por fecha (2026-09-30).
   - Fuentes nuevas: ayuntamientos grandes (10-15 mil al año) y 6 universidades (10-20 mil al año).
 - **Castilla y León.**
   - La Junta y SACYL están completos, porque el ODS coincide con el 1143.
@@ -586,7 +588,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 
 #### Prioridades (volumen × facilidad × valor antifraude)
 
-1. **Regenerar la CM**, por año con `createddate`: unos 2,3 M de filas con NIF. Esfuerzo: 1-2 días de ejecución.
+1. **Regenerar la CM**, por año con `createddate`: unos 2,3 M de filas con NIF. Esfuerzo: 1-2 días de ejecución. Hecho con la vía por fecha («Fecha del contrato o encargo», 2026-09-30), a falta de su primera descarga completa.
 2. **Regenerar Galicia.** Esfuerzo: 1 día.
 3. **Asturias desde una IP española:** CSV de 2025-2026, XML de 2016-2020 y relaciones XLSX. Esfuerzo: 1 día.
 4. **Gijón** (JSON con CIF). Esfuerzo: 0,5 días.
