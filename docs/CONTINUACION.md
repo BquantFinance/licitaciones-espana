@@ -229,7 +229,7 @@ Solo se usan en producción los scrapers **cerrados**: revisados, con tests en p
 | `scripts/ccaa_extremadura.py` | Cerrado | `4163d85` | Sí |
 | `scripts/ccaa_la_rioja.py`, `scripts/ccaa_valencia_menores.py` | Cerrado | `9190268` | Sí |
 | `scripts/ccaa_castilla_la_mancha.py` | Cerrado | `d015194` | Sí |
-| `scripts/municipios_menores.py` | Cerrado | `1361abd` | Sí |
+| `scripts/municipios_menores.py` | Cerrado | `0f4f89e` | Sí (errores de origen permanentes en `raw/_fallos_origen.json`: Leganés y Málaga siguen fallando igual el 29-sep; con los datos del VPS, los 8 Parquet idénticos byte a byte con el código anterior; Valladolid ya leía su cabecera, los avisos eran de hojas auxiliares; una entrada del registro que no es un objeto se descarta con aviso) |
 | `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | Sí, desde el VPS (2026-09-28): 2019-2024, 375.380 filas; la semilla no añade ninguna; 2025 y 2026 dan 404 en `dataset-contratacion-centralizada-<año>.csv` |
 | `scripts/ccaa_andalucia.py` | Cerrado | `a367943` | **No**: el portal corta desde la nube |
 | `scripts/ccaa_andalucia_menores.py` | Cerrado | `6f2f73c` | Sí, desde el VPS (2026-09-29): 9 CSV del CKAN de la Junta (2018-2026), 768.647 registros, 544.898 del SAS; la salida es idéntica al original celda a celda |

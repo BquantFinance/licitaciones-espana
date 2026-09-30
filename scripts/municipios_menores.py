@@ -28,6 +28,8 @@ Salida (por defecto <repo>/municipios_menores/):
     raw/.../_historico/               versiones anteriores de cada fichero (nunca se borran)
     raw/_manifiesto.json              URL, periodo, fecha de descarga y última comprobación de
                                       cada fichero y si el portal lo sigue publicando
+    raw/_fallos_origen.json           ficheros que no se pueden bajar: fallo, primer y último
+                                      intento e intentos seguidos (versiones en raw/_historico/)
     raw/descarga_log.txt              resumen de cada ejecución (se añade al final)
     <municipio>_menores.parquet       todas las filas de todos los ficheros (texto)
     _historico/                       versiones anteriores de los Parquet
@@ -63,6 +65,16 @@ Qué se descarga:
   404/410 lo retira. Un fichero enlazado que no se puede bajar (4xx, HTML en
   vez de la tabla) es un error y su copia anterior se conserva; uno enlazado
   dos veces (dos conjuntos del CKAN con la misma URL) se baja una sola vez.
+- Errores de origen permanentes (raw/_fallos_origen.json, RegistroFallos): un
+  fichero que falla igual (el mismo 404/410 de un recurso que se sigue
+  enlazando, o la misma respuesta que no es la tabla, con la misma URL) en
+  todos sus intentos desde hace al menos 20 horas (dos como mínimo) se avisa
+  en el resumen (ERRORES DE ORIGEN CONOCIDOS) y se sigue pidiendo, pero no da
+  código 1: así el semanal no falla siempre por un enlace roto del portal.
+  La primera vez, si cambia el fallo o la URL, y con fallos pasajeros (red,
+  429, 5xx, descargas cortadas, otros 4xx) el script sale con código 1,
+  aunque se repitan. Si el fichero vuelve a bajarse sale del registro
+  (RECUPERADOS). No se retira nada por un fallo.
 
 Lectura (todo como texto, sin convertir nada): CSV con comun.lectura_csv
 (detecta codificación y separador; las filas de título de encima de la
@@ -105,8 +117,15 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     por área (NOMBRE DE TERCERO, CONCEPTO, IMPORTE). Solo se cargan esas hojas
     de registros: las tablas dinámicas y de totales, las listas de códigos y
     los ficheros "Modelo procedimiento"/"Resumen anual" (agregados) quedan en
-    el original y se anotan en los avisos. Fundaciones de Cultura y Deportes
-    (2024-2026): solo PDF, DOCX y un ZIP de PDF (no se extraen).
+    el original y se anotan en los avisos. La cabecera de las hojas de
+    registros es su primera fila (medido en los 40 ficheros); las hojas sin
+    cabecera son la lista de códigos de área (Hoja1, Hoja3 en 2018: '01 | 01.
+    Alcaldía', a veces tras una fila vacía) y los totales por área de 2017
+    (TOTALES), que no se cargan: el aviso va en la lista de hojas que no se
+    cargan ("Hoja1 (140 filas, sin fila de cabecera)"). Al pie de OPERACIONES
+    SICALWIN de 2018 y 2025 hay una fila de total (solo Importe): se conserva,
+    así se publica. Fundaciones de Cultura y Deportes (2024-2026): solo PDF,
+    DOCX y un ZIP de PDF (no se extraen).
   - Fuenlabrada: https://transparencia.ayto-fuenlabrada.es/contratos/menores/
     (y /page/N/, 25 por página; archivo de la taxonomía grupo_contratos sin
     API REST y que ignora orderby/order): pagina por fecha y las entradas con
@@ -131,7 +150,9 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     la cabecera: _titulo_tabla), XLS mensual 2016-2017, CSV de 2015. En PDF:
     feb-sep 2016, ene-jun 2017, 2018 y noviembre de 2023. El enlace "Menores
     Septiembre 2023" apunta al PDF de septiembre de 2016 y "Menores agosto
-    2026" (/documents/131847/...) devuelve la portada del sitio (error).
+    2026" (/documents/131847/...) devuelve la portada del sitio: redirige al
+    acceso de Liferay, el documento no es público (comprobado el 2026-09-29;
+    error de origen permanente).
   - Málaga: CKAN https://datosabiertos.malaga.eu (package_search q=menores):
     77 conjuntos "Contratos menores N trimestre AAAA - Ayuntamiento de Málaga"
     (2016-2026) y "- CEMI" (2016-2024), cada uno con PDF y XLSX/XLS (y ODS
@@ -139,10 +160,10 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     2017, 1T 2018, 2T-3T 2021 y desde 2024 (el resto, solo el nombre del
     tercero); CEMI: NIF desde el 2T de 2018 (sus ficheros traen además una
     hoja Hoja2 con la lista de tipos de contrato). El XLSX del 4T de 2020 del
-    Ayuntamiento da 404 (error en cada ejecución; ese trimestre solo está en
-    PDF) y el conjunto de CEMI del 2T de 2020 enlaza el XLSX del 1T (se baja
-    una vez). Unos 2/3 de los menores de 2025 del Ayuntamiento también están
-    en el feed 1143 de la PLACSP (mismo NIF e importe).
+    Ayuntamiento da 404 (error de origen permanente; ese trimestre solo está
+    en PDF) y el conjunto de CEMI del 2T de 2020 enlaza el XLSX del 1T (se
+    baja una vez). Unos 2/3 de los menores de 2025 del Ayuntamiento también
+    están en el feed 1143 de la PLACSP (mismo NIF e importe).
   - Córdoba: CKAN https://datosabiertos.cordoba.es (q=menores): conjuntos
     "Contratos menores" (CSV 2021-2024 y XLS 2021-2023, que se solapan, y
     XLSX 2023 de lo publicado en PLACSP) y "Contratación administrativa - Contratos menores"
@@ -262,6 +283,11 @@ ERRORES_RED = (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
 ESTADOS_OK = ("nuevo", "actualizado", "sin_cambios")
 PARAMETROS_VOLATILES = {"t"}             # ?t=<marca de tiempo> de Liferay (Leganés)
 INTENTOS_OPCIONAL = 2                    # catálogos opcionales (CKAN de Vigo)
+# Errores de origen permanentes (RegistroFallos): los fallos que pueden serlo (404/410 o una
+# respuesta que no es la tabla) y lo que tiene que pasar entre el primer intento fallido y el actual
+FALLOS_ORIGEN = "_fallos_origen.json"
+ESTADOS_PERMANENTES = ("no_existe", "invalido")
+SEPARACION_PERMANENTE = dt.timedelta(hours=20)
 
 # Columnas que añade el script, en el orden en que quedan al final del Parquet.
 # Las de origen no cuentan al comparar registros entre versiones: el mismo
@@ -547,8 +573,103 @@ class Manifiesto:
         os.replace(tmp, self.ruta)
 
 
+def _instante(texto):
+    """Instante de una fecha escrita con iso() ('2026-09-27T14:43:00Z')."""
+    return datetime.strptime(texto, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+class RegistroFallos:
+    """raw/_fallos_origen.json: los ficheros que el portal enlaza (o que las fuentes dan por
+    publicados) y no se han podido bajar, con el fallo (estado y detalle de descargar()), la URL, el
+    primer y el último intento fallido y cuántos intentos seguidos han fallado igual.
+
+    ERROR DE ORIGEN PERMANENTE: el mismo fichero falla igual (mismo estado y detalle y la misma URL
+    sin parámetros volátiles) en todos sus intentos desde hace al menos SEPARACION_PERMANENTE (dos
+    intentos como mínimo), y el fallo es del origen: 404/410 de un recurso que se sigue enlazando o
+    una respuesta que no es la tabla (ESTADOS_PERMANENTES; p.ej. Leganés sirve la portada en lugar
+    del XLSX de agosto de 2026 y el XLSX del 4T-2020 de Málaga da 404). Se avisa en el log y en el
+    resumen (ERRORES DE ORIGEN CONOCIDOS), se vuelve a pedir en cada ejecución y no da código 1.
+    Dan código 1 siempre: un fallo nuevo (la primera vez), uno que cambia (otro estado, otro detalle
+    u otra URL), uno que se repite en menos de SEPARACION_PERMANENTE (un 404 de unos minutos no es
+    permanente) y los pasajeros (red, 429, 5xx, descarga cortada u otros 4xx), aunque se repitan.
+    Así el registro no esconde ningún error nuevo.
+    Cuando el fichero vuelve a bajarse sale del registro (RECUPERADOS); si vuelve a fallar, es un
+    fallo nuevo. El registro no retira nada: un fichero enlazado que falla conserva su copia y sus
+    filas. Se guarda con guardar_version: cada versión anterior queda en raw/_historico/."""
+
+    def __init__(self, raw, momento):
+        self.raw = Path(raw)
+        self.ruta = self.raw / FALLOS_ORIGEN
+        self.momento = iso(momento)
+        self.aviso = None
+        try:
+            self.datos = json.loads(self.ruta.read_text(encoding="utf-8"))
+            if not isinstance(self.datos, dict):
+                raise ValueError("no es un objeto JSON")
+        except FileNotFoundError:
+            self.datos = {}
+        except ValueError as e:
+            # Sin registro, todo fallo es nuevo y da código 1: nunca esconde nada
+            self.datos = {}
+            self.aviso = (f"{FALLOS_ORIGEN} ilegible ({str(e)[:100]}): los fallos de esta ejecución cuentan "
+                          "como nuevos; la copia ilegible queda en _historico/")
+        # JSON válido con alguna entrada que no es un objeto (editado a mano, p.ej.): fallo(), _bajado() y
+        # olvidar() la leen como un diccionario y el AttributeError tumbaba la ejecución sin generar
+        # ningún Parquet. Se descarta con aviso: su fallo, si se repite, cuenta como nuevo (código 1)
+        malas = [rel for rel, entrada in self.datos.items() if not isinstance(entrada, dict)]
+        for rel in malas:
+            del self.datos[rel]
+        if malas:
+            self.aviso = (f"{FALLOS_ORIGEN}: {len(malas)} entradas que no son un objeto, descartadas "
+                          f"({', '.join(malas[:5])}{', …' if len(malas) > 5 else ''}): sus fallos cuentan "
+                          "como nuevos; la copia anterior queda en _historico/")
+
+    def fallo(self, municipio, rel, url, estado, detalle):
+        """Anota que `rel` no se ha podido bajar en esta ejecución y devuelve su entrada."""
+        firma = f"{estado}: {detalle}"
+        clave_url = _clave_url(url)
+        previa = self.datos.get(rel) or {}
+        if previa.get("firma") == firma and previa.get("clave_url") == clave_url:
+            # Cada ruta se pide una vez por ejecución (_sin_duplicados, _asignar_rutas)
+            entrada = dict(previa, url=url, ultima=self.momento, veces=int(previa.get("veces") or 1) + 1)
+        else:
+            entrada = {"municipio": municipio, "url": url, "clave_url": clave_url, "estado": estado,
+                       "detalle": detalle, "firma": firma, "primera": self.momento, "ultima": self.momento,
+                       "veces": 1}
+        self.datos[rel] = entrada
+        return entrada
+
+    @staticmethod
+    def permanente(entrada):
+        """Si la entrada es un error de origen permanente (ver la clase)."""
+        try:
+            separacion = _instante(entrada["ultima"]) - _instante(entrada["primera"])
+            veces = int(entrada.get("veces") or 0)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return entrada.get("estado") in ESTADOS_PERMANENTES and veces >= 2 and separacion >= SEPARACION_PERMANENTE
+
+    def resuelto(self, rel):
+        """`rel` se ha bajado, se ha retirado o ya no es un fallo: sale del registro. Devuelve su
+        entrada (None si no estaba)."""
+        return self.datos.pop(rel, None)
+
+    def olvidar(self, municipio, rels):
+        """Fallos de `municipio` cuyo fichero el portal ya no enlaza (su lista se ha leído entera y
+        no está en `rels`): no se vuelven a pedir y salen del registro. Devuelve [(rel, entrada)]."""
+        fuera = [rel for rel in self.datos if rel.startswith(municipio + "/") and rel not in rels]
+        return [(rel, self.datos.pop(rel)) for rel in fuera]
+
+    def guardar(self):
+        """Escribe el registro (sin él y sin fallos no se crea el fichero)."""
+        if not self.datos and not self.ruta.exists():
+            return None
+        return guardar_json(self.ruta, self.datos)
+
+
 class Resumen:
-    """Lo descargado, lo que no existe, lo retirado, lo que no es una tabla y lo que falló."""
+    """Lo descargado, lo que no existe, lo retirado, lo que no es una tabla y lo que falló: los
+    errores (código 1) y los errores de origen conocidos (RegistroFallos: no cambian el código)."""
 
     def __init__(self, titulo):
         self.titulo = titulo
@@ -560,6 +681,8 @@ class Resumen:
         self.no_estructurados = {}
         self.avisos = []
         self.fallidos = []
+        self.conocidos = []
+        self.recuperados = []
         self.parquets = []
 
     def descarga(self, municipio, etiqueta, estado):
@@ -594,6 +717,8 @@ class Resumen:
         lineas = ["=" * 70]
         if self.fallidos:
             lineas.append(f"⚠️ {self.titulo}: COMPLETADO CON ERRORES ({len(self.fallidos)})")
+        elif self.conocidos:
+            lineas.append(f"✅ {self.titulo}: COMPLETADO (con {len(self.conocidos)} errores de origen conocidos)")
         else:
             lineas.append(f"✅ {self.titulo}: COMPLETADO")
         lineas += ["=" * 70, f"Inicio: {iso(self.inicio)}  Fin: {iso(ahora())}"]
@@ -615,6 +740,9 @@ class Resumen:
         bloque("PARQUET", [f"{n}: {f:,} filas x {c} columnas ({r:,} ya no publicadas)"
                            for n, f, c, r in self.parquets])
         bloque("AVISOS", self.avisos)
+        bloque("RECUPERADOS (fallaban y vuelven a bajarse; salen de raw/_fallos_origen.json)", self.recuperados)
+        bloque("ERRORES DE ORIGEN CONOCIDOS (fallan igual en intentos seguidos: se reintentan en cada ejecución "
+               "y no cambian el código de salida; raw/_fallos_origen.json)", self.conocidos)
         bloque("ERRORES - vuelve a ejecutar el script para reintentarlos", self.fallidos)
         return "\n".join(lineas)
 
@@ -735,6 +863,14 @@ def _parece_registro(fila):
     return bool(valores) and sum(bool(PATRON_DATO.fullmatch(v)) for v in valores) * 2 >= len(valores)
 
 
+def _etiqueta(nombre, hoja):
+    """Cómo se nombra una tabla en los avisos: el fichero y, si es de una hoja, la hoja."""
+    return nombre if hoja is None else f"{nombre} [{hoja}]"
+
+
+AVISO_SIN_CABECERA = "sin fila de cabecera"
+
+
 def _tabla(filas, nombre, hoja, avisos):
     """Tabla de una hoja o de un CSV: detecta la fila de cabecera (el texto de
     las filas de encima, título, entidad, periodo..., va a la columna
@@ -743,7 +879,7 @@ def _tabla(filas, nombre, hoja, avisos):
     filas = [list(f) for f in filas if any(v is not None for v in f)]
     if not filas:
         return None
-    etiqueta = nombre if hoja is None else f"{nombre} [{hoja}]"
+    etiqueta = _etiqueta(nombre, hoja)
     llenas = [sum(v is not None for v in f) for f in filas[:50]]
     maximo = max(llenas)
     umbral = 1 if maximo < 2 else max(2, math.ceil(0.6 * maximo))
@@ -761,7 +897,7 @@ def _tabla(filas, nombre, hoja, avisos):
     if _parece_registro(cabecera):
         # Tabla sin cabecera (p.ej. una lista auxiliar de códigos y NIF): su
         # primera fila es un registro, no los nombres de las columnas
-        avisos.append(f"{etiqueta}: sin fila de cabecera (la primera fila son datos: "
+        avisos.append(f"{etiqueta}: {AVISO_SIN_CABECERA} (la primera fila son datos: "
                       f"{' | '.join(str(v) for v in cabecera if v is not None)[:120]}); columnas columna_1…")
         cabecera = [f"columna_{i}" for i in range(1, ancho + 1)]
         pos -= 1
@@ -1018,7 +1154,12 @@ def leer_tabla(ruta, nombre=None, hoja_valida=None):
         if not len(df):
             sin_filas.append(f"{hoja} ({' | '.join(str(c) for c in df.columns if not str(c).startswith('_'))[:80]})")
         elif hoja_valida is not None and not hoja_valida(df):
-            descartadas.append(f"{hoja} ({len(df):,} filas)")
+            # Una hoja que no se carga (lista de códigos, totales...) y que no tiene cabecera se dice
+            # en su línea: suelto, el aviso parecería de las hojas de registros (Valladolid)
+            prefijo = f"{_etiqueta(nombre, hoja)}: {AVISO_SIN_CABECERA} ("
+            sin_cabecera = [a for a in avisos if a.startswith(prefijo)]
+            avisos = [a for a in avisos if not a.startswith(prefijo)]
+            descartadas.append(f"{hoja} ({len(df):,} filas{', ' + AVISO_SIN_CABECERA if sin_cabecera else ''})")
         else:
             cargadas.append(df)
     if sin_filas:
@@ -1642,9 +1783,41 @@ def _asignar_rutas(clave, recursos, manifiesto):
         usados[r.rel] = clave_url
 
 
-def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False):
+def _fallo_de_fichero(clave, rel, url, estado, detalle, resumen, registro, texto=None):
+    """Un fichero enlazado (o que las fuentes dan por publicado) que no se puede bajar: se conserva
+    su copia anterior y se vuelve a pedir en la próxima ejecución. Un error de origen permanente ya
+    conocido (RegistroFallos) se avisa sin código 1; cualquier otro fallo da código 1."""
+    entrada = registro.fallo(clave, rel, url, estado, detalle)
+    texto = texto or f"{clave} {rel}: {detalle or estado} ({url})"
+    if entrada["veces"] > 1:
+        texto += f"; falla igual desde {entrada['primera']} ({entrada['veces']} intentos seguidos)"
+    if RegistroFallos.permanente(entrada):
+        resumen.conocidos.append(texto)
+        print(f"  ⚠️ {rel}: {detalle or estado} (error de origen conocido desde {entrada['primera']})")
+    else:
+        resumen.fallidos.append(texto)
+        print(f"  ❌ {rel}: {detalle or estado}")
+
+
+def _bajado(clave, rel, estado, resumen, registro):
+    """Un fichero bajado: si fallaba, sale del registro de fallos (RECUPERADOS)."""
+    entrada = registro.resuelto(rel)
+    if entrada is not None:
+        resumen.recuperados.append(f"{clave} {rel}: vuelve a bajarse ({estado}); fallaba desde {entrada.get('primera')} "
+                                   f"({entrada.get('firma')}; {entrada.get('veces')} intentos)")
+
+
+def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False, registro=None):
     """Lee la lista de ficheros del municipio, descarga los que faltan o pueden
-    haber cambiado y marca como retirados los que el portal ya no enlaza."""
+    haber cambiado y marca como retirados los que el portal ya no enlaza. Los
+    ficheros que no se pueden bajar pasan por el registro de fallos de origen
+    (RegistroFallos; sin `registro`, se abre y se guarda aquí)."""
+    if registro is None:
+        registro = RegistroFallos(raw, ahora())
+        try:
+            return procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo, registro)
+        finally:
+            registro.guardar()
     config = MUNICIPIOS[clave]
     descubrir = ADAPTADORES[clave][0]
     print(f"\n📦 {config['nombre']} ({clave}): {config['descripcion']}")
@@ -1677,28 +1850,38 @@ def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False):
         if estado in ESTADOS_OK:
             manifiesto.registrar(destino, r.url, estado, municipio=clave, sondeo=r.sondeo, metadatos=r.metadatos())
             resumen.descarga(clave, f"{clave} {r.rel}", estado)
+            _bajado(clave, r.rel, estado, resumen, registro)
             print(f"  ✅ {r.rel}: {estado}")
         elif r.sondeo and estado == "invalido" and not destino.exists() and not r.confirmado:
+            registro.resuelto(r.rel)
             resumen.no_publicado(clave, int(r.anio) if (r.anio or "").isdigit() else r.rel)   # página HTML con 200
         elif r.sondeo and estado == "no_existe":
             if destino.exists():
+                registro.resuelto(r.rel)
                 manifiesto.retirar(destino, detalle)
                 resumen.retirados.append(f"{clave} {r.rel}: el portal ya no lo sirve ({detalle}); "
                                          "se conservan sus filas")
             elif r.confirmado:
-                resumen.fallidos.append(f"{clave} {r.anio}: año publicado según las fuentes y ahora no "
+                _fallo_de_fichero(clave, r.rel, r.url, estado, detalle, resumen, registro,
+                                  texto=f"{clave} {r.anio}: año publicado según las fuentes y ahora no "
                                         f"disponible ({detalle}; {r.url})")
             else:
+                registro.resuelto(r.rel)
                 resumen.no_publicado(clave, int(r.anio) if (r.anio or "").isdigit() else r.rel)
         else:
             # Enlazado (o confirmado) y no se puede bajar: se conserva la copia y se reintenta
-            resumen.fallidos.append(f"{clave} {r.rel}: {detalle or estado} ({r.url})")
-            print(f"  ❌ {r.rel}: {detalle or estado}")
+            _fallo_de_fichero(clave, r.rel, r.url, estado, detalle, resumen, registro)
     if not enlazados:
         if not any(r.sondeo for r in recursos):
             resumen.fallidos.append(f"{clave}: el portal no enlaza ningún fichero con tablas; no se retira nada")
         return
     publicados = {r.rel for r in recursos}
+    if not config.get("lista_incompleta"):
+        # La lista se ha leído entera (si no, no se llega aquí): los fallos de ficheros que ya no
+        # enlaza no se vuelven a pedir. Con una lista que pierde entradas no se sabe
+        for rel, entrada in registro.olvidar(clave, publicados):
+            resumen.avisos.append(f"{clave} {rel}: el portal ya no lo enlaza; sale del registro de fallos "
+                                  f"(fallaba desde {entrada.get('primera')}: {entrada.get('firma')})")
     for rel, entrada in manifiesto.de_municipio(clave).items():
         if rel in publicados or entrada.get("sondeo") or not entrada.get("publicado", True):
             continue
@@ -1711,12 +1894,15 @@ def procesar_municipio(clave, raw, manifiesto, resumen, comprobar_todo=False):
             if estado in ESTADOS_OK:
                 manifiesto.registrar(raw / rel, entrada["url"], estado)
                 resumen.descarga(clave, f"{clave} {rel} (no sale en la lista, pero su URL sigue publicada)", estado)
+                _bajado(clave, rel, estado, resumen, registro)
                 continue
             if estado != "no_existe":
-                resumen.fallidos.append(f"{clave} {rel}: no sale en la lista y su URL no responde bien "
+                _fallo_de_fichero(clave, rel, entrada["url"], estado, detalle, resumen, registro,
+                                  texto=f"{clave} {rel}: no sale en la lista y su URL no responde bien "
                                         f"({detalle or estado}); no se retira")
                 continue
             motivo += f" y su URL da {detalle}"
+        registro.resuelto(rel)
         manifiesto.retirar(raw / rel, motivo)
         resumen.retirados.append(f"{clave} {rel}: {motivo}; se conservan sus filas")
         print(f"  🗑️ {rel}: retirado por el portal")
@@ -1761,9 +1947,15 @@ def main(argv=None):
     print(f"Municipios: {', '.join(claves)}\nDestino: {salida.resolve()}")
     manifiesto = Manifiesto(raw)
     resumen = Resumen(TITULO)
-    for clave in claves:
-        if not args.solo_procesar:
-            procesar_municipio(clave, raw, manifiesto, resumen, args.comprobar_todo)
+    if not args.solo_procesar:
+        registro = RegistroFallos(raw, resumen.inicio)
+        if registro.aviso:
+            resumen.avisos.append(registro.aviso)
+        try:
+            for clave in claves:
+                procesar_municipio(clave, raw, manifiesto, resumen, args.comprobar_todo, registro)
+        finally:
+            registro.guardar()
     print("\n🧱 Generando Parquet...")
     for clave in claves:
         generar_parquet(clave, salida, raw, manifiesto, resumen)

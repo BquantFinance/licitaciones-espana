@@ -69,7 +69,9 @@ en Docker, con los datos fuera del repo y el histórico completo (sin sesgo del 
 
 Cada fuente entra en su cron semanal (`bin/ejecutar_fuente.sh <fuente> semanal`) cuando su primera
 descarga está verificada. Calendario previsto para las que faltan: miércoles Andalucía (y sus menores
-del CKAN), jueves Euskadi y BORME, viernes municipios (cuando un error de origen permanente deje de dar
-rc=1), sábado menores de la PSCP; Galicia, mensual (después de relanzar su primera descarga con la
+del CKAN), jueves Euskadi y BORME, viernes municipios (un error de origen permanente, como el XLSX de
+agosto de 2026 de Leganés o el del 4T-2020 de Málaga, solo da rc=1 la primera vez: la primera ejecución
+con `raw/_fallos_origen.json` los anota y, desde el día siguiente, se avisan con rc=0), sábado menores
+de la PSCP; Galicia, mensual (después de relanzar su primera descarga con la
 lista de organismos de la PR #36). La calidad y el cruce TED de la PLACSP aún no van en cron. Con la
 cola vacía, el cron de las 00:30 no hace nada.
