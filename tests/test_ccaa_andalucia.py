@@ -351,9 +351,30 @@ class AndaluciaScraperTests(unittest.TestCase):
         response.status_code = 403
         response.text = "forbidden"
 
-        with patch.object(ccaa_andalucia.S, "post", return_value=response):
+        with patch.object(ccaa_andalucia.S, "post", return_value=response) as post:
             with self.assertRaises(ccaa_andalucia.ScraperError):
                 ccaa_andalucia.es({"query": {"match_all": {}}}, timeout=1)
+        self.assertEqual(post.call_count, 1)   # un 403 no se reintenta
+
+    def test_es_retries_408_then_succeeds(self):
+        # 1-oct-2026: un 408 de la Junta tras 11 h de descarga paro la ejecucion entera
+        timeout = FakeResponse(408, {})
+        timeout.text = "408 Request Timeout"
+        with patch.object(ccaa_andalucia.S, "post", side_effect=[timeout, FakeResponse(200, {"hits": {}})]) as post, \
+                patch.object(ccaa_andalucia.time, "sleep") as sleep:
+            self.assertEqual(ccaa_andalucia.es({"query": {"match_all": {}}}, timeout=1), {"hits": {}})
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2])
+
+    def test_es_gives_up_after_max_retries_with_growing_waits(self):
+        timeout = FakeResponse(408, {})
+        timeout.text = "408 Request Timeout"
+        with patch.object(ccaa_andalucia.S, "post", return_value=timeout) as post, \
+                patch.object(ccaa_andalucia.time, "sleep") as sleep:
+            with self.assertRaises(ccaa_andalucia.ScraperError):
+                ccaa_andalucia.es({"query": {"match_all": {}}}, timeout=1)
+        self.assertEqual(post.call_count, ccaa_andalucia.MAX_RETRIES)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2, 6, 18, 54])
 
     @unittest.skipUnless(ccaa_andalucia.HAS_PANDAS, "pandas no disponible")
     def test_save_csv_and_parquet(self):

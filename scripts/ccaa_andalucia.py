@@ -204,10 +204,15 @@ log = logging.getLogger(__name__)
 DELAY = 0.3
 PAGE_SIZE = 100
 MAX_FROM = 9900
-MAX_RETRIES = 3
+MAX_RETRIES = 5
+# Espera antes del reintento n: ESPERA_REINTENTO * 3**(n-1) segundos (2, 6, 18 y 54: 80 s en total).
+# Con 3 intentos separados 2 s, un mal rato del servidor tumbaba una descarga de 11 h
+ESPERA_REINTENTO = 2
 # Maximo de clausulas must_not por consulta (ramas null y descubrimiento de perfiles)
 MAX_EXCLUSIONS = 900
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+# 408: el servidor de la Junta corta por tiempo cuando va cargado (1-oct-2026: un 408 tras 11 h de
+# descarga paro la ejecucion entera). Es pasajero: se reintenta como un 5xx
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 # Orden de las paginas: (idExpediente, portalGestor) es el registro del indice (unico), asi
 # que el orden es total y from/size no repite ni salta documentos mientras el indice no cambia
 ORDEN_PAGINAS = [{"idExpediente": "asc"}, {"portalGestor": "asc"}]
@@ -508,7 +513,7 @@ def es(body, timeout=DEFAULT_TIMEOUT):
             log.warning("Fallo de red en intento %s/%s: %s", attempt, MAX_RETRIES, exc)
 
         if attempt < MAX_RETRIES:
-            time.sleep(2)
+            time.sleep(ESPERA_REINTENTO * 3 ** (attempt - 1))
 
     raise ScraperError("La API de Andalucia fallo tras varios reintentos") from last_error
 
