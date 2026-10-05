@@ -32,8 +32,10 @@ Medido sobre los ficheros de v2026.10. **Registros**: filas de los Parquet de ca
 | 🆕 8 ayuntamientos (menores) | `municipios.zip` | 290K | 2015-2026 | 20 MB |
 | TED (España) | `ted.zip` | 857K filas de 355K avisos | 2006-2026 | 156 MB |
 | BORME (Registro Mercantil) | `borme.zip` | 9.61M actos + 17.8M cargos | 2009-2026 | 980 MB |
-| Calidad (indicadores) | — (solo en v2026.02) | 8.7M filas × 20 indicadores (v2026.02, sin regenerar; ver correcciones PLACSP) | 2012-2026 | 977 MB |
-| **TOTAL v2026.10** | **30 ZIP** | **87.8M + BORME (27.4M)** | **2005-2026** | **10.7 GB** |
+| Calidad (indicadores) | `calidad_licitaciones_resultado.zip` (fichero de v2026.02) | 8.7M filas × 20 indicadores (v2026.02, sin regenerar; ver correcciones PLACSP) | 2012-2026 | 977 MB |
+| **TOTAL v2026.10** | **31 ZIP** | **87.8M + BORME (27.4M)** | **2005-2026** | **10.7 GB** |
+
+Los registros y tamaños de cada fuente son los de v2026.10; no cuentan los ficheros de v2026.02 que van tal cual en la carpeta `v2026.02/` de algunos ZIP ni el de calidad.
 
 ---
 
@@ -43,7 +45,7 @@ Medido sobre los ficheros de v2026.10. **Registros**: filas de los Parquet de ca
 
 ### 👉 [Descarga directa (sin LFS) → GitHub Releases](https://github.com/BquantFinance/licitaciones-espana/releases/latest)
 
-Release **v2026.10** (octubre de 2026): los mismos datos que usa buscalicitaciones.com. Cada ZIP lleva `LEEME.txt` (qué es, portal de origen, script del repo que lo genera, fecha de descarga y avisos) y `MANIFEST.csv` (fichero, filas, columnas, bytes y SHA-256 de cada Parquet). El release trae además `SHA256SUMS.txt` (SHA-256 de cada ZIP) y un `MANIFEST.csv` global. En total, 30 ZIP y 8.46 GB.
+Release **v2026.10** (octubre de 2026): los mismos datos que usa buscalicitaciones.com y, para no tener menos datos que v2026.02, los ficheros de v2026.02 que la descarga actual no cubre, tal cual, en una carpeta `v2026.02/` dentro del ZIP de su fuente (ver abajo). Cada ZIP lleva `LEEME.txt` (qué es, portal de origen, script del repo que lo genera, fecha de descarga y avisos) y `MANIFEST.csv` (fichero, filas, columnas, bytes y SHA-256 de cada fichero; en los ZIP con carpeta `v2026.02/`, también una `nota` con el motivo de cada fichero de v2026.02). El release trae además `SHA256SUMS.txt` (SHA-256 de cada ZIP) y un `MANIFEST.csv` global. En total, 31 ZIP y 9.92 GB.
 
 | ZIP | Contenido | Tamaño |
 |-----|-----------|--------|
@@ -56,16 +58,16 @@ Release **v2026.10** (octubre de 2026): los mismos datos que usa buscalicitacion
 | `nacional_criterios.zip` | PLACSP, criterios de adjudicación | 663 MB |
 | `nacional_adjudicatarios.zip` | PLACSP, adjudicatarios | 336 MB |
 | `nacional_lotes_y_otras_tablas.zip` | PLACSP, lotes, modificaciones, borrados y semilla por contenido | 239 MB |
-| `catalunya.zip` | Catalunya: contratación (PSCP, RPC, Generalitat, Ayuntamiento de Barcelona) | 968 MB |
-| `catalunya_menores.zip` | Catalunya: contratos menores de la PSCP (en v2026.02 iban en `catalunya.zip`) | 96 MB |
-| `valencia.zip` | Valencia: REGCON 2013-2026 + DANA, convenios, lobbies (REGIA) y entidades | 41 MB |
+| `catalunya.zip` | Catalunya: contratación (PSCP, RPC, Generalitat, Ayuntamiento de Barcelona) + en `v2026.02/`, las demás categorías y el perfil del contratante de Barcelona de v2026.02 | 1.08 GB |
+| `catalunya_menores.zip` | Catalunya: contratos menores de la PSCP (en v2026.02 iban en `catalunya.zip`) + en `v2026.02/`, el fichero de v2026.02 | 307 MB |
+| `valencia.zip` | Valencia: REGCON 2013-2026 + DANA, convenios, lobbies (REGIA) y entidades + en `v2026.02/`, las demás categorías y las tablas que han cambiado | 124 MB |
 | `valencia_menores.zip` | 🆕 Valencia: menores de universidades, Ayto. de València y Diputación de Alicante | 57 MB |
 | `andalucia.zip` | Andalucía: contratación de la Junta (buscador de perfiles) | 79 MB |
 | `andalucia_menores.zip` | 🆕 Andalucía: contratos menores de la Junta (CKAN), con el SAS | 57 MB |
-| `euskadi.zip` | Euskadi: KontratazioA (contratos con importe y adjudicatario, anuncios…) y Open Data Euskadi | 298 MB |
+| `euskadi.zip` | Euskadi: KontratazioA (contratos con importe y adjudicatario, anuncios…) y Open Data Euskadi + en `v2026.02/`, Bilbao y las tablas de v2026.02 con filas que ya no se sirven | 403 MB |
 | `comunidad_madrid.zip` | Comunidad de Madrid (Parquet) | 142 MB |
 | `madrid_ayuntamiento.zip` | Ayuntamiento de Madrid: actividad contractual (tabla unificada y tabla fiel) | 27 MB |
-| `contratos_galicia.zip` | Xunta de Galicia (CM + LIC), tabla final y base | 62 MB |
+| `contratos_galicia.zip` | Xunta de Galicia (CM + LIC), tabla final y base + en `v2026.02/`, el CSV de v2026.02 | 96 MB |
 | `asturias.zip` | Contratación centralizada del Principado de Asturias | 17 MB |
 | `aragon.zip` | 🆕 Aragón: Gobierno de Aragón y Ayuntamiento de Zaragoza (OCDS) | 13 MB |
 | `castilla_leon.zip` | 🆕 Castilla y León: Junta y SACYL | 11 MB |
@@ -75,18 +77,29 @@ Release **v2026.10** (octubre de 2026): los mismos datos que usa buscalicitacion
 | `la_rioja.zip` | 🆕 La Rioja: contratos menores del Gobierno | 7 MB |
 | `canarias.zip` | 🆕 Canarias: Gobierno, Las Palmas de GC, Cabildo de Tenerife y resúmenes del SCS | 11 MB |
 | `municipios.zip` | 🆕 Menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife | 17 MB |
-| `ted.zip` | Tenders Electronic Daily — España (consolidado) | 127 MB |
+| `ted.zip` | Tenders Electronic Daily — España (consolidado) + en `v2026.02/`, el cruce PLACSP↔TED de v2026.02 | 298 MB |
 | `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | 775 MB |
+| `calidad_licitaciones_resultado.zip` | Indicadores de calidad sobre PLACSP: el Parquet de v2026.02 tal cual, sin regenerar (en v2026.02 iba en un RAR) | 753 MB |
 
 **La tabla principal de la PLACSP va partida.** GitHub no admite ficheros de 2 GB o más, así que `licitaciones_completo.parquet` (10.907.567 filas, 80 columnas, 5,0 GB) se publica partida por `ano` (año del anuncio de licitación) en 6 Parquet repartidos en los 5 ZIP `nacional_licitaciones_*.zip`. Al descomprimirlos en la misma carpeta, las partes quedan en `licitaciones_completo/` y se leen como una sola tabla (ver [Uso](#-uso)). Tienen las mismas columnas, tipos y valores que la tabla original: la suma de filas de las partes y una huella de contenido (suma del hash de cada fila y de cada columna) coinciden con las del original. Las tablas de detalle van en `nacional_resultados.zip`, `nacional_criterios.zip`, `nacional_adjudicatarios.zip` y `nacional_lotes_y_otras_tablas.zip`.
 
 **Comprobar la descarga:** `sha256sum -c SHA256SUMS.txt` (Linux) o `shasum -a 256 -c SHA256SUMS.txt` (macOS), con los ZIP en la misma carpeta.
 
-**Lo que no está en v2026.10** (sigue en v2026.02):
-- Los indicadores de calidad (`calidad_licitaciones_resultado.rar`) y los ficheros del cruce PLACSP↔TED: no se han regenerado.
-- Las categorías de Catalunya y de Valencia que no son contratación (subvenciones, presupuestos, RRHH, empleo, turismo…).
-- `bilbao_contratos.parquet` de Euskadi: el portal de datos abiertos de Bilbao respondió 403 en la descarga.
-- Los CSV (Andalucía, Comunidad de Madrid, Galicia): v2026.10 solo publica Parquet.
+**Ficheros de v2026.02 que van tal cual en v2026.10** (carpeta `v2026.02/`, mismo SHA-256 que en v2026.02), para que v2026.10 no tenga menos datos que v2026.02:
+- **Euskadi — `bilbao_contratos.parquet`:** es la última versión publicada (v2026.02, febrero de 2026), porque el portal de datos abiertos de Bilbao responde 403 a la descarga actual. Se actualizará cuando vuelva a servirse. Lleva los errores conocidos de esa versión (importes divididos entre 1.000, día y mes invertidos en la fecha de adjudicación).
+- **Euskadi — `contratos_master` y `empresas_licitadoras` de v2026.02:** traen filas que la descarga actual ya no sirve (`contratos_2025.xlsx` tenía 100.850 filas y ahora 96.570; 4 empresas que ya no están en el Registro de Licitadores).
+- **Catalunya:** las categorías que no son contratación (subvenciones, presupuestos, convenios, RRHH, entidades y territorio), que no se han vuelto a descargar, y `perfil_contratante_bcn` de v2026.02, con 6.120 publicaciones que el portal ya no sirve.
+- **Catalunya, menores de la PSCP:** el `contractacio_menors.parquet` de v2026.02, con 66.132 publicaciones (`id`, `expedientId`) que la descarga actual no trae.
+- **Valencia:** las categorías que no son contratación (subvenciones, presupuestos, empleo, paro, siniestralidad, patrimonio, territorio, turismo, sanidad y transporte), las asociaciones (no están en la descarga actual) y los lobbies, los recursos de gobierno abierto y el fichero de la DANA de v2026.02, cuyo contenido ha cambiado en el portal.
+- **Galicia:** el CSV de v2026.02, con 913 contratos menores que la descarga actual no trae (y el `importe` inflado de entonces).
+- **TED:** los ficheros del cruce PLACSP↔TED de v2026.02 (`crossval_*`, `missing_*`), calculados sobre los datos de v2026.02 y sin regenerar.
+- **Calidad:** `calidad_licitaciones_resultado.zip` lleva el Parquet que v2026.02 publicaba en `calidad_licitaciones_resultado.rar`, sin regenerar: está calculado sobre los datos nacionales de v2026.02, con sus errores.
+
+**Lo que no se repite de v2026.02**, porque lo que contiene ya está en v2026.10:
+- Los Parquet nacionales de v2026.02 (`licitaciones_espana`, `licitaciones_completo_2012_2026`): las 8.693.891 y 4.725.557 filas están en v2026.10 por (`id`, `fecha_updated`), y las que no tenían `fecha_updated`, por contenido en `_semilla_contenido`.
+- El consolidado de TED y sus cachés por año: los 287.036 avisos de v2026.02 están en el consolidado de v2026.10.
+- Los Parquet de Andalucía, Asturias, BORME y la Comunidad de Madrid de v2026.02, las demás tablas de Catalunya y Valencia que siguen con el mismo nombre, y `poderes_adjudicadores` y `revascon_historico` de Euskadi: sus registros (por su clave) están todos en v2026.10, aunque algunos valores hayan cambiado por correcciones del script o del portal. A `revascon_historico` solo le faltan las 16 filas de título y cabecera de los XLSX que v2026.02 leía como datos.
+- Los CSV que repetían un Parquet (Andalucía, Comunidad de Madrid), las capas crudas (`csv_originales/` de la Comunidad de Madrid) y las cachés (progreso de Andalucía, cachés por año de TED). Los scripts están en el repositorio.
 
 > **Corregido en v2026.10.** En v2026.02, `madrid_ayuntamiento.zip` era por error una copia exacta de `comunidad_madrid.zip` (mismo SHA-256), con los datos de la Comunidad de Madrid y no los del Ayuntamiento; los datos nacionales (PLACSP) tenían errores de columnas que afectan a cualquier suma o recuento ([Correcciones en los datos PLACSP](#correcciones-en-los-datos-placsp)); y TED traía 2020-2023 sin adjudicatario ni importe y solo 4 de los 7 tipos de anuncio de adjudicación ([TED](#-ted--diario-oficial-de-la-ue)). Los indicadores de calidad de v2026.02, calculados sobre esos datos nacionales, no se han regenerado y siguen teniendo esos errores.
 
@@ -133,7 +146,7 @@ ted/
 ├── ted_can_<año>_registros_irregulares.csv  # registros irregulares del CSV bulk (solo si los hay)
 ├── xml/<año>/<número>.xml.gz        # XML eForms de cada aviso de la API (capa cruda: se pide una vez)
 ├── _historico/                      # versiones anteriores de las cachés y del consolidado
-└── ted_es_can.parquet               # Consolidado (v2026.10: 857K filas, 156 MB; el único fichero de ted.zip)
+└── ted_es_can.parquet               # Consolidado (v2026.10: 857K filas, 156 MB; en ted.zip, con el cruce de v2026.02 en v2026.02/)
 ```
 
 **Sin sesgo del superviviente.**
@@ -429,7 +442,7 @@ calidad/
 ├── calidad_licitaciones.py                  # Pipeline
 ├── correcciones.py                          # Importes corregidos junto a los publicados
 ├── errores_fuente.csv                       # Errores de la fuente verificados, con su evidencia
-└── calidad_licitaciones_resultado.parquet   # v2026.02: 8.7M filas × 70 cols (977 MB), pendiente de regenerar
+└── calidad_licitaciones_resultado.parquet   # v2026.02: 8.7M filas × 70 cols (977 MB), pendiente de regenerar (en Releases: calidad_licitaciones_resultado.zip)
 ```
 
 ### Uso
@@ -584,7 +597,7 @@ Cada tabla vuelve a `licitaciones_completo_2012_<año en curso>`, sin copiarla y
 
 Datos del portal [Transparència Catalunya](https://analisi.transparenciacatalunya.cat) (Socrata API).
 
-En v2026.10 solo se ha actualizado la contratación: `catalunya.zip` (14 tablas, 8,05M filas) y `catalunya_menores.zip` (contratos menores de la PSCP, 1,43M filas). La tabla de abajo es la de v2026.02; las demás categorías siguen en ese release.
+En v2026.10 solo se ha actualizado la contratación: `catalunya.zip` (14 tablas, 8,05M filas) y `catalunya_menores.zip` (contratos menores de la PSCP, 1,43M filas). La tabla de abajo es la de v2026.02; las demás categorías van tal cual, como en v2026.02, en la carpeta `v2026.02/` de `catalunya.zip`.
 
 | Categoría | Registros | Período |
 |-----------|-----------|---------|
@@ -623,7 +636,7 @@ catalunya/
 
 Dataset nuevo con **3.024.000 filas** de contratos menores del sector público catalán.
 
-> ⚠️ En el parquet de v2026.02 solo 868.063 filas eran distintas (v2026.10: 1.429.086 filas, todas distintas): las otras 2.155.739 son copias idénticas de la misma publicación devuelta por varias consultas de fase (artefacto de la descarga, hasta 7 copias). Además la descarga se quedaba corta frente al dataset PSCP de Socrata (`ybgg-dgi6`): p.ej. 301.614 contratos menores agregados de 2025 frente a 529.780, ICS o UPF muy por debajo, por el tope de 20.000 resultados por consulta. El script ahora solo quita filas idénticas.
+> ⚠️ En el parquet de v2026.02 solo 868.063 filas eran distintas (v2026.10: 1.429.086 filas, todas distintas; el fichero de v2026.02 va también, tal cual, en `v2026.02/` de `catalunya_menores.zip`, porque trae 66.132 publicaciones que la descarga actual no trae): las otras 2.155.739 son copias idénticas de la misma publicación devuelta por varias consultas de fase (artefacto de la descarga, hasta 7 copias). Además la descarga se quedaba corta frente al dataset PSCP de Socrata (`ybgg-dgi6`): p.ej. 301.614 contratos menores agregados de 2025 frente a 529.780, ICS o UPF muy por debajo, por el tope de 20.000 resultados por consulta. El script ahora solo quita filas idénticas.
 - **Límite de la API:** `totalElements` nunca pasa de 10.000, así que el total no sirve para saber si falta algo. Los segmentos incompletos se detectan cuando los órdenes ascendente y descendente no se solapan.
 - **Sin sesgo del superviviente:**
   - Las fases, el crudo y la salida limpia se guardan con `guardar_version`.
@@ -667,7 +680,7 @@ Contratación pública del [País Vasco / Euskadi](https://www.contratacion.eusk
 | Vitoria contratos menores | — | Actual | Open Data Euskadi (no se consolida) |
 | **Total** | **~704K** | **2005-2026** | — |
 
-> **v2026.10** está regenerado con la consolidación actual (9 tablas, 2,75M filas), incluida la API `/contracts` completa (`api_contratos`, 715.868 contratos con importe y adjudicatario), pero sin `bilbao_contratos` (el portal de Bilbao respondió 403 en la descarga).
+> **v2026.10** está regenerado con la consolidación actual (9 tablas, 2,75M filas), incluida la API `/contracts` completa (`api_contratos`, 715.868 contratos con importe y adjudicatario), y, en la carpeta `v2026.02/` de `euskadi.zip`, `bilbao_contratos.parquet`: es la última versión publicada (v2026.02, febrero de 2026), porque el portal de datos abiertos de Bilbao responde 403 a la descarga actual; se actualizará cuando vuelva a servirse. En esa carpeta van también `contratos_master` y `empresas_licitadoras` de v2026.02, que traen filas que ya no se sirven.
 >
 > ⚠️ Los parquet de Euskadi de v2026.02 (los del repo en Git LFS) tienen errores de consolidación ya corregidos: en `revascon_historico` 31.191 de las 34.523 filas (REVASCON 2015-2018) salieron como columnas `unnamed:_N` porque el XLSX trae filas de título antes de la cabecera; en `bilbao_contratos` los importes están divididos entre 1.000 (`"52.990"` → 52,99) y la fecha de adjudicación tiene día y mes invertidos; `contratos_master` tiene los años 2011-2013 en columnas aparte y 18.826 filas de `contratos_2021.xlsx` con las columnas corridas 2-3 posiciones (URL en la fecha límite, expediente en la fecha de publicación…). La consolidación actual conserva todas las filas y celdas de los ficheros originales (verificado fichero a fichero): recoloca esas filas y lo indica en `_columnas_corridas`, y las filas repetidas (los JSON 2012-2013 repiten filas del de 2011; REVASCON repite contratos entre años; la API de empresas devuelve 25 empresas dos veces) se conservan marcadas en `_duplicado`. `contratos_master` son **metadatos de anuncios**: ninguna fuente de B1 incluye importes, adjudicatario, NIF, CPV ni procedimiento, así que para 2019-2026 no hay importes de adjudicación de Euskadi en los datos publicados. La API `/contracts` de KontratazioA tiene 655.518 contratos con importe y adjudicatario, pero el scraper solo obtenía una muestra de 10 (la API repetía la página 1); ver [docs/COBERTURA.md](docs/COBERTURA.md).
 
@@ -770,7 +783,7 @@ valencia/
 
 > ⚠️ Los contratos de 2025 de v2026.02 tienen solo 32 filas (formalizaciones de enero) frente a 37.432 en 2024: el script nunca volvía a descargar un fichero existente y se quedó la primera copia del año. Ahora vuelve a descargar los recursos que el portal ha actualizado (`last_modified`), descubre los años nuevos de cada serie y conserva los ceros a la izquierda de códigos postales, INE y centros (`03001`). En v2026.10 el fichero de 2025 sigue con 32 filas: es lo que sirve el recurso de 2025 del portal (descargado el 2026-09-28).
 >
-> v2026.10 (`valencia.zip`) solo trae contratación (REGCON 2013-2026 + DANA, 276K filas), convenios, lobbies y entidades; las demás categorías siguen en v2026.02.
+> v2026.10 (`valencia.zip`) solo trae contratación (REGCON 2013-2026 + DANA, 276K filas), convenios, lobbies y entidades; las demás categorías van tal cual, como en v2026.02, en la carpeta `v2026.02/` de `valencia.zip`.
 
 ### 🌟 Datos únicos de Valencia
 
@@ -998,7 +1011,7 @@ Contratación pública completa de la [Xunta de Galicia](https://www.contratosde
 | Licitaciones | 50,382 | 2007-2026 |
 | **Total** | **1,685,789** | **2007-2026** |
 
-> v2026.10 está regenerado: `importe` corregido (el 0,2 % de los contratos menores supera 48.400 €, frente al 55 % de v2026.02), 1.848.770 filas. Las columnas `detail_*` van vacías (`detail_status = missing`): esa descarga no ejecutó la fase de detalle.
+> v2026.10 está regenerado: `importe` corregido (el 0,2 % de los contratos menores supera 48.400 €, frente al 55 % de v2026.02), 1.848.770 filas. Las columnas `detail_*` van vacías (`detail_status = missing`): esa descarga no ejecutó la fase de detalle. El CSV de v2026.02 va también, tal cual, en `v2026.02/` de `contratos_galicia.zip`: trae 913 contratos menores que la descarga actual no trae.
 >
 > ⚠️ En los datos de v2026.02 (`contratos_galicia.parquet` del repo / `contratos_galicia.zip`) la columna `importe` está inflada ×10 o ×100: el scraper eliminaba el punto decimal de los importes de la API como si fuera separador de miles (674.78 → 67478). El 55 % de los contratos menores publicados supera 48.400 € (imposible por ley) y suman 547.600 M€. El scraper ya está corregido (v2026.10 está regenerado). El fichero de v2026.02 solo tiene las 12 columnas base; con la fase de detalle son 64, incluidas `detail_adjudicaciones_json` (adjudicatarios e importes por lote, que para las licitaciones solo están en el detalle) y `detail_campos_extra_json`. El scraper compara lo descargado con los totales que declara el portal por organismo.
 
