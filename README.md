@@ -1,58 +1,101 @@
 # 🇪🇸 Datos Abiertos de Contratación Pública - España
 
-Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Asturias, Catalunya, Euskadi, Galicia, Valencia, Madrid) + cruce europeo (TED) + Registro Mercantil (BORME).
+Dataset completo de contratación pública española: nacional (PLACSP) + datos autonómicos (Andalucía, Aragón, Asturias, Canarias, Castilla y León, Castilla-La Mancha, Catalunya, Euskadi, Extremadura, Galicia, La Rioja, Madrid, Murcia, Valencia) + contratos menores de 8 ayuntamientos grandes + cruce europeo (TED) + Registro Mercantil (BORME).
+
+**Datos actuales: release [v2026.10](https://github.com/BquantFinance/licitaciones-espana/releases/tag/v2026.10)** (octubre de 2026), los mismos que usa [buscalicitaciones.com](https://buscalicitaciones.com). Los ficheros en Git LFS de este repo siguen en v2026.02 (febrero de 2026).
 
 ## 📊 Resumen de Datos
 
-| Fuente | Registros | Período | Tamaño |
-|--------|-----------|---------|--------|
-| Nacional (PLACSP) | 8.7M entradas publicadas de 4.7M licitaciones (una por versión) | 2012-2026 | 780 MB |
-| Andalucía | ~857K | 2016-2026 | 47 MB |
-| Catalunya | 20.6M | 2014-2025 | ~180 MB |
-| 🆕 Euskadi | 704K | 2005-2026 | ~160 MB |
-| Valencia | 8.5M | 2000-2026 | 156 MB |
-| Madrid – Comunidad | 2.56M | 2017-2025 | 90 MB |
-| Madrid – Ayuntamiento | 119K | 2015-2025 | ~40 MB |
-| 🆕 Galicia | 1.7M | 2007-2026 | 36 MB |
-| 🆕 Asturias | 375K | 2019-2024 | 21 MB |
-| TED (España) | 591K | 2010-2025 | 57 MB |
-| 🆕 BORME (Registro Mercantil) | 9.2M empresas + 17M cargos | 2009-2026 | 750 MB |
-| 🆕 Calidad (indicadores) | 8.7M filas × 20 indicadores (v2026.02, ver correcciones PLACSP) | 2012-2026 | 977 MB |
-| **TOTAL** | **~40.4M + BORME** | **2000-2026** | **~2.3 GB** |
+Medido sobre los ficheros de v2026.10. **Registros**: filas de los Parquet de cada ZIP. **Período**: años con datos según la fecha principal de cada fuente, sin contar fechas sueltas fuera de rango (menos del 0,05 % de las filas). **Tamaño**: Parquet, antes de comprimir en ZIP.
+
+| Fuente | ZIP | Registros | Período | Tamaño |
+|--------|-----|-----------|---------|--------|
+| Nacional (PLACSP) | `nacional_*.zip` (9) | 10.9M entradas publicadas de 5.24M licitaciones + 41.3M filas en las tablas de detalle (resultados, adjudicatarios, lotes, criterios…) | 2012-2026 | 7.0 GB |
+| Catalunya (contratación) | `catalunya.zip` | 8.05M (14 tablas) | 2014-2026 | 1.17 GB |
+| Catalunya – contratos menores PSCP | `catalunya_menores.zip` | 1.43M | 2016-2026 | 120 MB |
+| Valencia | `valencia.zip` | 303K (contratación 276K + convenios, lobbies y entidades) | 2013-2026 | 49 MB |
+| 🆕 Valencia – menores fuera del REGCON | `valencia_menores.zip` | 1.88M | 2015-2026 | 66 MB |
+| Andalucía | `andalucia.zip` | 901K | 2008-2026 | 115 MB |
+| 🆕 Andalucía – menores (CKAN, con el SAS) | `andalucia_menores.zip` | 769K | 2018-2026 | 75 MB |
+| Euskadi | `euskadi.zip` | 2.75M (9 tablas) | 2011-2026 | 387 MB |
+| Madrid – Comunidad | `comunidad_madrid.zip` | 4.91M | 2015-2026 | 176 MB |
+| Madrid – Ayuntamiento | `madrid_ayuntamiento.zip` | 132K (tabla unificada; la fiel repite las mismas filas) | 2011-2026 | 32 MB |
+| Galicia | `contratos_galicia.zip` | 1.85M (tabla final; la base repite las mismas filas con 12 columnas) | 2008-2026 | 82 MB |
+| Asturias | `asturias.zip` | 375K | 2019-2024 | 22 MB |
+| 🆕 Aragón | `aragon.zip` | 267K (13 tablas) | 2009-2025 | 16 MB |
+| 🆕 Castilla y León | `castilla_leon.zip` | 185K (15 tablas) | 2005-2026 | 13 MB |
+| 🆕 Castilla-La Mancha | `castilla_la_mancha.zip` | 6.95M (4.16M son líneas de factura del SESCAM) | 2015-2026 | 200 MB |
+| 🆕 Región de Murcia | `murcia.zip` | 1.01M | 2014-2025 | 22 MB |
+| 🆕 Extremadura | `extremadura.zip` | 222K | 2022-2026 | 10 MB |
+| 🆕 La Rioja | `la_rioja.zip` | 351K | 2018-2026 | 9 MB |
+| 🆕 Canarias | `canarias.zip` | 115K | 2016-2026 | 13 MB |
+| 🆕 8 ayuntamientos (menores) | `municipios.zip` | 290K | 2015-2026 | 20 MB |
+| TED (España) | `ted.zip` | 857K filas de 355K avisos | 2006-2026 | 156 MB |
+| BORME (Registro Mercantil) | `borme.zip` | 9.61M actos + 17.8M cargos | 2009-2026 | 980 MB |
+| Calidad (indicadores) | — (solo en v2026.02) | 8.7M filas × 20 indicadores (v2026.02, sin regenerar; ver correcciones PLACSP) | 2012-2026 | 977 MB |
+| **TOTAL v2026.10** | **30 ZIP** | **87.8M + BORME (27.4M)** | **2005-2026** | **10.7 GB** |
 
 ---
 
 ## 📥 Descarga de datos
 
-> ⚠️ Los ficheros `.parquet` y `.csv` de este repo usan **Git LFS**. Si haces fork o descargas el ZIP del repo, solo obtendrás punteros (~130 bytes), no los datos reales.
+> ⚠️ Los ficheros `.parquet` y `.csv` de este repo usan **Git LFS** y **siguen en v2026.02** (febrero de 2026). Si haces fork o descargas el ZIP del repo, solo obtendrás punteros (~130 bytes), no los datos reales. **Los datos actuales están en Releases.**
 
 ### 👉 [Descarga directa (sin LFS) → GitHub Releases](https://github.com/BquantFinance/licitaciones-espana/releases/latest)
 
+Release **v2026.10** (octubre de 2026): los mismos datos que usa buscalicitaciones.com. Cada ZIP lleva `LEEME.txt` (qué es, portal de origen, script del repo que lo genera, fecha de descarga y avisos) y `MANIFEST.csv` (fichero, filas, columnas, bytes y SHA-256 de cada Parquet). El release trae además `SHA256SUMS.txt` (SHA-256 de cada ZIP) y un `MANIFEST.csv` global. En total, 30 ZIP y 8.46 GB.
+
 | ZIP | Contenido | Tamaño |
 |-----|-----------|--------|
-| `nacional.zip` | Licitaciones PLACSP | 1.34 GB |
-| `catalunya.zip` | Datos Catalunya (contratación, subvenciones, RRHH...) | 1.06 GB |
-| `ted.zip` | Tenders Electronic Daily — España | 217 MB |
-| `valencia.zip` | Datos Valencia (14 categorías) | 120 MB |
-| `andalucia.zip` | Contratación Junta de Andalucía | 114 MB |
-| `euskadi.zip` | Contratación Euskadi | 109 MB |
-| `comunidad_madrid.zip` | Contratación Comunidad de Madrid (CSV + Parquet + CSV originales) | 252 MB |
-| `madrid_ayuntamiento.zip` | Actividad contractual Ayuntamiento de Madrid ⚠️ ver nota | 252 MB |
-| `contratos_galicia.zip` | Contratación pública Xunta de Galicia (CM + LIC) | 34 MB |
-| `asturias.zip` | Contratación centralizada Principado de Asturias | 17 MB |
-| `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | 750 MB |
-| `calidad_licitaciones_resultado.rar` | Indicadores de calidad sobre PLACSP (RAR) | 690 MB |
+| `nacional_licitaciones_hasta_2019.zip` | PLACSP, tabla principal: entradas con año del anuncio hasta 2019 y las que no tienen año | 406 MB |
+| `nacional_licitaciones_2020_2021.zip` | PLACSP, tabla principal: 2020-2021 | 468 MB |
+| `nacional_licitaciones_2022_2023.zip` | PLACSP, tabla principal: 2022-2023 | 759 MB |
+| `nacional_licitaciones_2024_2025.zip` | PLACSP, tabla principal: 2024-2025 | 1.24 GB |
+| `nacional_licitaciones_desde_2026.zip` | PLACSP, tabla principal: 2026 en adelante | 762 MB |
+| `nacional_resultados.zip` | PLACSP, resultados por lote | 763 MB |
+| `nacional_criterios.zip` | PLACSP, criterios de adjudicación | 663 MB |
+| `nacional_adjudicatarios.zip` | PLACSP, adjudicatarios | 336 MB |
+| `nacional_lotes_y_otras_tablas.zip` | PLACSP, lotes, modificaciones, borrados y semilla por contenido | 239 MB |
+| `catalunya.zip` | Catalunya: contratación (PSCP, RPC, Generalitat, Ayuntamiento de Barcelona) | 968 MB |
+| `catalunya_menores.zip` | Catalunya: contratos menores de la PSCP (en v2026.02 iban en `catalunya.zip`) | 96 MB |
+| `valencia.zip` | Valencia: REGCON 2013-2026 + DANA, convenios, lobbies (REGIA) y entidades | 41 MB |
+| `valencia_menores.zip` | 🆕 Valencia: menores de universidades, Ayto. de València y Diputación de Alicante | 57 MB |
+| `andalucia.zip` | Andalucía: contratación de la Junta (buscador de perfiles) | 79 MB |
+| `andalucia_menores.zip` | 🆕 Andalucía: contratos menores de la Junta (CKAN), con el SAS | 57 MB |
+| `euskadi.zip` | Euskadi: KontratazioA (contratos con importe y adjudicatario, anuncios…) y Open Data Euskadi | 298 MB |
+| `comunidad_madrid.zip` | Comunidad de Madrid (Parquet) | 142 MB |
+| `madrid_ayuntamiento.zip` | Ayuntamiento de Madrid: actividad contractual (tabla unificada y tabla fiel) | 27 MB |
+| `contratos_galicia.zip` | Xunta de Galicia (CM + LIC), tabla final y base | 62 MB |
+| `asturias.zip` | Contratación centralizada del Principado de Asturias | 17 MB |
+| `aragon.zip` | 🆕 Aragón: Gobierno de Aragón y Ayuntamiento de Zaragoza (OCDS) | 13 MB |
+| `castilla_leon.zip` | 🆕 Castilla y León: Junta y SACYL | 11 MB |
+| `castilla_la_mancha.zip` | 🆕 Castilla-La Mancha: menores, caja pagadora, SESCAM, sector público y UCLM | 168 MB |
+| `murcia.zip` | 🆕 Región de Murcia: CARM y Servicio Murciano de Salud | 19 MB |
+| `extremadura.zip` | 🆕 Extremadura: Registro de Contratos de la Junta | 8 MB |
+| `la_rioja.zip` | 🆕 La Rioja: contratos menores del Gobierno | 7 MB |
+| `canarias.zip` | 🆕 Canarias: Gobierno, Las Palmas de GC, Cabildo de Tenerife y resúmenes del SCS | 11 MB |
+| `municipios.zip` | 🆕 Menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife | 17 MB |
+| `ted.zip` | Tenders Electronic Daily — España (consolidado) | 127 MB |
+| `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | 775 MB |
 
-> ⚠️ En el release `v2026.02`, `madrid_ayuntamiento.zip` es por error una copia exacta de `comunidad_madrid.zip` (mismo SHA-256): contiene los datos de la **Comunidad** de Madrid, no `actividad_contractual_madrid_completo.parquet`. Para obtener los datos del Ayuntamiento, ejecutar `comunidad_madrid/ccaa_madrid_ayuntamiento.py` hasta que se publique el ZIP correcto.
->
-> ⚠️ Los datos nacionales (PLACSP) de `v2026.02` y los indicadores de calidad derivados tienen errores de columnas que afectan a cualquier suma o recuento: ver [Correcciones en los datos PLACSP](#correcciones-en-los-datos-placsp).
+**La tabla principal de la PLACSP va partida.** GitHub no admite ficheros de 2 GB o más, así que `licitaciones_completo.parquet` (10.907.567 filas, 80 columnas, 5,0 GB) se publica partida por `ano` (año del anuncio de licitación) en 6 Parquet repartidos en los 5 ZIP `nacional_licitaciones_*.zip`. Al descomprimirlos en la misma carpeta, las partes quedan en `licitaciones_completo/` y se leen como una sola tabla (ver [Uso](#-uso)). Tienen las mismas columnas, tipos y valores que la tabla original: la suma de filas de las partes y una huella de contenido (suma del hash de cada fila y de cada columna) coinciden con las del original. Las tablas de detalle van en `nacional_resultados.zip`, `nacional_criterios.zip`, `nacional_adjudicatarios.zip` y `nacional_lotes_y_otras_tablas.zip`.
+
+**Comprobar la descarga:** `sha256sum -c SHA256SUMS.txt` (Linux) o `shasum -a 256 -c SHA256SUMS.txt` (macOS), con los ZIP en la misma carpeta.
+
+**Lo que no está en v2026.10** (sigue en v2026.02):
+- Los indicadores de calidad (`calidad_licitaciones_resultado.rar`) y los ficheros del cruce PLACSP↔TED: no se han regenerado.
+- Las categorías de Catalunya y de Valencia que no son contratación (subvenciones, presupuestos, RRHH, empleo, turismo…).
+- `bilbao_contratos.parquet` de Euskadi: el portal de datos abiertos de Bilbao respondió 403 en la descarga.
+- Los CSV (Andalucía, Comunidad de Madrid, Galicia): v2026.10 solo publica Parquet.
+
+> **Corregido en v2026.10.** En v2026.02, `madrid_ayuntamiento.zip` era por error una copia exacta de `comunidad_madrid.zip` (mismo SHA-256), con los datos de la Comunidad de Madrid y no los del Ayuntamiento; los datos nacionales (PLACSP) tenían errores de columnas que afectan a cualquier suma o recuento ([Correcciones en los datos PLACSP](#correcciones-en-los-datos-placsp)); y TED traía 2020-2023 sin adjudicatario ni importe y solo 4 de los 7 tipos de anuncio de adjudicación ([TED](#-ted--diario-oficial-de-la-ue)). Los indicadores de calidad de v2026.02, calculados sobre esos datos nacionales, no se han regenerado y siguen teniendo esos errores.
 
 ### Cómo obtener los datos
 
 | Método | Instrucciones |
 |--------|---------------|
 | **Descarga directa** (recomendado) | Ir a [Releases](https://github.com/BquantFinance/licitaciones-espana/releases/latest) y descargar los ZIP |
-| **Git clone + LFS** | `git clone` + `git lfs pull` (requiere [Git LFS](https://git-lfs.github.com/) instalado) |
+| **Git clone + LFS** | `git clone` + `git lfs pull` (requiere [Git LFS](https://git-lfs.github.com/) instalado). Trae los datos de v2026.02 |
 | **Fork** | Tras hacer fork, ejecutar `git lfs pull` en tu copia, o descargar desde Releases |
 
 ---
@@ -61,13 +104,14 @@ Dataset completo de contratación pública española: nacional (PLACSP) + datos 
 
 Contratos publicados en [Tenders Electronic Daily](https://ted.europa.eu/) correspondientes a España. Los contratos públicos que superan cierto importe (contratos SARA) deben publicarse obligatoriamente en el DOUE.
 
-| Conjunto | Registros | Período | Fuente |
+| Conjunto (v2026.10) | Registros | Período | Fuente |
 |----------|-----------|---------|--------|
-| CSV bulk | 339K | 2010-2019 | data.europa.eu |
-| API v3 eForms | 252K | 2020-2025 | ted.europa.eu/api |
-| **Consolidado** | **591K** | **2010-2025** | — |
+| CSV bulk | 642K | 2006-2023 | data.europa.eu |
+| API v3 + XML eForms | 202K | 2023-2026 | ted.europa.eu/api |
+| Filas de la API conservadas de v2026.02 (avisos que TED ya no sirve) | 13K | 2020-2023 | release v2026.02 |
+| **Consolidado** | **857K filas, 355K avisos** | **2006-2026** | — |
 
-> ⚠️ En los datos publicados, 2020-2023 (y ~87 % de 2023) vienen de la API sin adjudicatario, importe, nº de ofertas ni fecha de adjudicación (anuncios anteriores a eForms), las filas de la API no tienen fecha de publicación, tipo de contrato ni procedimiento, y solo se descargaban 4 de los 7 tipos de anuncio de adjudicación (faltaban `veat`, `can-tran` y `compl`). `ted_module.py` ya usa el CSV bulk de data.europa.eu para 2020-2023, conserva todas sus columnas, pide los 7 tipos y cubre de 2006 al año en curso; hay que regenerar los datos.
+> En v2026.02 (corregido en v2026.10): 2020-2023 (y ~87 % de 2023) venían de la API sin adjudicatario, importe, nº de ofertas ni fecha de adjudicación (anuncios anteriores a eForms), las filas de la API no tenían fecha de publicación, tipo de contrato ni procedimiento, y solo se descargaban 4 de los 7 tipos de anuncio de adjudicación (faltaban `veat`, `can-tran` y `compl`). v2026.10 está regenerado con el `ted_module.py` actual: 2006-2023 del CSV bulk de data.europa.eu con todas sus columnas, los 7 tipos de anuncio y, desde los avisos eForms de 2023, la API con el XML de cada aviso.
 
 ### Archivos
 
@@ -89,7 +133,7 @@ ted/
 ├── ted_can_<año>_registros_irregulares.csv  # registros irregulares del CSV bulk (solo si los hay)
 ├── xml/<año>/<número>.xml.gz        # XML eForms de cada aviso de la API (capa cruda: se pide una vez)
 ├── _historico/                      # versiones anteriores de las cachés y del consolidado
-└── ted_es_can.parquet               # Consolidado (591K, 31 MB)
+└── ted_es_can.parquet               # Consolidado (v2026.10: 857K filas, 156 MB; el único fichero de ted.zip)
 ```
 
 **Sin sesgo del superviviente.**
@@ -132,7 +176,7 @@ ted/
   - Las filas que entran en la tabla desde un registro irregular llevan el motivo en `_registro_irregular`.
   - Si el CSV de un año trae alguno, `download` guarda lo descargado y sale con código 1. Es un aviso único: el CSV de un año cerrado solo se lee una vez y después se usa la caché.
 
-### Campos principales (57 columnas)
+### Campos principales (de las 164 columnas del consolidado)
 
 | Categoría | Campos |
 |-----------|--------|
@@ -228,12 +272,14 @@ Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_bo
 
 | Conjunto | Registros | Contenido |
 |----------|-----------|-----------|
-| Empresas | 9.2M filas, 3.3M únicas | Actos mercantiles: constituciones, disoluciones, fusiones, ampliaciones de capital... |
-| Cargos | 17M filas, 3.8M personas | Nombramientos, ceses, revocaciones — con persona hasheada (SHA-256) |
+| Empresas | 9.61M filas, 3.43M empresas (v2026.10) | Actos mercantiles: constituciones, disoluciones, fusiones, ampliaciones de capital... |
+| Cargos | 17.8M filas, 3.92M personas (v2026.10) | Nombramientos, ceses, revocaciones — con persona hasheada (SHA-256) |
 
 > ⚠️ Los PDFs originales no se redistribuyen porque contienen nombres de personas físicas protegidos por RGPD. Se publica el scraper para descargarlos directamente desde boe.es y los datos derivados anonimizados: solo se sustituyen por un hash los nombres de las personas de los cargos; empresa, domicilio social y actos se publican tal como aparecen en el BORME.
 >
-> Los datos publicados solo contienen la sección A. `borme_scraper.py` ahora combina los PDF del índice HTML con la API oficial de sumarios (secciones A, B y C). Faltan los boletines 2012 #173-174, 2013 #1 y 2024 #89-90: hay que volver a descargar esos días.
+> Los datos publicados solo contienen la sección A. `borme_scraper.py` ahora combina los PDF del índice HTML con la API oficial de sumarios (secciones A, B y C). En v2026.02 faltaban los boletines 2012 #173-174, 2013 #1 y 2024 #89-90; v2026.10 ya trae 2012 #173 y 2013 #1, y siguen faltando 2012 #174 y 2024 #89-90.
+>
+> En v2026.10, los actos del 2009-01-02 al 2026-02-17 vienen del release v2026.02 (`_origen='release v2026.02'`, con los errores conocidos de abajo), salvo los días 7, 10 y 11 de septiembre de 2012 y 2 de enero de 2013; los del 2026-02-18 en adelante salen de PDF nuevos.
 
 ### Archivos
 
@@ -439,6 +485,8 @@ Licitaciones de la [Plataforma de Contratación del Sector Público](https://con
 | Consultas preliminares | 1,9K | 3,7K | 2022-actualidad |
 | **Total** | **4,73M** | **8,69M** | |
 
+En v2026.10 (Releases) los datos salen del scraper corregido: 10.907.567 entradas publicadas de 5.241.440 licitaciones (`es_ultima_version`), con todas las versiones, la tabla de resultados por lote y las de adjudicatarios, lotes, criterios, modificaciones y borrados.
+
 ### Correcciones en los datos PLACSP
 
 Los parquet nacionales publicados hasta `v2026.02` —y todo lo calculado sobre ellos: indicadores de calidad, cruce PLACSP↔TED, detector BORME×PLACSP— tienen errores de columnas que distorsionan cualquier suma o recuento. Cifras medidas sobre el propio `licitaciones_espana.parquet`:
@@ -451,7 +499,9 @@ Los parquet nacionales publicados hasta `v2026.02` —y todo lo calculado sobre 
 | **CPV guardado como número** | 73.903 CPV sin el cero inicial (`9134100` en lugar de `09134100`) | CPV como texto de 8 dígitos |
 | **`fecha_publicacion` (y `ano`) de un anuncio posterior.** Se tomaba el primer `ValidNoticeInfo` sin mirar su tipo | En las licitaciones adjudicadas o resueltas era casi siempre la fecha del anuncio de adjudicación/formalización: en el 63 % el plazo de presentación termina *antes* de esa "publicación" (0,2 % en las que siguen en plazo). Los recuentos por año usan en realidad el año de adjudicación | Fecha del anuncio de licitación (`DOC_CN`) o, si no lo hay, del primer anuncio publicado. Solo se corrige reprocesando los ATOM |
 
-El scraper ya genera los datos corregidos. Para corregir un parquet ya descargado sin volver a procesar los ATOM:
+**v2026.10 ya trae los datos corregidos**, generados por el scraper actual. Medido en su última versión de cada licitación: 0 de 1.203.058 licitaciones con `importe_sin_iva` > `importe_con_iva` (frente al 27 %), el código 3 es "Negociado sin publicidad" (207.477) y el 4 "Negociado con publicidad" (14.360), y ningún CPV de 7 dígitos.
+
+Para corregir un parquet de v2026.02 ya descargado sin volver a procesar los ATOM:
 
 ```bash
 python nacional/normalizar_placsp.py -i nacional/licitaciones_espana.parquet \
@@ -534,6 +584,8 @@ Cada tabla vuelve a `licitaciones_completo_2012_<año en curso>`, sin copiarla y
 
 Datos del portal [Transparència Catalunya](https://analisi.transparenciacatalunya.cat) (Socrata API).
 
+En v2026.10 solo se ha actualizado la contratación: `catalunya.zip` (14 tablas, 8,05M filas) y `catalunya_menores.zip` (contratos menores de la PSCP, 1,43M filas). La tabla de abajo es la de v2026.02; las demás categorías siguen en ese release.
+
 | Categoría | Registros | Período |
 |-----------|-----------|---------|
 | Subvenciones RAISC | 9.6M | 2014-2025 |
@@ -571,7 +623,7 @@ catalunya/
 
 Dataset nuevo con **3.024.000 filas** de contratos menores del sector público catalán.
 
-> ⚠️ En el parquet publicado solo 868.063 filas son distintas: las otras 2.155.739 son copias idénticas de la misma publicación devuelta por varias consultas de fase (artefacto de la descarga, hasta 7 copias). Además la descarga se quedaba corta frente al dataset PSCP de Socrata (`ybgg-dgi6`): p.ej. 301.614 contratos menores agregados de 2025 frente a 529.780, ICS o UPF muy por debajo, por el tope de 20.000 resultados por consulta. El script ahora solo quita filas idénticas.
+> ⚠️ En el parquet de v2026.02 solo 868.063 filas eran distintas (v2026.10: 1.429.086 filas, todas distintas): las otras 2.155.739 son copias idénticas de la misma publicación devuelta por varias consultas de fase (artefacto de la descarga, hasta 7 copias). Además la descarga se quedaba corta frente al dataset PSCP de Socrata (`ybgg-dgi6`): p.ej. 301.614 contratos menores agregados de 2025 frente a 529.780, ICS o UPF muy por debajo, por el tope de 20.000 resultados por consulta. El script ahora solo quita filas idénticas.
 - **Límite de la API:** `totalElements` nunca pasa de 10.000, así que el total no sirve para saber si falta algo. Los segmentos incompletos se detectan cuando los órdenes ascendente y descendente no se solapan.
 - **Sin sesgo del superviviente:**
   - Las fases, el crudo y la salida limpia se guardan con `guardar_version`.
@@ -615,7 +667,9 @@ Contratación pública del [País Vasco / Euskadi](https://www.contratacion.eusk
 | Vitoria contratos menores | — | Actual | Open Data Euskadi (no se consolida) |
 | **Total** | **~704K** | **2005-2026** | — |
 
-> ⚠️ Los parquet publicados de Euskadi tienen errores de consolidación ya corregidos en los scripts (hay que regenerarlos): en `revascon_historico` 31.191 de las 34.523 filas (REVASCON 2015-2018) salieron como columnas `unnamed:_N` porque el XLSX trae filas de título antes de la cabecera; en `bilbao_contratos` los importes están divididos entre 1.000 (`"52.990"` → 52,99) y la fecha de adjudicación tiene día y mes invertidos; `contratos_master` tiene los años 2011-2013 en columnas aparte y 18.826 filas de `contratos_2021.xlsx` con las columnas corridas 2-3 posiciones (URL en la fecha límite, expediente en la fecha de publicación…). La consolidación actual conserva todas las filas y celdas de los ficheros originales (verificado fichero a fichero): recoloca esas filas y lo indica en `_columnas_corridas`, y las filas repetidas (los JSON 2012-2013 repiten filas del de 2011; REVASCON repite contratos entre años; la API de empresas devuelve 25 empresas dos veces) se conservan marcadas en `_duplicado`. `contratos_master` son **metadatos de anuncios**: ninguna fuente de B1 incluye importes, adjudicatario, NIF, CPV ni procedimiento, así que para 2019-2026 no hay importes de adjudicación de Euskadi en los datos publicados. La API `/contracts` de KontratazioA tiene 655.518 contratos con importe y adjudicatario, pero el scraper solo obtenía una muestra de 10 (la API repetía la página 1); ver [docs/COBERTURA.md](docs/COBERTURA.md).
+> **v2026.10** está regenerado con la consolidación actual (9 tablas, 2,75M filas), incluida la API `/contracts` completa (`api_contratos`, 715.868 contratos con importe y adjudicatario), pero sin `bilbao_contratos` (el portal de Bilbao respondió 403 en la descarga).
+>
+> ⚠️ Los parquet de Euskadi de v2026.02 (los del repo en Git LFS) tienen errores de consolidación ya corregidos: en `revascon_historico` 31.191 de las 34.523 filas (REVASCON 2015-2018) salieron como columnas `unnamed:_N` porque el XLSX trae filas de título antes de la cabecera; en `bilbao_contratos` los importes están divididos entre 1.000 (`"52.990"` → 52,99) y la fecha de adjudicación tiene día y mes invertidos; `contratos_master` tiene los años 2011-2013 en columnas aparte y 18.826 filas de `contratos_2021.xlsx` con las columnas corridas 2-3 posiciones (URL en la fecha límite, expediente en la fecha de publicación…). La consolidación actual conserva todas las filas y celdas de los ficheros originales (verificado fichero a fichero): recoloca esas filas y lo indica en `_columnas_corridas`, y las filas repetidas (los JSON 2012-2013 repiten filas del de 2011; REVASCON repite contratos entre años; la API de empresas devuelve 25 empresas dos veces) se conservan marcadas en `_duplicado`. `contratos_master` son **metadatos de anuncios**: ninguna fuente de B1 incluye importes, adjudicatario, NIF, CPV ni procedimiento, así que para 2019-2026 no hay importes de adjudicación de Euskadi en los datos publicados. La API `/contracts` de KontratazioA tiene 655.518 contratos con importe y adjudicatario, pero el scraper solo obtenía una muestra de 10 (la API repetía la página 1); ver [docs/COBERTURA.md](docs/COBERTURA.md).
 
 ### Archivos
 
@@ -714,7 +768,9 @@ valencia/
 └── transporte/            # 7 archivos, 21 MB
 ```
 
-> ⚠️ Los contratos de 2025 publicados tienen solo 32 filas (formalizaciones de enero) frente a 37.432 en 2024: el script nunca volvía a descargar un fichero existente y se quedó la primera copia del año. Ahora vuelve a descargar los recursos que el portal ha actualizado (`last_modified`), descubre los años nuevos de cada serie y conserva los ceros a la izquierda de códigos postales, INE y centros (`03001`).
+> ⚠️ Los contratos de 2025 de v2026.02 tienen solo 32 filas (formalizaciones de enero) frente a 37.432 en 2024: el script nunca volvía a descargar un fichero existente y se quedó la primera copia del año. Ahora vuelve a descargar los recursos que el portal ha actualizado (`last_modified`), descubre los años nuevos de cada serie y conserva los ceros a la izquierda de códigos postales, INE y centros (`03001`). En v2026.10 el fichero de 2025 sigue con 32 filas: es lo que sirve el recurso de 2025 del portal (descargado el 2026-09-28).
+>
+> v2026.10 (`valencia.zip`) solo trae contratación (REGCON 2013-2026 + DANA, 276K filas), convenios, lobbies y entidades; las demás categorías siguen en v2026.02.
 
 ### 🌟 Datos únicos de Valencia
 
@@ -737,7 +793,9 @@ Conteos observados en torno al 2026-03-23 consultando la API pública del portal
 | Contratos menores (sin BRR) | ~775.7K | Operativa |
 | **Total (sin BRR)** | **~856.7K** | **Operativa** |
 
-> ⚠️ El fichero publicado tiene 808.441 filas (hasta 2026-02-11): faltan unos 41K contratos menores (los del SAS están en el CKAN de la Junta: `scripts/ccaa_andalucia_menores.py`, 41.022 en 2019-2025). 15 segmentos del SAS superan el límite de 10.000 resultados tras las 8 dimensiones de subdivisión (273K registros); la solución prevista es partir por mes de publicación (pendiente de verificar en vivo). El script ahora incluye los códigos de estado/tipo/provincia presentes en los datos, años calculados en ejecución, descubrimiento completo de perfiles y 4 columnas JSON con todas las adjudicaciones, lotes, anuncios y campos no mapeados (19.765 expedientes con varias adjudicaciones perdían las siguientes).
+> v2026.10: 900.931 filas (descarga del 2026-09-29) y, aparte, los menores del CKAN de la Junta con el SAS entero en `andalucia_menores.zip` (768.647).
+>
+> ⚠️ El fichero de v2026.02 tiene 808.441 filas (hasta 2026-02-11): faltan unos 41K contratos menores (los del SAS están en el CKAN de la Junta: `scripts/ccaa_andalucia_menores.py`, 41.022 en 2019-2025). 15 segmentos del SAS superan el límite de 10.000 resultados tras las 8 dimensiones de subdivisión (273K registros); la solución prevista es partir por mes de publicación (pendiente de verificar en vivo). El script ahora incluye los códigos de estado/tipo/provincia presentes en los datos, años calculados en ejecución, descubrimiento completo de perfiles y 4 columnas JSON con todas las adjudicaciones, lotes, anuncios y campos no mapeados (19.765 expedientes con varias adjudicaciones perdían las siguientes).
 
 ### Archivos
 
@@ -816,7 +874,7 @@ Contratación pública completa de la [Comunidad de Madrid](https://contratos-pu
 | Consultas preliminares del mercado | 28 | — | — |
 | **Total** | **2,563,527** | **49,004M €** | **487M €** |
 
-> ⚠️ El portal pone cada lote, adjudicatario, prórroga o modificación adicional en una **fila de continuación** sin tipo ni referencia justo después de su contrato (el 36 % de las filas en una muestra independiente de 30.907). El dataset publicado deduplicaba por expediente + referencia + entidad y las perdió todas (queda 1). El script ahora solo descarta bloques completos repetidos en CSV distintos (consultas solapadas) y conserva los duplicados de origen, descarga también los anuncios de 2014-2016 y los menores con presupuesto ≤0 o >50.000 € de las entidades subdivididas, y vuelve a descargar los CSV acumulativos (el publicado se corta el 2025-09-30). Pendiente: los menores de entidades históricas que ya no aparecen en el desplegable (p.ej. consejerías de legislaturas anteriores). Hay que regenerar los datos.
+> ⚠️ El portal pone cada lote, adjudicatario, prórroga o modificación adicional en una **fila de continuación** sin tipo ni referencia justo después de su contrato (el 36 % de las filas en una muestra independiente de 30.907). El dataset de v2026.02 deduplicaba por expediente + referencia + entidad y las perdió todas (queda 1). El script ahora solo descarta bloques completos repetidos en CSV distintos (consultas solapadas) y conserva los duplicados de origen, descarga también los anuncios de 2014-2016 y los menores con presupuesto ≤0 o >50.000 € de las entidades subdivididas, y vuelve a descargar los CSV acumulativos (el publicado se corta el 2025-09-30). Pendiente: los menores de entidades históricas que ya no aparecen en el desplegable (p.ej. consejerías de legislaturas anteriores). v2026.10 está regenerado con el script actual: 4.906.068 filas (v2026.02: 2.563.527).
 
 ### Archivos
 
@@ -940,7 +998,9 @@ Contratación pública completa de la [Xunta de Galicia](https://www.contratosde
 | Licitaciones | 50,382 | 2007-2026 |
 | **Total** | **1,685,789** | **2007-2026** |
 
-> ⚠️ En los datos publicados (`contratos_galicia.parquet` / `contratos_galicia.zip`) la columna `importe` está inflada ×10 o ×100: el scraper eliminaba el punto decimal de los importes de la API como si fuera separador de miles (674.78 → 67478). El 55 % de los contratos menores publicados supera 48.400 € (imposible por ley) y suman 547.600 M€. El scraper ya está corregido; hay que regenerar los datos. El fichero publicado solo tiene las 12 columnas base; con la fase de detalle son 64, incluidas `detail_adjudicaciones_json` (adjudicatarios e importes por lote, que para las licitaciones solo están en el detalle) y `detail_campos_extra_json`. El scraper compara lo descargado con los totales que declara el portal por organismo.
+> v2026.10 está regenerado: `importe` corregido (el 0,2 % de los contratos menores supera 48.400 €, frente al 55 % de v2026.02), 1.848.770 filas. Las columnas `detail_*` van vacías (`detail_status = missing`): esa descarga no ejecutó la fase de detalle.
+>
+> ⚠️ En los datos de v2026.02 (`contratos_galicia.parquet` del repo / `contratos_galicia.zip`) la columna `importe` está inflada ×10 o ×100: el scraper eliminaba el punto decimal de los importes de la API como si fuera separador de miles (674.78 → 67478). El 55 % de los contratos menores publicados supera 48.400 € (imposible por ley) y suman 547.600 M€. El scraper ya está corregido (v2026.10 está regenerado). El fichero de v2026.02 solo tiene las 12 columnas base; con la fase de detalle son 64, incluidas `detail_adjudicaciones_json` (adjudicatarios e importes por lote, que para las licitaciones solo están en el detalle) y `detail_campos_extra_json`. El scraper compara lo descargado con los totales que declara el portal por organismo.
 
 ### Archivos
 
@@ -1037,7 +1097,9 @@ Contratación centralizada del [Principado de Asturias](https://sede.asturias.es
 | Columnas | 99 |
 | Tamaño | 21 MB |
 
-> ⚠️ En el parquet publicado la columna `IVA` de 2023 está multiplicada ×10 (210/100/40/50 en lugar de 21/10/4/5) y, con pandas 3, los importes quedaban como texto. El script ya está corregido y escribe en `ccaa_asturias/`; hay que regenerar los datos. Además: descarga todos los años hasta el actual (antes solo 2019-2024, y el fichero de 2025 ya existe), lee los CSV como Windows-1252 (5.099 caracteres corruptos), mantiene `Nº EXPEDIENTE ORGANO` como texto (67.440 valores pasaban a NaN) y guarda las líneas mal formadas en `lineas_descartadas_AAAA.csv` en vez de descartarlas.
+> v2026.10 está regenerado: el IVA de 2023 ya es 21/10/4 y los importes son numéricos. Sigue siendo 2019-2024: el Principado no publicaba aún los ficheros de 2025 ni de 2026 (404 el 2026-09-28).
+>
+> ⚠️ En el parquet de v2026.02 la columna `IVA` de 2023 está multiplicada ×10 (210/100/40/50 en lugar de 21/10/4/5) y, con pandas 3, los importes quedaban como texto. El script ya está corregido y escribe en `ccaa_asturias/` (v2026.10 está regenerado). Además: descarga todos los años hasta el actual que publique el Principado (antes solo 2019-2024), lee los CSV como Windows-1252 (5.099 caracteres corruptos), mantiene `Nº EXPEDIENTE ORGANO` como texto (67.440 valores pasaban a NaN) y guarda las líneas mal formadas en `lineas_descartadas_AAAA.csv` en vez de descartarlas.
 
 ### Archivos
 
@@ -1079,6 +1141,23 @@ python scripts/ccaa_asturias.py --semilla asturias_contracts_ALL_YEARS.parquet  
 ---
 
 ## 📥 Uso
+
+Con los ZIP de v2026.10 descomprimidos en una carpeta:
+
+```python
+import duckdb, pandas as pd
+
+# PLACSP: las 6 partes de nacional_licitaciones_*.zip quedan en licitaciones_completo/
+# (10,9M filas × 80 columnas: elige columnas o filtra antes de pasar a pandas)
+ultimas = pd.read_parquet('licitaciones_completo/', filters=[('es_ultima_version', '==', True)],
+                          columns=['id', 'organo_contratante', 'importe_adjudicacion', 'nif_adjudicatario', 'ano'])
+duckdb.sql("SELECT ano, count(*) FROM 'licitaciones_completo/*.parquet' WHERE es_ultima_version GROUP BY ano ORDER BY ano")
+
+# Resultados por lote (nacional_resultados.zip), con la misma clave id + fecha_updated
+df_res = pd.read_parquet('licitaciones_completo_resultados.parquet')
+```
+
+Con los ficheros del repo (Git LFS, v2026.02):
 
 ```python
 import pandas as pd
@@ -1232,6 +1311,14 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `scripts/ccaa_cataluna_contratosmenores.py` | contractaciopublica.cat | Descarga contratos menores Catalunya (todas las fases, API del portal) |
 | `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
 | `scripts/ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias → `ccaa_asturias/` |
+| `scripts/ccaa_aragon.py` | Aragón Open Data + Ayuntamiento de Zaragoza (OCDS) | Contratos del Gobierno de Aragón, Registro de Contratos, anuncios del perfil y OCDS de Zaragoza |
+| `scripts/ccaa_castilla_leon.py` | Datos abiertos de la Junta de Castilla y León | Contratos ordinarios, menores, basados en acuerdo marco, modificados… de la Junta y del SACYL |
+| `scripts/ccaa_castilla_la_mancha.py` | Junta de Castilla-La Mancha + UCLM | Menores, caja pagadora, SESCAM por línea de factura, sector público 2015-2018 y contratos de la UCLM |
+| `scripts/ccaa_murcia.py` | CARM + Servicio Murciano de Salud | Contratos y contratos menores de la CARM y menores del SMS |
+| `scripts/ccaa_extremadura.py` | Junta de Extremadura | Registro de Contratos: menores, mayores e incidencias |
+| `scripts/ccaa_la_rioja.py` | Gobierno de La Rioja | CSV anual de contratos menores |
+| `scripts/ccaa_valencia_menores.py` | UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV | Contratos menores valencianos fuera del REGCON |
+| `scripts/municipios_menores.py` | 8 ayuntamientos | Contratos menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife |
 | `scripts/ccaa_cataluna.py` | Socrata + CKAN Barcelona | Descarga datos Catalunya |
 | `scripts/ccaa_cataluna_parquet.py` | — | Convierte los CSV de Catalunya a Parquet |
 | `scripts/ccaa_valencia.py` | CKAN | Descarga datos Valencia |
@@ -1309,6 +1396,12 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 | Galicia | https://www.contratosdegalicia.gal/ |
 | Asturias | https://sede.asturias.es/ |
 | Canarias | https://datos.canarias.es/ · https://www.gobiernodecanarias.org/transparencia/ |
+| Aragón | https://opendata.aragon.es/ · https://www.zaragoza.es/ |
+| Castilla y León | https://datosabiertos.jcyl.es/ |
+| Castilla-La Mancha | https://contratacion.castillalamancha.es/ · https://contratos.apps.uclm.es/ |
+| Región de Murcia | https://datosabiertos.regiondemurcia.es/ · https://transparencia.carm.es/ |
+| Extremadura | https://www.juntaex.es/ |
+| La Rioja | https://web.larioja.org/dato-abierto |
 | BORME | https://www.boe.es/diario_borme/ |
 | BQuant Finance | https://bquantfinance.com |
 
