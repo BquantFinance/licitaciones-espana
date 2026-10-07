@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "Si usas estos datos o este código, cítalo así."
+type: dataset
+title: "licitaciones-espana: datos abiertos de la contratación pública española (PLACSP, TED, comunidades autónomas, ayuntamientos y BORME)"
+abstract: >-
+  Scrapers, ETL y releases en Parquet de la contratación pública española:
+  la Plataforma de Contratación del Sector Público (PLACSP), el TED de la Unión
+  Europea, las plataformas de las comunidades autónomas, los contratos menores
+  de ayuntamientos y el BORME, tal como los publica cada fuente oficial. El
+  código es MIT; las columnas y correcciones añadidas por el proyecto, CC BY 4.0;
+  los datos de origen conservan la licencia de cada portal (DATA_LICENSE.md).
+authors:
+  - given-names: Gerard
+    family-names: Sánchez Vidal
+    affiliation: BQuant Finance
+version: v2026.10
+date-released: 2026-10-05
+url: "https://buscalicitaciones.com"
+repository-code: "https://github.com/BquantFinance/licitaciones-espana"
+repository-artifact: "https://github.com/BquantFinance/licitaciones-espana/releases/tag/v2026.10"
+license-url: "https://github.com/BquantFinance/licitaciones-espana/blob/main/DATA_LICENSE.md"
+keywords:
+  - contratación pública
+  - datos abiertos
+  - public procurement
+  - open data
+  - Spain
+  - PLACSP
+  - TED
+  - BORME
+  - Parquet
