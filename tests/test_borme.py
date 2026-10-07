@@ -1372,7 +1372,7 @@ def test_pipeline_readme_completo(monkeypatch, tmp_path, fake_pdf, capsys):
     assert len(emp) == 9 and len(car) == 7
     assert str(emp["fecha_borme"].dtype).startswith("datetime64")
     assert set(emp["fecha_borme"].dt.strftime("%Y-%m-%d")) == {"2024-01-02", "2024-01-04"}
-    # 3. Anonimizar
+    # 3. Seudonimizar
     _run_cli(monkeypatch, "borme_anonymize.py", "--input", pdfs, "--output", data)
     emp_pub = pd.read_parquet(data / "borme_empresas_pub.parquet")
     car_pub = pd.read_parquet(data / "borme_cargos_pub.parquet")
@@ -1605,7 +1605,7 @@ def test_scraper_comprobar_con_descarga_fallida_no_toca_el_pdf(monkeypatch, tmp_
 #  Memoria: primera descarga con las semillas del release
 # ═════════════════════════════════════════════
 # Con las semillas del release (9,25 M de empresas y 17,1 M de cargos), el parser llegaba a
-# 12,4 GiB al sembrar y el anonimizador a 10,1 GiB con las dos tablas. Lo reescrito tiene
+# 12,4 GiB al sembrar y borme_anonymize.py a 10,1 GiB con las dos tablas. Lo reescrito tiene
 # que dar exactamente lo mismo que el código anterior, que se copia aquí tal cual (main en
 # c889c2d) como referencia.
 import pyarrow.parquet as pq  # noqa: E402

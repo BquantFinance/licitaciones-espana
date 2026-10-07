@@ -78,7 +78,7 @@ Release **v2026.10** (octubre de 2026): los mismos datos que usa buscalicitacion
 | `canarias.zip` | 🆕 Canarias: Gobierno, Las Palmas de GC, Cabildo de Tenerife y resúmenes del SCS | 11 MB |
 | `municipios.zip` | 🆕 Menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife | 17 MB |
 | `ted.zip` | Tenders Electronic Daily — España (consolidado) + en `v2026.02/`, el cruce PLACSP↔TED de v2026.02 | 298 MB |
-| `borme.zip` | Registro Mercantil — actos mercantiles + cargos (anonimizado) | 775 MB |
+| `borme.zip` | Registro Mercantil — actos mercantiles + cargos (personas seudonimizadas) | 775 MB |
 | `calidad_licitaciones_resultado.zip` | Indicadores de calidad sobre PLACSP: el Parquet de v2026.02 tal cual, sin regenerar (en v2026.02 iba en un RAR) | 753 MB |
 
 **La tabla principal de la PLACSP va partida.** GitHub no admite ficheros de 2 GB o más, así que `licitaciones_completo.parquet` (10.907.567 filas, 80 columnas, 5,0 GB) se publica partida por `ano` (año del anuncio de licitación) en 6 Parquet repartidos en los 5 ZIP `nacional_licitaciones_*.zip`. Al descomprimirlos en la misma carpeta, las partes quedan en `licitaciones_completo/` y se leen como una sola tabla (ver [Uso](#-uso)). Tienen las mismas columnas, tipos y valores que la tabla original: la suma de filas de las partes y una huella de contenido (suma del hash de cada fila y de cada columna) coinciden con las del original. Las tablas de detalle van en `nacional_resultados.zip`, `nacional_criterios.zip`, `nacional_adjudicatarios.zip` y `nacional_lotes_y_otras_tablas.zip`.
@@ -286,9 +286,14 @@ Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_bo
 | Conjunto | Registros | Contenido |
 |----------|-----------|-----------|
 | Empresas | 9.61M filas, 3.43M empresas (v2026.10) | Actos mercantiles: constituciones, disoluciones, fusiones, ampliaciones de capital... |
-| Cargos | 17.8M filas, 3.92M personas (v2026.10) | Nombramientos, ceses, revocaciones — con persona hasheada (SHA-256) |
+| Cargos | 17.8M filas, 3.92M códigos de persona (v2026.10) | Nombramientos, ceses, revocaciones — con la persona seudonimizada (`persona_hash`) |
 
-> ⚠️ Los PDFs originales no se redistribuyen porque contienen nombres de personas físicas protegidos por RGPD. Se publica el scraper para descargarlos directamente desde boe.es y los datos derivados anonimizados: solo se sustituyen por un hash los nombres de las personas de los cargos; empresa, domicilio social y actos se publican tal como aparecen en el BORME.
+> ⚠️ Los PDFs originales no se redistribuyen porque contienen nombres de personas físicas protegidos por el RGPD. Se publica el scraper para descargarlos directamente desde boe.es y los datos derivados con las personas **seudonimizadas**: solo se sustituye el nombre de cada persona de los cargos por un código, `persona_hash` (SHA-256 del nombre con una sal, truncado a 16 caracteres hexadecimales); empresa, domicilio social y actos se publican tal como aparecen en el BORME.
+>
+> **Seudonimizado no es anonimizado.**
+> - El código es el mismo para el mismo nombre, en cualquier fecha y empresa: es lo que permite seguir a un administrador entre empresas.
+> - Por eso **junta a los homónimos**: dos personas que se llaman igual comparten código y cuentan como una sola. Y al revés: una misma persona escrita de dos formas (con o sin tilde, en otro orden) tiene dos códigos. Los 3.92M códigos de persona de la tabla no son 3.92M personas.
+> - No impide reconocer a una persona cuyo nombre ya se conoce. Trata `borme_cargos_pub` como datos personales.
 >
 > Los datos publicados solo contienen la sección A. `borme_scraper.py` ahora combina los PDF del índice HTML con la API oficial de sumarios (secciones A, B y C). En v2026.02 faltaban los boletines 2012 #173-174, 2013 #1 y 2024 #89-90; v2026.10 ya trae 2012 #173 y 2013 #1, y siguen faltando 2012 #174 y 2024 #89-90.
 >
@@ -300,12 +305,12 @@ Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_bo
 borme/
 ├── data/
 │   ├── borme_empresas_pub.parquet     # 9.2M actos mercantiles por empresa
-│   └── borme_cargos_pub.parquet       # 17M cargos (persona_hash, no nombre real)
+│   └── borme_cargos_pub.parquet       # 17M cargos (persona_hash seudonimizado, sin el nombre)
 └── scripts/
     ├── borme_scraper.py               # Descarga PDFs desde boe.es
     ├── borme_batch_parser.py          # Extrae actos mercantiles de los PDFs
     ├── borme_validate.py              # Validación del parser
-    ├── borme_anonymize.py             # Genera datasets públicos sin datos personales
+    ├── borme_anonymize.py             # Genera las versiones públicas (personas seudonimizadas)
     └── borme_placsp_match.py          # Cruza BORME × PLACSP → flags de anomalías
 ```
 
@@ -315,7 +320,7 @@ borme/
 |------|-------|-------------|
 | 1 | Empresa recién creada | Constitución < 6 meses antes de adjudicación |
 | 2 | Capital ridículo | Capital social < 10K€ ganando contratos > 100K€ |
-| 3 | Administradores compartidos | Misma persona con cargo en varias empresas adjudicatarias |
+| 3 | Administradores compartidos | Misma persona con cargo en varias empresas adjudicatarias. Agrupa por nombre (o por `persona_hash`, que sale del nombre): los homónimos cuentan como una sola persona |
 | 4 | Disolución post-adjudicación | Disuelta < 12 meses después de cobrar |
 | 5 | Adjudicación en concurso | Empresa en situación concursal recibiendo contratos |
 
@@ -328,7 +333,7 @@ python borme/scripts/borme_scraper.py --start 2009-01-01 --output ./borme_pdfs
 # 2. Parsear → borme_empresas.parquet + borme_cargos.parquet (PRIVADOS)
 python borme/scripts/borme_batch_parser.py --input ./borme_pdfs --workers 8
 
-# 3. Anonimizar → versiones públicas con persona_hash
+# 3. Seudonimizar → versiones públicas con persona_hash
 python borme/scripts/borme_anonymize.py --input ./borme_pdfs --output borme/data
 
 # 4. Detectar anomalías cruzando con PLACSP (cuenta cada licitación una vez: su versión más reciente)
@@ -1216,10 +1221,10 @@ df_val = pd.concat([pd.read_parquet(f) for f in sorted(glob.glob('valencia/contr
 # Valencia - Lobbies REGIA (la carpeta mezcla 7 tablas distintas)
 df_lobbies = pd.read_parquet('valencia/lobbies/Grupos_de_interés.parquet')
 
-# BORME - Actos mercantiles (anonimizado)
+# BORME - Actos mercantiles
 df_borme = pd.read_parquet('borme/data/borme_empresas_pub.parquet')
 
-# BORME - Cargos con persona hasheada
+# BORME - Cargos con la persona seudonimizada (persona_hash)
 df_cargos = pd.read_parquet('borme/data/borme_cargos_pub.parquet')
 
 # Galicia - Contratación completa (CM + LIC)
@@ -1280,8 +1285,8 @@ constit.groupby(constit['fecha_borme'].dt.year).size().plot(title='Constitucione
 # BORME: administradores compartidos entre empresas
 df_cargos = pd.read_parquet('borme/data/borme_cargos_pub.parquet')
 nombramientos = df_cargos[df_cargos['tipo_acto'] == 'nombramiento']
-multi = nombramientos.groupby('persona_hash')['empresa_norm'].nunique()
-print(f"Admins en >1 empresa: {(multi > 1).sum():,}")
+multi = nombramientos.groupby('persona_hash')['empresa_norm'].nunique()  # junta a los homónimos
+print(f"Códigos de persona en >1 empresa: {(multi > 1).sum():,}")
 
 # Galicia: top 10 adjudicatarios por importe (contratos menores)
 df_gal_cm = df_gal[df_gal['_tipo'] == 'CM']
@@ -1344,7 +1349,7 @@ ast_menores['ORGANO CONTRATANTE'].value_counts().head(20)
 | `ted/analisis_sector_salud.py` | — | Deep dive sector salud |
 | `borme/scripts/borme_scraper.py` | BOE/BORME | Descarga ~126K PDFs del Registro Mercantil |
 | `borme/scripts/borme_batch_parser.py` | — | Parser de actos mercantiles (constituciones, cargos...) |
-| `borme/scripts/borme_anonymize.py` | — | Genera datasets públicos sin datos personales |
+| `borme/scripts/borme_anonymize.py` | — | Genera las versiones públicas, con las personas seudonimizadas |
 | `borme/scripts/borme_placsp_match.py` | — | Detector de anomalías BORME × PLACSP (5 flags) |
 | `calidad/calidad_licitaciones.py` | — | 21 indicadores de calidad sobre PLACSP + TED + BORME |
 | `calidad/correcciones.py` | — | Importes corregidos junto a los publicados (registro de errores de la fuente y saltos de escala) |

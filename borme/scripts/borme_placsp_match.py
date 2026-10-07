@@ -257,6 +257,10 @@ def flag_mismos_administradores(df_car, empresas=None):
 
     empresas: empresa_norm de las adjudicatarias (match con PLACSP). Sin él se
     cuentan todas las empresas del BORME.
+
+    Agrupa por el nombre tal como sale del BORME: dos homónimos cuentan como una
+    sola persona. Con los datos publicados (persona_hash) pasa lo mismo, porque el
+    código es el mismo para el mismo nombre.
     """
     log.info("Flag 3: Mismos administradores en múltiples empresas...")
 
