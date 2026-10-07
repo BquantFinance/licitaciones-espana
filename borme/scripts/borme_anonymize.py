@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 """
-BORME Anonymizer — Genera datasets públicos sin datos personales
-================================================================
+BORME: versiones públicas con las personas seudonimizadas
+=========================================================
 Toma la salida cruda del parser (borme_empresas.parquet + borme_cargos.parquet)
-y genera versiones anonimizadas aptas para redistribución pública (GitHub).
+y genera las versiones que se publican.
 
-Los nombres de personas físicas se eliminan o se sustituyen por un hash
-irreversible (SHA-256 truncado). Esto preserva la capacidad de detectar
-administradores compartidos entre empresas sin exponer identidades.
+Los nombres de las personas físicas de los cargos se sustituyen por un código
+seudónimo, `persona_hash` (SHA-256 del nombre con una sal, truncado a 16
+caracteres hexadecimales; ver hash_persona). Es una seudonimización, no una
+anonimización:
+  - El código es el mismo para el mismo nombre, en cualquier fecha y empresa. Es
+    lo que permite seguir a un administrador entre empresas.
+  - Por eso junta a los homónimos: dos personas que se llaman igual comparten
+    código y cuentan como una sola. Y al revés: una misma persona escrita de dos
+    formas (con o sin tilde, en otro orden) tiene dos códigos.
+  - No impide reconocer a una persona cuyo nombre ya se conoce. Los cargos con
+    `persona_hash` siguen siendo datos personales.
 
 Salidas:
-  1. borme_empresas_pub.parquet   — Actos mercantiles por empresa (sin cambios,
-                                     no contiene datos personales directos)
-  2. borme_cargos_pub.parquet     — Cargos con persona_hash en vez de nombre
-  3. borme_grafo_admin.parquet    — Grafo empresa↔empresa por admin compartido
+  1. borme_empresas_pub.parquet   — Actos mercantiles por empresa, tal como los
+                                     publica el BORME (sin el objeto social)
+  2. borme_cargos_pub.parquet     — Cargos con persona_hash en vez del nombre
+  3. borme_grafo_admin.parquet    — Grafo empresa↔empresa por administrador
+                                     compartido (build_admin_graph; main() no lo
+                                     escribe)
 
 Uso:
   python borme_anonymize.py --input ./borme_pdfs --output ./data
@@ -45,10 +55,13 @@ COLUMNAS_CONTROL = ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarg
 
 
 def hash_persona(name: str, salt: str = "borme_2024") -> str:
-    """Hash irreversible de nombre de persona.
+    """Código seudónimo de un nombre de persona.
 
-    Se usa SHA-256 con salt, truncado a 16 chars hex.
-    Suficiente para detectar coincidencias, imposible de revertir.
+    SHA-256 de "<salt>:<NOMBRE>", truncado a 16 caracteres hexadecimales. El
+    nombre solo se normaliza con strip() y upper(), así que el mismo nombre da
+    siempre el mismo código (los homónimos comparten código) y dos grafías del
+    mismo nombre dan dos códigos. Es una seudonimización, no una anonimización
+    (ver el docstring del módulo). Un nombre vacío o que no es texto da "".
     """
     if not name or not isinstance(name, str):
         return ""
@@ -93,7 +106,9 @@ def _donde(condicion: pd.Series, valores: pd.Series, otros: pd.Series) -> pd.Ser
 
 
 def anonymize_cargos(df_car: pd.DataFrame) -> pd.DataFrame:
-    """Reemplaza nombres de personas por hash irreversible."""
+    """Sustituye el nombre de cada persona por su código seudónimo (persona_hash).
+
+    Las filas de la semilla no traen el nombre: conservan el persona_hash publicado."""
     log.info("Anonimizando cargos...")
 
     # Copia superficial: solo se sustituyen columnas enteras (una copia completa duplicaba
@@ -107,7 +122,7 @@ def anonymize_cargos(df_car: pd.DataFrame) -> pd.DataFrame:
         hashes = _donde(nombres.notna(), hashes, df["persona_hash"])
     df["persona_hash"] = hashes
 
-    # Eliminar nombre real
+    # Quitar el nombre
     df = df.drop(columns=["persona"], errors="ignore")
 
     # Reordenar
@@ -129,6 +144,10 @@ def build_admin_graph(df_car_anon: pd.DataFrame, max_empresas_per_admin: int = 2
     Cada fila = un par de empresas con al menos un admin en común.
     Admins en >max_empresas_per_admin empresas se excluyen (profesionales
     de despachos que administran cientos de sociedades — no son señal).
+
+    persona_hash junta a los homónimos: un par de empresas puede salir conectado
+    por dos personas distintas que se llaman igual. Tenlo en cuenta antes de
+    leerlo como señal.
 
     Columnas: empresa_a, empresa_b, n_admins_compartidos, admin_hashes.
     """
@@ -200,7 +219,7 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cargar. Las tablas se anonimizan y se escriben de una en una: con la semilla del
+    # Cargar. Las tablas se seudonimizan y se escriben de una en una: con la semilla del
     # release son 9,6 M y 17,8 M de filas y las dos a la vez (más sus copias) llegaban a
     # 10 GiB. El número de filas de las dos sale de sus metadatos antes de
     # nada (como cuando se cargaban las dos al empezar: si falta una tabla, no se escribe nada)
@@ -211,7 +230,7 @@ def main():
     log.info(f"  Empresas: {n_emp:,} filas")
     log.info(f"  Cargos: {n_car:,} filas")
 
-    # Anonimizar y guardar
+    # Seudonimizar y guardar
     path_emp = output_dir / "borme_empresas_pub.parquet"
     df_emp_pub = anonymize_empresas(pd.read_parquet(ruta_emp))
     filas_emp, unicas_emp = len(df_emp_pub), df_emp_pub['empresa_norm'].nunique()
