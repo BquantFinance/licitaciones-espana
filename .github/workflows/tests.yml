@@ -1,0 +1,67 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff (F, E9)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false              # el código, sin los 6,8 GB de datos de Git LFS
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: ruff
+        run: |
+          python -m pip install -r requirements-dev.txt -c constraints.txt
+          ruff check .
+
+  tests:
+    name: pytest (pandas ${{ matrix.pandas }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        pandas: ["3.0.6", "2.2.3"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            constraints.txt
+      - name: Bibliotecas del sistema (RAR de Castilla-La Mancha)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libarchive-dev unar
+      - name: Dependencias (constraints.txt, con la versión de pandas de la matriz)
+        run: |
+          grep -v '^pandas==' constraints.txt > "$RUNNER_TEMP/constraints.txt"
+          python -m pip install -r requirements.txt -r requirements-dev.txt \
+            -c "$RUNNER_TEMP/constraints.txt" "pandas==${{ matrix.pandas }}"
+          python -c "import sys, pandas, numpy, pyarrow; print(sys.version.split()[0], 'pandas', pandas.__version__, 'numpy', numpy.__version__, 'pyarrow', pyarrow.__version__)"
+      - name: pytest
+        run: python -m pytest -q -p no:cacheprovider
