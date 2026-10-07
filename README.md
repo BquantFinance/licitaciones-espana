@@ -654,6 +654,8 @@ Dataset nuevo con **3.024.000 filas** de contratos menores del sector público c
 
 **Ventanas móviles.** El RPC (`hb6v-jcbf`) y los menores de la Generalitat (`qjue-2pk9`, 2020-2024, importes en céntimos tal como se publican; antes se pedía `ydq4-xy5b`, que da 404) solo sirven los últimos 5 años. `ccaa_cataluna.py` guarda la versión anterior de cada CSV en `_historico/` y `ccaa_cataluna_parquet.py` construye cada parquet con todas las versiones: lo que sale de la ventana sigue con `_en_ultima_descarga=False`.
 
+**Memoria.** `ccaa_cataluna_parquet.py` no carga los CSV enteros: lee cada versión por trozos y la guarda en una carpeta temporal junto al parquet (`.<parquet>.trozos`, que se borra al acabar), decide la acumulación con las huellas de las filas, infiere los tipos columna a columna y escribe el parquet por grupos de filas, en un fichero aparte que solo sustituye al anterior al terminar. Con las tres versiones de la PSCP (2,5 GB cada una) el pico baja de 15,2 a 3,6 GiB, con la misma salida fila a fila (`tests/test_ccaa_cataluna_trozos.py`).
+
 **Semilla del release (`--semilla`).** Lo que salió de la ventana antes de la primera descarga solo está en el release v2026.02. `ccaa_cataluna_parquet.py --semilla <carpeta catalunya del release>` añade las filas del publicado cuya clave ya no está en la descarga, con `_origen='release v2026.02'` y `_en_ultima_descarga=False` (claves en `SEMILLAS`).
 - Medido el 28-sep-2026 frente a la primera descarga del VPS:
   - RPC: 751.187 filas, sobre todo menores y liquidaciones de 2021.
