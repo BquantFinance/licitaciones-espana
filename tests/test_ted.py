@@ -22,7 +22,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import urllib.error
 import zipfile
 from pathlib import Path
 

@@ -1,0 +1,11 @@
+# Solo las GitHub Actions. Las dependencias de Python no: una subida de pandas,
+# numpy o pyarrow puede cambiar lo que escriben los scrapers, así que se suben a
+# mano, con la suite en las dos versiones de pandas (constraints.txt).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

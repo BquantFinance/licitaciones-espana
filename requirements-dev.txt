@@ -1,0 +1,5 @@
+# Desarrollo y tests, además de requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+pytest>=8.0
+xlwt>=1.3.0        # 5 tests escriben .xls de prueba con él (sin xlwt se saltan)
+ruff>=0.6          # lint mínimo (ruff.toml): ruff check .
