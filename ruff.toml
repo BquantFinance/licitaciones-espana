@@ -1,0 +1,15 @@
+# Lint mínimo, sin formatear: solo errores de verdad (pyflakes y sintaxis).
+#   ruff check .
+target-version = "py312"
+
+[lint]
+select = ["F", "E9"]
+# F541 (f-string sin marcadores) es estilo, no un error: hay un centenar en scrapers y análisis.
+ignore = ["F541"]
+
+[lint.per-file-ignores]
+# Scrapers cerrados (docs/ESTADO_SCRAPERS.md): no se tocan por el lint.
+"galicia/scraper_galicia.py" = ["F821"]        # `window` viene de la iteración anterior del bucle (falso positivo)
+"scripts/ccaa_cataluna_parquet.py" = ["F401"]  # `glob` sin usar
+"ted/ted_module.py" = ["F401"]                 # `hashlib` sin usar
+"ted/run_ted_crossvalidation.py" = ["F841"]    # `best_ratio` sin usar
