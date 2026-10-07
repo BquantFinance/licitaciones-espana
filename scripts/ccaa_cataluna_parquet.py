@@ -15,14 +15,27 @@ _en_ultima_descarga=False, y cada fila lleva _primera_descarga/_ultima_descarga
 versión la salida es la de siempre más esas 3 columnas. Las consolidaciones de
 Open Data Barcelona (varios recursos → 1 parquet) hacen lo mismo recurso a
 recurso (registros_bcn).
+
+Los CSV sueltos (ARCHIVOS) se convierten sin tenerlos enteros en memoria (ver
+CONVERSIÓN POR TROZOS): las versiones se leen por trozos y se guardan en disco,
+la acumulación se decide con las huellas de las filas, los tipos se infieren
+columna a columna y el Parquet se escribe por grupos de filas. La salida es la
+misma que cuando se hacía todo en memoria.
 ================================================================================
 """
 
 import argparse
 import codecs
 import encodings.cp1252
+import os
+import shutil
 import sys
+import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.csv as pacsv
+import pyarrow.parquet as pq
 from pathlib import Path
 from datetime import datetime, timezone
 import json
@@ -33,7 +46,8 @@ import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import (  # noqa: E402
-    COLUMNAS_META, acumular, imprimir_informe_semilla, sembrar, versiones,
+    ANADIDA, COLUMNAS_META, COLUMNAS_SEMILLA, IGNORAR_POR_DEFECTO, ORIGEN_SEMILLA, _armonizar, acumular,
+    imprimir_informe_semilla, informe_semilla, seleccionar_semilla, sembrar, versiones,
 )
 
 # =============================================================================
@@ -280,21 +294,23 @@ def leer_texto(path):
     return _leer_csv(path, dtype=str)[0]
 
 
-def _leer_csv(path, **kwargs):
-    """(DataFrame, encoding, separador) del primer separador que da más de una columna. UTF-8 y, solo
-    en las secuencias que no lo son, CP1252 (ERRORES_UTF8)."""
+def _separadores(path):
+    """Separadores que se prueban, el más frecuente en la cabecera primero: un CSV con ';' y una coma
+    en algún nombre de columna se aceptaría con ',' y se leería desalineado."""
     separators = [',', ';', '\t']
-    
-    # Probar primero el separador más frecuente en la cabecera: un CSV con ';' y una coma
-    # en algún nombre de columna se aceptaría con ',' y se leería desalineado
     try:
         with open(path, 'rb') as f:
             cabecera = f.readline(1024 * 1024).decode('latin-1')
         separators.sort(key=lambda s: -cabecera.count(s))
     except OSError:
         pass
-    
-    for sep in separators:
+    return separators
+
+
+def _leer_csv(path, **kwargs):
+    """(DataFrame, encoding, separador) del primer separador que da más de una columna. UTF-8 y, solo
+    en las secuencias que no lo son, CP1252 (ERRORES_UTF8)."""
+    for sep in _separadores(path):
         try:
             # Las líneas mal formadas se descartan, pero se cuentan y se avisa
             # (antes se perdían en silencio)
@@ -335,16 +351,6 @@ def versiones_csv(csv_path):
             d, hh, mm, ss = m.group(1), m.group(2), m.group(3), m.group(4)
             salida.append((v, f"{d[:4]}-{d[4:6]}-{d[6:]}T{hh}:{mm}:{ss}Z"))
     return salida
-
-
-def construir_registros(csv_path, tmp_csv):
-    """Registros de todas las versiones del CSV acumulados (comun.historico).
-    Devuelve (DataFrame con COLUMNAS_META, nº de versiones)."""
-    vers = versiones_csv(csv_path)
-    if len(vers) == 1:
-        # Una sola versión: exactamente la lectura de siempre + columnas meta
-        return acumular(None, load_csv(csv_path), vers[0][1], permitir_vacio=True), 1
-    return tipos_como_csv(acumular_versiones(vers, leer_texto), tmp_csv), len(vers)
 
 
 def acumular_versiones(vers, leer, saltar_ilegibles=False):
@@ -424,8 +430,20 @@ def restaurar_ceros_iniciales(df, path, encoding, sep):
     tipos = df.dtypes
     numericas = [i for i in range(len(tipos))
                  if pd.api.types.is_numeric_dtype(tipos.iloc[i]) and not pd.api.types.is_bool_dtype(tipos.iloc[i])]
+    texto = _texto_con_ceros(path, encoding, sep, df.shape[1], numericas, len(df))
+    for i, valores in texto.items():
+        df.isetitem(i, valores)
+    if texto:
+        log(f"   🔢 Guardadas como texto (ceros a la izquierda): {', '.join(str(df.columns[i]) for i in texto)}")
+    return df
+
+
+def _texto_con_ceros(path, encoding, sep, n_columnas, numericas, n_filas):
+    """Lo que restaurar_ceros_iniciales lee del CSV: {posición: texto (array)} de las columnas `numericas`
+    (posiciones) cuyo texto lleva ceros a la izquierda, en orden; {} si no hay o no se puede comprobar
+    (se avisa). n_columnas y n_filas son los de la lectura con tipos."""
     if not numericas:
-        return df
+        return {}
 
     def trozos():
         # Misma lectura (mismas líneas descartadas) pero todo como texto y por trozos
@@ -435,25 +453,22 @@ def restaurar_ceros_iniciales(df, path, encoding, sep):
     try:
         con_ceros = set()
         for trozo in trozos():
-            if trozo.shape[1] != df.shape[1]:
-                return df
+            if trozo.shape[1] != n_columnas:
+                return {}
             for i in numericas:
                 if i not in con_ceros and _tiene_cero_inicial(trozo.iloc[:, i]):
                     con_ceros.add(i)
         if not con_ceros:
-            return df
+            return {}
         posiciones = sorted(con_ceros)
         texto = pd.concat([t.iloc[:, posiciones] for t in trozos()], ignore_index=True)
     except Exception as e:
         log(f"   ⚠️ {Path(path).name}: no se pudo comprobar ceros a la izquierda ({e})")
-        return df
-    if len(texto) != len(df):
+        return {}
+    if len(texto) != n_filas:
         log(f"   ⚠️ {Path(path).name}: no se pudo comprobar ceros a la izquierda (filas distintas)")
-        return df
-    for j, i in enumerate(posiciones):
-        df.isetitem(i, texto.iloc[:, j].array)
-    log(f"   🔢 Guardadas como texto (ceros a la izquierda): {', '.join(str(df.columns[i]) for i in posiciones)}")
-    return df
+        return {}
+    return {i: texto.iloc[:, j].array for j, i in enumerate(posiciones)}
 
 
 def texto_sin_nulos(serie):
@@ -534,41 +549,655 @@ def sembrar_release(df, ruta, columnas, solo_con_clave=False):
     return out.drop(columns='_clave_semilla')
 
 
+# =============================================================================
+# CONVERSIÓN POR TROZOS (convert_to_parquet)
+# =============================================================================
+# Antes, convert_to_parquet tenía en memoria las versiones del CSV, la tabla acumulada, la semilla y sus
+# copias: con las tres versiones de publicaciones_pscp.csv (2,5 GB cada una) el pico era de 15,2 GiB
+# (medido el 7-oct-2026; leer una sola versión entera ya pasa de 8 GiB) y el semanal moría por memoria.
+# Ahora solo hay en memoria trozos de FILAS_POR_LOTE filas, una columna entera, las huellas de las filas
+# (8 bytes por fila) y las filas que se añaden de la semilla. Lo demás va a una carpeta temporal junto al
+# Parquet (CARPETA_TROZOS), que se borra al acabar:
+#   1. Cada versión se lee como texto por trozos y se guarda en Arrow (leer_version).
+#   2. La acumulación de comun.historico.acumular se decide con las huellas de las filas (las de
+#      _claves): la tabla acumulada son referencias a filas de las versiones (Registros).
+#   3. Los tipos se infieren columna a columna con la misma lectura de pandas sobre la columna entera
+#      (_tipar): pandas infiere cada columna solo con sus valores. Los ceros a la izquierda, con la
+#      lectura de siempre (_texto_con_ceros).
+#   4. La semilla se lee columna a columna (_preparar_semilla), cada columna de la salida se arma entera
+#      con las operaciones de antes (sembrar, texto_sin_nulos) y el Parquet se escribe por grupos de filas
+#      (_escribir_parquet) en un fichero aparte que solo sustituye al anterior al acabar.
+# La salida es la de antes: mismas filas en el mismo orden, mismas columnas, tipos y metadatos de pandas
+# (tests/test_ccaa_cataluna_trozos.py la compara con la del código anterior).
+FILAS_POR_LOTE = 100_000
+CARPETA_TROZOS = '.{}.trozos'
+
+
+def _huellas_lote(lote, columnas):
+    """comun.historico._claves de un lote Arrow de texto (large_string) sobre `columnas`: la huella con la
+    que acumular casa las filas de dos versiones (el texto de cada celda o '\\x00' si es nula), sin
+    pasar celda a celda por Python."""
+    if not columnas:
+        return np.zeros(lote.num_rows, dtype=np.uint64)
+    return pd.util.hash_pandas_object(pd.DataFrame(
+        {j: pd.Series(pc.fill_null(lote.column(c), '\x00').to_numpy(zero_copy_only=False), dtype=object)
+         for j, c in enumerate(columnas)}), index=False).to_numpy()
+
+
+def _lector_texto(path, sep, filas):
+    """La lectura de leer_texto con el separador `sep`, por trozos de `filas` filas."""
+    return pd.read_csv(path, encoding='utf-8', encoding_errors=ERRORES_UTF8, sep=sep, low_memory=False,
+                       on_bad_lines='warn', dtype=str, chunksize=filas)
+
+
+def _esquema_texto(columnas):
+    return pa.schema([pa.field(str(c), pa.large_string()) for c in columnas])
+
+
+def _guardar_texto(trozos, destino):
+    """Guarda los DataFrames de texto `trozos` en `destino` (Arrow, columnas large_string). Devuelve
+    (columnas, filas de cada trozo, índice implícito: pandas usó la 1ª columna como índice porque hay
+    más campos que cabeceras)."""
+    columnas = escritor = None
+    implicito = False
+    lotes = []
+    try:
+        for trozo in trozos:
+            if columnas is None:
+                columnas = list(trozo.columns)
+                implicito = not isinstance(trozo.index, pd.RangeIndex)
+                esquema = _esquema_texto(columnas)
+                escritor = pa.ipc.new_file(str(destino), esquema)
+            lotes.append(len(trozo))
+            escritor.write_table(pa.Table.from_pandas(trozo.reset_index(drop=True), schema=esquema,
+                                                      preserve_index=False))
+    finally:
+        if escritor is not None:
+            escritor.close()
+        if hasattr(trozos, 'close'):
+            trozos.close()
+    if columnas is None:
+        raise ValueError("sin cabecera")
+    return columnas, lotes, implicito
+
+
+def _misma_lectura(trozos, ruta, columnas, lotes, implicito):
+    """Si los DataFrames de texto `trozos` (otra lectura del mismo CSV) son, fila a fila, los guardados
+    en `ruta` por _guardar_texto (columnas, lotes, implicito)."""
+    esquema = _esquema_texto(columnas)
+    inicios = np.concatenate([[0], np.cumsum(lotes)]).astype(np.int64)
+    mapa = pa.memory_map(str(ruta))
+    try:
+        lector = pa.ipc.open_file(mapa)
+        desde = 0
+        for k, trozo in enumerate(trozos):
+            if list(trozo.columns) != columnas or (k == 0 and implicito == isinstance(trozo.index, pd.RangeIndex)):
+                return False
+            tabla = pa.Table.from_pandas(trozo.reset_index(drop=True), schema=esquema, preserve_index=False)
+            hasta = desde + tabla.num_rows
+            if hasta > inicios[-1]:
+                return False
+            k0 = int(np.searchsorted(inicios, desde, side='right')) - 1
+            k1 = int(np.searchsorted(inicios, hasta, side='left'))
+            guardada = pa.Table.from_batches([lector.get_batch(j) for j in range(k0, max(k1, k0))], schema=esquema)
+            if not guardada.slice(desde - inicios[k0], tabla.num_rows).equals(tabla):
+                return False
+            desde = hasta
+        return desde == inicios[-1]
+    finally:
+        if hasattr(trozos, 'close'):
+            trozos.close()
+        mapa.close()
+
+
+def _trozo_comprobacion(filas_por_lote, filas):
+    """Filas por trozo de la segunda lectura: una menos, si así ninguna frontera de las dos lecturas
+    coincide (coinciden cada mcm = filas_por_lote · (filas_por_lote - 1) filas); si no, todas de una vez."""
+    if filas_por_lote > 1 and filas_por_lote * (filas_por_lote - 1) > filas + 1:
+        return filas_por_lote - 1
+    return filas + 1
+
+
+def leer_version(path, destino):
+    """leer_texto(path) sin tenerlo entero en memoria: la misma lectura (separador, UTF-8 y CP1252, líneas
+    mal formadas, índice implícito) por trozos de FILAS_POR_LOTE filas, guardada en `destino` (Arrow, todo
+    texto). Devuelve (columnas, filas de cada trozo, índice implícito, separador). ValueError, como
+    _leer_csv, si ningún separador da más de una columna.
+
+    pandas no lee igual por trozos que de una vez un CSV con líneas de más campos: la primera línea de
+    cada trozo no se comprueba, y una con campos de más se queda (recortada) en vez de descartarse. Por
+    eso se vuelve a leer con trozos de otro tamaño (_trozo_comprobacion) y se compara con lo guardado:
+    las fronteras caen en filas distintas, y la primera fila en la que una lectura se desviase de la de
+    una vez la leería bien la otra. Si no coinciden, o si la lectura por trozos falla, se lee el CSV
+    entero, como antes."""
+    for sep in _separadores(path):
+        resultado = None
+        try:
+            with warnings.catch_warnings(record=True) as avisos:
+                warnings.simplefilter("always", pd.errors.ParserWarning)
+                resultado = _guardar_texto(_lector_texto(path, sep, FILAS_POR_LOTE), destino)
+            if len(resultado[0]) > 1:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", pd.errors.ParserWarning)
+                    trozo = _trozo_comprobacion(FILAS_POR_LOTE, sum(resultado[1]))
+                    if not _misma_lectura(_lector_texto(path, sep, trozo), destino, *resultado):
+                        resultado = None
+        except Exception:
+            resultado = None
+        if resultado is None:
+            try:
+                with warnings.catch_warnings(record=True) as avisos:
+                    warnings.simplefilter("always", pd.errors.ParserWarning)
+                    entero = pd.read_csv(path, encoding='utf-8', encoding_errors=ERRORES_UTF8, sep=sep,
+                                         low_memory=False, on_bad_lines='warn', dtype=str)
+            except Exception:
+                continue
+            if len(entero.columns) > 1:
+                log(f"   ℹ️ {Path(path).name}: leído de una vez (por trozos no se lee igual)")
+            resultado = _guardar_texto(
+                (entero.iloc[a:a + FILAS_POR_LOTE] for a in range(0, max(len(entero), 1), FILAS_POR_LOTE)),
+                destino)
+            del entero
+        if len(resultado[0]) > 1:
+            descartadas = sum(
+                str(a.message).count("Skipping line")
+                for a in avisos if issubclass(a.category, pd.errors.ParserWarning)
+            )
+            if descartadas:
+                log(f"   ⚠️ {Path(path).name}: {descartadas:,} líneas mal formadas descartadas")
+            return resultado + (sep,)
+    raise ValueError(f"No se pudo cargar: {path}")
+
+
+class Registros:
+    """Registros de las versiones de un CSV acumulados como hacía acumular_versiones(versiones,
+    leer_texto) (o, con una sola versión, la lectura de siempre), sin tenerlos en memoria. Cada versión
+    se guarda como texto en `carpeta` (leer_version); la tabla acumulada son segmentos (versión,
+    posiciones) en el orden de sus filas, las columnas que una versión no tiene van nulas o con el valor
+    que acumular les dio (rellenos), y las columnas de control son índices de versión y un booleano."""
+
+    def __init__(self, carpeta, n_versiones):
+        self.carpeta = Path(carpeta)
+        self.n_versiones = n_versiones
+        self.versiones = []        # dicts: ruta, origen, columnas, filas, fecha, lotes, implicito, sep
+        self.segmentos = []        # [(versión, posiciones crecientes)]
+        self.columnas = []         # columnas de datos, en el orden de acumular
+        self.columnas_base = []    # las de la versión con la que empieza la acumulación (las demás: object)
+        self.rellenos = {}         # columna nueva -> (filas, valores) de las filas anteriores que casaron
+        self.primera = np.zeros(0, dtype=np.int64)
+        self.ultima = np.zeros(0, dtype=np.int64)
+        self.en_ultima = np.zeros(0, dtype=bool)
+        self.iniciado = False      # (acumulado is not None)
+        self._lectores = {}
+        self._huellas = {}         # (versión, columnas) -> huellas de todas sus filas
+
+    @property
+    def filas(self):
+        return len(self.en_ultima)
+
+    def leer(self, ruta, fecha):
+        i = len(self.versiones)
+        destino = self.carpeta / f'version_{i}.arrow'
+        columnas, lotes, implicito, sep = leer_version(ruta, destino)
+        self.versiones.append(dict(ruta=destino, origen=Path(ruta), columnas=columnas, filas=int(sum(lotes)),
+                                   fecha=fecha, lotes=lotes, implicito=implicito, sep=sep))
+        return i
+
+    def descartar(self, i):
+        """Una versión que no se acumula: fuera del disco."""
+        Path(self.versiones[i]['ruta']).unlink(missing_ok=True)
+
+    def _lector(self, i):
+        if i not in self._lectores:
+            mapa = pa.memory_map(str(self.versiones[i]['ruta']))
+            inicios = np.concatenate([[0], np.cumsum(self.versiones[i]['lotes'])]).astype(np.int64)
+            self._lectores[i] = (mapa, pa.ipc.open_file(mapa), inicios)
+        return self._lectores[i][1:]
+
+    def cerrar(self):
+        lectores, self._lectores = self._lectores, {}
+        for mapa, _, _ in lectores.values():
+            mapa.close()
+
+    def _filas(self, i, posiciones, columnas):
+        """Columnas `columnas` (las tiene la versión i) de sus filas `posiciones` (crecientes): tabla Arrow."""
+        lector, inicios = self._lector(i)
+        lotes = np.searchsorted(inicios, posiciones, side='right') - 1
+        partes = []
+        for k in np.unique(lotes):
+            lote = pa.Table.from_batches([lector.get_batch(int(k))]).select(columnas)
+            locales = posiciones[lotes == k] - inicios[k]
+            if len(locales) == lote.num_rows:   # el lote entero (posiciones crecientes y sin repetir)
+                partes.append(lote)
+            else:
+                partes.append(lote.take(pa.array(locales)))
+        if not partes:
+            return _esquema_texto(columnas).empty_table()
+        return pa.concat_tables(partes)
+
+    def huellas_version(self, i, columnas):
+        """Huellas de todas las filas de la versión i sobre `columnas` (_huellas_lote), guardadas."""
+        clave = (i, tuple(columnas))
+        if clave not in self._huellas:
+            lector, _ = self._lector(i)
+            partes = [_huellas_lote(lector.get_batch(k), list(columnas)) for k in range(lector.num_record_batches)]
+            self._huellas[clave] = np.concatenate(partes) if partes else np.zeros(0, dtype=np.uint64)
+        return self._huellas[clave]
+
+    def huellas(self, columnas):
+        """_claves(acumulado, columnas): huellas de los registros acumulados, en su orden."""
+        partes = []
+        for k, (i, posiciones) in enumerate(self.segmentos):
+            if all(c in self.versiones[i]['columnas'] for c in columnas):
+                partes.append(self.huellas_version(i, columnas)[posiciones])
+            else:
+                partes.extend(_huellas_lote(t, columnas) for t in self._trozos_segmento(k, columnas))
+        return np.concatenate(partes) if partes else np.zeros(0, dtype=np.uint64)
+
+    def _relleno(self, c, desde, n):
+        valores = np.full(n, None, dtype=object)
+        if c in self.rellenos:
+            filas, vals = self.rellenos[c]
+            a, b = np.searchsorted(filas, [desde, desde + n])
+            valores[filas[a:b] - desde] = vals[a:b]
+        return pa.array(valores, type=pa.large_string())
+
+    def _trozos_segmento(self, k, columnas):
+        i, posiciones = self.segmentos[k]
+        inicio = int(sum(len(p) for _, p in self.segmentos[:k]))
+        propias = [c for c in columnas if c in self.versiones[i]['columnas']]
+        for a in range(0, len(posiciones), FILAS_POR_LOTE):
+            p = posiciones[a:a + FILAS_POR_LOTE]
+            tabla = self._filas(i, p, propias)
+            yield pa.table([tabla.column(c) if c in propias else self._relleno(c, inicio + a, len(p))
+                            for c in columnas], schema=_esquema_texto(columnas))
+
+    def trozos(self, columnas=None):
+        """Los registros acumulados como texto (tablas Arrow), por trozos de FILAS_POR_LOTE filas como
+        mucho y en su orden: las columnas `columnas` (por defecto todas), nulas en las versiones que no las
+        tienen (salvo las filas que acumular rellenó)."""
+        columnas = self.columnas if columnas is None else columnas
+        for k in range(len(self.segmentos)):
+            yield from self._trozos_segmento(k, columnas)
+
+    def acumular(self, i, permitir_vacio=False):
+        """comun.historico.acumular(acumulado, versión i, su fecha) sobre los registros."""
+        v = self.versiones[i]
+        n = v['filas']
+        if n == 0 and not permitir_vacio:
+            raise ValueError("Descarga vacía: no se marca nada como retirado")
+        self.iniciado = True
+        if self.filas == 0:
+            self.segmentos = [(i, np.arange(n, dtype=np.int64))]
+            self.columnas, self.columnas_base, self.rellenos = list(v['columnas']), list(v['columnas']), {}
+            self.primera = np.full(n, i, dtype=np.int64)
+            self.ultima = np.full(n, i, dtype=np.int64)
+            self.en_ultima = np.ones(n, dtype=bool)
+            return
+        excluir = set(COLUMNAS_META) | set(IGNORAR_POR_DEFECTO)
+        comunes = [c for c in v['columnas'] if c in self.columnas and c not in excluir]
+        if comunes:
+            # Como en acumular: multiconjunto de huellas (la k-ésima repetición casa con la k-ésima)
+            k_ant = pd.Series(self.huellas(comunes))
+            k_nue = pd.Series(self.huellas_version(i, comunes))
+            pos_ant = pd.Series(np.arange(len(k_ant)), index=pd.MultiIndex.from_arrays(
+                [k_ant.to_numpy(), k_ant.groupby(k_ant).cumcount().to_numpy()]))
+            pos = pos_ant.reindex(pd.MultiIndex.from_arrays(
+                [k_nue.to_numpy(), k_nue.groupby(k_nue).cumcount().to_numpy()]))
+            casada = pos.notna().to_numpy()
+            i_ant = pos.to_numpy()[casada].astype("int64")
+        else:
+            casada = np.zeros(n, dtype=bool)
+            i_ant = np.zeros(0, dtype="int64")
+        self.en_ultima[:] = False
+        self.ultima[i_ant] = i
+        self.en_ultima[i_ant] = True
+        nuevas = [c for c in v['columnas'] if c not in self.columnas]
+        if nuevas:
+            # acumular da a las filas anteriores que casan el valor de la versión nueva
+            orden = np.argsort(i_ant, kind='stable')
+            valores = self._filas(i, np.flatnonzero(casada), nuevas)
+            for c in nuevas:
+                self.rellenos[c] = (i_ant[orden], valores.column(c).to_numpy(zero_copy_only=False)[orden])
+            self.columnas.extend(nuevas)
+        altas = np.flatnonzero(~casada)
+        self.segmentos.append((i, altas))
+        self.primera = np.concatenate([self.primera, np.full(len(altas), i, dtype=np.int64)])
+        self.ultima = np.concatenate([self.ultima, np.full(len(altas), i, dtype=np.int64)])
+        self.en_ultima = np.concatenate([self.en_ultima, np.ones(len(altas), dtype=bool)])
+
+    def meta(self):
+        """Las columnas de control como las añadía acumular (una versión) o tipos_como_csv (varias)."""
+        m = pd.DataFrame(index=pd.RangeIndex(self.filas))
+        if self.n_versiones == 1:
+            fecha = self.versiones[self.segmentos[0][0]]['fecha']
+            m["_primera_descarga"] = fecha
+            m["_ultima_descarga"] = fecha
+            m["_en_ultima_descarga"] = True
+        else:
+            fechas = np.array([v['fecha'] for v in self.versiones], dtype=object)
+            m["_primera_descarga"] = fechas[self.primera]
+            m["_ultima_descarga"] = fechas[self.ultima]
+            m["_en_ultima_descarga"] = self.en_ultima.copy()
+        return m
+
+
+def construir_registros(csv_path, carpeta):
+    """Registros de todas las versiones del CSV acumulados (comun.historico), en disco (Registros): lo
+    que daba acumular_versiones(versiones, leer_texto) o, con una sola versión, la lectura de siempre."""
+    vers = versiones_csv(csv_path)
+    reg = Registros(carpeta, len(vers))
+    if len(vers) == 1:
+        reg.acumular(reg.leer(*vers[0]), permitir_vacio=True)
+        return reg
+    cabecera = None
+    for ruta, fecha in vers:
+        i = reg.leer(ruta, fecha)
+        columnas = reg.versiones[i]['columnas']
+        if reg.versiones[i]['filas'] == 0 and reg.iniciado:
+            log(f"   ⚠️ Versión vacía ignorada (no se marca nada como retirado): {ruta.name}")
+            reg.descartar(i)
+            continue
+        faltan = [c for c in cabecera if c not in columnas] if cabecera is not None else []
+        if faltan:
+            nuevas = [c for c in columnas if c not in cabecera]
+            aviso = (f"{ruta.parent.name}/{ruta.name}: la cabecera cambia respecto a la versión anterior "
+                     f"(faltan {faltan}; nuevas {nuevas}); no se acumula: no se retira ni se duplica nada")
+            log(f"   ⚠️ REVISAR {aviso}")
+            REVISAR.append(aviso)
+            reg.descartar(i)
+            continue
+        reg.acumular(i, permitir_vacio=not reg.iniciado)
+        cabecera = list(columnas)
+    return reg
+
+
+def _tipar(reg, tmp_csv):
+    """Las columnas de datos con los tipos de la lectura de siempre: con una sola versión, la del CSV
+    (load_csv); con varias, la del texto acumulado escrito en tmp_csv (tipos_como_csv), o texto si esa
+    lectura no devuelve las mismas columnas y filas. Cada columna se infiere entera, como en la lectura de
+    una vez, con un CSV estrecho por columna (la columna y otra fija, para que una celda vacía no sea una
+    línea en blanco) y la misma lectura. Devuelve {columna: (pickle de la serie, dtype, si tiene algún
+    valor)}; las versiones guardadas ya no hacen falta y se borran."""
+    columnas = list(reg.columnas)
+    una = reg.n_versiones == 1
+    estrechos = [reg.carpeta / f'columna_{j}.csv' for j in range(len(columnas))]
+    # Los CSV estrechos los escribe Arrow (mucho más rápido que to_csv): entrecomilla todos los textos,
+    # y pandas lee igual un valor con comillas que sin ellas (mismos valores, mismos tipos)
+    esquema_estrecho = pa.schema([pa.field('_', pa.int8()), pa.field('v', pa.large_string())])
+    escritores, tmp, texto = [], None, False
+    try:
+        try:
+            for p in estrechos:
+                escritores.append(pacsv.CSVWriter(str(p), esquema_estrecho,
+                                                  write_options=pacsv.WriteOptions(quoting_style='needed')))
+            if not una:
+                tmp = open(tmp_csv, 'w', encoding='utf-8', newline='')
+            primero = True
+            for trozo in reg.trozos():
+                if tmp is not None:
+                    trozo.to_pandas().to_csv(tmp, header=primero, index=False)
+                cero = pa.array(np.zeros(trozo.num_rows, dtype=np.int8))
+                for j, c in enumerate(columnas):
+                    escritores[j].write_table(pa.table([cero, trozo.column(c)], schema=esquema_estrecho))
+                primero = False
+            if primero and tmp is not None:   # sin filas: solo la cabecera
+                pd.DataFrame(columns=columnas).to_csv(tmp, index=False)
+        finally:
+            for e in escritores:
+                e.close()
+            if tmp is not None:
+                tmp.close()
+        if una:
+            v = reg.versiones[reg.segmentos[0][0]]
+            fuente, sep, restaurar = v['origen'], v['sep'], not v['implicito']
+        else:
+            guardado = reg.carpeta / 'tmp.arrow'
+            columnas_tmp, lotes_tmp, _, sep = leer_version(tmp_csv, guardado)
+            guardado.unlink()
+            fuente, restaurar = tmp_csv, True
+            if list(columnas_tmp) != columnas or sum(lotes_tmp) != reg.filas:
+                log("   ⚠️ No se pudieron inferir los tipos: se guarda como texto")
+                texto = True
+        salida, numericas = {}, []
+        for j, c in enumerate(columnas):
+            if texto:
+                # tipos_como_csv deja el texto acumulado tal cual: str (object en las columnas que acumular
+                # añadió después)
+                partes = [t.column(c).to_pandas() for t in reg.trozos([c])]
+                serie = pd.concat(partes, ignore_index=True) if partes else pd.Series([], dtype=object)
+                if c not in reg.columnas_base:
+                    serie = serie.astype(object)
+            else:
+                serie = pd.read_csv(estrechos[j], encoding='utf-8', encoding_errors=ERRORES_UTF8, sep=',',
+                                    low_memory=False, on_bad_lines='warn').iloc[:, 1]
+                if pd.api.types.is_numeric_dtype(serie.dtype) and not pd.api.types.is_bool_dtype(serie.dtype):
+                    numericas.append(j)
+            estrechos[j].unlink()
+            ruta = reg.carpeta / f'tipada_{j}.pkl'
+            serie = serie.rename(c)
+            serie.to_pickle(ruta)
+            salida[c] = (ruta, serie.dtype, bool(serie.notna().any()))
+            del serie
+        if not texto and restaurar:
+            con_ceros = _texto_con_ceros(fuente, 'utf-8', sep, len(columnas), numericas, reg.filas)
+            for j, valores in con_ceros.items():
+                c = columnas[j]
+                serie = pd.Series(valores, name=c)
+                serie.to_pickle(salida[c][0])
+                salida[c] = (salida[c][0], serie.dtype, bool(serie.notna().any()))
+            if con_ceros:
+                log(f"   🔢 Guardadas como texto (ceros a la izquierda): {', '.join(columnas[j] for j in con_ceros)}")
+        return salida
+    finally:
+        Path(tmp_csv).unlink(missing_ok=True)
+        for p in estrechos:
+            p.unlink(missing_ok=True)
+        reg.cerrar()
+        for v in reg.versiones:
+            Path(v['ruta']).unlink(missing_ok=True)
+
+
+def _clave_por_trozos(clave, df):
+    """clave(df) por trozos de FILAS_POR_LOTE filas: las claves (clave_texto, uuid_publicacio) son fila a
+    fila y, de una vez, copian la tabla de la clave varias veces."""
+    if len(df) <= FILAS_POR_LOTE:
+        return clave(df)
+    return pd.concat([clave(df.iloc[a:a + FILAS_POR_LOTE]) for a in range(0, len(df), FILAS_POR_LOTE)])
+
+
+def _preparar_semilla(semilla, dtypes, columna, hay_datos):
+    """sembrar_release(df, *semilla) sin cargar df ni el Parquet publicado: la clave de la descarga sale de
+    sus columnas de la clave, la del publicado de las suyas, y cada columna del publicado se lee y se
+    armoniza (comun.historico._armonizar) por separado. Devuelve (filas del publicado que se añaden, ya
+    con _origen y _en_ultima_descarga, y las columnas de la salida en orden) o None si no se siembra (no
+    existe o le faltan columnas de la clave), con los avisos de siempre.
+
+    dtypes: {columna de df: dtype}; columna(c): la columna c de df entera; hay_datos(c):
+    si la columna c tiene algún valor en las filas descargadas (sembrar)."""
+    ruta, columnas_clave = semilla
+    columnas_clave, funcion = (columnas_clave, None) if isinstance(columnas_clave, list) else columnas_clave
+    clave = globals()[funcion] if funcion else (lambda d: clave_texto(d, columnas_clave))
+    ruta = Path(ruta)
+    if not ruta.exists():
+        log(f"   ⚠️ Sin semilla: no existe {ruta}")
+        return None
+    publicadas = list(pq.read_schema(ruta).empty_table().to_pandas().columns)
+    faltan = [c for c in columnas_clave if c not in dtypes or c not in publicadas]
+    if faltan:
+        log(f"   ⚠️ Semilla {ruta.name} sin sembrar: faltan columnas de la clave ({', '.join(faltan)})")
+        return None
+
+    nombre = '_clave_semilla'
+    clave_descarga = _clave_por_trozos(clave, pd.DataFrame({c: columna(c) for c in columnas_clave}))
+    clave_publicado = _clave_por_trozos(clave, pd.read_parquet(ruta, columns=columnas_clave))
+    nuevos_clave = clave_descarga.reset_index(drop=True).to_frame(nombre)
+    semilla_clave = clave_publicado.reset_index(drop=True).to_frame(nombre)
+    # sembrar arma la semilla con los tipos de la descarga (_armonizar solo mira sus tipos)
+    tipos_nuevos = dict(dtypes, **{nombre: clave_descarga.dtype})
+    modelo = pd.DataFrame({c: pd.Series([], dtype=d) for c, d in tipos_nuevos.items()})
+    armonizadas = {}
+
+    def publicada(c):
+        if c == nombre:
+            return semilla_clave[nombre]
+        if c not in armonizadas:
+            serie = pd.read_parquet(ruta, columns=[c]).reset_index(drop=True)
+            armonizadas.clear()   # una columna cada vez
+            armonizadas[c] = _armonizar(serie, modelo)[c]
+        return armonizadas[c]
+
+    excluir = set(COLUMNAS_META) | set(COLUMNAS_SEMILLA) | {nombre}
+    con_clave = publicadas + [nombre]
+    contenido = [c for c in con_clave if c in tipos_nuevos and c not in excluir and hay_datos(c)]
+
+    motivo = seleccionar_semilla(
+        nuevos_clave, semilla_clave,
+        lambda filas: pd.DataFrame({c: columna(c).loc[filas] for c in contenido}, index=pd.Index(filas)),
+        lambda filas: pd.DataFrame({c: publicada(c).loc[filas] for c in contenido}, index=pd.Index(filas)),
+        None)
+    elegidas = motivo == ANADIDA
+    anadidas = pd.DataFrame({c: publicada(c).loc[elegidas] for c in con_clave})
+    armonizadas.clear()
+    propio = anadidas["_origen"] if "_origen" in anadidas.columns else pd.Series(None, index=anadidas.index)
+    anadidas["_origen"] = propio.astype(object).where(propio.notna(), ORIGEN_SEMILLA)
+    anadidas["_en_ultima_descarga"] = False
+
+    salida = list(tipos_nuevos)
+    for c in ("_origen", "_en_ultima_descarga"):
+        if c not in salida:
+            salida.append(c)
+    columnas = [c for c in salida + [c for c in anadidas.columns if c not in salida] if c != nombre]
+
+    informe = informe_semilla(motivo, ORIGEN_SEMILLA, semilla_clave)
+    informe['ruta'] = str(ruta)
+    imprimir_informe_semilla(informe)
+    return anadidas.drop(columns=nombre), columnas
+
+
+def _columna_salida(c, descarga, anadidas, otra):
+    """La columna c de la salida, entera, con las operaciones de antes: sembrar (pd.concat de la descarga
+    y las filas añadidas, _en_ultima_descarga como bool) y texto_sin_nulos. descarga: la columna de df
+    (None si solo la tiene la semilla); anadidas: las filas añadidas de la semilla (None sin semilla);
+    otra: otra columna de df (_en_ultima_descarga).
+
+    Al lado que no tiene la columna se le deja otra, como en el concat de las tablas enteras: pandas
+    trata distinto una tabla sin columnas (sin filas, ni la mira) que una a la que le falta esa (cuenta
+    como nulos, y un bool o un entero cambian de tipo aunque no tenga filas)."""
+    if anadidas is not None:
+        izq = descarga.to_frame(c) if descarga is not None else otra.to_frame("_en_ultima_descarga")
+        der = anadidas[[c]] if c in anadidas.columns else anadidas[["_en_ultima_descarga"]]
+        serie = pd.concat([izq, der], ignore_index=True, sort=False)[c]
+        if c == "_en_ultima_descarga":
+            serie = serie.astype(bool)
+    else:
+        serie = descarga
+    if es_texto(serie) and c not in COLUMNAS_CONTROL:
+        serie = texto_sin_nulos(serie)
+    return serie
+
+
+def _escribir_parquet(columnas, carpeta, destino):
+    """Escribe las columnas [(ruta Arrow de una columna, metadatos de pandas de esa columna)] como un
+    Parquet por grupos de FILAS_POR_LOTE filas, con el esquema y los metadatos de pandas que daba
+    df.to_parquet(index=False, compression='snappy'), en un fichero aparte que sustituye a `destino` al
+    acabar (si la ejecución muere a medias, el Parquet anterior sigue entero). Devuelve las filas."""
+    mapas, tablas, campos, metadatos = [], [], [], None
+    try:
+        for ruta, meta in columnas:
+            mapas.append(pa.memory_map(str(ruta)))
+            tablas.append(pa.ipc.open_file(mapas[-1]).read_all())
+            campos.append(tablas[-1].schema.field(0))
+            meta = json.loads(meta)
+            if metadatos is None:
+                metadatos = meta
+            else:
+                metadatos['columns'].extend(meta['columns'])
+        esquema = pa.schema(campos, metadata={b'pandas': json.dumps(metadatos).encode('utf8')})
+        filas = tablas[0].num_rows if tablas else 0
+        parcial = carpeta / f'{destino.name}.parcial'
+        with pq.ParquetWriter(str(parcial), esquema, compression='snappy') as escritor:
+            if filas == 0:
+                escritor.write_table(esquema.empty_table())
+            for a in range(0, filas, FILAS_POR_LOTE):
+                escritor.write_table(pa.Table.from_arrays(
+                    [t.column(0).slice(a, FILAS_POR_LOTE) for t in tablas], schema=esquema))
+        os.replace(parcial, destino)
+        return filas
+    finally:
+        del tablas
+        for mapa in mapas:
+            mapa.close()
+
+
 def convert_to_parquet(input_path, output_path, descripcion, semilla=None):
     """Convierte un CSV a Parquet, con todas sus versiones y, si se da `semilla` (ruta del Parquet
-    publicado y columnas de la clave), las filas que el publicado tiene y la descarga ya no"""
+    publicado y columnas de la clave), las filas que el publicado tiene y la descarga ya no. Por trozos
+    (ver CONVERSIÓN POR TROZOS), con la salida que daba hacerlo todo en memoria."""
     log(f"\n📄 {descripcion}")
     log(f"   Input: {input_path.name}")
-    
-    # Cargar (todas las versiones del CSV)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df, n_versiones = construir_registros(input_path, output_path.with_name(output_path.name + '.csv.tmp'))
-    log(f"   📝 {len(df):,} registros, {len(df.columns)} columnas")
-    if n_versiones > 1:
-        retirados = int((~df['_en_ultima_descarga'].astype(bool)).sum())
-        log(f"   📜 {n_versiones} versiones del CSV; {retirados:,} registros ya no servidos (conservados)")
-    if semilla is not None:
-        df = sembrar_release(df, *semilla)
-    
-    # Optimizar tipos de datos
-    for col in df.columns:
-        # Convertir object a string para evitar errores de tipos mixtos
-        if es_texto(df[col]) and col not in COLUMNAS_CONTROL:
-            df[col] = texto_sin_nulos(df[col])
-    
-    # Crear directorio de salida
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Guardar
-    df.to_parquet(output_path, index=False, compression='snappy')
-    
+    carpeta = output_path.with_name(CARPETA_TROZOS.format(output_path.name))
+    shutil.rmtree(carpeta, ignore_errors=True)   # de una ejecución que murió a medias
+    carpeta.mkdir()
+    reg = None
+    try:
+        # Cargar (todas las versiones del CSV) y tipos
+        reg = construir_registros(input_path, carpeta)
+        tipadas = _tipar(reg, output_path.with_name(output_path.name + '.csv.tmp'))
+        meta = reg.meta()
+        n = reg.filas
+        log(f"   📝 {n:,} registros, {len(tipadas) + len(meta.columns)} columnas")
+        if reg.n_versiones > 1:
+            retirados = int((~meta['_en_ultima_descarga'].astype(bool)).sum())
+            log(f"   📜 {reg.n_versiones} versiones del CSV; {retirados:,} registros ya no servidos (conservados)")
+
+        dtypes = {c: d for c, (_, d, _) in tipadas.items()}
+        dtypes.update(meta.dtypes.to_dict())
+
+        def columna(c):
+            return meta[c] if c in meta.columns else pd.read_pickle(tipadas[c][0])
+
+        def hay_datos(c):
+            if "_origen" not in dtypes:
+                return tipadas[c][2] if c in tipadas else bool(meta[c].notna().any())
+            return bool(columna(c)[columna("_origen").isna().to_numpy()].notna().any())
+
+        anadidas, columnas = None, list(dtypes)
+        if semilla is not None:
+            sembrada = _preparar_semilla(semilla, dtypes, columna, hay_datos)
+            if sembrada is not None:
+                anadidas, columnas = sembrada
+
+        # Cada columna de la salida, entera y ya convertida a Arrow, a su fichero
+        salida = []
+        for j, c in enumerate(columnas):
+            descarga = columna(c) if c in dtypes else (
+                pd.Series([None] * n, dtype=object) if c == "_origen" else None)
+            serie = _columna_salida(c, descarga, anadidas, meta["_en_ultima_descarga"])
+            del descarga
+            tabla = pa.Table.from_pandas(serie.to_frame(c), preserve_index=False)
+            del serie
+            ruta = carpeta / f'salida_{j}.arrow'
+            with pa.ipc.new_file(str(ruta), tabla.schema) as escritor:
+                escritor.write_table(tabla)
+            salida.append((ruta, tabla.schema.metadata[b'pandas']))
+            del tabla
+            if c in tipadas:
+                Path(tipadas[c][0]).unlink()
+        total = _escribir_parquet(salida, carpeta, output_path)
+    finally:
+        if reg is not None:
+            reg.cerrar()
+        shutil.rmtree(carpeta, ignore_errors=True)
+
     size_csv = input_path.stat().st_size / 1024 / 1024
     size_parquet = output_path.stat().st_size / 1024 / 1024
     ratio = (1 - size_parquet / size_csv) * 100 if size_csv > 0 else 0
-    
+
     log(f"   💾 {output_path.name}: {size_parquet:.1f}MB (↓{ratio:.0f}% de {size_csv:.1f}MB)")
-    
-    return len(df), size_parquet
+
+    return total, size_parquet
 
 
 # Formatos que descarga ccaa_cataluna.py de Open Data BCN
