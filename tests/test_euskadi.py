@@ -932,11 +932,11 @@ def test_entrada_y_salida_de_la_consolidacion(monkeypatch, tmp_path):
 
 
 # ─────────────────────────────────────────────────────────────
-# Log con --salida: en el VPS el repo se monta en solo lectura
+# Log con --salida: en producción el repo se monta en solo lectura
 # ─────────────────────────────────────────────────────────────
 
 def _copia_en_solo_lectura(tmp_path, fichero):
-    """Copia el script a tmp/repo/Euskadi (que el test deja en solo lectura, como /repo en el VPS)
+    """Copia el script a tmp/repo/Euskadi (que el test deja en solo lectura, como el repo en producción)
     y lo carga capturando la llamada real a basicConfig. Devuelve (módulo, carpeta, el FileHandler
     que el script le pasa, con el formato que le pondría basicConfig)."""
     carpeta = tmp_path / "repo" / "Euskadi"
@@ -964,7 +964,7 @@ def test_log_va_a_la_salida_con_el_script_en_solo_lectura(tmp_path, red, fichero
     raiz.setLevel(logging.INFO)   # el nivel que pone el basicConfig real
     carpeta.chmod(0o555)
     try:
-        # Sin --salida falla como en el VPS: el primer mensaje no puede abrir el log (en Windows
+        # Sin --salida falla como en producción: el primer mensaje no puede abrir el log (en Windows
         # chmod no impide escribir y no hay geteuid; como root tampoco se puede comprobar)
         if os.name == "posix" and os.geteuid() != 0:
             with pytest.raises(PermissionError):

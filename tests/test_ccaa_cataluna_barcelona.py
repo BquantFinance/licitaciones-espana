@@ -56,7 +56,7 @@ def _menores(entrada, salida):
 
 def test_csv_cp1252_el_euro_y_las_comillas_no_llegan_como_controles_c1(tmp_path):
     """El 2015 de contratos menores está en CP1252: leído como latin-1, ' 1.830,20 € ' llegaba como
-    ' 1.830,20 \\x80 ' y 'D’INFORMATICA' como 'D\\x92INFORMATICA' (37.721 celdas en el VPS)."""
+    ' 1.830,20 \\x80 ' y 'D’INFORMATICA' como 'D\\x92INFORMATICA' (37.721 celdas en la descarga de producción)."""
     texto = ('Proveïdor,"Objecte del contracte"," Import adjudicat "\r\n'          # como el CSV real
              '"DISTRIBUIDORA D’INFORMATICA SL","“Ordinadors” – 3 unitats…"," 1.830,20 € "\r\n'
              '"Òmnium","Neteja • Sants"," 99,00 € "\r\n')
@@ -92,7 +92,7 @@ def _cp1252_entero(datos):
     return "".join(chr(b) if b in (0x81, 0x8D, 0x8F, 0x90, 0x9D) else bytes([b]).decode("cp1252") for b in datos)
 
 
-# Como 2018_menors.csv del VPS: cabecera con un salto de línea dentro de las comillas y texto catalán en
+# Como 2018_menors.csv de producción: cabecera con un salto de línea dentro de las comillas y texto catalán en
 # varias columnas (una lectura del fichero entero en CP1252 cambia todas)
 CABECERA_2018 = ('"Trimestre","Tipus ens","Òrgan contractant","Tipus Contracte     ","Data \nadjudicació",'
                  '"Proveïdor","NIF","Objecte del contracte","Import adjudicat","Durada"\r\n')
@@ -110,8 +110,8 @@ def test_un_byte_cp1252_en_un_utf8_no_cambia_el_resto_del_fichero(tmp_path, monk
     """Revisión de la PR #40 (simulación con el 2018_menors.csv real): una versión nueva igual a la
     anterior salvo la 'ó' de 'Contractació' escrita en CP1252 (0xF3) dentro del UTF-8 se leía entera en
     CP1252. Tres cabeceras cambiaban ('Ã’rgan contractant') y la acumulación daba 26.115 de las 39.192
-    filas por retiradas y las volvía a añadir con mojibake (en el ETL de la web, el fichero de 2018 pasaba
-    de 140,6 a 251,4 M€). Ahora solo ese byte se lee en CP1252: la versión nueva es la misma y no cambia
+    filas por retiradas y las volvía a añadir con mojibake (sumado, el fichero de 2018 pasaba de 140,6 a
+    251,4 M€). Ahora solo ese byte se lee en CP1252: la versión nueva es la misma y no cambia
     nada."""
     monkeypatch.setattr(cp, "REVISAR", [], raising=False)    # raising=False: corre también con el código anterior
     anterior = (CABECERA_2018 + FILAS_2018).encode("utf-8")
@@ -268,7 +268,7 @@ def _release(tmp_path):
 
 def test_semilla_del_perfil_anade_las_publicaciones_que_ya_no_se_sirven(tmp_path, monkeypatch):
     """El CSV del perfil es una ventana que el portal va cerrando: el release trae 6.120 publicaciones
-    que la primera descarga del VPS ya no. Se casan por el uuid del procedimiento (otra fase u otro
+    que la primera descarga de producción ya no. Se casan por el uuid del procedimiento (otra fase u otro
     idioma en la URL es la misma publicación); las filas sin uuid no se siembran."""
     _perfil(tmp_path)
     _recurso(tmp_path, "contratos_menores", "2019_menors.csv", "Expedient,Import\nE-1,10\n")

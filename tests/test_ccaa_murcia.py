@@ -494,7 +494,7 @@ def test_un_arreglo_de_lectura_llega_a_las_filas_ya_guardadas(portal, tmp_path, 
 
 # ---------------------------------------------------------------------------
 # CSV del exportador JSON de datosabiertos.carm.es/odata (líneas reales de los
-# crudos del VPS, 2026-09-28): comillas escapadas con barra, cortes de línea
+# crudos de producción, 2026-09-28): comillas escapadas con barra, cortes de línea
 # escritos como \n cada 80 caracteres y restos de la lista JSON al final
 # ---------------------------------------------------------------------------
 
@@ -601,7 +601,7 @@ def test_texto_sin_cortes(valor, esperado):
     assert M.texto_sin_cortes(valor) == esperado
 
 
-# Valores reales (crudos del VPS, 2026-09-28) con saltos de línea del texto dentro de la ventana de 80
+# Valores reales (crudos de producción, 2026-09-28) con saltos de línea del texto dentro de la ventana de 80
 # caracteres: el contador del exportador no se reinicia en ellos (cuentan uno). Contando cada línea por
 # separado salía lo que dice cada comentario.
 @pytest.mark.parametrize("valor, esperado", [
@@ -709,7 +709,7 @@ def test_comillas_con_barra_se_leen_aunque_haya_una_barra_suelta(tmp_path):
 def test_lector_del_exportador_lee_como_el_modulo_csv(texto, barra):
     """Sin barras ni relleno, _registros_json lee como el módulo csv (su docstring): así se leen los menores
     de 2018 (solo restos de la lista al final) y, con la barra decidida por '\\"', cualquier fichero que lo
-    traiga. No se pierde lo pegado tras una comilla de cierre ni el último campo vacío. Ningún crudo del VPS
+    traiga. No se pierde lo pegado tras una comilla de cierre ni el último campo vacío. Ningún crudo de producción
     tiene estos casos (comprobado): son la garantía de no perder texto con un fichero mal formado."""
     assert M._registros_json(texto, ",", barra, False)[0] == list(csv.reader(io.StringIO(texto)))
 
@@ -815,7 +815,7 @@ def test_exportador_json_de_punta_a_punta(portal, tmp_path):
 
 
 def test_una_barra_suelta_en_la_descarga_nueva_no_duplica_contratos(portal, tmp_path):
-    """Simulación del revisor con los crudos del VPS: contratosOD2023 vuelve a descargarse con una fila más que
+    """Simulación del revisor con los crudos de producción: contratosOD2023 vuelve a descargarse con una fila más que
     trae una barra suelta ('RD 390\\2021'). Antes esa barra devolvía la versión nueva entera al lector normal:
     los contratos con '\\"' cambiaban, la versión buena quedaba retirada y la corrupta vigente (33 contratos
     duplicados, 15.433 filas en vez de 15.400). Ahora las dos versiones se leen igual: nada se retira ni se

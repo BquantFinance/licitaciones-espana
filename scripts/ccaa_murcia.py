@@ -582,7 +582,7 @@ def _leer_csv_tolerante(ruta, sep, codificacion):
 # ----------------------------------------------------------------------------
 # CSV del exportador JSON de datosabiertos.carm.es/odata
 # ----------------------------------------------------------------------------
-# Medido en los crudos del VPS (descarga del 2026-09-28):
+# Medido en los crudos de la descarga de producción (2026-09-28):
 # - contratosOD 2019-2023 y CONTRA_ContratosMenores 2021-2022 escapan las comillas de dentro de un campo
 #   entrecomillado con una barra, como una cadena JSON ('"IES \"MENARGUEZ COSTA\", CEIP..."'). Un lector
 #   CSV normal cierra el campo en esa comilla: 44 contratos corridos, 38 a la derecha hasta

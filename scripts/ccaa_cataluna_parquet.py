@@ -209,7 +209,7 @@ CATEGORIAS_DISPONIBLES = sorted({categoria_csv(k) for k in ARCHIVOS})
 # Semilla (--semilla <carpeta de Catalunya del release v2026.02>): por Parquet, la clave estable con
 # la que se añaden las filas del publicado que no están en la descarga, con _origen='release
 # v2026.02' y _en_ultima_descarga=False (comun.historico.sembrar). Medido el 28-sep-2026 contra la
-# primera descarga del VPS:
+# primera descarga de producción:
 #   - RPC: 751.187 filas, sobre todo menores y liquidaciones de 2021 que la ventana móvil de 5 años ya
 #     no sirve. Con Exercici en la clave solo se repiten 4.754 del publicado.
 #   - PSCP: 85.397 filas de procedimientos que ya no se publican, por el uuid del procedimiento en la
@@ -230,7 +230,7 @@ SEMILLAS = {
         'Any', 'Trimestre', 'Departament/Ens', 'Descripció del contracte', 'Agrupació', 'Tipus de contracte'],
 }
 # Consolidaciones de Open Data Barcelona con semilla (parquet de destino → clave, como en SEMILLAS).
-# Medido el 29-sep-2026 contra la primera descarga del VPS: menores, contratistas, modificaciones y
+# Medido el 29-sep-2026 contra la primera descarga de producción: menores, contratistas, modificaciones y
 # resumen trimestral del release coinciden fila a fila con la descarga (0 filas que falten). El perfil
 # de contratante no: su CSV de la PSCP es una ventana que el portal va cerrando y el release trae
 # 6.120 publicaciones (7.411 filas, casi todas de 2018-2021) que ya no sirve. Se casan por el uuid del
@@ -263,7 +263,7 @@ COLUMNAS_CONTROL = set(COLUMNAS_META) | {'_origen'}
 # en CP1252) un UTF-8 con un carácter mal codificado se leía entero en CP1252, sus cabeceras cambiaban
 # ('Òrgan contractant' → 'Ã’rgan contractant') y la acumulación de versiones lo duplicaba (revisión de
 # la PR #40: 26.115 de las 39.192 filas de 2018 como retiradas y otra vez con mojibake). Medido en los 50
-# CSV del crudo del VPS (29-sep-2026): 45 son UTF-8 válido y en los 5 en CP1252 esta lectura da los
+# CSV del crudo de la descarga de producción (29-sep-2026): 45 son UTF-8 válido y en los 5 en CP1252 esta lectura da los
 # mismos caracteres que la del fichero entero en CP1252. Los 5 bytes que CP1252 deja sin asignar (0x81,
 # 0x8D, 0x8F, 0x90 y 0x9D) dan el carácter de control C1 del mismo valor, como en latin-1 y en el
 # 'windows-1252' de los navegadores (WHATWG): no se pierde ninguno.

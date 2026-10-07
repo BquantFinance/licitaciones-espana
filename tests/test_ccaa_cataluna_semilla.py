@@ -131,7 +131,7 @@ def test_main_con_semilla_inexistente_o_errores_sale_con_1(repo_cat, monkeypatch
 
 def test_pscp_se_siembra_por_el_uuid_del_procedimiento(tmp_path):
     """La URL de la PSCP cambia con cada fase (su último número) y entre /ca/ y /es/: casar por la
-    URL entera añadía fases antiguas de procedimientos que siguen publicados (102.180 en el VPS)."""
+    URL entera añadía fases antiguas de procedimientos que siguen publicados (102.180 en la descarga de producción)."""
     base = "https://contractaciopublica.cat/{}/detall-publicacio/{}/{}"
     a, b = "992d779c-6a90-5a7f-047e-a86a9ed3d999", "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
     df = _descarga({"enllac_publicacio": [base.format("ca", a, "300138374")], "fase_publicacio": ["Formalització"]})

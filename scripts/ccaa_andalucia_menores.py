@@ -127,15 +127,15 @@ Qué se descarga (una petición cada vez, con pausa):
 
 FUENTES
 -------
-Verificado en vivo desde el VPS el 2026-09-29 (confianza A):
+Verificado en vivo en la descarga de producción el 2026-09-29 (confianza A):
   - https://www.juntadeandalucia.es/datosabiertos/portal/api/3/action/package_search
     y package_show (404 con «Not Found Error» si el conjunto no existe).
   - 9 conjuntos, 2018-2026 (organización economia-hacienda-y-fondos-europeos, CC BY 4.0),
     con un CSV y un JSON cada uno: 768.647 registros (768.648 filas: uno va partido),
     544.898 del SAS. Descarga completa en 5 min 41 s (525 MB); el Parquet (78 MB), en
     32 s con 2,1 GB de memoria.
-Desde la nube de Claude Code www.juntadeandalucia.es corta la conexión: hay que
-ejecutarlo desde el VPS (o desde otra red con acceso).
+Desde algunas redes www.juntadeandalucia.es corta la conexión (pasó en el entorno de
+desarrollo): hay que ejecutarlo desde una red con acceso.
 =============================================================================
 """
 
