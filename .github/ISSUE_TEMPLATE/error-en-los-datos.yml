@@ -1,0 +1,62 @@
+name: Error en los datos
+description: Un valor que está mal, en la fuente o en nuestra lectura.
+title: "Error en los datos: <fuente>, <campo>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Los datos se publican **tal como los publica cada administración**. Si el valor está mal en la fuente, no se cambia: una vez verificado, entra en `calidad/errores_fuente.csv` con su evidencia y el valor corregido va en una columna aparte. Si el error es nuestro (el scraper lee mal), se trata como un bug.
+  - type: dropdown
+    id: origen
+    attributes:
+      label: ¿Dónde está el error?
+      options:
+        - En la fuente (el portal lo publica así)
+        - En nuestra lectura (el portal lo publica bien)
+        - No lo sé
+    validations:
+      required: true
+  - type: input
+    id: fuente
+    attributes:
+      label: Fuente
+      description: Portal o ZIP de la release (p. ej. `placsp`, `comunidad_madrid.zip`, `galicia`).
+    validations:
+      required: true
+  - type: input
+    id: id
+    attributes:
+      label: Identificador del registro
+      description: El `id`, la URL o el expediente que lo identifica en la fuente.
+    validations:
+      required: true
+  - type: input
+    id: campo
+    attributes:
+      label: Campo
+      description: Columna afectada (p. ej. `importe_adjudicacion`).
+    validations:
+      required: true
+  - type: input
+    id: valor_publicado
+    attributes:
+      label: Valor publicado
+    validations:
+      required: true
+  - type: input
+    id: valor_probable
+    attributes:
+      label: Valor probable
+      description: El valor correcto, si lo sabes.
+  - type: textarea
+    id: evidencia
+    attributes:
+      label: Evidencia
+      description: Por qué crees que es un error y dónde se ve (enlace al anuncio, otro campo del mismo registro, la plataforma de origen…).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Release o commit
+      description: Dónde lo has visto (p. ej. `v2026.10`, o el commit si ejecutaste el scraper).

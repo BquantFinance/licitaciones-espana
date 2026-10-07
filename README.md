@@ -1387,13 +1387,12 @@ pip install pytest && python -m pytest
 
 ## 📄 Licencia
 
-Datos públicos del Gobierno de España, Unión Europea y CCAA.
+- **Código:** [MIT](LICENSE).
+- **Lo que añade este proyecto a los datos** (columnas `_…`, versiones de la PLACSP, valores `<campo>_corregido`, indicadores de calidad, `persona_hash`…): [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es).
+- **Los datos de origen** conservan la licencia o las condiciones de reutilización de cada portal, casi siempre con la obligación de citar la fuente. [`DATA_LICENSE.md`](DATA_LICENSE.md) las recoge fuente a fuente, con el enlace a cada una, e incluye los portales que no publican licencia para sus datos.
+- **Cómo citar:** [`CITATION.cff`](CITATION.cff) (en GitHub, «Cite this repository»).
 
-- España: [Licencia de Reutilización](https://datos.gob.es/es/aviso-legal)
-- Galicia: [Ley 1/2016 de transparencia y buen gobierno de Galicia](https://www.contratosdegalicia.gal)
-- Asturias: [Portal de Transparencia del Principado de Asturias](https://sede.asturias.es/)
-- TED: [EU Open Data Licence](https://data.europa.eu/eli/dec_impl/2011/833/oj)
-- BORME: [Condiciones de Reutilización BOE](https://www.boe.es/informacion/aviso_legal/index.php#reutilizacion) — Fuente: Agencia Estatal Boletín Oficial del Estado
+Para contribuir, ver [`CONTRIBUTING.md`](CONTRIBUTING.md). También están el [código de conducta](CODE_OF_CONDUCT.md), cómo avisar de un problema de [seguridad](SECURITY.md) y los [cambios de cada versión](CHANGELOG.md).
 
 ---
 

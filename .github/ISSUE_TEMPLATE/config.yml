@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Vulnerabilidad o datos personales publicados por error
+    url: https://github.com/BquantFinance/licitaciones-espana/security/policy
+    about: No lo avises en un issue público. Sigue SECURITY.md.

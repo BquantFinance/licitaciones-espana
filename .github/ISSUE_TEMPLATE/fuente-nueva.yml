@@ -1,0 +1,60 @@
+name: Fuente nueva
+description: Proponer un portal o un conjunto de datos de contratación pública que aún no está.
+title: "Fuente nueva: <organismo o portal>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Antes de abrirlo, mira `docs/COBERTURA.md`: recoge lo que ya se ha revisado por comunidad, y muchas administraciones ya publican en la PLACSP.
+  - type: input
+    id: organismo
+    attributes:
+      label: Organismo
+      description: Quién publica (comunidad, ayuntamiento, universidad…).
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: URL de los datos
+      description: Descarga, API o catálogo de datos abiertos.
+    validations:
+      required: true
+  - type: input
+    id: formato
+    attributes:
+      label: Formato
+      description: CSV, XLSX, JSON, API, HTML, PDF…
+  - type: input
+    id: periodo
+    attributes:
+      label: Periodo
+      description: Años que cubre y cada cuánto se actualiza.
+  - type: dropdown
+    id: menores
+    attributes:
+      label: ¿Incluye contratos menores?
+      options:
+        - Sí
+        - "No"
+        - No lo sé
+  - type: input
+    id: licencia
+    attributes:
+      label: Condiciones de reutilización
+      description: Enlace al aviso legal o a la licencia del portal.
+  - type: dropdown
+    id: placsp
+    attributes:
+      label: ¿Están ya en la PLACSP?
+      options:
+        - "No"
+        - En parte
+        - Sí
+        - No lo sé
+  - type: textarea
+    id: notas
+    attributes:
+      label: Notas
+      description: Volumen aproximado, si trae NIF del adjudicatario e importes, límites de la API…
