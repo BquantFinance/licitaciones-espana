@@ -179,7 +179,7 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     contratos e importe total) no son registros y no se cargan.
 Otras fuentes conocidas NO incorporadas (inventario del 2026-09-27): Móstoles
 (PDF mensual 2018-), Alcalá de Henares (XLSX 2024 pasado de un informe
-contable en PDF), A Coruña (XLS/ODS trimestral; 403 por ASN desde la nube).
+contable en PDF), A Coruña (XLS/ODS trimestral; 403 por ASN desde el entorno de desarrollo).
 VERIFICAR EN VIVO:
   - Que las páginas mantienen su estructura (si una lista sale vacía es un
     error y no se retira nada).

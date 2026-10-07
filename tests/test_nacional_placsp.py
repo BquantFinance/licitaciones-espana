@@ -1872,7 +1872,7 @@ class TestNombreFijo:
     """Con el rango completo la salida tiene un nombre fijo (licitaciones_completo...). Antes llevaba el
     año en curso (licitaciones_completo_2012_2026): en enero se escribían ficheros nuevos, la cadena de
     versiones de _historico/ se cortaba, la salida del año anterior se quedaba congelada en la carpeta y
-    el ETL de la web, que la lee por su nombre, seguía con ella. El nombre con años queda como enlace."""
+    quien la lee por su nombre seguía con ella. El nombre con años queda como enlace."""
     P = "licitacionesPerfilesContratanteCompleto3_"
     L1 = _xml("urn:L1", "2024-01-15T10:00:00+01:00", "PUB", lotes=1)
     L2 = _xml("urn:L2", "2024-03-01T00:00:00Z", "PUB", lotes=1)
@@ -1909,7 +1909,7 @@ class TestNombreFijo:
 
     def test_la_salida_con_anos_pasa_al_nombre_fijo_y_la_cadena_de_versiones_sigue(self, base):
         salida = base / "salida"
-        # La salida de antes: ficheros reales con el nombre con años (la del VPS del 29-sep-2026)
+        # La salida de antes: ficheros reales con el nombre con años (la de producción del 29-sep-2026)
         self._zip(base, [self.L1])
         self._exportar(base, "licitaciones_completo_2012_2026", csv=True)
         antes = pd.read_parquet(salida / "licitaciones_completo_2012_2026.parquet")
@@ -2029,8 +2029,8 @@ class TestNombreFijo:
     def test_la_salida_de_un_ano_anterior_pasa_al_nombre_fijo_con_su_historia(self, base):
         """La primera ejecución con el nombre fijo llega en enero de 2027: antes solo se miraba el nombre
         con años del año en curso (2012_2027), el fijo empezaba como «nuevo», la cadena de versiones se
-        cortaba y los 8 ficheros reales de 2012_2026 se quedaban congelados (en el VPS, 6,2 GB duplicados)
-        mientras el ETL de la web seguía leyéndolos. Ahora el más reciente de cualquier año pasa al fijo con
+        cortaba y los 8 ficheros reales de 2012_2026 se quedaban congelados (en producción, 6,2 GB duplicados)
+        mientras quien los lee por su nombre seguía leyéndolos. Ahora el más reciente de cualquier año pasa al fijo con
         su historia de _historico/ y todos los nombres con años son enlaces."""
         salida = base / "salida"
         self._zip(base, [self.L1])

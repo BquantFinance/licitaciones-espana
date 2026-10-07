@@ -165,7 +165,7 @@ FUENTES (verificado en vivo el 2026-09-27)
      botones que llevan a estos paquetes. No está en el 1143.
 
 Otras fuentes valencianas revisadas (2026-09-27), no incorporadas:
-  - Ayuntamiento de Elche: transparencia.elche.es corta la conexión desde la nube;
+  - Ayuntamiento de Elche: transparencia.elche.es corta la conexión desde el entorno de desarrollo;
     www.elche.es solo remite al perfil del contratante de su sede electrónica.
   - Ajuntament de Castelló: www.castello.es corta la conexión;
     transparencia.castello.es (Govern Obert) solo tiene fichas de taxonomía.

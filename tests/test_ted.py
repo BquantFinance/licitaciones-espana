@@ -2062,8 +2062,7 @@ def test_nif_con_los_textos_que_pandas_leia_como_nulos(tmp_path):
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  XML eForms: una fila por oferta ganadora de cada resultado de lote
-#  (fallos medidos por el ETL de la web, docs/etl_v2/grupo4.md del repo de la web,
-#  y revisión de la PR #45)
+#  (fallos medidos al usar los datos y revisión de la PR #45)
 # ═══════════════════════════════════════════════════════════════════════════
 
 FIX_EFORMS = REPO_DIR / "tests" / "fixtures" / "ted_eforms"

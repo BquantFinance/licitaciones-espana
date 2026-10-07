@@ -1,8 +1,8 @@
 # Regeneración de la PLACSP y de la calidad para el issue #6 (2026-09-27)
 
-Regeneración completa del conjunto nacional (PLACSP) con el código corregido de esta rama y con `--semilla` de `v2026.02`, más el cruce con TED y los 20 indicadores de calidad. La pidió el propietario para el issue #6, en un release en **borrador** que no toca `v2026.02`.
+> **Documento histórico.** Describe una regeneración de prueba del 2026-09-27 que no se publicó. Los datos regenerados se publicaron después, con descargas más recientes, en la release v2026.10. Las cifras de aquí sirven para contrastar una regeneración equivalente (§6).
 
-> **No se ha publicado.** Esta sesión de Claude Code en la nube no puede crear releases (403: *"Creating, editing, or deleting releases is not permitted for this session type"*) ni tiene `git lfs`. Los ficheros solo existieron en el contenedor. Para publicarlos hay que repetirlo en la máquina del propietario (§6). Las cifras de este documento sirven para verificar ese resultado.
+Regeneración completa del conjunto nacional (PLACSP) con el código corregido de entonces y con `--semilla` de `v2026.02`, más el cruce con TED y los 20 indicadores de calidad. Se hizo para el issue #6, como release en **borrador** que no tocaba `v2026.02`.
 
 ## 1. Resumen
 
@@ -44,7 +44,7 @@ Coincide con la regeneración independiente de la PR #24: 4.383.029 cambios de 8
   - Por motivo: `CERRADA` 389.204, `ANULADA` 16.883 y sin motivo 73.377.
   - En 470.057 de las 470.305 marcas no repetidas, la licitación tiene alguna versión en la tabla principal. De las otras 248 solo queda la marca.
   - La agregación de 2024 es un caso extremo: 227.716 marcas de borrado frente a 242.265 entradas.
-  - Para el modelo antifraude, una licitación anulada o retirada es información, no ruido.
+  - Para un análisis antifraude, una licitación anulada o retirada es información, no ruido.
 
 ## 3. Contraste con `v2026.02` y con la PR #24
 
@@ -53,7 +53,7 @@ Coincide con la regeneración independiente de la PR #24: 4.383.029 cambios de 8
 - Los 39 mensuales no existen ya: 0 filas frente a 16.543-70.554 cada uno.
 - `CPM_SectorPublico_2026` y `EMP_SectorPublico_2026` han crecido: 548→930 y 317→3.163.
 
-**Por versión** (`herramientas/.../comparar_por_version.py`). Se une por `id` + `fecha_updated` sin mirar el fichero, y solo con claves únicas y con fecha en los dos lados:
+**Por versión** (con un script de contraste que no está en el repositorio). Se une por `id` + `fecha_updated` sin mirar el fichero, y solo con claves únicas y con fecha en los dos lados:
 
 | | Esta regeneración | PR #24 (@686f6c61) |
 |---|---|---|
@@ -132,7 +132,7 @@ Coincide con la regeneración independiente de la PR #24: 4.383.029 cambios de 8
   - No encontrados por letra del NIF: B (SL) 49,6 % y A (SA) 42,0 %.
   - En las entidades que no se inscriben en el Registro Mercantil pasa del 95 %: G (asociaciones y fundaciones), F (cooperativas), Q (organismos públicos), U (UTE), J (sociedades civiles), E (comunidades de bienes), N (entidades extranjeras) y V.
   - También D (comanditarias), con un 98,6 %, y W (establecimientos de no residentes), con un 71,7 %.
-  - Para el modelo antifraude conviene leerlo solo en A y B. Aun así, la mitad sin encontrar apunta a nombres que no casan más que a empresas inexistentes.
+  - En un análisis antifraude conviene leerlo solo en A y B. Aun así, la mitad sin encontrar apunta a nombres que no casan más que a empresas inexistentes.
 
 ### Añadido después: INT-FIA-12 e importes corregidos (issue #22)
 
@@ -160,15 +160,11 @@ La tabla anterior es anterior a los dos. Medidos después sobre la misma PLACSP 
 
 - La calidad y el cruce TED se calculan sobre la **última versión** de cada licitación, como hace el módulo de calidad. Las versiones anteriores están en la principal, marcadas con `es_ultima_version = False`.
 - El snapshot de TED llega a 2025, y 2026 queda sin evaluar. El BORME es el del repo, así que las empresas inscritas después no cuentan.
-- **Reproducir en la máquina del propietario** con los scripts de la sesión del 2026-09-27 (no publicados):
-  1. `descargar.sh`: los 45 ZIP. Hay que comprobar los hashes del anexo; si la PLACSP ha actualizado algún ZIP, cambian y hay más entradas.
-  2. `procesar.sh`: `nacional/licitaciones.py` con `--semilla` de `v2026.02`. Pide unos 6 GB de RAM y ~15 GB de disco con los ZIP.
-  3. `cadena2.sh`:
-     - `reducir.py` y `subconjunto.py`, porque el cruce TED con las 55 columnas pasaba de 13 GB.
-     - `cruce_ted.py` y la calidad.
-     - `comparar_publicado.py` frente a `v2026.02`.
-  4. `comparar_por_version.py`: el contraste del §3. Las cifras deben coincidir con las de este documento, o superarlas si hay ZIP nuevos.
-  5. `publicar_release.py` con un token del propietario: release en borrador, con las notas de `notas_release.md`.
+- **Reproducir:**
+  1. Descargar los 45 ZIP de la PLACSP y comprobar los hashes del anexo. Si la PLACSP ha actualizado algún ZIP, cambian y hay más entradas.
+  2. `nacional/licitaciones.py` con `--semilla` de `v2026.02` (el comando del §2). Pide unos 6 GB de RAM y ~15 GB de disco con los ZIP.
+  3. El cruce con TED (`ted/run_ted_crossvalidation.py`) y la calidad (`calidad/calidad_licitaciones.py`). Con las 55 columnas, el cruce TED pasaba de 13 GB: conviene reducir antes la tabla a las columnas que usa.
+  4. El contraste del §3, por versión (`id` + `fecha_updated`). Las cifras deben coincidir con las de este documento, o superarlas si hay ZIP nuevos.
 
 ## Anexo: ZIP leídos (descargados el 2026-09-27)
 

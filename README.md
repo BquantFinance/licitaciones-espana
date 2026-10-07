@@ -569,7 +569,7 @@ El scraper escribe `licitaciones_completo.parquet/.csv`, con una fila por entrad
 python nacional/licitaciones.py --output-dir <salida> --deshacer-nombre-fijo
 ```
 
-Cada tabla vuelve a `licitaciones_completo_2012_<año en curso>`, sin copiarla y con su historia de `_historico/` (el código anterior sigue la misma cadena de versiones), y se quitan los enlaces con años. Si algo lee ya el nombre fijo (p.ej. el ETL de la web), hay que volver a apuntarlo al nombre con años.
+Cada tabla vuelve a `licitaciones_completo_2012_<año en curso>`, sin copiarla y con su historia de `_historico/` (el código anterior sigue la misma cadena de versiones), y se quitan los enlaces con años. Si algo lee ya el nombre fijo (p. ej. un ETL), hay que volver a apuntarlo al nombre con años.
 
 ### Campos principales
 
@@ -662,14 +662,14 @@ Dataset nuevo con **3.024.000 filas** de contratos menores del sector público c
 **Memoria.** `ccaa_cataluna_parquet.py` no carga los CSV enteros: lee cada versión por trozos y la guarda en una carpeta temporal junto al parquet (`.<parquet>.trozos`, que se borra al acabar), decide la acumulación con las huellas de las filas, infiere los tipos columna a columna y escribe el parquet por grupos de filas, en un fichero aparte que solo sustituye al anterior al terminar. Con las tres versiones de la PSCP (2,5 GB cada una) el pico baja de 15,2 a 3,6 GiB, con la misma salida fila a fila (`tests/test_ccaa_cataluna_trozos.py`).
 
 **Semilla del release (`--semilla`).** Lo que salió de la ventana antes de la primera descarga solo está en el release v2026.02. `ccaa_cataluna_parquet.py --semilla <carpeta catalunya del release>` añade las filas del publicado cuya clave ya no está en la descarga, con `_origen='release v2026.02'` y `_en_ultima_descarga=False` (claves en `SEMILLAS`).
-- Medido el 28-sep-2026 frente a la primera descarga del VPS:
+- Medido el 28-sep-2026 frente a la primera descarga de producción:
   - RPC: 751.187 filas, sobre todo menores y liquidaciones de 2021.
   - PSCP: 85.397, de procedimientos que ya no se publican. La clave es el uuid del procedimiento en la URL: la URL entera cambia con cada fase y entre `/ca/` y `/es/`.
   - Fase de ejecución: 9.047.
   - Contratación programada: 5.095.
 - Adjudicaciones de la Generalitat, COVID y el Tribunal coinciden con el publicado.
 
-**Solo algunas categorías (`--categorias`).** `ccaa_cataluna.py` y `ccaa_cataluna_parquet.py` aceptan `--categorias contratacion,subvenciones,...` (por defecto, todas). Open Data Barcelona va con `contratacion`. buscalicitaciones.com solo usa `contratacion`: las concesiones RAISC pesan 19 GB por descarga.
+**Solo algunas categorías (`--categorias`).** `ccaa_cataluna.py` y `ccaa_cataluna_parquet.py` aceptan `--categorias contratacion,subvenciones,...` (por defecto, todas). Open Data Barcelona va con `contratacion`. La descarga de producción solo usa `contratacion`: las concesiones RAISC pesan 19 GB por descarga.
 
 ---
 
@@ -749,7 +749,7 @@ El scraper sigue una arquitectura **API-first** con múltiples capas de fallback
 
 Datos del portal [Dades Obertes GVA](https://dadesobertes.gva.es) (CKAN API).
 
-`ccaa_valencia.py` y `ccaa_valencia_parquet.py` aceptan `--categorias contratacion,...` (por defecto, todas); el VPS de buscalicitaciones.com solo pide `contratacion`.
+`ccaa_valencia.py` y `ccaa_valencia_parquet.py` aceptan `--categorias contratacion,...` (por defecto, todas); la descarga de producción solo pide `contratacion`.
 
 | Categoría | Archivos | Registros | Contenido |
 |-----------|----------|-----------|-----------|
@@ -832,7 +832,7 @@ scripts/
 **Sin sesgo del superviviente.**
 - Cada descarga se guarda tal cual en `raw/` (`guardar_version`).
 - El Parquet se construye con `acumular` sobre la salida anterior. Lo que el portal retira o cambia se conserva con `_en_ultima_descarga=False`. Solo se retira lo que seguro cae en una consulta completa: con el tope de 10.000 o una paginación cortada no se retira nada.
-- **Registro = (`portalGestor`, `idExpediente`).** El índice junta dos numeraciones que comparten ids (4.402-13.890 y 400.000-425.471, de 2021-2022); `portalGestor` va en `campos_extra_json`. Deduplicar por el id solo perdió 18.453 menores y 34 licitaciones en la primera descarga del VPS (29-sep-2026) y dio por retiradas 5.030 licitaciones.
+- **Registro = (`portalGestor`, `idExpediente`).** El índice junta dos numeraciones que comparten ids (4.402-13.890 y 400.000-425.471, de 2021-2022); `portalGestor` va en `campos_extra_json`. Deduplicar por el id solo perdió 18.453 menores y 34 licitaciones en la primera descarga de producción (29-sep-2026) y dio por retiradas 5.030 licitaciones.
 - `--semilla <parquet publicado>` añade las filas del publicado que no están en la salida y que una descarga de su alcance ha dejado de traer. Primero se mira si están y después el ámbito. Fuera de los ids compartidos basta el `id_expediente`; en ellos, el mismo id y nº de expediente, la misma fila, o el mismo id, perfil, título e importe (el nº cambia a veces). Una descarga del código anterior no cuenta como releída en los ids compartidos.
 - `procesar` regenera las salidas sin red. `--perfil` y `--anio` descargan una parte, y solo esa parte puede marcar retiradas.
 - Si la salida por defecto es aún un puntero Git LFS sin descargar, el script se niega a sobrescribirla. En ese caso usa `--salida` o baja antes el fichero.
@@ -851,7 +851,7 @@ scripts/
 | Otros | forma_presentacion, cofinanciado_ue, subasta_electronica, sistema_racionalizacion, cpv, medios_publicacion, num_lotes, num_anuncios |
 | Detalle completo (JSON) | adjudicaciones_json, lotes_json, anuncios_json, campos_extra_json (con `portalGestor`) |
 
-> **Columnas planas de la adjudicación.** `adjudicatario_nif`, `importe_adjudicacion` e `importe_adjudicacion_iva` son la **primera adjudicación de primer nivel tal como la sirve el portal**, sea cual sea su resultado (`codigoResultado` AWARD, NOAWA —desierta—, RESIGN, MISES; una no adjudicada suele traer 0 o el presupuesto), y no miran los lotes: en un expediente con lotes están vacías (sus adjudicaciones van en `lotes_json[].adjudicacion`). Para sumar lo adjudicado hay que leer `adjudicaciones_json` y `lotes_json` (resultado AWARD, sin la copia de formalización), como hace el ETL de buscalicitaciones.com. `fecha_publicacion` es a menudo una publicación posterior: la primera es `anuncio_primera_fecha`. `url_detalle` lleva solo el `idExpediente`, que en los ids compartidos no dice de qué numeración es.
+> **Columnas planas de la adjudicación.** `adjudicatario_nif`, `importe_adjudicacion` e `importe_adjudicacion_iva` son la **primera adjudicación de primer nivel tal como la sirve el portal**, sea cual sea su resultado (`codigoResultado` AWARD, NOAWA —desierta—, RESIGN, MISES; una no adjudicada suele traer 0 o el presupuesto), y no miran los lotes: en un expediente con lotes están vacías (sus adjudicaciones van en `lotes_json[].adjudicacion`). Para sumar lo adjudicado hay que leer `adjudicaciones_json` y `lotes_json` (resultado AWARD, sin la copia de formalización). `fecha_publicacion` es a menudo una publicación posterior: la primera es `anuncio_primera_fecha`. `url_detalle` lleva solo el `idExpediente`, que en los ids compartidos no dice de qué numeración es.
 
 ### Estrategia de descarga
 
@@ -1072,7 +1072,7 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
 
 **Barrido temporal CM**: Ventanas de 3 meses desde la fecha actual hasta 2000-01-01. El servidor reporta `recordsTotal` global (ignorando el filtro de fecha), pero los datos devueltos sí están filtrados. Deduplicación por `(id, _tipo)` para eliminar solapamientos entre ventanas.
 
-**Orden de las páginas**: por `id`, único en cada listado. Ordenadas por `publicado` (el orden del navegador), los empates salían en otro orden en cada página: la primera descarga del VPS (29-sep-2026) dejó 45 ventanas de CM incompletas y 989 menores sin descargar. Con el orden por `id` las 45 llegan completas (19.364 de 19.364, medido en vivo). Una ventana o un listado de LIC que no llega completo se repite hasta dos veces antes de darlo por incompleto.
+**Orden de las páginas**: por `id`, único en cada listado. Ordenadas por `publicado` (el orden del navegador), los empates salían en otro orden en cada página: la primera descarga de producción (29-sep-2026) dejó 45 ventanas de CM incompletas y 989 menores sin descargar. Con el orden por `id` las 45 llegan completas (19.364 de 19.364, medido en vivo). Una ventana o un listado de LIC que no llega completo se repite hasta dos veces antes de darlo por incompleto.
 
 **Detalle HTML real**: El portal no expone un endpoint JSON útil para la ficha; los campos adicionales salen de `POST /licitacion`. El scraper hace un segundo paso de enriquecimiento HTML para `LIC` y `CM`.
 
@@ -1435,7 +1435,7 @@ Datos públicos del Gobierno de España, Unión Europea y CCAA.
 - [x] La Rioja: `scripts/ccaa_la_rioja.py`, el CSV anual de menores del Gobierno (2018-2026, 350.967 filas, con NIF salvo personas físicas enmascaradas), verificado en vivo el 2026-09-28
 - [x] Menores valencianos fuera del REGCON: `scripts/ccaa_valencia_menores.py` (Universitat de València, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV; 1,43 M filas 2015-2026), verificado en vivo el 2026-09-28
 - [x] Menores de 8 ayuntamientos grandes con poco o nada en el 1143: `scripts/municipios_menores.py` (Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife; 289.401 filas 2015-2026), verificado en vivo el 2026-09-28
-- [x] Andalucía, menores de la Junta con el SAS entero: `scripts/ccaa_andalucia_menores.py`, los CSV «Contratación Menor en {año}» del CKAN de la Junta (2018-2026, 768.647 registros, 544.898 del SAS, NIF válido en el 98,4 %), verificado desde el VPS el 2026-09-29. Cubre los ~41K menores del SAS que el buscador no alcanza; las dos fuentes se complementan (docs/COBERTURA.md §5.2)
+- [x] Andalucía, menores de la Junta con el SAS entero: `scripts/ccaa_andalucia_menores.py`, los CSV «Contratación Menor en {año}» del CKAN de la Junta (2018-2026, 768.647 registros, 544.898 del SAS, NIF válido en el 98,4 %), verificado en la descarga de producción el 2026-09-29. Cubre los ~41K menores del SAS que el buscador no alcanza; las dos fuentes se complementan (docs/COBERTURA.md §5.2)
 - [x] Castilla-La Mancha: `scripts/ccaa_castilla_la_mancha.py`, los ficheros de transparencia de la Junta (menores, caja pagadora, SESCAM por línea de factura, sector público 2015-2018) y la UCLM 2017-2026, verificado en vivo el 2026-09-28. Los RAR necesitan `rarfile` con `unrar` o `libarchive-c` (Universitat de València, Ajuntament de València, Diputación de Alicante): scrapers en desarrollo
 - [x] Canarias: `scripts/ccaa_canarias.py` (CSV de contratos del Gobierno, que es su PLACSP; Las Palmas de GC 2016-2026 y Cabildo de Tenerife 2019-2025 por las API de sus portales; resúmenes del SCS y de los departamentos), verificado en vivo el 2026-09-30. El SCS solo publica totales: 89.340 menores en 2025 y ~1.500 contrato a contrato (docs/COBERTURA.md §5.2)
 - [ ] Cantabria, Illes Balears, Ceuta y Melilla

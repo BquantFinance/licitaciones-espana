@@ -519,7 +519,7 @@ def test_descargar_reintenta_con_backoff(web, tmp_path):
 
 def test_descargar_url_http_prueba_primero_https(web, tmp_path):
     # El CKAN da enlaces http:// de servidores que sirven https (las series de
-    # menores 2024-2025 del Gobierno): el proxy de la nube rechaza HTTP plano (403)
+    # menores 2024-2025 del Gobierno): algún proxy rechaza HTTP plano (403)
     http = "http://serviciosciudadano.aragon.es/cgi-bin/AODB/BRSCGI?CMD=VERLST&EJER=2025"
     web.poner(http, Respuesta(403, b"<html>Forbidden</html>"))
     web.poner("https" + http[4:], b"a;b\n1;2\n")

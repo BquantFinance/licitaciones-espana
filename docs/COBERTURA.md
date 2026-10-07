@@ -6,14 +6,14 @@ Estado a 2026-09. Confianza de cada fuente: **A** = confirmada en página oficia
 
 ## 0. Contratos menores: qué tenemos (medición del 2026-09-27)
 
-Objetivo del propietario: el 100 % de los contratos menores (LCSP art. 118 y 63.4) para un modelo antifraude.
+Objetivo: el 100 % de los contratos menores publicados (LCSP art. 118 y 63.4).
 
 **Método.**
 - **PLACSP:** contratos menores distintos (un `id`) del feed 1143 en `licitaciones_espana.parquet` (v2026.02), con año de adjudicación 2018-2025.
   - Región: la del NUTS de ejecución, presente en el 100 % de las filas.
   - Tipo de órgano: el prefijo del DIR3 del órgano, presente en el 77,5 % (A = autonómica, L01 = ayuntamiento, L02/L03 = diputación, cabildo o consell, E = Estado, U = universidad).
 - **Fuentes regionales:** contratos distintos por su clave en cada fuente.
-- Scripts: `scratchpad/cobertura/medir_placsp.py` y `contar_regionales.py`, de la sesión del 2026-09-27.
+- Los scripts de esta medición (2026-09-27) no están en el repositorio.
 
 **PLACSP 1143 por comunidad y tipo de órgano (2018-2025):**
 
@@ -67,7 +67,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Canarias | Ayuntamiento de Las Palmas de GC, API de transparencia (desde 2018, todos en el 1143; 2016: 1.643 y 2017: 1.640, no; `ccaa_canarias.py`) | 1.359 | 951 | 899 | 1.058 | 1.040 | 619 | 655 | 632 |
 | Canarias | Cabildo de Tenerife, API de transparencia (sin NIF; unos dos tercios no casan con el 1143 por el objeto; `ccaa_canarias.py`) | – | 40 | 7 | 50 | 22 | 1.823 | 2.425 | 2.629 |
 
-### 0.1 Veredicto (2026-09-27, noche)
+### 0.1 Veredicto (2026-09-27)
 
 **No hay cobertura del 100 %: estimamos el 55-65 % de los contratos menores publicados.**
 - Recogemos ~2,0-2,2 millones de menores al año. En 2024:
@@ -89,26 +89,26 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
   - Asturias: 20 mil frente a 16 mil.
   - Catalunya: la Generalitat en la PSCP frente a 141 mil.
 
-**Por comunidad.** "Cobertura" es la estimación de los menores publicados que tenemos; "tras lo en curso" incluye los scrapers y descargas de esta sesión.
+**Por comunidad.** "Cobertura" es la estimación de los menores publicados que tenemos; "tras lo en curso" incluye los scrapers y descargas en curso en esa fecha.
 
 | CCAA | Cobertura hoy | Tras lo en curso | NIF | Huecos que quedan |
 |---|---|---|---|---|
 | Catalunya | ~95 % dentro de la ventana del RPC | = | PSCP 99,7-100 % desde el 2.º sem. 2022; RPC sin NIF | Antes de 2021 solo lo guardado. Faltan grandes ayuntamientos que solo publican documentos. El Parquet debe acumular versiones |
-| Galicia | ~92 % | ~100 % (volver a ejecutar) | 99 % | Concellos fuera del 1143: Vigo (sin NIF), A Coruña (bloqueado desde la nube) |
-| Andalucía | 75-85 % | **Junta y SAS completos** uniendo el buscador y el CKAN de menores (`scripts/ccaa_andalucia_menores.py`, verificado desde el VPS el 2026-09-29: +41.022 menores del SAS 2019-2025) | 98,4 % | 6 universidades, capitales y diputaciones de Granada y Huelva |
+| Galicia | ~92 % | ~100 % (volver a ejecutar) | 99 % | Concellos fuera del 1143: Vigo (sin NIF), A Coruña (bloqueado desde el entorno de desarrollo) |
+| Andalucía | 75-85 % | **Junta y SAS completos** uniendo el buscador y el CKAN de menores (`scripts/ccaa_andalucia_menores.py`, verificado en la descarga de producción el 2026-09-29: +41.022 menores del SAS 2019-2025) | 98,4 % | 6 universidades, capitales y diputaciones de Granada y Huelva |
 | Castilla y León | Junta ~100 % | = | 99 % | Valladolid, León, Salamanca, Ponferrada; diputaciones de Burgos y Ávila. SACYL publica ~2,4 mil/año (probable caja fija, art. 63.4) |
-| Asturias | ~100 % del Principado hasta 2024 | = | 99,9 % combinando columnas | 2025-2026 bloqueado desde la nube; Gijón (64 mil con CIF desde 2018), Oviedo, Avilés |
+| Asturias | ~100 % del Principado hasta 2024 | = | 99,9 % combinando columnas | 2025-2026 bloqueado desde el entorno de desarrollo; Gijón (64 mil con CIF desde 2018), Oviedo, Avilés |
 | Madrid | Comunidad: 2015-2024 completo (la descarga del 2026-09-28 cuadra con el publicado); faltaban 2025 (215 mil de 349 mil) y 2026 | 2025-2026 al día (+133 mil y +127 mil, descargados el 2026-09-28, sin publicar) | 99,999 % | Ayuntamientos de Alcalá, Fuenlabrada, Móstoles, Leganés, Parla; universidades |
 | Murcia | ~45 % | **~85-90 %** (SMS 2019-2025 hecho: +594 mil líneas) | 85-100 % (personas físicas enmascaradas) | UPCT, 14 ayuntamientos |
 | País Vasco | ~11 % con importe y NIF | **~98 %** (API `/contracts` descargada: 643.462 menores 2014-2026; falta publicarla) | 100 % | Bilbao y Donostia (PDF), Barakaldo (nada desde 2021) |
 | La Rioja | ~4 % | **~100 % del Gobierno** (CSV 2018-2026: `scripts/ccaa_la_rioja.py`, 350.967 filas, verificado en vivo) | 91,9 % válido; 8,1 % personas físicas enmascaradas | Universidad, empresas públicas, Parlamento, ~120 municipios |
 | Extremadura | ~30 % | **~90 %** (Registro de Contratos 1T 2022-2T 2026: `scripts/ccaa_extremadura.py`, 207.702 filas, verificado en vivo) | 99,997 % | 2016-2021 (Intervención General, 404), UEx, 173 ayuntamientos |
 | Castilla-La Mancha | 50-65 % | ~85 % (`scripts/ccaa_castilla_la_mancha.py`: UCLM 253.571 filas 2017-2026, Junta 2019-2026, caja pagadora y sector público 2015-2018; verificado en vivo) | Sí salvo SESCAM (por línea de factura) y 2019 (20,7 %) | SESCAM (por factura, sin NIF), 469 ayuntamientos |
-| Aragón | ~30 % | = (2024-2025 del Gobierno recuperados) | Registro 99,96 %; Gobierno sin NIF | Ayuntamiento de Zaragoza y DPZ (bloqueados desde la nube), SALUD pequeños, UZ |
-| C. Valenciana | ~35 % | ~50 % (`scripts/ccaa_valencia_menores.py`: UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV, verificado en vivo) | REGCON 93 %; UV 97,9 %; València 100 %; Diputación, UA y UPV sin NIF | Departamentos de salud, Elche, Castelló y Diputació de València (cortan la conexión desde la nube), UJI |
+| Aragón | ~30 % | = (2024-2025 del Gobierno recuperados) | Registro 99,96 %; Gobierno sin NIF | Ayuntamiento de Zaragoza y DPZ (bloqueados desde el entorno de desarrollo), SALUD pequeños, UZ |
+| C. Valenciana | ~35 % | ~50 % (`scripts/ccaa_valencia_menores.py`: UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV, verificado en vivo) | REGCON 93 %; UV 97,9 %; València 100 %; Diputación, UA y UPV sin NIF | Departamentos de salud, Elche, Castelló y Diputació de València (cortan la conexión desde el entorno de desarrollo), UJI |
 | Canarias | ~30 % | ~30-35 % (`scripts/ccaa_canarias.py`, verificado en vivo el 2026-09-30: CSV del Gobierno, que es su PLACSP; Las Palmas de GC 2016-2026; Cabildo de Tenerife 2019-2025; y los resúmenes del SCS y de los departamentos como denominador) | Gobierno 99,96 %; Las Palmas 100 % en 2025; Tenerife sin NIF | **SCS: 89.340 menores en 2025 según sus propios resúmenes y ~1.500 contrato a contrato (1,7 %)**: pedir el resto por acceso a la información. Los departamentos publican casi todo en la PLACSP |
 | Illes Balears | ~15 % | = | — | Govern e IB-Salut (la CAIB publica ~2 mil/año, copia de PLACSP), Palma (bloqueado), UIB (PDF) |
-| Cantabria | parcial | = | — | contratosdecantabria.es congelado en noviembre de 2023; cantabria.es bloqueado desde la nube |
+| Cantabria | parcial | = | — | contratosdecantabria.es congelado en noviembre de 2023; cantabria.es bloqueado desde el entorno de desarrollo |
 | Navarra | ~0 % contrato a contrato | = | — | **La ley foral (art. 102.3 LFCP) solo obliga a publicar la menor cuantía agregada por empresa y trimestre**: 519 documentos en 2024, el 84 % PDF |
 | Ceuta / Melilla | 1143 / ~0 | = | — | Melilla publica en PDF en la pestaña "Documentos" de su perfil |
 
@@ -138,7 +138,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 - Otros ~1.950 usan la PLACSP para licitar pero no cargan menores en el 1143. Los publican como listados en la pestaña "Documentos" (PDF o XLS) o no los publican.
 - Catalunya y País Vasco los canalizan por la PSCP y KontratazioA. En País Vasco, 346 de 465 entes locales no publicaron ningún menor en la API en 2024.
 
-**Para el modelo antifraude:**
+**Para sumarlos o cruzarlos (p. ej. en un análisis antifraude):**
 1. Deduplicar los solapes antes de sumar (PLACSP frente a portal en CyL, Murcia desde 2022, Aragón y la UPV/EHU).
    - **CyL**: por el `idEvl` de su "Enlace de publicación", que es el mismo del `url` de la PLACSP. Lo trae el 96,5 % de los menores de la Junta y, en 2019-2025, entre el 94 % y el 98 % ya están en el 1143 (medido con v2026.02; 2026 casará con la PLACSP regenerada). El portal solo añade un 2-6 %.
    - **Resto de fuentes**: no llevan enlace ni identificador de la PLACSP. Hay que casar por contenido: NIF del órgano, expediente, adjudicatario, importe y fecha.
@@ -197,7 +197,7 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
 
 ## 4. Verificación en vivo
 
-### 4.1 Verificado el 2026-09-27 (sesión con red)
+### 4.1 Verificado en vivo el 2026-09-27
 
 - **PLACSP.** `contrataciondelsectorpublico.gob.es` y `contrataciondelestado.es` sirven los ZIP (sin `Content-Length` ni `Range`; ~0,4-1 MB/s por conexión). Existen los anuales de 2025 y 2026 de los cinco conjuntos (el de 2026 se regenera a diario) y el mensual 202609. El 1403 (consultas) tiene ZIP 2022-2026 con dos ATOM cada uno; el de 2023 repite 345 entradas del de 2022, que salen como `entrada_repetida`. Las entradas CPM reales se parsean bien: 4.063 entradas y 2.262 consultas distintas en 2022-2026, frente a 3.681 filas en v2026.02.
 - **TED.** CSV bulk: `https://data.europa.eu/api/hub/store/data/ted-contract-award-notices-{año}.zip` redirige (301) a `/data-management/store/api/legacy/data/…zip/` y sirve el ZIP de 2006 a 2023 (2020: 88 MB, 2023: 111 MB). 2005 y 2024 dan 404. La API v3 acepta los 63 campos de `API_FIELDS` y los modos `PAGE_NUMBER` e `ITERATION`, que devuelve `iterationNextToken`. En una semana de 2025 no aparece nunca `winner-listed`, `buyer-contracting-entity`, `sme-part`, `subcontracting-value(-cur)`, `business-country` ni `business-identifier`.
@@ -218,15 +218,15 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
   - Aragón: CKAN en `/api/3` y `/ckan/api/3`.
   - Excepciones: el CSV antiguo de licitaciones de CyL devuelve 92 bytes y el listado `transparencia.carm.es/…/SMS/Contratos_menores/` da 403.
 - **Canarias (2026-09-30).** Responden `datos.canarias.es` (CKAN), `transparencia.laspalmasgc.es` (API `/api/proxy/obligaciones/...`), `webadmin.transparencia.tenerife.es` (API; sin la cabecera `Origin: https://transparencia.tenerife.es` da 400), `www3.gobiernodecanarias.org/sanidad/scs/` y `www.gobiernodecanarias.org/transparencia/`. `datosabiertos.laspalmasgc.es` tiene el certificado HTTPS caducado (por HTTP, 503 en la ficha); `elhierro.cloudtransparencia.es`, certificado autofirmado; `lagomera.cloudtransparencia.es` no resuelve y `www.arrecife.es` no presenta la cadena de certificados completa. El perfil antiguo `gobiernodecanarias.org/perfildelcontratante/apipublica/` da 404.
-- **Inalcanzables desde la nube de Claude Code.** No se pueden verificar ni regenerar desde allí:
-  - `www.juntadeandalucia.es` (Andalucía) y `descargas.asturias.es` (Asturias): el túnel se corta en origen. Desde el VPS, `www.juntadeandalucia.es` sí responde (su CKAN, verificado el 2026-09-29).
+- **Inalcanzables desde el entorno de desarrollo.** No se pudieron verificar desde allí:
+  - `www.juntadeandalucia.es` (Andalucía) y `descargas.asturias.es` (Asturias): el túnel se corta en origen. Desde la descarga de producción, `www.juntadeandalucia.es` sí responde (su CKAN, verificado el 2026-09-29).
   - `www.zaragoza.es`: conexión reiniciada.
   - `datos.gob.es`: 403 de su cortafuegos (Imperva).
 
 ### 4.2 Pendiente
 
 - **PLACSP.** Nº de entradas borradas por ZIP y hueco de `agregacion` del 17 al 22 de octubre de 2025. Salen del informe de procesado de la regeneración completa.
-- **Andalucía.** ~~Partición de los segmentos del SAS de más de 10K~~: **hecho** con tramos de `idExpediente` (`range`), medido desde el VPS el 2026-09-29: las tres consultas con tope quedan en 6, 4 y 6 tramos de 9.874 como mucho, que suman el total. Queda el nº de documentos BRR.
+- **Andalucía.** ~~Partición de los segmentos del SAS de más de 10K~~: **hecho** con tramos de `idExpediente` (`range`), medido en la descarga de producción el 2026-09-29: las tres consultas con tope quedan en 6, 4 y 6 tramos de 9.874 como mucho, que suman el total. Queda el nº de documentos BRR.
 - **Catalunya.** Filtro de fechas del portal de menores para segmentar ICS, UPF y UAB.
 - ~~**Madrid Comunidad.** Filtros de fecha para menores sin entidad.~~ Medido el 2026-09-30: «Fecha del contrato o encargo» (`ds_fecha_encargo`) sin entidad cuadra con la faceta (4.832.621 con fecha de 1900 a 2099 y 2 de 1899). Las ventanas son intervalos cerrados en UTC y se solapan en la frontera. Es la vía por fecha del script.
 - **Euskadi.** IDs de poder de REVASCON.
@@ -234,11 +234,11 @@ Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Públic
 
 ## 5. Contratos menores: inventario de fuentes por comunidad (2026-09-27)
 
-Inventario hecho con red completa desde la nube el 2026-09-27, en cuatro bloques independientes, cada uno con su método y su leyenda de confianza (**A** = verificada en vivo; **M** = fuente secundaria o portal inalcanzable desde la nube; **B** = inferida). "¿En 1143?" es cuántos menores de ese órgano trae el feed 1143 de la PLACSP.
+Inventario hecho en vivo el 2026-09-27, en cuatro bloques independientes, cada uno con su método y su leyenda de confianza (**A** = verificada en vivo; **M** = fuente secundaria o portal inalcanzable desde el entorno de desarrollo; **B** = inferida). "¿En 1143?" es cuántos menores de ese órgano trae el feed 1143 de la PLACSP.
 
 ### 5.1 Catalunya, C. Valenciana, Illes Balears y Aragón
 
-Verificado en vivo el 2026-09-27. Confianza: **A** = verificada en vivo; **M** = fuente secundaria o sitio inalcanzable desde la nube; **B** = inferida.
+Verificado en vivo el 2026-09-27. Confianza: **A** = verificada en vivo; **M** = fuente secundaria o sitio inalcanzable desde el entorno de desarrollo; **B** = inferida.
 
 El 1143 se midió con los ZIP mensuales de marzo y junio de 2026 (45.612 y 44.359 entradas). Cada menor se asignó a su comunidad por el código postal del órgano. Más del 99 % traen NIF del adjudicatario e importe.
 
@@ -283,7 +283,7 @@ Ningún órgano autonómico ni local catalán publica menores en el 1143. En Cat
 | PLACSP 1143 | Consells (Eivissa, Mallorca, Formentera; el de Mallorca remite aquí sus menores), ayuntamientos salvo Palma, IB-Salut (≈ 50 al mes), Govern | ATOM | 2018 en adelante | ≈ 8,4 K | Sí | — | A | |
 | Transparència de la CAIB, "Contractes menors" | Govern y sector público instrumental (IB-Salut 42 %, IBISEC 10 %) | CSV, XLS y ODS | 24-7-2017 a 30-6-2026 | 1,3-2,5 K (16.331 filas en total). CIF, enmascarado en el 11 % | No | Sí: se genera desde PLACSP | A | caib.es/sites/transparencia/ca/contractes_menors/ |
 | Plataforma de contractació de la CAIB (menores 2008-2017) | Govern | HTML | 6-2008 a 23-7-2017 | — | No | No | A | **Retirada**: redirige a una URL rota |
-| Ajuntament de Palma, relación trimestral | Ajuntament | XLSX trimestral | 2023-2026 | — | No | No (0) | M (el sitio corta la conexión desde la nube) | palma.es/es/contratos-menores |
+| Ajuntament de Palma, relación trimestral | Ajuntament | XLSX trimestral | 2023-2026 | — | No | No (0) | M (el sitio corta la conexión desde el entorno de desarrollo) | palma.es/es/contratos-menores |
 | UIB | UIB | PDF trimestral | 2019-2023 o más | — | No | No (0) | M | transparencia.uib.cat |
 
 #### Aragón
@@ -334,7 +334,7 @@ Estimación de orden de magnitud (B). La referencia es la tasa per cápita de me
 
 Verificado el 2026-09-27. Confianza: **A** = comprobada en vivo (código HTTP, formato y filas); **M** = catálogo o fuente secundaria; **B** = inferida.
 
-"¿En 1143?" sale del ZIP anual 2025 del 1143: 542.191 menores distintos, clasificados por la jerarquía `ParentLocatedParty` del órgano. `www.juntadeandalucia.es`, `sevilla.org` y `web.archive.org` siguen cortando el TLS desde la nube.
+"¿En 1143?" sale del ZIP anual 2025 del 1143: 542.191 menores distintos, clasificados por la jerarquía `ParentLocatedParty` del órgano. `www.juntadeandalucia.es`, `sevilla.org` y `web.archive.org` siguen cortando el TLS desde el entorno de desarrollo.
 
 #### Qué trae ya el 1143 (2025)
 
@@ -358,12 +358,12 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 | Fuente | Órganos | Formato | Periodo | Volumen/año | ¿La tenemos? | ¿En 1143? | Conf. | URL |
 |---|---|---|---|---|---|---|---|---|
 | Buscador ES de la Plataforma de la Junta | Junta, SAS, agencias, empresas. **Sin universidades, diputaciones ni ayuntamientos**: 0 filas en el publicado, contra lo que dice el README | JSON | 2016-2026 | 106-127K | Sí, `ccaa_andalucia.py` (con el SAS entero desde los tramos de id y el registro por (`portalGestor`, `idExpediente`), 2026-09-29) | No | A (publicado) | `juntadeandalucia.es/haciendayadministracionpublica/apl/pdc-front-publico/` |
-| CKAN «Contratación Menor en {año}» (9 conjuntos) | Igual, con el SAS entero (71 % de las filas) | CSV con `\|` (2018-2023 en ZIP) y JSON; NIF y nombre del adjudicatario | 2018-2026 (año de adjudicación; 2026 hasta el 30 de junio) | 50-125K | **Sí**, `ccaa_andalucia_menores.py` (2026-09-29; ver abajo) | No | A (VPS) | `www.juntadeandalucia.es/datosabiertos/portal/dataset/00510697-…/download/menores_2025_v1_20260618.csv` |
+| CKAN «Contratación Menor en {año}» (9 conjuntos) | Igual, con el SAS entero (71 % de las filas) | CSV con `\|` (2018-2023 en ZIP) y JSON; NIF y nombre del adjudicatario | 2018-2026 (año de adjudicación; 2026 hasta el 30 de junio) | 50-125K | **Sí**, `ccaa_andalucia_menores.py` (2026-09-29; ver abajo) | No | A (producción) | `www.juntadeandalucia.es/datosabiertos/portal/dataset/00510697-…/download/menores_2025_v1_20260618.csv` |
 | Pestaña "Documentos" del perfil en PLACSP | UGR (desde 2020), Diputación de Granada | PDF/XLS | 2019- | ? | No | No | A (UGR) | `scgp.ugr.es/pages/contratos-menores/contratos-menores` |
 | Ayuntamiento de Sevilla | Ayuntamiento y organismos | PDF mensual | 2017- | ? | No | 320 | M | `sevilla.org/servicios/contratacion/contratos/{año}` |
 | CKAN de Málaga y de Córdoba | Ayuntamientos | XLSX/XLS/ODS/PDF trimestral con CIF | 2016-2026 | ~600 / ~400 | **Sí**, `municipios_menores.py` | Sí | A | `datosabiertos.malaga.eu`, `datosabiertos.cordoba.es` |
 
-**CKAN de menores de la Junta, medido desde el VPS el 2026-09-29** (`scripts/ccaa_andalucia_menores.py`, confianza A).
+**CKAN de menores de la Junta, medido en la descarga de producción el 2026-09-29** (`scripts/ccaa_andalucia_menores.py`, confianza A).
 - 9 conjuntos «Contratación Menor en {año} publicada en la Plataforma de Contratación de la Junta de Andalucía» (organización Economía, Hacienda y Fondos Europeos; CC BY 4.0), cada uno con un CSV y un JSON con los mismos datos. El año es el de adjudicación; el de 2026 llega al 30 de junio. La Junta sustituye el fichero de un año durante el siguiente (el de 2025, el 2026-07-07).
 - La salida es idéntica al original: mismas filas y celdas con valor y el mismo texto, celda a celda, en los 9 ficheros.
 - NIF válido: DNI, NIE o CIF con su dígito de control, tras quitar el relleno, el `;` final, guiones y puntos. Además hay 3.964 enmascarados (personas físicas, `630****1948`), 5.094 con forma de NIF de otro país de la UE, 2.546 con otras formas y 511 vacíos.
@@ -382,7 +382,7 @@ En las siete, los entes locales tienen el perfil en PLACSP. La Plataforma de la 
 | 2026 (hasta el 30-jun) | 34.733 | 22.607 | 98,7 % | 1.662 | 33.071 | 22.606 | 278,3 |
 | **Total** | **768.647** | **544.898** | **98,4 %** | **688.926** | **79.721** | **63.628** | **6.296,8** |
 
-- **Los nuevos** son el hueco del tope de 10.000 del buscador (41.022 menores del SAS en 2019-2025: los «~41K») y lo posterior a la semilla (33.071 de 2026). Hay que volver a medir 2026 con la primera descarga del buscador en el VPS.
+- **Los nuevos** son el hueco del tope de 10.000 del buscador (41.022 menores del SAS en 2019-2025: los «~41K») y lo posterior a la semilla (33.071 de 2026). Hay que volver a medir 2026 con la primera descarga de producción del buscador.
 - **Lo que el CKAN no trae: 42.357 menores del buscador.**
   - 19.427 son de 2010-2017: no hay conjuntos anteriores a 2018.
   - 22.930 son de 2018-2026: los de enero y febrero de 2018 adjudicados en 2017 (5.244), cargas de un mes que el CKAN no recoge (noviembre de 2023 y mayo de 2024 y de 2025: unos 5.000 al año, sobre todo del SAS) y órganos enteros ("Centros docentes públicos dependientes de la Consejería DEFP" en 2024-2025).
@@ -476,7 +476,7 @@ Correcciones: los menores del SCS son agregados (también los de §3, que decía
    - El trimestre del listado es el de inscripción, no el de adjudicación.
 3. **UCLM 2017-2026**: un postback por año. **0,5-1 día.**
 4. **Ficheros de la JCCM**: 57 enlaces en XLS, XLSX, ZIP y RAR (caja pagadora, 2015-2018, UCLM 2019-2023). **1 día.**
-5. ~~**CKAN de menores de la Junta de Andalucía**~~: hecho (`scripts/ccaa_andalucia_menores.py`, verificado desde el VPS el 2026-09-29; medición arriba).
+5. ~~**CKAN de menores de la Junta de Andalucía**~~: hecho (`scripts/ccaa_andalucia_menores.py`, verificado en la descarga de producción el 2026-09-29; medición arriba).
 6. **Pestaña "Documentos" de PLACSP** (UGR, Diputación de Granada, Melilla): navegar el portal WPS y extraer tablas de PDF. **3-5 días.**
 7. **Portales municipales**: Málaga, Córdoba, Santa Cruz de Tenerife, Lorca y Cáceres. Poco volumen, sirven para el histórico. **0,5 día cada uno.**
 8. **SCS**: solicitud de acceso a la información, con el total por órgano y trimestre que ya publica (`scs_resumen` de `scripts/ccaa_canarias.py`) para comprobar que llega entero.
@@ -485,7 +485,7 @@ Correcciones: los menores del SCS son agregados (también los de §3, que decía
 
 **Método.** Se parseó el ZIP anual 2025 del 1143: 1.104 ATOM, 550.102 entradas y 542.191 id. Los órganos se clasificaron por `ParentLocatedParty`. Los portales se comprobaron con curl.
 
-**Bloqueados desde la nube:**
+**Bloqueados desde el entorno de desarrollo:**
 - Cortan el TLS: `*.asturias.es` (descargas, sede, miprincipado), `astursalud.es` y `*.cantabria.es`.
 - `share.coruna.gal`: 403 "Access denied for ASN 396982".
 - `sede.oviedo.es`: 403.
@@ -628,7 +628,7 @@ Esas fuentes quedan en confianza M y hay que descargarlas desde una IP española
 
 ### 5.4 País Vasco, Navarra, La Rioja y referencias nacionales
 
-Verificado en vivo el 2026-09-27. Confianza: **A** = en vivo; **M** = secundaria o inalcanzable desde la nube; **B** = inferida. Cifras de referencia por comunidad y año en `docs/cobertura_referencias_menores.md`.
+Verificado en vivo el 2026-09-27. Confianza: **A** = en vivo; **M** = secundaria o inalcanzable desde el entorno de desarrollo; **B** = inferida. Cifras de referencia por comunidad y año en `docs/cobertura_referencias_menores.md`.
 
 Tres situaciones distintas:
 - **País Vasco.** La API de KontratazioA ya contiene los menores con importe, NIF y CPV: **643.463** contratos con `minorContract=true` (2014-2026) y el filtro `minor-contract=true`.
@@ -676,7 +676,7 @@ Tres situaciones distintas:
 - **La Rioja.** Tenemos ~4 % de lo publicado (2,3 de 52,7 mil); con el CSV autonómico, ~100 %. Quedan fuera la UR, las empresas y fundaciones públicas, el Parlamento y unos 120 de los 174 municipios, sin menores en el 1143.
 
 **Prioridades:**
-1. ~~Ejecutar el A1 de Euskadi~~: hecho el 2026-09-27 con la API completa (643.462 menores; +67-92 mil/año con importe). Falta publicarlo desde la máquina del propietario (`Euskadi/ccaa_euskadi.py` y `consolidacion_euskadi.py`). Deduplicar la UPV/EHU de 2025-2026 (1.492 y 4.051 en la API, frente a 12.063 y 187 en el 1143).
+1. ~~Ejecutar el A1 de Euskadi~~: hecho el 2026-09-27 con la API completa (643.462 menores; +67-92 mil/año con importe). Falta publicarlo (`Euskadi/ccaa_euskadi.py` y `consolidacion_euskadi.py`). Deduplicar la UPV/EHU de 2025-2026 (1.492 y 4.051 en la API, frente a 12.063 y 187 en el 1143).
 2. ~~`scripts/ccaa_la_rioja.py` con los 9 CSV~~: hecho (350.967 filas, +32-50 mil/año). Los años nuevos se descubren sondeando los códigos del servidor de descargas.
 3. Navarra SICP. Listado por año + descarga por UID + extracción, empezando por Salud (XLSX), Educación, Pamplona y la UPNA. Columna `_granularidad` (factura, contratista o contrato).
 4. Fuentes pequeñas: Bilbao (PDF), Donostia (PDF), Vitoria 2013-2017 (anterior a la API), Álava XML 2015-2022, Barakaldo 2011-2020.

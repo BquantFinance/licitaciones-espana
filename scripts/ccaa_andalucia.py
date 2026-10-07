@@ -61,7 +61,8 @@ Sesgo del superviviente (docs/PRINCIPIOS.md, regla 3; comun/historico.py)
   retirada hasta la siguiente.
 - Memoria, medida con pandas 3.0.6 y la capa cruda real del 29-sep-2026 (900.929
   expedientes): 4,1 GB al generar la salida desde las dos descargas, 5,5 GB al incorporar
-  una descarga nueva sobre ella y 3,5 GB al sembrar el publicado v2026.02 (el VPS da 10 GB).
+  una descarga nueva sobre ella y 3,5 GB al sembrar el publicado v2026.02 (la descarga de producción
+  tiene 10 GB).
 
 Registro: (portalGestor, idExpediente), no el idExpediente solo
 ---------------------------------------------------------------
@@ -71,7 +72,7 @@ anterior (false; el SAS con n.o '+6.…' y la Junta con 'CONTR …'). portalGest
 todos los documentos (medido el 2026-09-29: 554.489 true + 370.648 false = los 925.137
 sin BRR) y el _id del indice es el id en la primera y el id con 12 cifras en la segunda
 ('425471' / '000000425471'; 400 de 400 muestras): la pareja es el registro. Antes se
-deduplicaba por idExpediente: la primera descarga del VPS (29-sep) descarto sin avisar
+deduplicaba por idExpediente: la primera descarga de produccion (29-sep) descarto sin avisar
 18.453 menores y 34 licitaciones (todas en esos rangos; dos hojas quedaron como
 «paginacion incompleta» por lo mismo) y dio por retiradas 5.030 licitaciones al
 incorporar los menores (el mismo id, en la otra numeracion). Ahora se deduplica por la
@@ -93,8 +94,8 @@ Consultas que no caben en la ventana de 10.000
   aplicara (las dos mitades con el total), se vuelve al multi-sort de antes, que puede
   quedarse corto (tope).
 
-Columnas planas de la adjudicacion (sin cambios: las lee asi el ETL de la web)
--------------------------------------------------------------------------------
+Columnas planas de la adjudicacion (sin cambios: asi las leen quienes ya usan la salida)
+---------------------------------------------------------------------------------------
 adjudicatario_nif, importe_adjudicacion e importe_adjudicacion_iva son la PRIMERA
 adjudicacion de primer nivel tal como la sirve el portal, sea cual sea su resultado
 (codigoResultado AWARD, NOAWA -desierta-, RESIGN, MISES: una no adjudicada suele traer
@@ -102,7 +103,7 @@ adjudicacion de primer nivel tal como la sirve el portal, sea cual sea su result
 adjudicaciones van en lotes_json[].adjudicacion). todos_adjudicatarios_nif junta los NIF
 de primer nivel. Todas las adjudicaciones, con su lote, resultado, fechas y copia de
 formalizacion, van completas en adjudicaciones_json y lotes_json: para sumar lo
-adjudicado hay que leerlas (lo hace el ETL de la web).
+adjudicado hay que leerlas.
 fecha_publicacion es el fechaPublicacion del indice, que a menudo es una publicacion
 posterior: la primera es anuncio_primera_fecha. url_detalle lleva solo el idExpediente,
 que en los ids compartidos no dice de que numeracion es.

@@ -1510,11 +1510,11 @@ TABLAS_DETALLE = ('resultados', 'adjudicatarios', 'lotes', 'criterios', 'modific
 TABLAS_SALIDA = ('principal',) + TABLAS_DETALLE + ('borrados', 'semilla_contenido')
 
 # Nombre de la salida. Con el rango completo (del primer año de la PLACSP al año en curso, el de por
-# defecto y el del VPS) es fijo: licitaciones_completo.parquet, licitaciones_completo_resultados.parquet...
+# defecto y el de producción) es fijo: licitaciones_completo.parquet, licitaciones_completo_resultados.parquet...
 # Antes llevaba el año en curso (licitaciones_completo_2012_2026): en enero cambiaba el nombre, la
 # ejecución escribía ficheros nuevos, la cadena de versiones de _historico/ se cortaba (guardar_version
 # va por ruta), la salida del año anterior se quedaba en la carpeta congelada y quien la leía por su
-# nombre (el ETL de la web) seguía con ella sin saberlo. El nombre con años de cada ejecución
+# nombre (p. ej. un ETL) seguía con ella sin saberlo. El nombre con años de cada ejecución
 # (licitaciones_completo_<inicio>_<fin>...) queda como enlace simbólico al fijo: los de años
 # anteriores siguen apuntando a la salida vigente. Un rango parcial (--anos 2024-2024) no cambia: su
 # nombre con años no se mueve.

@@ -12,7 +12,7 @@ Fases: base (listados JSON de LIC y CM por organismo) -> detail (ficha HTML de
 cada contrato, en caché SQLite) -> merge (tabla final contratos_galicia.csv y
 .parquet). Todo se puede repetir y reanudar (--resume). La ficha es la única
 fuente del adjudicatario y del importe adjudicado de las licitaciones (y de su
-procedimiento, tipo, CPV y fecha de formalización); el despliegue automático
+procedimiento, tipo, CPV y fecha de formalización); la descarga de producción
 aún no ejecuta 'detail'.
 
 SESGO DEL SUPERVIVIENTE (comun/historico.py; docs/PRINCIPIOS.md)
@@ -98,7 +98,7 @@ El portal retira y cambia contratos: nada de lo descargado alguna vez se pierde.
   --origen-semilla) y _en_ultima_descarga=False; nunca se modifica ni se
   duplica una fila de la descarga. (_tipo, id) es único en el publicado
   (1.685.789 filas); el id solo no lo es (25.593 ids son a la vez CM y LIC).
-  Organismos retirados enteros (decisión del propietario, sep-2026: sus filas
+  Organismos retirados enteros (decisión del proyecto, sep-2026: sus filas
   de la semilla son la única copia que queda): un organismo de la semilla lo
   está si la descarga tiene lista de organismos del portal, su id se ha
   probado en todas las de la descarga (1..hasta), no está en ninguna y la
@@ -500,8 +500,8 @@ def organism_name(html):
     """Nombre del organismo en su página (consultaOrganismo.jsp): el <h2> de
     <div id="objeto"> o, si no está, el <title> «Detalle perfil contratante: <nombre> -
     Contratos Públicos de Galicia», con los espacios juntos. Es el nombre actual: el
-    portal lo enseña igual en todas las fichas del organismo (docs/etl_v2/grupo7.md de la
-    web). None si no se encuentra."""
+    portal lo enseña igual en todas las fichas del organismo. None si no se
+    encuentra."""
     if not isinstance(html, str) or not html:
         return None
     try:
@@ -3117,7 +3117,7 @@ def apply_seed(acumulado, path, ambito, origen_semilla=None, portal=None, max_re
     orgs = _org_keys(view["_organismo_id"])
     inside = rows_in_scope(view, ambito)
     # Las filas de un organismo que el portal ha retirado entero (decisión del
-    # propietario: son la única copia) se tratan como las del ámbito.
+    # proyecto: son la única copia) se tratan como las del ámbito.
     portal = portal if portal is not None else {"motivo": "sin lista de organismos del portal"}
     max_retirados = MAX_ORGANISMOS_RETIRADOS if max_retirados is None else max_retirados
     retired = pd.Series(orgs, dtype=object).isin(retired_organisms(orgs, portal, ambito)).to_numpy()

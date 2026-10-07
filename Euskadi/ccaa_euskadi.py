@@ -1412,7 +1412,7 @@ def _mover_log(carpeta):
     """Lleva el log del script (el FileHandler llamado LOG_NOMBRE, esté junto al script o en una
     --salida anterior) a carpeta/LOG_NOMBRE, con el mismo formato y nivel.
 
-    Con --salida no se escribe nada junto al script: en el VPS el repo se monta en solo lectura y
+    Con --salida no se escribe nada junto al script: en producción el repo se monta en solo lectura y
     el FileHandler (delay=True) fallaría en el primer mensaje. Como configurar_salida() de
     scripts/ccaa_andalucia.py.
     """

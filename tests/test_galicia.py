@@ -2101,7 +2101,7 @@ def seed_added(final):
 
 class GaliciaOrganismosRetiradosTests(unittest.TestCase):
     """Filas de la semilla de organismos que el portal ha retirado enteros
-    (decisión 4 del propietario, PLAN_PUESTA_A_PUNTO): se añaden solo si la
+    (decisión del proyecto, sep-2026): se añaden solo si la
     descarga leyó la lista completa de organismos del portal y no están en ella."""
 
     def _portal(self):
@@ -2510,8 +2510,8 @@ class GaliciaPaginacionTests(unittest.TestCase):
 
 
 class GaliciaNombreOrganismoTests(unittest.TestCase):
-    """_organismo_nombre: el nombre de la página de cada organismo (hasta ahora el ETL de
-    la web usaba un mapa de 332 hecho a mano)."""
+    """_organismo_nombre: el nombre de la página de cada organismo (antes había que mantener
+    a mano un mapa de 332)."""
 
     def test_organism_name_from_its_page_goes_to_manifest_and_final_table(self):
         portal = GaliciaHistoricoTests._three_orgs(None)
