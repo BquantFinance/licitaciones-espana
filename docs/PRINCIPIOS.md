@@ -14,7 +14,7 @@ Reglas que cumple todo scraper y todo cambio del repositorio. El código las cit
    - **Re-ejecuciones:** incrementales y reanudables.
 4. **Las releases publicadas (v2026.02 y v2026.10) y el LFS del repo son la copia histórica.**
    - No modificar ni borrar ficheros de datos publicados.
-   - Cada scraper debe aceptar `--semilla <parquet publicado>`. Añade, **por clave estable**, solo las claves que no aparecen en la nueva descarga, marcadas con `_origen='release v2026.02'` y `_en_ultima_descarga=False`. Nunca modifica ni duplica filas nuevas. Hay que documentar los errores conocidos del publicado de esa fuente (ver README).
+   - Cada scraper debe aceptar `--semilla <parquet publicado>`. Añade, **por clave estable**, solo las claves que no aparecen en la nueva descarga, marcadas con `_origen='release v2026.02'` y `_en_ultima_descarga=False`. Nunca modifica ni duplica filas nuevas. Hay que documentar los errores conocidos del publicado de esa fuente, en su ficha de [`docs/fuentes/`](fuentes/).
    - Los parquet publicados se descargan de `https://media.githubusercontent.com/media/BquantFinance/licitaciones-espana/main/<ruta>`.
 5. **Tests con pandas 3 y pandas 2.2**, la segunda en un venv aparte (`pip install "pandas==2.2.3"`: `pandas<3` instala 2.3). La suite completa en verde antes de cada commit.
 6. **Git.**

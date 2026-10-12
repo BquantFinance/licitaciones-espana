@@ -62,13 +62,13 @@ class AsturiasToParquet:
     - Semillas (--semilla, p.ej. el parquet publicado en v2026.02): se añaden las
       inscripciones (CLAVE) de los años procesados que no están en la descarga,
       con _origen; en las ejecuciones siguientes se conservan. Traen los errores
-      conocidos del publicado (README): IVA de 2023 multiplicado por 10 y
+      conocidos del publicado (docs/fuentes/asturias.md): IVA de 2023 multiplicado por 10 y
       expedientes con letras convertidos en NaN.
     """
     
     def __init__(self, output_dir=None, last_year=None, semillas=()):
         self.base_url = "https://descargas.asturias.es/asturias/opendata/SectorPublico/contratacion"
-        # Por defecto <repo>/ccaa_asturias (ruta documentada en el README), sin depender del cwd
+        # Por defecto <repo>/ccaa_asturias (ruta documentada en docs/fuentes/asturias.md), sin depender del cwd
         if output_dir is None:
             output_dir = Path(__file__).resolve().parent.parent / "ccaa_asturias"
         self.output_dir = Path(output_dir)

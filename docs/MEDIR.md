@@ -94,8 +94,8 @@ que se mide.
 | `borme_constituciones` | Constituciones de sociedades por año | «Constitución» como acto de la lista, no como texto suelto |
 | `borme_nombramientos` | Las 20 sociedades con más nombramientos de cargos | Recuento de distintos sobre los 17,8 M de cargos (los códigos de persona están seudonimizados) |
 
-Los importes son los publicados, sin las correcciones de `calidad/` (ver «Importes publicados y corregidos» en el
-README). Las cinco consultas que también se hacen con pandas leen con pyarrow solo las columnas que hacen falta y usan la
+Los importes son los publicados, sin las correcciones de `calidad/` (ver [importes publicados y
+corregidos](fuentes/calidad.md#importes-publicados-y-corregidos-issue-22)). Las cinco consultas que también se hacen con pandas leen con pyarrow solo las columnas que hacen falta y usan la
 misma regla; la del TED usa `avisos_para_cruce()` del repositorio, tal cual.
 
 ## Medir en tu máquina

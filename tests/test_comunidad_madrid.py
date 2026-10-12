@@ -2288,7 +2288,7 @@ CLAVE_ANTIBOT = "k3y-ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklm"   # 43 chars, lik
 
 
 def _clave_transformada(clave):
-    # README: "invirtiendo pares de 2 caracteres desde el final"
+    # docs/fuentes/comunidad_madrid.md: "invirtiendo pares de 2 caracteres desde el final"
     return "".join(clave[max(i - 2, 0):i] for i in range(len(clave), 0, -2))
 
 

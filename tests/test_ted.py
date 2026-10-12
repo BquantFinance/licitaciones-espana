@@ -585,7 +585,7 @@ class TestNormalize:
 
 class TestTedModuleCli:
     def test_default_data_dir_matches_readme_layout(self):
-        # README: ted/ted_es_can.parquet y ted/ted_can_{año}_ES*.parquet;
+        # docs/fuentes/ted.md: ted/ted_es_can.parquet y ted/ted_can_{año}_ES*.parquet;
         # run_ted_crossvalidation.py lee ted/ted_es_can.parquet
         assert tm.TEDConfig.DATA_DIR.resolve() == TED_DIR
         assert rtc.TED_PATH.resolve() == TED_DIR / "ted_es_can.parquet"
@@ -690,7 +690,7 @@ class TestCrossValidateTedModule:
 #  run_ted_crossvalidation.py — reglas SARA
 # ═══════════════════════════════════════════════════════════════════════════
 
-# (año, obras, servicios AGE, servicios resto, sectores especiales) — README + Reglamentos UE
+# (año, obras, servicios AGE, servicios resto, sectores especiales) — docs/fuentes/ted.md + Reglamentos UE
 _BIENIOS = [
     (2016, 5_225_000, 135_000, 209_000, 418_000),
     (2017, 5_225_000, 135_000, 209_000, 418_000),
@@ -754,7 +754,7 @@ class TestSaraRules:
 def crossval_repo(tmp_path, monkeypatch, ted_http):
     repo = _make_repo(tmp_path, ["run_ted_crossvalidation.py", "diagnostico_missing_ted.py",
                                  "analisis_sector_salud.py", "cross-validation_ted_placsp.py"])
-    # TED descargado con ted_module (red simulada) en <repo>/ted, como documenta el README
+    # TED descargado con ted_module (red simulada) en <repo>/ted, como documenta docs/fuentes/ted.md
     monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", repo / "ted")
     tm.download_ted_spain(years=[2019, 2024])
     assert (repo / "ted" / "ted_es_can.parquet").exists()

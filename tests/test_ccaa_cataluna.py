@@ -319,7 +319,7 @@ class DescargaCatalunyaTests(unittest.TestCase):
 
         for parquet_rel, _ in cat_parquet.ARCHIVOS.values():
             self.assertTrue((parquet_dir / parquet_rel).exists(), parquet_rel)
-        # Documentado en catalunya/README.md (antes nunca se generaba)
+        # Lo listaba el README generado en catalunya/ (antes nunca se generaba)
         self.assertTrue((parquet_dir / "contratacion" / "licitaciones_adjudicaciones.parquet").exists())
         for nombre in ("contratos_menores_bcn", "contratistas_bcn", "perfil_contratante_bcn",
                        "modificaciones_bcn", "resumen_trimestral_bcn", "contratos_menores_autorizacion_bcn"):

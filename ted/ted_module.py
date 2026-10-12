@@ -86,7 +86,7 @@ class TEDConfig:
     """Configuración del módulo TED."""
     
     # ── Directorios ──
-    # Carpeta ted/ del repo (junto a este script), como documenta el README y
+    # Carpeta ted/ del repo (junto a este script), como documenta docs/fuentes/ted.md y
     # donde lee run_ted_crossvalidation.py; no depende del cwd
     DATA_DIR = Path(__file__).resolve().parent
     OUTPUT_DIR = Path("output")

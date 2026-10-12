@@ -65,7 +65,7 @@ Markdown (una columna por perfil de máquina).
 Nada se escribe en la carpeta de datos: DuckDB lee los Parquet tal cual, sin
 cargarlos enteros en memoria (si le falta, usa una carpeta temporal del
 sistema). Los importes son los publicados, sin las correcciones de calidad/
-(ver «Importes publicados y corregidos» en el README antes de sumar en serio).
+(ver «Importes publicados y corregidos» en docs/fuentes/calidad.md antes de sumar en serio).
 """
 from __future__ import annotations
 

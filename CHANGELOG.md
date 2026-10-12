@@ -6,11 +6,22 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 
 ### Añadido
 
+- Documentación por fuente en [`docs/fuentes/`](docs/fuentes/): una ficha por fuente con todo lo que estaba en el README (qué trae, cómo se descarga, columnas, avisos y errores conocidos de cada versión), ejemplos rehechos sobre la release v2026.10 y fichas nuevas para Aragón, Castilla y León, Castilla-La Mancha, Región de Murcia, Extremadura, La Rioja, Canarias, los menores valencianos, los menores de la Junta de Andalucía y los 8 ayuntamientos.
+- [`docs/REPRODUCIR.md`](docs/REPRODUCIR.md): requisitos, cómo se ejecuta cada script con su semilla, tiempos orientativos y qué ZIP sale de cada uno.
+- Logo del repositorio en [`docs/img/`](docs/img/), con versión para fondo oscuro, y la vista previa social (`docs/img/social-preview.png`).
+- `tests/test_enlaces_docs.py`: cada enlace relativo y cada ancla del README y de `docs/` tiene que existir.
 - `LICENSE` (MIT) para el código, [`DATA_LICENSE.md`](DATA_LICENSE.md) con la licencia de cada fuente y CC BY 4.0 para lo que añade el proyecto, `CITATION.cff`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md` y plantillas de issues y PR.
 
 ### Cambiado
 
+- **README** corto: qué es, descarga de la release (los 31 ZIP y `sha256sum -c`), fuentes, cobertura por comunidad, uso rápido con los avisos dentro del código (`es_ultima_version`, `avisos_para_cruce()` y el importe corregido), medir, reproducir, calidad, licencias y cómo citar. Recomienda clonar con `GIT_LFS_SKIP_SMUDGE=1` y bajar los datos de las releases.
+- Los ejemplos de análisis del README antiguo sumaban sobre los ficheros de v2026.02 lo que no se debe sumar (todas las versiones de la PLACSP, filas del TED en vez de avisos, las copias de los menores de Catalunya, el `importe` inflado de Galicia): se han rehecho sobre la release, comprobados con los datos, o se han quitado.
+- Contradicciones del README antiguo corregidas: años del CSV masivo del TED (2006-2023), cifras del BORME de v2026.10, 11 estructuras del Ayuntamiento de Madrid, 9 tablas de Euskadi, tramos de `idExpediente` en Andalucía y 21 indicadores de calidad (19 base + TED + BORME). Se quita la tabla de frecuencias de actualización, que estaba desfasada.
 - Cataluña: `ccaa_cataluna_parquet.py` convierte cada versión a Parquet por trozos. Con las tres versiones de la PSCP, el pico de memoria baja de 15,2 a 3,6 GiB, con la misma salida fila a fila (#57).
+
+### Eliminado
+
+- `catalunya/README.md`: estadísticas de enero de 2026 sobre una carpeta que ya no existe. La misma información va en `v2026.02/README.md` de `catalunya.zip`.
 
 ## [v2026.10] - 2026-10-05
 
@@ -48,6 +59,28 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 - **Euskadi:** consolidación corregida (REVASCON sin columnas `unnamed`, filas corridas recolocadas y duplicados marcados) y la API `/contracts` completa: 715.868 contratos con importe y adjudicatario.
 - **Andalucía:** 900.931 filas, frente a 808.441, con el registro (`portalGestor`, `idExpediente`) y columnas JSON con todas las adjudicaciones, lotes y anuncios.
 - **BORME:** actos hasta el 2026-10-01, y recuperados los boletines 2012 n.º 173 y 2013 n.º 1.
+
+### Ficheros de v2026.02 que van tal cual
+
+En una carpeta `v2026.02/` del ZIP de su fuente, con el mismo SHA-256 que en v2026.02, para que v2026.10 no tenga menos datos que v2026.02:
+
+- **Euskadi — `bilbao_contratos.parquet`:** es la última versión publicada (v2026.02, febrero de 2026), porque el portal de datos abiertos de Bilbao responde 403 a la descarga actual. Se actualizará cuando vuelva a servirse. Lleva los errores conocidos de esa versión (importes divididos entre 1.000, día y mes invertidos en la fecha de adjudicación).
+- **Euskadi — `contratos_master` y `empresas_licitadoras` de v2026.02:** traen filas que la descarga actual ya no sirve (`contratos_2025.xlsx` tenía 100.850 filas y ahora 96.570; 4 empresas que ya no están en el Registro de Licitadores).
+- **Catalunya:** las categorías que no son contratación (subvenciones, presupuestos, convenios, RRHH, entidades y territorio), que no se han vuelto a descargar, y `perfil_contratante_bcn` de v2026.02, con 6.120 publicaciones que el portal ya no sirve.
+- **Catalunya, menores de la PSCP:** el `contractacio_menors.parquet` de v2026.02, con 66.132 publicaciones (`id`, `expedientId`) que la descarga actual no trae.
+- **Valencia:** las categorías que no son contratación (subvenciones, presupuestos, empleo, paro, siniestralidad, patrimonio, territorio, turismo, sanidad y transporte), las asociaciones (no están en la descarga actual) y los lobbies, los recursos de gobierno abierto y el fichero de la DANA de v2026.02, cuyo contenido ha cambiado en el portal.
+- **Galicia:** el CSV de v2026.02, con 913 contratos menores que la descarga actual no trae (y el `importe` inflado de entonces).
+- **TED:** los ficheros del cruce PLACSP↔TED de v2026.02 (`crossval_*`, `missing_*`), calculados sobre los datos de v2026.02 y sin regenerar.
+- **Calidad:** `calidad_licitaciones_resultado.zip` lleva el Parquet que v2026.02 publicaba en `calidad_licitaciones_resultado.rar`, sin regenerar: está calculado sobre los datos nacionales de v2026.02, con sus errores.
+
+### Lo que no se repite de v2026.02
+
+Porque lo que contiene ya está en v2026.10:
+
+- Los Parquet nacionales de v2026.02 (`licitaciones_espana`, `licitaciones_completo_2012_2026`): las 8.693.891 y 4.725.557 filas están en v2026.10 por (`id`, `fecha_updated`), y las que no tenían `fecha_updated`, por contenido en `_semilla_contenido`.
+- El consolidado de TED y sus cachés por año: los 287.036 avisos de v2026.02 están en el consolidado de v2026.10.
+- Los Parquet de Andalucía, Asturias, BORME y la Comunidad de Madrid de v2026.02, las demás tablas de Catalunya y Valencia que siguen con el mismo nombre, y `poderes_adjudicadores` y `revascon_historico` de Euskadi: sus registros (por su clave) están todos en v2026.10, aunque algunos valores hayan cambiado por correcciones del script o del portal. A `revascon_historico` solo le faltan las 16 filas de título y cabecera de los XLSX que v2026.02 leía como datos.
+- Los CSV que repetían un Parquet (Andalucía, Comunidad de Madrid), las capas crudas (`csv_originales/` de la Comunidad de Madrid) y las cachés (progreso de Andalucía, cachés por año de TED). Los scripts están en el repositorio.
 
 ### Avisos
 

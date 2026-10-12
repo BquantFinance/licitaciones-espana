@@ -140,7 +140,7 @@ se hizo aparte desde el CSV):
   adjudicaciones 2a y siguientes (19.765 expedientes tienen varias) y el resto de campos.
 - Faltan unos 41K menores del SAS por encima del tope de 10.000 (segmentos PARTIAL de su
   scraper.log) y no trae universidades, diputaciones ni ayuntamientos (0 filas), aunque
-  el README los cite.
+  el README de entonces los citara.
 - Deduplicaba por idExpediente: de cada id compartido por las dos numeraciones solo
   tiene uno de los dos expedientes.
 """
