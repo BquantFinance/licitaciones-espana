@@ -145,7 +145,7 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 ## Comprobar el resultado
 
 - **Tests:** `python -m pytest -q -p no:cacheprovider`, con pandas 3 y con pandas 2.2.3 ([`CONTRIBUTING.md`](../CONTRIBUTING.md#tests)).
-- **Contra la release:** los `MANIFEST.csv` de la release dan filas, columnas y SHA-256 de cada fichero. Una descarga posterior tendrá más filas (lo nuevo) y nunca menos de lo que tenía la release: lo retirado sigue, con `_en_ultima_descarga=False`.
+- **Contra la release:** los `MANIFEST.csv` de la release dan filas, columnas y SHA-256 de cada fichero, y [`docs/esquema/`](esquema/README.md), las columnas y los tipos. Una descarga posterior tendrá más filas (lo nuevo) y nunca menos de lo que tenía la release: lo retirado sigue, con `_en_ultima_descarga=False`.
 - **Tiempos de consulta:** [`docs/MEDIR.md`](MEDIR.md).
 
 ## Todos los scripts
@@ -187,3 +187,4 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `calidad/calidad_licitaciones.py` | — | 21 indicadores de calidad sobre PLACSP + TED + BORME |
 | `calidad/correcciones.py` | — | Importes corregidos junto a los publicados (registro de errores de la fuente y saltos de escala) |
 | `scripts/medir_consultas.py` | — | Tiempos de consulta sobre la release ([`docs/MEDIR.md`](MEDIR.md)) |
+| `scripts/esquema_release.py` | — | Columnas, tipos y filas de cada Parquet de una release, leyendo solo sus pies ([`docs/ESQUEMA.md`](ESQUEMA.md#cómo-se-genera-docsesquema)) |

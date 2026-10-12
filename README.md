@@ -144,9 +144,12 @@ La PLACSP cubre a todas las administraciones que publican en ella, en todas las 
 
 ## Esquema
 
-Cada ZIP lleva su `MANIFEST.csv` con las filas y columnas de cada fichero, y cada ficha de [`docs/fuentes/`](docs/fuentes/) explica sus columnas principales y las marcas `_…` que añade su script. Las marcas comunes:
+- **Columnas y tipos de cada fichero:** [`docs/esquema/`](docs/esquema/README.md), una página por ZIP, generada desde los pies de los Parquet de la release con [`scripts/esquema_release.py`](scripts/esquema_release.py) y comprobada contra su `MANIFEST.csv`.
+- **Marcas `_…`:** qué significa cada una, quién la pone y cómo filtrar, en [`docs/ESQUEMA.md`](docs/ESQUEMA.md). Las propias de una sola fuente, en su ficha de [`docs/fuentes/`](docs/fuentes/).
 
-- **Control de versiones** ([`comun/historico.py`](comun/historico.py)): `_primera_descarga`, `_ultima_descarga` y `_en_ultima_descarga` (`False` = la fuente ya no la sirve o la ha cambiado). `_origen = 'release v2026.02'`: la fila viene de la release anterior.
+Las tres que más importan:
+
+- **Control de versiones** ([`comun/historico.py`](comun/historico.py)): `_primera_descarga`, `_ultima_descarga` y `_en_ultima_descarga` (`False` = la fuente ya no la sirve o la ha cambiado). `_origen = 'release v2026.02'`: la fila viene de la release anterior ([más](docs/ESQUEMA.md#control-de-versiones)).
 - **PLACSP**: `n_versiones`, `es_ultima_version` y `entrada_repetida` ([ficha](docs/fuentes/placsp.md#correcciones-en-los-datos-placsp)).
 - **Importes corregidos**: `<campo>_corregido` y `correccion_<campo>`, junto al publicado ([calidad](docs/fuentes/calidad.md#importes-publicados-y-corregidos-issue-22)).
 

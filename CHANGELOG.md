@@ -9,6 +9,8 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 - Documentación por fuente en [`docs/fuentes/`](docs/fuentes/): una ficha por fuente con todo lo que estaba en el README (qué trae, cómo se descarga, columnas, avisos y errores conocidos de cada versión), ejemplos rehechos sobre la release v2026.10 y fichas nuevas para Aragón, Castilla y León, Castilla-La Mancha, Región de Murcia, Extremadura, La Rioja, Canarias, los menores valencianos, los menores de la Junta de Andalucía y los 8 ayuntamientos.
 - [`docs/REPRODUCIR.md`](docs/REPRODUCIR.md): requisitos, cómo se ejecuta cada script con su semilla, tiempos orientativos y qué ZIP sale de cada uno.
 - Logo del repositorio en [`docs/img/`](docs/img/), con versión para fondo oscuro, y la vista previa social (`docs/img/social-preview.png`).
+- [`docs/ESQUEMA.md`](docs/ESQUEMA.md): las marcas `_…` comunes (control de versiones, procedencia, calidad del origen, versiones de la PLACSP, importes corregidos, valores convertidos y TED): qué significa cada una, quién la pone y cómo filtrar.
+- [`docs/esquema/`](docs/esquema/README.md): columnas, tipos y filas de cada Parquet de la release v2026.10, una página por ZIP, generadas con `scripts/esquema_release.py`, que lee solo los pies de los Parquet y comprueba filas y columnas contra el `MANIFEST.csv`.
 - `tests/test_enlaces_docs.py`: cada enlace relativo y cada ancla del README y de `docs/` tiene que existir.
 - `LICENSE` (MIT) para el código, [`DATA_LICENSE.md`](DATA_LICENSE.md) con la licencia de cada fuente y CC BY 4.0 para lo que añade el proyecto, `CITATION.cff`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md` y plantillas de issues y PR.
 
