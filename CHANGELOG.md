@@ -21,6 +21,7 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 - Contradicciones del README antiguo corregidas: años del CSV masivo del TED (2006-2023), cifras del BORME de v2026.10, 11 estructuras del Ayuntamiento de Madrid, 9 tablas de Euskadi, tramos de `idExpediente` en Andalucía y 21 indicadores de calidad (19 base + TED + BORME). Se quita la tabla de frecuencias de actualización, que estaba desfasada.
 - `ted/run_ted_crossvalidation.py`, `ted/cross-validation_ted_placsp.py` y `ted/analisis_sector_salud.py` leen por defecto la PLACSP de `nacional/licitaciones_completo.parquet` (la tabla del scraper actual), no de `nacional/licitaciones_espana.parquet` (v2026.02).
 - Cataluña: `ccaa_cataluna_parquet.py` convierte cada versión a Parquet por trozos. Con las tres versiones de la PSCP, el pico de memoria baja de 15,2 a 3,6 GiB, con la misma salida fila a fila (#57).
+- **Red común en [`comun/red.py`](comun/red.py)** (sin cambio de comportamiento): `pedir_json`, `pedir_texto`, `descargar`, `_espera`, `ErrorPortal` y las constantes de red (User-Agent, timeouts, intentos y esperas), que estaban copiados en 9 scrapers autonómicos y municipales. Cada script importa los mismos nombres; lo que no era idéntico se queda en su script. Las mismas peticiones con los portales simulados de los tests y los mismos Parquet, byte a byte, desde la capa cruda de la descarga de producción.
 
 ### Corregido
 
