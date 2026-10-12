@@ -8,7 +8,7 @@ Uso:
     python ted/cross-validation_ted_placsp.py
 
 Inputs:
-    - nacional/licitaciones_espana.parquet  (PLACSP)
+    - nacional/licitaciones_completo.parquet  (PLACSP)
     - ted/ted_es_can.parquet                (TED, generado por ted_module.py)
 
 Outputs:
@@ -37,7 +37,9 @@ from ted_module import avisos_para_cruce  # noqa: E402
 # guarda ted_module.py); las salidas van a data/ted para no pisar las de
 # run_ted_crossvalidation.py (ted/crossval_*.parquet)
 _REPO_DIR = Path(__file__).resolve().parent.parent
-PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_espana.parquet"
+# La tabla principal de la PLACSP: la salida de nacional/licitaciones.py o las partes de la release
+# juntas en un fichero (docs/fuentes/ted.md#cruce-placsp--ted-cross-validation)
+PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_completo.parquet"
 TED_PATH = _REPO_DIR / "ted" / "ted_es_can.parquet"
 OUTPUT_DIR = _REPO_DIR / "data" / "ted"
 

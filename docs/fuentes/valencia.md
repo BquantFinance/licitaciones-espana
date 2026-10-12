@@ -11,7 +11,7 @@ Datos del portal [Dades Obertes GVA](https://dadesobertes.gva.es) (CKAN API).
 
 `ccaa_valencia.py` y `ccaa_valencia_parquet.py` aceptan `--categorias contratacion,...` (por defecto, todas); la descarga de producción solo pide `contratacion`.
 
-La tabla y el árbol siguientes son los de v2026.02 (los del repositorio en Git LFS), con todas las categorías:
+La tabla y el árbol siguientes son los de v2026.02 (los que estuvieron en Git LFS en el repositorio, ahora en la etiqueta `datos-lfs-v2026.02`), con todas las categorías:
 
 | Categoría | Archivos | Registros | Contenido |
 |-----------|----------|-----------|-----------|

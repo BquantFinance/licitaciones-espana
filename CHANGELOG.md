@@ -19,10 +19,12 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 - **README** corto: qué es, descarga de la release (los 31 ZIP y `sha256sum -c`), fuentes, cobertura por comunidad, uso rápido con los avisos dentro del código (`es_ultima_version`, `avisos_para_cruce()` y el importe corregido), medir, reproducir, calidad, licencias y cómo citar. Recomienda clonar con `GIT_LFS_SKIP_SMUDGE=1` y bajar los datos de las releases.
 - Los ejemplos de análisis del README antiguo sumaban sobre los ficheros de v2026.02 lo que no se debe sumar (todas las versiones de la PLACSP, filas del TED en vez de avisos, las copias de los menores de Catalunya, el `importe` inflado de Galicia): se han rehecho sobre la release, comprobados con los datos, o se han quitado.
 - Contradicciones del README antiguo corregidas: años del CSV masivo del TED (2006-2023), cifras del BORME de v2026.10, 11 estructuras del Ayuntamiento de Madrid, 9 tablas de Euskadi, tramos de `idExpediente` en Andalucía y 21 indicadores de calidad (19 base + TED + BORME). Se quita la tabla de frecuencias de actualización, que estaba desfasada.
+- `ted/run_ted_crossvalidation.py`, `ted/cross-validation_ted_placsp.py` y `ted/analisis_sector_salud.py` leen por defecto la PLACSP de `nacional/licitaciones_completo.parquet` (la tabla del scraper actual), no de `nacional/licitaciones_espana.parquet` (v2026.02).
 - Cataluña: `ccaa_cataluna_parquet.py` convierte cada versión a Parquet por trozos. Con las tres versiones de la PSCP, el pico de memoria baja de 15,2 a 3,6 GiB, con la misma salida fila a fila (#57).
 
 ### Eliminado
 
+- **Los datos de v2026.02 que estaban en Git LFS salen del árbol** (519 ficheros, 6,77 GB, y `Euskadi/euskadi_parquet/stats.json`). Siguen en la etiqueta `datos-lfs-v2026.02`, en las releases y en la historia: no se borra ningún objeto. El clon baja de 6,9 GB con git-lfs a unos 160 MB. `.gitignore` excluye las carpetas de salida de los scrapers y los Parquet, para que una ejecución local no suba datos; `.gitattributes` queda con la regla de `*.parquet`, y se quita `Euskadi/.gitattributes`, que la repetía. `ccaa_Andalucia/` y `ccaa_asturias/` siguen en el árbol, solo con un `LEEME.md`, porque sus scripts las crean de entrada (al importarse y al instanciarse) y con el repositorio en solo lectura tienen que existir.
 - `catalunya/README.md`: estadísticas de enero de 2026 sobre una carpeta que ya no existe. La misma información va en `v2026.02/README.md` de `catalunya.zip`.
 
 ## [v2026.10] - 2026-10-05

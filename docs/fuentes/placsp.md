@@ -46,14 +46,14 @@ Los parquet nacionales publicados hasta `v2026.02` —y todo lo calculado sobre 
 Para corregir un parquet de v2026.02 ya descargado sin volver a procesar los ATOM:
 
 ```bash
-python nacional/normalizar_placsp.py -i nacional/licitaciones_espana.parquet \
-    -o nacional/licitaciones_espana_normalizado.parquet    # ~1-2 min, ~4 GB de RAM
+python nacional/normalizar_placsp.py -i licitaciones_espana.parquet \
+    -o licitaciones_espana_normalizado.parquet    # ~1-2 min, ~4 GB de RAM
 ```
 
 ```python
 import sys; sys.path.insert(0, '.')        # desde la raíz del repo
 from nacional.licitaciones import leer_placsp
-df = leer_placsp('nacional/licitaciones_espana.parquet')  # todas las entradas + n_versiones / es_ultima_version, semántica actual
+df = leer_placsp('licitaciones_espana.parquet')  # todas las entradas + n_versiones / es_ultima_version, semántica actual
 ultimas = df[df['es_ultima_version']]                      # una fila por licitación, para sumar o contar
 # o directamente: leer_placsp(ruta, solo_ultima_version=True)
 ```
@@ -61,10 +61,11 @@ ultimas = df[df['es_ultima_version']]                      # una fila por licita
 Sobre los parquet de `v2026.02` la normalización mueve el antiguo `importe_sin_iva` a `valor_estimado_contrato` y deja `importe_sin_iva` vacío: el presupuesto sin IVA real solo se obtiene reprocesando los ZIP de la PLACSP:
 
 ```bash
-# La salida, en una carpeta aparte: los parquet de nacional/ son la única copia de v2026.02
 python nacional/licitaciones.py --data-dir <zips PLACSP> --output-dir <salida> --procesos 3 --sin-csv \
-    --semilla nacional/licitaciones_espana.parquet --semilla nacional/licitaciones_completo_2012_2026.parquet
+    --semilla licitaciones_espana.parquet --semilla licitaciones_completo_2012_2026.parquet
 ```
+
+`licitaciones_espana.parquet` y `licitaciones_completo_2012_2026.parquet` son los de v2026.02: están en `nacional.zip` de la [release v2026.02](https://github.com/BquantFinance/licitaciones-espana/releases/tag/v2026.02) y en la etiqueta `datos-lfs-v2026.02` del repositorio.
 
 ## Ejecución: memoria, histórico y semilla
 
@@ -78,10 +79,10 @@ python nacional/licitaciones.py --data-dir <zips PLACSP> --output-dir <salida> -
 ```
 nacional/
 ├── licitaciones.py                          # Scraper ATOM → Parquet/CSV (todas las entradas, con es_ultima_version)
-├── normalizar_placsp.py                     # Corrige parquets ya generados (ver arriba)
-├── licitaciones_espana.parquet              # v2026.02: 8,7M entradas = todas las versiones de 4,7M licitaciones (965 MB)
-└── licitaciones_completo_2012_2026.parquet  # v2026.02: 4,7M filas, una por licitación, no siempre la más reciente (762 MB)
+└── normalizar_placsp.py                     # Corrige parquets ya generados (ver arriba)
 ```
+
+Los dos Parquet de v2026.02 que estuvieron aquí en Git LFS, `licitaciones_espana.parquet` (8,7M entradas = todas las versiones de 4,7M licitaciones, 965 MB) y `licitaciones_completo_2012_2026.parquet` (4,7M filas, una por licitación, no siempre la más reciente, 762 MB), siguen en la etiqueta `datos-lfs-v2026.02`.
 
 El scraper escribe `licitaciones_completo.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**. Además escribe `_adjudicatarios` (cada `WinningParty`), `_lotes`, `_criterios`, `_modificaciones`, `_borrados` (entradas `at:deleted-entry`) y, con `--semilla`, `_semilla_contenido`: se cruzan con la principal por `id` + `fecha_updated`. Con el rango completo (`--anos` del 2012 al año en curso, el de por defecto) el nombre es fijo; el nombre con años de cada año (`licitaciones_completo_2012_<año>...`, el de antes) es un enlace simbólico a cada tabla. La primera ejecución con el nombre fijo le pasa la salida con años más reciente, sea del año que sea, sin copiarla y con su historia de `_historico/`; las de otros años van a `_historico/` (no se borra nada). Con un rango parcial, `licitaciones_completo_{inicio}_{fin}`; si ese nombre es uno de los enlaces (p.ej. `--anos 2012-2026` lanzado en 2027), el script se para sin escribir nada: nunca escribe a través de un enlace.
 
@@ -122,7 +123,7 @@ Cada tabla vuelve a `licitaciones_completo_2012_<año en curso>`, sin copiarla y
 
 ## v2026.02
 
-Los Parquet nacionales de v2026.02 (en el árbol del repositorio, en Git LFS, y en `nacional.zip` de la release v2026.02) tienen los errores de [Correcciones en los datos PLACSP](#correcciones-en-los-datos-placsp). No se repiten en v2026.10: sus 8.693.891 y 4.725.557 filas están en v2026.10 por (`id`, `fecha_updated`), y las que no tenían `fecha_updated`, por contenido en `_semilla_contenido`.
+Los Parquet nacionales de v2026.02 (en `nacional.zip` de la release v2026.02 y en la etiqueta `datos-lfs-v2026.02` del repositorio) tienen los errores de [Correcciones en los datos PLACSP](#correcciones-en-los-datos-placsp). No se repiten en v2026.10: sus 8.693.891 y 4.725.557 filas están en v2026.10 por (`id`, `fecha_updated`), y las que no tenían `fecha_updated`, por contenido en `_semilla_contenido`.
 
 | Conjunto | Licitaciones únicas | Filas en `licitaciones_espana.parquet` (v2026.02) | Período |
 |----------|--------------------:|-------------------------------------------------:|---------|

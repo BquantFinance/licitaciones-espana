@@ -28,6 +28,17 @@ def test_config_git_es_utf8_sin_bom(path):
     datos.decode("utf-8")
 
 
+@pytest.mark.parametrize("carpeta, script", [("ccaa_Andalucia", "scripts/ccaa_andalucia.py"),
+                                              ("ccaa_asturias", "scripts/ccaa_asturias.py")])
+def test_carpeta_que_un_script_crea_de_entrada_esta_en_el_arbol(carpeta, script):
+    """scripts/ccaa_andalucia.py crea su carpeta de salida por defecto al importarse y scripts/ccaa_asturias.py
+    al instanciarse, aunque no descarguen nada. Con el repositorio montado en solo lectura, eso solo funciona
+    si la carpeta ya existe: tiene que venir en el árbol (con su LEEME.md), aunque los datos que escribe el
+    script no vayan en git."""
+    assert (RAIZ / carpeta / "LEEME.md").is_file()
+    assert f'"{carpeta}"' in (RAIZ / script).read_text(encoding="utf-8")
+
+
 def test_parquet_en_lfs():
     reglas = (RAIZ / ".gitattributes").read_text(encoding="utf-8").splitlines()
     assert "*.parquet filter=lfs diff=lfs merge=lfs -text" in reglas

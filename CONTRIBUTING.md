@@ -10,8 +10,8 @@ Gracias por ayudar. Este repositorio descarga y publica la contratación públic
 ## Preparar el entorno
 
 ```bash
-# Solo el código: los datos actuales están en las releases, no en Git LFS
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/BquantFinance/licitaciones-espana.git
+# El repositorio solo lleva el código: los datos están en las releases
+git clone https://github.com/BquantFinance/licitaciones-espana.git
 cd licitaciones-espana
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt

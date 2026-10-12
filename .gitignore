@@ -43,3 +43,33 @@ galicia/contratos_galicia_detail.sqlite3
 # no se suben a git (van a los releases); así no gastan cuota de LFS por error
 raw/
 _historico/
+
+# Salidas de los scrapers en sus carpetas por defecto. Los datos van a las releases
+# (docs/REPRODUCIR.md), no al repositorio
+*.parquet
+*.sqlite3
+*.zip
+aragon/
+# ccaa_Andalucia/ y ccaa_asturias/ van en el repositorio (con su LEEME.md): sus scripts las crean al
+# importarse o al instanciarse, también con el repositorio en solo lectura
+ccaa_Andalucia/*
+!ccaa_Andalucia/LEEME.md
+ccaa_andalucia_menores/
+ccaa_asturias/*
+!ccaa_asturias/LEEME.md
+ccaa_canarias/
+ccaa_castilla_la_mancha/
+ccaa_castilla_leon/
+ccaa_extremadura/
+ccaa_la_rioja/
+ccaa_murcia/
+ccaa_valencia_menores/
+municipios_menores/
+catalunya/
+valencia/
+Euskadi/euskadi_parquet/
+comunidad_madrid/csv_originales/
+borme/data/
+borme_pdfs/
+ted/xml/
+data/

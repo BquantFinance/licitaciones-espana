@@ -758,7 +758,7 @@ def crossval_repo(tmp_path, monkeypatch, ted_http):
     monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", repo / "ted")
     tm.download_ted_spain(years=[2019, 2024])
     assert (repo / "ted" / "ted_es_can.parquet").exists()
-    _placsp_df().to_parquet(repo / "nacional" / "licitaciones_espana.parquet", index=False)
+    _placsp_df().to_parquet(repo / "nacional" / "licitaciones_completo.parquet", index=False)
     _run_script(repo, "run_ted_crossvalidation.py", monkeypatch)
     return repo
 
@@ -874,7 +874,7 @@ def test_sara_de_un_ano_sin_ted_queda_sin_evaluar(tmp_path, monkeypatch, ted_htt
         id="placsp-2025", expediente="DEF-2025-1", ano=2025.0,
         fecha_adjudicacion=pd.Timestamp("2025-06-01"))
     pd.concat([df, extra], ignore_index=True).to_parquet(
-        repo / "nacional" / "licitaciones_espana.parquet", index=False)
+        repo / "nacional" / "licitaciones_completo.parquet", index=False)
     _run_script(repo, "run_ted_crossvalidation.py", monkeypatch)
 
     sara = pd.read_parquet(repo / "ted" / "crossval_sara.parquet").set_index("expediente")

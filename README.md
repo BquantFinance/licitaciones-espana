@@ -76,13 +76,13 @@ for z in *.zip; do unzip -q "$z" -d "${z%.zip}"; done  # cada ZIP en su carpeta
 - **Carpeta `v2026.02/`.** Para que v2026.10 no tenga menos datos que v2026.02, algunos ZIP llevan ahí, tal cual, los ficheros de v2026.02 que la descarga actual ya no cubre: 473 ficheros. La columna `nota` del `MANIFEST.csv` de cada ZIP dice por qué está cada uno. Detalle en el [CHANGELOG](CHANGELOG.md#v202610---2026-10-05) y en la ficha de cada fuente.
 - En Windows: `Get-FileHash .\ted.zip -Algorithm SHA256` y compáralo con su línea de `SHA256SUMS.txt`.
 
-**Solo el código**, sin los datos antiguos de Git LFS:
+**Solo el código:** el repositorio no lleva datos, y el clon, con toda su historia, ocupa unos 160 MB.
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/BquantFinance/licitaciones-espana.git
+git clone https://github.com/BquantFinance/licitaciones-espana.git
 ```
 
-Sin `GIT_LFS_SKIP_SMUDGE=1`, si tienes git-lfs instalado, el clon baja 6,8 GB de Parquet de v2026.02, con los errores que corrige v2026.10 ([CHANGELOG](CHANGELOG.md#v202602---2026-02-13)). Los datos buenos están en las releases.
+Los Parquet de v2026.02 que estuvieron en Git LFS hasta octubre de 2026 (6,8 GB, con los errores que corrige v2026.10: [CHANGELOG](CHANGELOG.md#v202602---2026-02-13)) siguen en la etiqueta `datos-lfs-v2026.02`. Solo se bajan si haces checkout de esa etiqueta, o de un commit anterior, con git-lfs instalado; para clonar una versión anterior sin ellos, `GIT_LFS_SKIP_SMUDGE=1 git clone …`.
 
 ## Fuentes
 

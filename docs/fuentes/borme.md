@@ -28,8 +28,8 @@ Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_bo
 ```
 borme/
 ├── data/
-│   ├── borme_empresas_pub.parquet     # v2026.02 (Git LFS): 9,2 M actos mercantiles; en v2026.10 (borme.zip), 9,61 M
-│   └── borme_cargos_pub.parquet       # v2026.02 (Git LFS): 17 M cargos; en v2026.10, 17,8 M (persona_hash seudonimizado, sin el nombre)
+│   ├── borme_empresas_pub.parquet     # v2026.02 (etiqueta datos-lfs-v2026.02): 9,2 M actos; en v2026.10 (borme.zip), 9,61 M
+│   └── borme_cargos_pub.parquet       # v2026.02 (etiqueta datos-lfs-v2026.02): 17 M cargos; en v2026.10, 17,8 M (persona_hash seudonimizado)
 └── scripts/
     ├── borme_scraper.py               # Descarga PDFs desde boe.es
     ├── borme_batch_parser.py          # Extrae actos mercantiles de los PDFs
@@ -61,7 +61,7 @@ python borme/scripts/borme_batch_parser.py --input ./borme_pdfs --workers 8
 python borme/scripts/borme_anonymize.py --input ./borme_pdfs --output borme/data
 
 # 4. Detectar anomalías cruzando con PLACSP (cuenta cada licitación una vez: su versión más reciente)
-python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp nacional/licitaciones_espana.parquet --output ./anomalias
+python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp nacional/licitaciones_completo.parquet --output ./anomalias
 ```
 
 **Sin sesgo del superviviente.**
