@@ -1352,7 +1352,7 @@ def test_extract_pdf_links_tipos_y_duplicados():
 
 
 # ═════════════════════════════════════════════
-#  Pipeline del README (pasos 1-4) + borme_validate.py
+#  Pipeline de docs/fuentes/borme.md (pasos 1-4) + borme_validate.py
 # ═════════════════════════════════════════════
 def test_pipeline_readme_completo(monkeypatch, tmp_path, fake_pdf, capsys):
     boe = FakeBOE(monkeypatch)

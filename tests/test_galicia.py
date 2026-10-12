@@ -219,7 +219,7 @@ class FakePortal:
                 total = len(rows)
             else:
                 all_rows = self.cm.get(org_id, [])
-                # README: recordsTotal es global (ignora el filtro de fechas).
+                # docs/fuentes/galicia.md: recordsTotal es global (ignora el filtro de fechas).
                 total = len(all_rows)
                 first = date.fromisoformat(params["datestart"])
                 last = date.fromisoformat(params["dateend"])
@@ -1210,7 +1210,7 @@ class GaliciaScraperTests(unittest.TestCase):
             first_final = (output_dir / scraper_galicia.FINAL_CSV_NAME).read_bytes()
             requests_all = list(portal.requests)
 
-            # Segunda pasada de detalle: no rehace trabajo (README).
+            # Segunda pasada de detalle: no rehace trabajo (docs/fuentes/galicia.md).
             portal.requests.clear()
             code, out = run_main(cli_args(output_dir, "detail", "--resume"), portal)
             self.assertEqual(code, 0)
@@ -1266,7 +1266,7 @@ class GaliciaScraperTests(unittest.TestCase):
         self.assertIn(("C", "824000", "48"), payloads)
         self.assertIn(("CM", "CM500000", "48"), payloads)
 
-        # Final: 12 + el nombre del organismo + 52 columnas (las 62 del README +
+        # Final: 12 + el nombre del organismo + 52 columnas (las 62 de docs/fuentes/galicia.md +
         # adjudicaciones y campos extra en JSON) y, al final, las 3 de control de
         # comun/historico.py; mismas filas, detalle mapeado.
         self.assertEqual(len(final_text.columns), 68)
@@ -1285,7 +1285,7 @@ class GaliciaScraperTests(unittest.TestCase):
         self.assertNotIn("nan", final_text.to_numpy().ravel().tolist())
 
         if df_gal is not None:
-            # Ejemplos del README sobre contratos_galicia.parquet.
+            # Ejemplos de análisis sobre contratos_galicia.parquet (antes en el README).
             df_gal_cm = df_gal[df_gal["_tipo"] == "CM"].copy()
             df_gal_cm["año"] = df_gal_cm["publicado"].dt.year
             by_year = df_gal_cm.groupby("año")["importe"].sum()

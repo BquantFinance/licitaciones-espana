@@ -457,7 +457,7 @@ class AsturiasHistoricoTests(unittest.TestCase):
 
 
 class AsturiasEndToEndTests(unittest.TestCase):
-    """Ejecuta el script como en el README (`python scripts/ccaa_asturias.py`) con las
+    """Ejecuta el script como en docs/REPRODUCIR.md (`python scripts/ccaa_asturias.py`) con las
     descargas simuladas, sobre una copia en un arbol temporal para no tocar el repo."""
 
     def setUp(self):
@@ -519,7 +519,7 @@ class AsturiasEndToEndTests(unittest.TestCase):
             got_iva = [None if pd.isna(value) else value for value in rows["IVA"]]
             self.assertEqual(got_iva, expected_iva, year)
 
-        # Ejemplos de analisis del README
+        # Ejemplos de analisis (antes en el README)
         by_type = df_ast.groupby(["year", "CARACTERISTICAS CONTRATO"])["IMP. ADJ. (CON IVA)"].sum()
         self.assertAlmostEqual(by_type[(2024, "SERVICIOS")], 15680511.0)
         top = df_ast.groupby("ENTE CONTRATANTE")["IMP. ADJ. (CON IVA)"].sum().nlargest(10)

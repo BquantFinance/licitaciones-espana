@@ -1889,7 +1889,7 @@ def save_parquet(df, path, label=""):
     return path
 
 
-# Fechas que se guardan como datetime en Parquet (el README usa
+# Fechas que se guardan como datetime en Parquet (los ejemplos de docs/fuentes/galicia.md usan
 # df_gal['publicado'].dt.year); en el CSV van como texto ISO.
 PARQUET_DATE_COLUMNS = (
     "publicado",
