@@ -70,8 +70,6 @@ VERIFICAR EN VIVO (el sandbox donde se escribió no llega a los portales):
 """
 
 import argparse
-import codecs
-import datetime as dt
 import json
 import math
 import os
@@ -79,7 +77,6 @@ import re
 import sys
 import time
 import unicodedata
-import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -91,7 +88,11 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, leer_registros, versiones  # noqa: E402
-from comun.lectura_csv import registros_csv  # noqa: E402
+# Lectura común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.lectura
+from comun.lectura import (  # noqa: E402, F401
+    formato_contenido, _detectar_codificacion, _detectar_separador, _lineas_de_datos, _nombres_columnas,
+    _leer_csv_tolerante, leer_csv, _celda_texto, _buscar_registros, _leer_json)
+from comun.lectura_csv import registros_csv  # noqa: E402, F401
 # Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
 from comun.red import (  # noqa: E402, F401
     CABECERAS, TIMEOUT_API, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES,
@@ -196,22 +197,6 @@ def url_completa(url, params=None):
 
 def sin_acentos(texto):
     return "".join(c for c in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(c))
-
-
-def formato_contenido(cabeza):
-    """Formato real de un fichero por sus primeros bytes."""
-    if cabeza.startswith(b"PK\x03\x04"):
-        return "xlsx"
-    if cabeza.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
-        return "xls"
-    if cabeza.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return "csv"                                      # texto UTF-16
-    texto = cabeza.lstrip(b"\xef\xbb\xbf").lstrip()
-    if texto[:1] in (b"{", b"["):
-        return "json"
-    if texto[:1] == b"<":
-        return "html" if b"html" in texto[:1024].lower() else "xml"
-    return "csv"
 
 
 def validar_contenido(ruta, tipo):
@@ -370,152 +355,6 @@ class Resumen:
 # Lectura de ficheros como texto (todas las filas y columnas, sin convertir nada)
 # ----------------------------------------------------------------------------
 
-def _detectar_codificacion(ruta):
-    """Primera codificación capaz de decodificar el fichero COMPLETO. cp1252 va
-    antes que latin-1 (latin-1 acepta cualquier byte y dejaría '€', '’'... como
-    caracteres de control)."""
-    with open(ruta, "rb") as f:
-        inicio = f.read(4)
-    if inicio.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return "utf-16"
-    candidatas = ["utf-8-sig"] if inicio.startswith(b"\xef\xbb\xbf") else ["utf-8"]
-    for codificacion in candidatas + ["cp1252", "latin-1"]:
-        decodificador = codecs.getincrementaldecoder(codificacion)()
-        try:
-            with open(ruta, "rb") as f:
-                while bloque := f.read(1 << 20):
-                    decodificador.decode(bloque)
-            decodificador.decode(b"", final=True)
-            return codificacion
-        except UnicodeDecodeError:
-            continue
-    return "latin-1"
-
-
-def _detectar_separador(ruta, codificacion):
-    """Separador más frecuente (fuera de comillas) en la primera línea con texto."""
-    with open(ruta, encoding=codificacion, newline="") as f:
-        primera = next((linea for linea in f if linea.strip()), "")
-    cuentas = dict.fromkeys([";", ",", "\t", "|"], 0)
-    entre_comillas = False
-    for caracter in primera:
-        if caracter == '"':
-            entre_comillas = not entre_comillas
-        elif not entre_comillas and caracter in cuentas:
-            cuentas[caracter] += 1
-    mejor = max(cuentas, key=cuentas.get)
-    return mejor if cuentas[mejor] else ","
-
-
-def _lineas_de_datos(ruta):
-    """Líneas no vacías del fichero menos la cabecera (para avisar si el
-    analizador junta líneas: comillas desparejadas, saltos de línea en campos)."""
-    with open(ruta, "rb") as f:
-        return max(sum(1 for linea in f if linea.strip()) - 1, 0)
-
-
-def _nombres_columnas(cabecera):
-    """Nombres únicos como los pone pandas: vacíos -> 'Unnamed: i', repetidos -> 'X.1'."""
-    nombres, vistos = [], set()
-    for i, valor in enumerate(cabecera):
-        nombre = "" if valor is None else str(valor)
-        if nombre == "":
-            nombre = f"Unnamed: {i}"
-        if nombre in vistos:
-            k = 1
-            while f"{nombre}.{k}" in vistos:
-                k += 1
-            nombre = f"{nombre}.{k}"
-        vistos.add(nombre)
-        nombres.append(nombre)
-    return nombres
-
-
-def _leer_csv_tolerante(ruta, sep, codificacion):
-    """Lectura que no descarta nada: como el módulo csv, pero una comilla
-    literal al principio de un campo no se traga los registros siguientes
-    (comun.lectura_csv); los campos que sobran respecto a la cabecera van a
-    columnas _columna_extra_N. Devuelve (df, filas con campos de más,
-    comillas literales)."""
-    with open(ruta, encoding=codificacion, newline="") as f:
-        filas, literales = registros_csv(f.read(), sep)
-    if not filas:
-        return pd.DataFrame(), 0, 0
-    nombres = _nombres_columnas(filas[0])
-    ancho = max(len(fila) for fila in filas)
-    nombres += [f"_columna_extra_{k}" for k in range(1, ancho - len(nombres) + 1)]
-    datos = [[v if v != "" else None for v in fila] + [None] * (ancho - len(fila)) for fila in filas[1:]]
-    df = pd.DataFrame(datos, columns=nombres, dtype=object)
-    extra = [c for c in nombres if c.startswith("_columna_extra_")]
-    con_extra = int(df[extra].notna().any(axis=1).sum()) if extra else 0
-    vacias = [c for c in extra if df[c].isna().all()]
-    return df.drop(columns=vacias), con_extra, literales
-
-
-def leer_csv(ruta):
-    """CSV como texto: dtype=str, sin convertir 'NA', 'N/A', 'NULL'... en nulos
-    (solo el campo vacío es nulo) y sin perder filas ni campos."""
-    ruta = Path(ruta)
-    avisos = []
-    codificacion = _detectar_codificacion(ruta)
-    sep = _detectar_separador(ruta, codificacion)
-    try:
-        with warnings.catch_warnings():
-            # "Length of header or names does not match": pandas perdería campos
-            warnings.simplefilter("error", pd.errors.ParserWarning)
-            df = pd.read_csv(ruta, sep=sep, encoding=codificacion, dtype=str, keep_default_na=False,
-                             na_values=[""], index_col=False, low_memory=False)
-    except pd.errors.EmptyDataError:
-        return pd.DataFrame(), [f"{ruta.name}: fichero sin cabecera ni filas"]
-    except (pd.errors.ParserError, pd.errors.ParserWarning):
-        df, con_extra, literales = _leer_csv_tolerante(ruta, sep, codificacion)
-        if con_extra:
-            avisos.append(f"{ruta.name}: {con_extra:,} filas con más campos que la cabecera; "
-                          "los campos de más se conservan en columnas _columna_extra_N")
-        if literales:
-            avisos.append(f"{ruta.name}: {literales:,} comillas literales al principio de un campo "
-                          "(se conservan en el texto; sin ellas se tragarían los registros siguientes)")
-    if codificacion != "utf-16":
-        lineas = _lineas_de_datos(ruta)
-        if lineas != len(df):
-            # Puede ser una comilla literal que se traga registros enteros:
-            # se vuelve a leer sin que lo haga (comun.lectura_csv)
-            tolerante, con_extra, literales = _leer_csv_tolerante(ruta, sep, codificacion)
-            if literales and len(tolerante) > len(df):
-                avisos.append(f"{ruta.name}: {literales:,} comillas literales al principio de un campo se "
-                              f"tragaban {len(tolerante) - len(df):,} registros; se leen sin tragárselos "
-                              "(la comilla se conserva en el texto)")
-                if con_extra:
-                    avisos.append(f"{ruta.name}: {con_extra:,} filas con más campos que la cabecera; "
-                                  "los campos de más se conservan en columnas _columna_extra_N")
-                df = tolerante
-        if lineas != len(df):
-            avisos.append(f"{ruta.name}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
-                          "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")
-    return df, avisos
-
-
-def _celda_texto(valor):
-    """Valor de una celda de Excel como texto (None si está vacía)."""
-    if valor is None:
-        return None
-    if isinstance(valor, str):
-        return valor if valor != "" else None
-    if isinstance(valor, bool):
-        return str(valor)
-    if isinstance(valor, float):
-        if math.isnan(valor):
-            return None
-        return str(int(valor)) if valor.is_integer() else repr(valor)
-    if isinstance(valor, datetime):
-        if valor.tzinfo is None and valor.time() == dt.time(0):
-            return valor.date().isoformat()
-        return valor.isoformat(sep=" ")
-    if isinstance(valor, (dt.date, dt.time)):
-        return valor.isoformat()
-    return str(valor)
-
-
 def _hoja_a_df(filas, nombre, hoja, avisos):
     """Tabla de una hoja: detecta la fila de cabecera (las filas de título de
     encima se anotan en los avisos) y conserva todas las filas con algún valor."""
@@ -588,36 +427,6 @@ def _leer_xls(ruta):
     finally:
         libro.release_resources()
     return partes, avisos
-
-
-def _buscar_registros(datos, profundidad=0):
-    """Primera lista de objetos de un JSON (la raíz, result.records, data...)."""
-    if isinstance(datos, list) and all(isinstance(x, dict) for x in datos):
-        return datos
-    if isinstance(datos, dict) and profundidad < 4:
-        claves = ["records", "result", "results", "data", "items"]
-        for clave in claves + [k for k in datos if k not in claves]:
-            encontrado = _buscar_registros(datos.get(clave), profundidad + 1)
-            if encontrado is not None:
-                return encontrado
-    return None
-
-
-def _leer_json(ruta):
-    with open(ruta, encoding=_detectar_codificacion(ruta)) as f:
-        registros = _buscar_registros(json.load(f))
-    if registros is None:
-        raise ValueError("el JSON no contiene una lista de registros")
-
-    def texto(v):
-        if v is None:
-            return None
-        if isinstance(v, str):
-            return v if v != "" else None
-        return json.dumps(v, ensure_ascii=False)
-
-    columnas = list(dict.fromkeys(k for r in registros for k in r))
-    return pd.DataFrame([[texto(r.get(c)) for c in columnas] for r in registros], columns=columnas, dtype=object)
 
 
 def leer_tabla(ruta):

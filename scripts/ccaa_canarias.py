@@ -176,7 +176,6 @@ docs/COBERTURA.md (§3 y §5.2):
 """
 
 import argparse
-import codecs
 import csv
 import hashlib
 import io
@@ -200,6 +199,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, leer_registros, versiones  # noqa: E402
+# Lectura común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.lectura
+from comun.lectura import (  # noqa: E402, F401
+    _detectar_codificacion, _nombres_columnas, PATRON_DATO)
 from comun.lectura_csv import registros_csv  # noqa: E402
 # Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
 from comun.red import (  # noqa: E402, F401
@@ -621,28 +623,6 @@ class Filtro:
 # Lectura de ficheros como texto (todas las filas y columnas, sin convertir nada)
 # ----------------------------------------------------------------------------
 
-def _detectar_codificacion(ruta):
-    """Primera codificación capaz de decodificar el fichero COMPLETO: UTF-8 y, si no,
-    cp1252 (antes que latin-1, que acepta cualquier byte y dejaría '€' o '’' como
-    caracteres de control)."""
-    with open(ruta, "rb") as f:
-        inicio = f.read(4)
-    if inicio.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return "utf-16"
-    candidatas = ["utf-8-sig"] if inicio.startswith(b"\xef\xbb\xbf") else ["utf-8"]
-    for codificacion in candidatas + ["cp1252", "latin-1"]:
-        decodificador = codecs.getincrementaldecoder(codificacion)()
-        try:
-            with open(ruta, "rb") as f:
-                while bloque := f.read(1 << 20):
-                    decodificador.decode(bloque)
-            decodificador.decode(b"", final=True)
-            return codificacion
-        except UnicodeDecodeError:
-            continue
-    return "latin-1"
-
-
 def _detectar_separador(texto):
     """Separador más frecuente (fuera de comillas) en la primera línea con texto."""
     primera = next((linea for linea in re.split(r"\r\n|\r|\n", texto[:1 << 16]) if linea.strip()), "")
@@ -655,23 +635,6 @@ def _detectar_separador(texto):
             cuentas[caracter] += 1
     mejor = max(cuentas, key=cuentas.get)
     return mejor if cuentas[mejor] else ","
-
-
-def _nombres_columnas(cabecera):
-    """Nombres únicos como los pone pandas: vacíos -> 'Unnamed: i', repetidos -> 'X.1'."""
-    nombres, vistos = [], set()
-    for i, valor in enumerate(cabecera):
-        nombre = "" if valor is None else str(valor)
-        if nombre == "":
-            nombre = f"Unnamed: {i}"
-        if nombre in vistos:
-            k = 1
-            while f"{nombre}.{k}" in vistos:
-                k += 1
-            nombre = f"{nombre}.{k}"
-        vistos.add(nombre)
-        nombres.append(nombre)
-    return nombres
 
 
 def leer_csv(ruta):
@@ -833,10 +796,6 @@ def _filas_tabla(tabla, valor=_valor_ods):
         if valores:            # una fila vacía (a veces repetida hasta el final de la hoja) no es un registro
             filas.extend([valores] * int(fila.get(_TABLE + "number-rows-repeated", "1")))
     return filas, tapadas
-
-
-PATRON_DATO = re.compile(r"-?\d+(?:[.,]\d+)*|\d{4}-\d{2}-\d{2}(?:[ T][\d:.]+)?|[A-Z]?\d{7,8}[A-Z]?|[A-Z]\d{7}[A-Z0-9]",
-                         re.IGNORECASE)
 
 
 def _es_dato(valor):

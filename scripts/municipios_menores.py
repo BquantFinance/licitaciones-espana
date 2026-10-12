@@ -188,7 +188,6 @@ VERIFICAR EN VIVO:
 """
 
 import argparse
-import codecs
 import collections
 import csv
 import datetime as dt
@@ -216,6 +215,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, leer_registros, versiones  # noqa: E402
+# Lectura común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.lectura
+from comun.lectura import (  # noqa: E402, F401
+    _detectar_codificacion, _nombres_columnas, _celda_texto, PATRON_DATO, _buscar_registros)
 from comun.lectura_csv import registros_csv  # noqa: E402
 # Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
 from comun.red import (  # noqa: E402, F401
@@ -743,28 +745,6 @@ class Resumen:
 # Lectura de ficheros como texto (todas las filas y columnas, sin convertir nada)
 # ----------------------------------------------------------------------------
 
-def _detectar_codificacion(ruta):
-    """Primera codificación capaz de decodificar el fichero COMPLETO. cp1252 va
-    antes que latin-1 (latin-1 acepta cualquier byte y dejaría '€', '’'... como
-    caracteres de control)."""
-    with open(ruta, "rb") as f:
-        inicio = f.read(4)
-    if inicio.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return "utf-16"
-    candidatas = ["utf-8-sig"] if inicio.startswith(b"\xef\xbb\xbf") else ["utf-8"]
-    for codificacion in candidatas + ["cp1252", "latin-1"]:
-        decodificador = codecs.getincrementaldecoder(codificacion)()
-        try:
-            with open(ruta, "rb") as f:
-                while bloque := f.read(1 << 20):
-                    decodificador.decode(bloque)
-            decodificador.decode(b"", final=True)
-            return codificacion
-        except UnicodeDecodeError:
-            continue
-    return "latin-1"
-
-
 def _lineas(texto):
     return re.split(r"\r\n|\r|\n", texto)
 
@@ -790,48 +770,6 @@ def _ancho_habitual(texto, sep):
     lector = csv.reader(io.StringIO(texto[:1 << 18], newline=""), delimiter=sep)
     anchos = collections.Counter(len(fila) for _, fila in zip(range(60), lector) if fila)
     return anchos.most_common(1)[0][0] if anchos else None
-
-
-def _nombres_columnas(cabecera):
-    """Nombres únicos como los pone pandas: vacíos -> 'Unnamed: i', repetidos -> 'X.1'."""
-    nombres, vistos = [], set()
-    for i, valor in enumerate(cabecera):
-        nombre = "" if valor is None else str(valor)
-        if nombre == "":
-            nombre = f"Unnamed: {i}"
-        if nombre in vistos:
-            k = 1
-            while f"{nombre}.{k}" in vistos:
-                k += 1
-            nombre = f"{nombre}.{k}"
-        vistos.add(nombre)
-        nombres.append(nombre)
-    return nombres
-
-
-def _celda_texto(valor):
-    """Valor de una celda de Excel como texto (None si está vacía)."""
-    if valor is None:
-        return None
-    if isinstance(valor, str):
-        return valor if valor != "" else None
-    if isinstance(valor, bool):
-        return str(valor)
-    if isinstance(valor, float):
-        if math.isnan(valor):
-            return None
-        return str(int(valor)) if valor.is_integer() else repr(valor)
-    if isinstance(valor, datetime):
-        if valor.tzinfo is None and valor.time() == dt.time(0):
-            return valor.date().isoformat()
-        return valor.isoformat(sep=" ")
-    if isinstance(valor, (dt.date, dt.time)):
-        return valor.isoformat()
-    return str(valor)
-
-
-PATRON_DATO = re.compile(r"-?\d+(?:[.,]\d+)*|\d{4}-\d{2}-\d{2}(?:[ T][\d:.]+)?|[A-Z]?\d{7,8}[A-Z]?|[A-Z]\d{7}[A-Z0-9]",
-                         re.IGNORECASE)
 
 
 def _es_dato(valor):
@@ -1081,19 +1019,6 @@ def _leer_ods(ruta, nombre):
                 filas = []
                 elemento.clear()
     return partes, avisos
-
-
-def _buscar_registros(datos, profundidad=0):
-    """Primera lista de objetos de un JSON (la raíz, result.records, contratos.contrato...)."""
-    if isinstance(datos, list) and all(isinstance(x, dict) for x in datos):
-        return datos
-    if isinstance(datos, dict) and profundidad < 4:
-        claves = ["records", "result", "results", "data", "items"]
-        for clave in claves + [k for k in datos if k not in claves]:
-            encontrado = _buscar_registros(datos.get(clave), profundidad + 1)
-            if encontrado is not None:
-                return encontrado
-    return None
 
 
 def _leer_json(ruta):
