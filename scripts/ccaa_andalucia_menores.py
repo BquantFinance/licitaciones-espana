@@ -162,6 +162,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, archivar, guardar_version  # noqa: E402
+# Lectura común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.lectura
+from comun.lectura import (  # noqa: E402, F401
+    _lineas_de_datos, _nombres_columnas)
 from comun.lectura_csv import registros_csv  # noqa: E402
 # Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
 from comun.red import (  # noqa: E402, F401
@@ -593,30 +596,6 @@ def _detectar_separador(ruta, codificacion):
             cuentas[caracter] += 1
     mejor = max(cuentas, key=cuentas.get)
     return mejor if cuentas[mejor] else ","
-
-
-def _lineas_de_datos(ruta):
-    """Líneas no vacías del fichero menos la cabecera (para avisar si el
-    analizador junta líneas: comillas desparejadas, saltos de línea en campos)."""
-    with open(ruta, "rb") as f:
-        return max(sum(1 for linea in f if linea.strip()) - 1, 0)
-
-
-def _nombres_columnas(cabecera):
-    """Nombres únicos como los pone pandas: vacíos -> 'Unnamed: i', repetidos -> 'X.1'."""
-    nombres, vistos = [], set()
-    for i, valor in enumerate(cabecera):
-        nombre = "" if valor is None else str(valor)
-        if nombre == "":
-            nombre = f"Unnamed: {i}"
-        if nombre in vistos:
-            k = 1
-            while f"{nombre}.{k}" in vistos:
-                k += 1
-            nombre = f"{nombre}.{k}"
-        vistos.add(nombre)
-        nombres.append(nombre)
-    return nombres
 
 
 def _salto_de_linea(ruta, codificacion):

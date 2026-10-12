@@ -128,12 +128,9 @@ VERIFICAR EN VIVO:
 """
 
 import argparse
-import codecs
-import datetime as dt
 import html
 import importlib
 import json
-import math
 import os
 import re
 import shutil
@@ -155,7 +152,11 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, versiones  # noqa: E402
-from comun.lectura_csv import registros_csv  # noqa: E402
+# Lectura común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.lectura
+from comun.lectura import (  # noqa: E402, F401
+    _detectar_codificacion, _detectar_separador, _lineas_de_datos, _nombres_columnas, _leer_csv_tolerante,
+    _celda_texto, PATRON_DATO, _parece_registro, _hoja_a_df)
+from comun.lectura_csv import registros_csv  # noqa: E402, F401
 # Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
 from comun.red import (  # noqa: E402, F401
     CABECERAS, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES, ERRORES_RED,
@@ -577,88 +578,6 @@ class Resumen:
 # Lectura de ficheros como texto (todas las filas y columnas, sin convertir nada)
 # ----------------------------------------------------------------------------
 
-def _detectar_codificacion(ruta):
-    """Primera codificación capaz de decodificar el fichero COMPLETO. cp1252 va
-    antes que latin-1 (latin-1 acepta cualquier byte y dejaría '€', '’'... como
-    caracteres de control)."""
-    with open(ruta, "rb") as f:
-        inicio = f.read(4)
-    if inicio.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return "utf-16"
-    candidatas = ["utf-8-sig"] if inicio.startswith(b"\xef\xbb\xbf") else ["utf-8"]
-    for codificacion in candidatas + ["cp1252", "latin-1"]:
-        decodificador = codecs.getincrementaldecoder(codificacion)()
-        try:
-            with open(ruta, "rb") as f:
-                while bloque := f.read(1 << 20):
-                    decodificador.decode(bloque)
-            decodificador.decode(b"", final=True)
-            return codificacion
-        except UnicodeDecodeError:
-            continue
-    return "latin-1"
-
-
-def _detectar_separador(ruta, codificacion):
-    """Separador más frecuente (fuera de comillas) en la primera línea con texto."""
-    with open(ruta, encoding=codificacion, newline="") as f:
-        primera = next((linea for linea in f if linea.strip()), "")
-    cuentas = dict.fromkeys([";", ",", "\t", "|"], 0)
-    entre_comillas = False
-    for caracter in primera:
-        if caracter == '"':
-            entre_comillas = not entre_comillas
-        elif not entre_comillas and caracter in cuentas:
-            cuentas[caracter] += 1
-    mejor = max(cuentas, key=cuentas.get)
-    return mejor if cuentas[mejor] else ","
-
-
-def _lineas_de_datos(ruta):
-    """Líneas no vacías del fichero menos la cabecera (para avisar si el
-    analizador junta líneas: comillas desparejadas, saltos de línea en campos)."""
-    with open(ruta, "rb") as f:
-        return max(sum(1 for linea in f if linea.strip()) - 1, 0)
-
-
-def _nombres_columnas(cabecera):
-    """Nombres únicos como los pone pandas: vacíos -> 'Unnamed: i', repetidos -> 'X.1'."""
-    nombres, vistos = [], set()
-    for i, valor in enumerate(cabecera):
-        nombre = "" if valor is None else str(valor)
-        if nombre == "":
-            nombre = f"Unnamed: {i}"
-        if nombre in vistos:
-            k = 1
-            while f"{nombre}.{k}" in vistos:
-                k += 1
-            nombre = f"{nombre}.{k}"
-        vistos.add(nombre)
-        nombres.append(nombre)
-    return nombres
-
-
-def _leer_csv_tolerante(ruta, sep, codificacion):
-    """Lectura que no descarta nada: como el módulo csv, pero una comilla
-    literal al principio de un campo no se traga los registros siguientes
-    (comun.lectura_csv); los campos que sobran respecto a la cabecera van a
-    columnas _columna_extra_N. Devuelve (df, filas con campos de más,
-    comillas literales)."""
-    with open(ruta, encoding=codificacion, newline="") as f:
-        filas, literales = registros_csv(f.read(), sep)
-    if not filas:
-        return pd.DataFrame(), 0, 0
-    nombres = _nombres_columnas(filas[0])
-    ancho = max(len(fila) for fila in filas)
-    nombres += [f"_columna_extra_{k}" for k in range(1, ancho - len(nombres) + 1)]
-    datos = [[v if v != "" else None for v in fila] + [None] * (ancho - len(fila)) for fila in filas[1:]]
-    df = pd.DataFrame(datos, columns=nombres, dtype=object)
-    extra = [c for c in nombres if c.startswith("_columna_extra_")]
-    con_extra = int(df[extra].notna().any(axis=1).sum()) if extra else 0
-    vacias = [c for c in extra if df[c].isna().all()]
-    return df.drop(columns=vacias), con_extra, literales
-
-
 def leer_csv(ruta, nombre=None):
     """CSV como texto: dtype=str, sin convertir 'NA', 'N/A', 'NULL'... en nulos
     (solo el campo vacío es nulo) y sin perder filas ni campos."""
@@ -701,72 +620,6 @@ def leer_csv(ruta, nombre=None):
             avisos.append(f"{nombre}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
                           "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")
     return df, avisos
-
-
-def _celda_texto(valor):
-    """Valor de una celda de Excel como texto (None si está vacía)."""
-    if valor is None:
-        return None
-    if isinstance(valor, str):
-        return valor if valor != "" else None
-    if isinstance(valor, bool):
-        return str(valor)
-    if isinstance(valor, float):
-        if math.isnan(valor):
-            return None
-        return str(int(valor)) if valor.is_integer() else repr(valor)
-    if isinstance(valor, datetime):
-        if valor.tzinfo is None and valor.time() == dt.time(0):
-            return valor.date().isoformat()
-        return valor.isoformat(sep=" ")
-    if isinstance(valor, (dt.date, dt.time)):
-        return valor.isoformat()
-    return str(valor)
-
-
-PATRON_DATO = re.compile(r"-?\d+(?:[.,]\d+)*|\d{4}-\d{2}-\d{2}(?:[ T][\d:.]+)?|[A-Z]?\d{7,8}[A-Z]?|[A-Z]\d{7}[A-Z0-9]",
-                         re.IGNORECASE)
-
-
-def _parece_registro(fila):
-    """¿La fila detectada como cabecera son datos? Lo son si la mayoría de sus
-    celdas con valor son números, fechas o NIF (una cabecera son rótulos)."""
-    valores = [str(v).strip() for v in fila if v is not None and str(v).strip()]
-    return bool(valores) and sum(bool(PATRON_DATO.fullmatch(v)) for v in valores) * 2 > len(valores)
-
-
-def _hoja_a_df(filas, nombre, hoja, avisos):
-    """Tabla de una hoja: detecta la fila de cabecera (las filas de título de
-    encima se anotan en los avisos) y conserva todas las filas con algún valor."""
-    # Número de fila original de cada fila con algún valor (para el aviso)
-    numeradas = [(i, list(f)) for i, f in enumerate(filas) if any(v is not None for v in f)]
-    if not numeradas:
-        return None
-    filas = [f for _, f in numeradas]
-    llenas = [sum(v is not None for v in f) for f in filas[:50]]
-    maximo = max(llenas)
-    umbral = 1 if maximo < 2 else max(2, math.ceil(0.6 * maximo))
-    pos = next((i for i, n in enumerate(llenas[:30]) if n >= umbral), 0)
-    if pos:
-        titulo = " | ".join(" ".join(str(v) for v in f if v is not None) for f in filas[:pos])
-        avisos.append(f"{nombre} [{hoja}]: {numeradas[pos][0]} filas antes de la cabecera "
-                      f"(no son datos): {titulo[:200]}")
-    ancho = max(len(f) for f in filas)
-    cabecera = filas[pos] + [None] * (ancho - len(filas[pos]))
-    if _parece_registro(cabecera):
-        # Hoja sin cabecera (p.ej. una tabla auxiliar de códigos y NIF): su
-        # primera fila es un registro, no los nombres de las columnas
-        avisos.append(f"{nombre} [{hoja}]: sin fila de cabecera (la primera fila son datos: "
-                      f"{' | '.join(str(v) for v in cabecera if v is not None)[:120]}); columnas columna_1…")
-        cabecera = [f"columna_{i}" for i in range(1, ancho + 1)]
-        pos -= 1
-    datos = [f + [None] * (ancho - len(f)) for f in filas[pos + 1:]]
-    df = pd.DataFrame(datos, columns=_nombres_columnas(cabecera), dtype=object)
-    # Columnas sin nombre y sin ningún valor: restos del rango usado de Excel
-    vacias = [c for c, v in zip(df.columns, cabecera) if v is None and df[c].isna().all()]
-    df = df.drop(columns=vacias)
-    df["_hoja"] = hoja
-    return df
 
 
 def _leer_xlsx(ruta, nombre=None):
