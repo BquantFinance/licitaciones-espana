@@ -156,6 +156,10 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, versiones  # noqa: E402
 from comun.lectura_csv import registros_csv  # noqa: E402
+# Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
+from comun.red import (  # noqa: E402, F401
+    CABECERAS, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES, ERRORES_RED,
+    ErrorPortal, _espera)
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -216,16 +220,10 @@ TITULO = "CASTILLA-LA MANCHA - CONTRATOS MENORES"
 # tablas HTML y Parquet por partes para ficheros de cientos de miles de filas)
 # ============================================================================
 
-CABECERAS = {"User-Agent": "licitaciones-espana (+https://github.com/BquantFinance/licitaciones-espana)"}
-TIMEOUT_API = 120
-TIMEOUT_DESCARGA = 600
-INTENTOS = 5
-ESPERA_BASE = 2.0            # segundos: 2, 4, 8, 16 entre intentos
-ESPERA_MAXIMA = 120.0
+# En comun/red.py, con los mismos valores: CABECERAS, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE,
+# ESPERA_MAXIMA, CODIGOS_REINTENTABLES y ERRORES_RED
+TIMEOUT_API = 120            # propio: el de comun/red.py es 60 (lo usa _pedir)
 PAUSA = 0.3                  # entre peticiones, para no cargar el portal
-CODIGOS_REINTENTABLES = {408, 425, 429, 500, 502, 503, 504}
-ERRORES_RED = (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
-               requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError)
 ESTADOS_OK = ("nuevo", "actualizado", "sin_cambios")
 
 # Columnas que añade el script, en el orden en que quedan al final del Parquet.
@@ -261,23 +259,9 @@ def sin_acentos(texto):
     return "".join(c for c in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(c))
 
 
-class ErrorPortal(Exception):
-    def __init__(self, mensaje, codigo=None):
-        super().__init__(mensaje)
-        self.codigo = codigo
-
-
 class LectorNoDisponible(RuntimeError):
     """Falta la biblioteca o el programa para abrir un fichero (p.ej. un RAR): el
     original se conserva y queda como pendiente."""
-
-
-def _espera(intento, respuesta=None):
-    """Backoff exponencial, o lo que pida el servidor en Retry-After."""
-    valor = (getattr(respuesta, "headers", None) or {}).get("Retry-After") if respuesta is not None else None
-    if valor and str(valor).strip().isdigit():
-        return min(float(valor), ESPERA_MAXIMA)
-    return min(ESPERA_BASE * 2 ** (intento - 1), ESPERA_MAXIMA)
 
 
 def _pedir(metodo, url, **kwargs):

@@ -97,6 +97,11 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, leer_registros, versiones  # noqa: E402
 from comun.lectura_csv import registros_csv  # noqa: E402
+# Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
+from comun.red import (  # noqa: E402, F401
+    CABECERAS, TIMEOUT_API, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES,
+    ERRORES_RED, ErrorPortal, _espera, pedir_json, pedir_texto)
+from comun import red  # noqa: E402
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -152,16 +157,9 @@ TITULO = "REGIÓN DE MURCIA - CONTRATACIÓN PÚBLICA"
 # acumulación de registros y Parquet.
 # ============================================================================
 
-CABECERAS = {"User-Agent": "licitaciones-espana (+https://github.com/BquantFinance/licitaciones-espana)"}
-TIMEOUT_API = 60
-TIMEOUT_DESCARGA = 600
-INTENTOS = 5
-ESPERA_BASE = 2.0            # segundos: 2, 4, 8, 16 entre intentos
-ESPERA_MAXIMA = 120.0
+# En comun/red.py, con los mismos valores: CABECERAS, TIMEOUT_API, TIMEOUT_DESCARGA, INTENTOS,
+# ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES y ERRORES_RED
 PAUSA = 0.3                  # entre peticiones, para no cargar el portal
-CODIGOS_REINTENTABLES = {408, 425, 429, 500, 502, 503, 504}
-ERRORES_RED = (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
-               requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError)
 ESTADOS_OK = ("nuevo", "actualizado", "sin_cambios")
 
 # Columnas que añade el script, en el orden en que quedan al final del Parquet.
@@ -213,72 +211,6 @@ def sin_acentos(texto):
     return "".join(c for c in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(c))
 
 
-class ErrorPortal(Exception):
-    def __init__(self, mensaje, codigo=None):
-        super().__init__(mensaje)
-        self.codigo = codigo
-
-
-def _espera(intento, respuesta=None):
-    """Backoff exponencial, o lo que pida el servidor en Retry-After."""
-    valor = (getattr(respuesta, "headers", None) or {}).get("Retry-After") if respuesta is not None else None
-    if valor and str(valor).strip().isdigit():
-        return min(float(valor), ESPERA_MAXIMA)
-    return min(ESPERA_BASE * 2 ** (intento - 1), ESPERA_MAXIMA)
-
-
-def pedir_json(url, params=None):
-    """GET a una API JSON con reintentos (red, 429, 5xx, respuesta no JSON).
-    Un 4xx no se reintenta: se lanza ErrorPortal con el código."""
-    detalle = ""
-    for intento in range(1, INTENTOS + 1):
-        respuesta = None
-        try:
-            respuesta = requests.get(url, params=params, headers=CABECERAS, timeout=TIMEOUT_API)
-            codigo = respuesta.status_code
-            if codigo not in CODIGOS_REINTENTABLES:
-                if codigo >= 400:
-                    raise ErrorPortal(f"HTTP {codigo}", codigo)
-                return respuesta.json()
-            detalle = f"HTTP {codigo}"
-        except ErrorPortal:
-            raise
-        except ERRORES_RED as e:
-            detalle = f"{type(e).__name__}: {str(e)[:150]}"
-        except ValueError as e:
-            detalle = f"respuesta no JSON ({str(e)[:80]})"
-        except requests.exceptions.RequestException as e:
-            raise ErrorPortal(f"{type(e).__name__}: {str(e)[:150]}") from e
-        if intento < INTENTOS:
-            time.sleep(_espera(intento, respuesta))
-    raise ErrorPortal(f"{detalle} (tras {INTENTOS} intentos)")
-
-
-def pedir_texto(url):
-    """GET de una página HTML con reintentos (red, 429, 5xx); un 4xx lanza
-    ErrorPortal."""
-    detalle = ""
-    for intento in range(1, INTENTOS + 1):
-        respuesta = None
-        try:
-            respuesta = requests.get(url, headers=CABECERAS, timeout=TIMEOUT_API)
-            codigo = respuesta.status_code
-            if codigo not in CODIGOS_REINTENTABLES:
-                if codigo >= 400:
-                    raise ErrorPortal(f"HTTP {codigo}", codigo)
-                return respuesta.text
-            detalle = f"HTTP {codigo}"
-        except ErrorPortal:
-            raise
-        except ERRORES_RED as e:
-            detalle = f"{type(e).__name__}: {str(e)[:150]}"
-        except requests.exceptions.RequestException as e:
-            raise ErrorPortal(f"{type(e).__name__}: {str(e)[:150]}") from e
-        if intento < INTENTOS:
-            time.sleep(_espera(intento, respuesta))
-    raise ErrorPortal(f"{detalle} (tras {INTENTOS} intentos)")
-
-
 def formato_contenido(cabeza):
     """Formato real de un fichero por sus primeros bytes."""
     if cabeza.startswith(b"PK\x03\x04"):
@@ -313,50 +245,12 @@ def validar_contenido(ruta, tipo):
 
 
 def descargar(url, destino, params=None, tipo=None):
-    """Descarga `url` en `destino` sin perder nunca la versión anterior.
-
-    Escribe en un temporal, comprueba que es el tipo de fichero esperado y lo
-    entrega a guardar_version(): si el contenido no cambió no se toca nada y si
-    cambió la copia previa pasa a _historico/. Reintenta con backoff los fallos
-    de red, 429 y 5xx (también cortes a mitad de descarga).
+    """Descarga `url` en `destino` sin perder nunca la versión anterior
+    (comun.red.descargar, con el validar_contenido de este script).
     Devuelve (estado, detalle): 'nuevo' | 'actualizado' | 'sin_cambios',
     'no_existe' (404/410), 'invalido' (no es el fichero esperado) o 'error'.
     """
-    destino = Path(destino)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    tmp = destino.with_name(f".{destino.name}.part")
-    detalle = ""
-    try:
-        for intento in range(1, INTENTOS + 1):
-            respuesta = None
-            try:
-                with requests.get(url, params=params, headers=CABECERAS, timeout=TIMEOUT_DESCARGA,
-                                  stream=True) as respuesta:
-                    codigo = respuesta.status_code
-                    if codigo in (404, 410):
-                        return "no_existe", f"HTTP {codigo}"
-                    if codigo not in CODIGOS_REINTENTABLES:
-                        if codigo >= 400:
-                            return "error", f"HTTP {codigo}"
-                        with open(tmp, "wb") as f:
-                            for trozo in respuesta.iter_content(chunk_size=1 << 16):
-                                if trozo:
-                                    f.write(trozo)
-                        motivo = validar_contenido(tmp, tipo)
-                        if motivo:
-                            return "invalido", motivo
-                        return guardar_version(destino, desde=tmp), ""
-                    detalle = f"HTTP {codigo}"
-            except ERRORES_RED as e:
-                detalle = f"{type(e).__name__}: {str(e)[:150]}"
-            except requests.exceptions.RequestException as e:
-                return "error", f"{type(e).__name__}: {str(e)[:150]}"
-            if intento < INTENTOS:
-                time.sleep(_espera(intento, respuesta))
-        return "error", f"{detalle} (tras {INTENTOS} intentos)"
-    finally:
-        if tmp.exists():
-            tmp.unlink()
+    return red.descargar(url, destino, params, tipo, validar_contenido=validar_contenido)
 
 
 def guardar_json(destino, datos):

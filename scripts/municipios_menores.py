@@ -217,6 +217,10 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import HISTORICO, acumular, guardar_version, leer_registros, versiones  # noqa: E402
 from comun.lectura_csv import registros_csv  # noqa: E402
+# Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
+from comun.red import (  # noqa: E402, F401
+    CABECERAS, TIMEOUT_API, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES,
+    ERRORES_RED, ErrorPortal, _espera)
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -270,16 +274,9 @@ TITULO = "CONTRATOS MENORES DE AYUNTAMIENTOS (FUERA DE LA PLACSP)"
 # de un municipio a partir del manifiesto)
 # ============================================================================
 
-CABECERAS = {"User-Agent": "licitaciones-espana (+https://github.com/BquantFinance/licitaciones-espana)"}
-TIMEOUT_API = 60
-TIMEOUT_DESCARGA = 600
-INTENTOS = 5
-ESPERA_BASE = 2.0            # segundos: 2, 4, 8, 16 entre intentos
-ESPERA_MAXIMA = 120.0
+# En comun/red.py, con los mismos valores: CABECERAS, TIMEOUT_API, TIMEOUT_DESCARGA, INTENTOS,
+# ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES y ERRORES_RED
 PAUSA = 0.3                  # entre peticiones, para no cargar el portal
-CODIGOS_REINTENTABLES = {408, 425, 429, 500, 502, 503, 504}
-ERRORES_RED = (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
-               requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError)
 ESTADOS_OK = ("nuevo", "actualizado", "sin_cambios")
 PARAMETROS_VOLATILES = {"t"}             # ?t=<marca de tiempo> de Liferay (Leganés)
 INTENTOS_OPCIONAL = 2                    # catálogos opcionales (CKAN de Vigo)
@@ -322,20 +319,6 @@ def fecha_version(ruta):
 
 def sin_acentos(texto):
     return "".join(c for c in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(c))
-
-
-class ErrorPortal(Exception):
-    def __init__(self, mensaje, codigo=None):
-        super().__init__(mensaje)
-        self.codigo = codigo
-
-
-def _espera(intento, respuesta=None):
-    """Backoff exponencial, o lo que pida el servidor en Retry-After."""
-    valor = (getattr(respuesta, "headers", None) or {}).get("Retry-After") if respuesta is not None else None
-    if valor and str(valor).strip().isdigit():
-        return min(float(valor), ESPERA_MAXIMA)
-    return min(ESPERA_BASE * 2 ** (intento - 1), ESPERA_MAXIMA)
 
 
 def _pedir(url, params=None, intentos=INTENTOS):
