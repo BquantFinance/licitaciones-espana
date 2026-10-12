@@ -207,6 +207,9 @@ from comun.lectura_csv import registros_csv  # noqa: E402
 from comun.red import (  # noqa: E402, F401
     CABECERAS, TIMEOUT_API, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES,
     ERRORES_RED, ErrorPortal, _espera)
+# Salida común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.salida
+from comun.salida import (  # noqa: E402, F401
+    iso, fecha_version, guardar_json)
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -250,6 +253,8 @@ TITULO = "CANARIAS - CONTRATOS MENORES"
 # UTILIDADES COMUNES (bloque de ccaa_andalucia_menores.py, ccaa_la_rioja.py y
 # municipios_menores.py adaptado: cabeceras por petición, JSON con los números
 # como vienen escritos, ODS y ODT leídos de su content.xml)
+# Lo que era idéntico en varios scripts está en comun/red.py, comun/lectura.py y
+# comun/salida.py: se importa con el mismo nombre o se envuelve aquí.
 # ============================================================================
 
 # En comun/red.py, con los mismos valores: CABECERAS, TIMEOUT_API, TIMEOUT_DESCARGA, INTENTOS,
@@ -269,23 +274,6 @@ ORDEN_METADATOS = (CONTEXTO_CONTENIDO + METADATOS_ORIGEN
 
 def ahora():
     return datetime.now(timezone.utc)
-
-
-def iso(momento):
-    """Fecha ISO 8601 en UTC al segundo: '2026-09-27T14:43:00Z' (ordenable como texto)."""
-    return momento.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def fecha_version(ruta):
-    """Fecha de una versión de un fichero crudo: el sello que guardar_version pone
-    en _historico/ (fecha de esa copia) o, para la copia actual, su fecha de
-    modificación. Al pasar a _historico/ la copia conserva la misma fecha."""
-    ruta = Path(ruta)
-    if ruta.parent.name == HISTORICO:
-        sellos = re.findall(r"__(\d{8}T\d{6}Z)", ruta.name)
-        if sellos:
-            return iso(datetime.strptime(sellos[-1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc))
-    return iso(datetime.fromtimestamp(ruta.stat().st_mtime, timezone.utc))
 
 
 def sin_acentos(texto):
@@ -476,12 +464,6 @@ def descargar(url, destino, tipo, cabeceras=None, tamano=None):
     finally:
         if tmp.exists():
             tmp.unlink()
-
-
-def guardar_json(destino, datos):
-    """Guarda metadatos del portal (fichas, inventarios de enlaces) conservando sus versiones."""
-    contenido = json.dumps(datos, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
-    return guardar_version(destino, contenido)
 
 
 class Manifiesto:

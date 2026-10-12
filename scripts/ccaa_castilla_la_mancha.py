@@ -161,6 +161,9 @@ from comun.lectura_csv import registros_csv  # noqa: E402, F401
 from comun.red import (  # noqa: E402, F401
     CABECERAS, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE, ESPERA_MAXIMA, CODIGOS_REINTENTABLES, ERRORES_RED,
     ErrorPortal, _espera)
+# Salida común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.salida
+from comun.salida import (  # noqa: E402, F401
+    iso, fecha_version, guardar_json, _como_texto)
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -219,6 +222,8 @@ TITULO = "CASTILLA-LA MANCHA - CONTRATOS MENORES"
 # ============================================================================
 # UTILIDADES COMUNES (bloque de ccaa_murcia.py adaptado: POST, ZIP/RAR anidados,
 # tablas HTML y Parquet por partes para ficheros de cientos de miles de filas)
+# Lo que era idéntico en varios scripts está en comun/red.py, comun/lectura.py y
+# comun/salida.py: se importa con el mismo nombre o se envuelve aquí.
 # ============================================================================
 
 # En comun/red.py, con los mismos valores: CABECERAS, TIMEOUT_DESCARGA, INTENTOS, ESPERA_BASE,
@@ -237,23 +242,6 @@ ORDEN_METADATOS = METADATOS_ORIGEN + ("_primera_descarga", "_ultima_descarga", "
 
 def ahora():
     return datetime.now(timezone.utc)
-
-
-def iso(momento):
-    """Fecha ISO 8601 en UTC al segundo: '2026-09-27T14:43:00Z' (ordenable como texto)."""
-    return momento.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def fecha_version(ruta):
-    """Fecha de una versión de un fichero crudo: el sello que guardar_version pone
-    en _historico/ (fecha de esa copia) o, para la copia actual, su fecha de
-    modificación. Al pasar a _historico/ la copia conserva la misma fecha."""
-    ruta = Path(ruta)
-    if ruta.parent.name == HISTORICO:
-        sellos = re.findall(r"__(\d{8}T\d{6}Z)", ruta.name)
-        if sellos:
-            return iso(datetime.strptime(sellos[-1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc))
-    return iso(datetime.fromtimestamp(ruta.stat().st_mtime, timezone.utc))
 
 
 def sin_acentos(texto):
@@ -463,12 +451,6 @@ def descargar(url, destino, params=None, tipo=None):
     finally:
         if tmp.exists():
             tmp.unlink()
-
-
-def guardar_json(destino, datos):
-    """Guarda metadatos del portal (inventarios) conservando sus versiones."""
-    contenido = json.dumps(datos, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
-    return guardar_version(destino, contenido)
 
 
 class Manifiesto:
@@ -1020,16 +1002,6 @@ def leer_tabla(ruta):
 # ----------------------------------------------------------------------------
 # Registros acumulados (comun/historico.py) y Parquet
 # ----------------------------------------------------------------------------
-
-def _como_texto(serie):
-    """Serie de texto (None = nulo) para escribirla como string en Parquet."""
-    if isinstance(serie.dtype, pd.StringDtype):
-        return serie
-    valores = serie.astype(object)
-    if pd.api.types.infer_dtype(valores, skipna=True) in ("string", "empty"):
-        return valores
-    return valores.map(lambda v: v if isinstance(v, str) else (None if pd.isna(v) else str(v)))
-
 
 def ordenar_columnas(df):
     """Columnas del portal (en su orden) y después las añadidas por el script."""
