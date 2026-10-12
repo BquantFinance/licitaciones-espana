@@ -1568,7 +1568,9 @@ def scope_from_report(informe):
         # Ventanas contiguas completas, juntas en un solo tramo de fechas.
         ranges = []
         for start, end in sorted(cm.get("ventanas") or []):
-            if ranges and pd.Timestamp(start) - pd.Timestamp(ranges[-1][1]) == pd.Timedelta(days=1):
+            # Un día, como Timedelta(1, unit="D"): Timedelta(days=1) es el mismo valor, pero con pandas 2.2 y
+            # numpy 2.5 da un aviso de numpy (unidad genérica) que un numpy futuro convertirá en error
+            if ranges and pd.Timestamp(start) - pd.Timestamp(ranges[-1][1]) == pd.Timedelta(1, unit="D"):
                 ranges[-1][1] = end
             else:
                 ranges.append([start, end])

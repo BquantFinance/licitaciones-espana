@@ -186,6 +186,7 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `ted/run_ted_crossvalidation.py` | — | Cross-validation PLACSP↔TED + matching avanzado (9 estrategias) |
 | `ted/diagnostico_missing_ted.py` | — | Diagnóstico de missing |
 | `ted/analisis_sector_salud.py` | — | Deep dive sector salud |
+| `ted/cross-validation_ted_placsp.py` | — | Versión anterior del cruce PLACSP↔TED (la vigente es `run_ted_crossvalidation.py`) |
 | `borme/scripts/borme_scraper.py` | BOE/BORME | Descarga ~126K PDFs del Registro Mercantil |
 | `borme/scripts/borme_batch_parser.py` | — | Parser de actos mercantiles (constituciones, cargos...) |
 | `borme/scripts/borme_anonymize.py` | — | Genera las versiones públicas, con las personas seudonimizadas |

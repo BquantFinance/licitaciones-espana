@@ -1,8 +1,15 @@
 """
-Cross-validation PLACSP ↔ TED
-==============================
+Cross-validation PLACSP ↔ TED (VERSIÓN ANTERIOR)
+================================================
 Cruza el parquet de licitaciones nacionales contra los datos TED
 para detectar contratos que deberían estar publicados en TED pero no lo están.
+
+Es la versión anterior y más simple del cruce: un único umbral (140.000 EUR) para
+todo tipo de contrato y dos estrategias de matching (NIF e importe, y nº de
+expediente), sin las reglas SARA por bienio, tipo de contrato y comprador ni las
+demás estrategias de ted/run_ted_crossvalidation.py, que es la vigente
+(docs/fuentes/ted.md). Se conserva, con su test, para poder repetir los
+resultados de entonces.
 
 Uso:
     python ted/cross-validation_ted_placsp.py

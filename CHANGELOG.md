@@ -22,6 +22,13 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 - `ted/run_ted_crossvalidation.py`, `ted/cross-validation_ted_placsp.py` y `ted/analisis_sector_salud.py` leen por defecto la PLACSP de `nacional/licitaciones_completo.parquet` (la tabla del scraper actual), no de `nacional/licitaciones_espana.parquet` (v2026.02).
 - Cataluña: `ccaa_cataluna_parquet.py` convierte cada versión a Parquet por trozos. Con las tres versiones de la PSCP, el pico de memoria baja de 15,2 a 3,6 GiB, con la misma salida fila a fila (#57).
 
+### Corregido
+
+- **Galicia:** `scope_from_report` construye el día con `pd.Timedelta(1, unit="D")` en lugar de `pd.Timedelta(days=1)`: el mismo valor y la misma comparación, sin los 6.928 avisos de numpy («unidad genérica») que daba en los tests con pandas 2.2 y numpy 2.5 y que un numpy futuro convertirá en error.
+- **Calidad:** `calcular_score` rellena con `False` sin el FutureWarning de pandas 2.2; el resultado es el mismo en cada versión de pandas (Parquet de salida idéntico byte a byte).
+- **Tests:** el fixture de Canarias llevaba el NIF real de una persona física; ahora uno inventado con su letra de control válida (`12345678Z`).
+- `ted/cross-validation_ted_placsp.py` se marca como versión anterior del cruce PLACSP↔TED; la vigente es `run_ted_crossvalidation.py`.
+
 ### Eliminado
 
 - **Los datos de v2026.02 que estaban en Git LFS salen del árbol** (519 ficheros, 6,77 GB, y `Euskadi/euskadi_parquet/stats.json`). Siguen en la etiqueta `datos-lfs-v2026.02`, en las releases y en la historia: no se borra ningún objeto. El clon baja de 6,9 GB con git-lfs a unos 160 MB. `.gitignore` excluye las carpetas de salida de los scrapers y los Parquet, para que una ejecución local no suba datos; `.gitattributes` queda con la regla de `*.parquet`, y se quita `Euskadi/.gitattributes`, que la repetía. `ccaa_Andalucia/` y `ccaa_asturias/` siguen en el árbol, solo con un `LEEME.md`, porque sus scripts las crean de entrada (al importarse y al instanciarse) y con el repositorio en solo lectura tienen que existir.

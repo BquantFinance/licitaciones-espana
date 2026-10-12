@@ -2827,5 +2827,51 @@ class GaliciaNombreConSemillaTests(unittest.TestCase):
         self.assertEqual(scraper_galicia.organism_name(pagina), "Consellería de Facenda e Administración")
 
 
+class GaliciaVentanasContiguasTests(unittest.TestCase):
+    """scope_from_report junta las ventanas de CM separadas por un día exacto. El día se construye con
+    Timedelta(1, unit="D") y no con Timedelta(days=1), que con pandas 2.2 y numpy 2.5 da un aviso de numpy: tiene
+    que juntar lo mismo que el código anterior, con fechas, horas, nanosegundos, años bisiestos y cambios de año,
+    y sin ningún aviso."""
+
+    @staticmethod
+    def _juntar_como_antes(ventanas):
+        ranges = []
+        for start, end in sorted(ventanas):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                contigua = bool(ranges) and pd.Timestamp(start) - pd.Timestamp(ranges[-1][1]) == pd.Timedelta(days=1)
+            if contigua:
+                ranges[-1][1] = end
+            else:
+                ranges.append([start, end])
+        return ranges
+
+    def _juntar(self, ventanas):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")   # ningún aviso, tampoco con pandas 2.2
+            return scraper_galicia.scope_from_report({"CM": {"ventanas": [list(v) for v in ventanas]}})["CM"]
+
+    def test_casos_limite(self):
+        for a, b in [("2024-03-01", "2024-02-29"), ("2024-03-01", "2024-02-28"), ("2026-01-01", "2025-12-31"),
+                     ("2024-03-01 00:00:00", "2024-02-29 00:00:00"), ("2024-03-01 00:00:00.000000001", "2024-02-29"),
+                     ("2024-02-29 23:59:59", "2024-02-29"), ("2024-02-28", "2024-02-29")]:
+            ventanas = [[b, b], [a, a]]
+            self.assertEqual(self._juntar(ventanas), self._juntar_como_antes(ventanas), (a, b))
+        self.assertEqual(self._juntar([["2024-01-01", "2024-03-31"], ["2024-04-01", "2024-06-30"]]),
+                         [["2024-01-01", "2024-06-30"]])
+        self.assertEqual(self._juntar([]), [])
+
+    def test_igual_que_antes_con_ventanas_al_azar(self):
+        fechas = pd.date_range("2023-12-20", "2024-03-10", freq="D")
+        rnd = random.Random(20261012)
+        for _ in range(300):
+            ventanas = []
+            for _ in range(rnd.randint(0, 8)):
+                ini = fechas[rnd.randrange(len(fechas))]
+                fin = ini + pd.Timedelta(rnd.randint(0, 40), unit="D")
+                ventanas.append([ini.strftime("%Y-%m-%d"), fin.strftime("%Y-%m-%d")])
+            self.assertEqual(self._juntar(ventanas), self._juntar_como_antes(ventanas), ventanas)
+
+
 if __name__ == "__main__":
     unittest.main()
