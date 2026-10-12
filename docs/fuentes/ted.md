@@ -175,6 +175,7 @@ Top órganos missing: Servicio Andaluz de Salud (4,833), FREMAP (2,410), IB-Salu
 | `ted/run_ted_crossvalidation.py` | Cross-validation PLACSP↔TED con reglas SARA + matching avanzado (9 estrategias: E1-E7, E2b, E3b) → `ted/crossval_*.parquet` |
 | `ted/diagnostico_missing_ted.py` | Diagnóstico de missing: falsos positivos vs gaps reales |
 | `ted/analisis_sector_salud.py` | Deep dive sector salud: lotes, acuerdos marco, CPV, CCAA |
+| `ted/cross-validation_ted_placsp.py` | **Versión anterior** y más simple del cruce (un único umbral de 140.000 € y dos estrategias de matching, sin las reglas SARA por bienio, tipo de contrato y comprador). Se conserva, con su test, para repetir los resultados de entonces; la vigente es `run_ted_crossvalidation.py` |
 
 ## Uso
 

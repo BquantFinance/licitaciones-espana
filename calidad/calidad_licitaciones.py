@@ -396,8 +396,18 @@ def aplicar_borme(df, empresas):
 # SCORE Y RESUMEN
 # ======================================================================
 
+def _rellenar_con_false(sc):
+    """sc.fillna(False) con el mismo resultado que hasta ahora en cada versión de pandas, sin el FutureWarning
+    de pandas 2.2. pandas 2.2 convertía en silencio a bool las columnas que quedaban de tipo object al rellenar
+    (y avisaba de que pandas 3 dejaría de hacerlo): aquí esa conversión se hace explícita con infer_objects.
+    pandas 3 ya no convierte, así que ahí basta fillna."""
+    if int(pd.__version__.split(".")[0]) >= 3:
+        return sc.fillna(False)
+    with pd.option_context("future.no_silent_downcasting", True):
+        return sc.fillna(False).infer_objects(copy=False)
+
 def calcular_score(sc):
-    ev=sc.notna().sum(axis=1); pa=sc.fillna(False).sum(axis=1)
+    ev=sc.notna().sum(axis=1); pa=_rellenar_con_false(sc).sum(axis=1)
     s=(pa/ev*100).round(1); s[ev==0]=np.nan; return s
 
 def imprimir_resumen(sc, n, df):

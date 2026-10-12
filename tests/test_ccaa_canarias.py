@@ -220,7 +220,7 @@ def test_csv_del_gobierno_se_lee_tal_cual():
     # '_U' (no consta) se queda como texto; el campo vacío es el único nulo
     assert int((df == "_U").sum().sum()) == 59
     assert int(df.isna().sum().sum()) == 1 and df["formula_revision_precios"].isna().sum() == 1
-    assert df["importe_ofertado"].iloc[0] == "4575" and df["adjudicataria_nif"].iloc[0] == "43667730E"
+    assert df["importe_ofertado"].iloc[0] == "4575" and df["adjudicataria_nif"].iloc[0] == "12345678Z"
     # Todos los procedimientos, como se publican (7 menores; los otros 3, también)
     assert df["procedimiento_contratacion"].value_counts().to_dict() == {
         "Contrato menor": 7, "Abierto": 1, "Negociado sin publicidad": 1, "Abierto simplificado": 1}

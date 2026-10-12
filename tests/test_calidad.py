@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -186,3 +187,18 @@ def test_cons20_se_une_por_version_y_respeta_la_cobertura_de_ted(tmp_path):
     ted.drop(columns=["id", "fecha_updated", "_ted_anio_cubierto"]).to_parquet(ruta_antigua, index=False)
     antiguo = calidad.calcular_cons20(_nacional_cons20(), str(ruta_antigua))
     assert antiguo.tolist() == [True, True, False, False, False]
+
+
+def test_calcular_score_sin_avisos():
+    """calcular_score rellena con False sin el FutureWarning de pandas 2.2 (que convertía en silencio las columnas
+    object a bool al rellenar) y cuenta igual: un indicador sin evaluar (NaN, None o <NA>) no cuenta."""
+    sc = pd.DataFrame({
+        "A": pd.array([True, False, None, True], dtype="boolean"),
+        "B": np.array([True, True, False, False]),
+        "C": [np.nan, np.nan, np.nan, np.nan],                  # indicador sin evaluar en ninguna fila
+        "D": pd.Series([True, None, False, np.nan], dtype=object),
+    })
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        s = calidad.calcular_score(sc)
+    assert [float(x) for x in s] == [100.0, 50.0, 0.0, 50.0]
