@@ -54,7 +54,9 @@ from nacional.licitaciones import leer_placsp  # noqa: E402
 
 # Rutas relativas a la raíz del repo (no al cwd)
 _REPO_DIR = Path(__file__).resolve().parent.parent
-PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_espana.parquet"
+# La tabla principal de la PLACSP: la salida de nacional/licitaciones.py o las partes de la release
+# juntas en un fichero (docs/fuentes/ted.md#cruce-placsp--ted-cross-validation)
+PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_completo.parquet"
 TED_PATH = _REPO_DIR / "ted" / "ted_es_can.parquet"
 OUTPUT_DIR = _REPO_DIR / "ted"
 

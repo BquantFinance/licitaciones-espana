@@ -26,8 +26,11 @@ Procesa el fichero por row groups, así que no necesita cargar las ~9M filas en
 memoria a la vez.
 
 Uso:
-    python nacional/normalizar_placsp.py -i nacional/licitaciones_espana.parquet \\
-        -o nacional/licitaciones_espana_normalizado.parquet
+    python nacional/normalizar_placsp.py -i licitaciones_espana.parquet \\
+        -o licitaciones_espana_normalizado.parquet
+
+(licitaciones_espana.parquet: el de v2026.02, en nacional.zip de esa release o en la
+etiqueta datos-lfs-v2026.02 del repositorio)
 """
 
 import argparse

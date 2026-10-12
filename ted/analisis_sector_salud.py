@@ -41,7 +41,7 @@ _REPO_DIR = Path(__file__).resolve().parent.parent
 SARA_V2_PATH = _REPO_DIR / "ted" / "crossval_sara_v2.parquet"
 SARA_V1_PATH = _REPO_DIR / "ted" / "crossval_sara.parquet"
 TED_PATH = _REPO_DIR / "ted" / "ted_es_can.parquet"
-PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_espana.parquet"
+PLACSP_PATH = _REPO_DIR / "nacional" / "licitaciones_completo.parquet"
 OUTPUT_DIR = _REPO_DIR / "data" / "ted"
 
 # Patrones para detectar organos de salud

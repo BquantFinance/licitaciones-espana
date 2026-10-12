@@ -12,10 +12,10 @@ Reglas que cumple todo scraper y todo cambio del repositorio. El código las cit
    - **Capa cruda:** toda escritura de una descarga que pueda existir pasa por `guardar_version`; la versión anterior va a `_historico/`.
    - **Salidas:** se construyen con el código actual desde **todas** las versiones de los crudos (`versiones()`), usando `acumular(anterior, nuevos, fecha, ambito=...)`. Los registros retirados o modificados se conservan con `_en_ultima_descarga=False`. Una descarga vacía o fallida no retira nada.
    - **Re-ejecuciones:** incrementales y reanudables.
-4. **Las releases publicadas (v2026.02 y v2026.10) y el LFS del repo son la copia histórica.**
+4. **Las releases publicadas (v2026.02 y v2026.10) son la copia histórica.** El repositorio no lleva datos: se publican solo en las releases.
    - No modificar ni borrar ficheros de datos publicados.
    - Cada scraper debe aceptar `--semilla <parquet publicado>`. Añade, **por clave estable**, solo las claves que no aparecen en la nueva descarga, marcadas con `_origen='release v2026.02'` y `_en_ultima_descarga=False`. Nunca modifica ni duplica filas nuevas. Hay que documentar los errores conocidos del publicado de esa fuente, en su ficha de [`docs/fuentes/`](fuentes/).
-   - Los parquet publicados se descargan de `https://media.githubusercontent.com/media/BquantFinance/licitaciones-espana/main/<ruta>`.
+   - Los ficheros de v2026.02 que estuvieron en Git LFS en el árbol del repositorio siguen en la etiqueta `datos-lfs-v2026.02` (es la semilla de Galicia, por ejemplo) y se descargan de `https://media.githubusercontent.com/media/BquantFinance/licitaciones-espana/datos-lfs-v2026.02/<ruta>`.
 5. **Tests con pandas 3 y pandas 2.2**, la segunda en un venv aparte (`pip install "pandas==2.2.3"`: `pandas<3` instala 2.3). La suite completa en verde antes de cada commit.
 6. **Git.**
    - Un cambio por rama y por PR, con la suite en verde.

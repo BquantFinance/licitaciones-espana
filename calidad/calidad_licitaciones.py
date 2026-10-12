@@ -5,13 +5,13 @@ PIPELINE DE CALIDAD — Licitaciones Publicas de Espana (v4.0)
 21 indicadores sobre PLACSP nacional + TED + BORME.
 
 Uso:
-  python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
+  python calidad_licitaciones.py -i nacional/licitaciones_completo.parquet
 
-  python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
+  python calidad_licitaciones.py -i nacional/licitaciones_completo.parquet \
     --ted ted/crossval_sara.parquet \
     --borme borme_empresas.parquet
 
-  python calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
+  python calidad_licitaciones.py -i nacional/licitaciones_completo.parquet \
     --ted ted/crossval_sara.parquet \
     --borme borme_empresas.parquet \
     -s 200000

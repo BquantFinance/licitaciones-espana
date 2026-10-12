@@ -102,8 +102,8 @@ misma regla; la del TED usa `avisos_para_cruce()` del repositorio, tal cual.
 
 ```bash
 pip install duckdb pandas pyarrow
-# Solo el código: sin GIT_LFS_SKIP_SMUDGE=1, git-lfs bajaría los 6,8 GB de datos antiguos (v2026.02) del repositorio
-GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 https://github.com/BquantFinance/licitaciones-espana
+# Solo el código: el repositorio no lleva datos
+git clone --depth 1 https://github.com/BquantFinance/licitaciones-espana
 cd licitaciones-espana
 python scripts/medir_consultas.py --datos CARPETA --motor ambos --json mi_maquina.json
 ```

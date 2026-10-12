@@ -5,7 +5,7 @@ Todo lo que trae la release sale de los scripts de este repositorio, que descarg
 ## Requisitos
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/BquantFinance/licitaciones-espana.git
+git clone https://github.com/BquantFinance/licitaciones-espana.git
 cd licitaciones-espana
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
@@ -40,7 +40,13 @@ for z in nacional ted andalucia asturias borme catalunya comunidad_madrid; do
 done
 ```
 
-La de Galicia es el Parquet de Git LFS del repositorio, del 26-feb-2026 (`git lfs pull --include galicia/contratos_galicia.parquet`): el ZIP de v2026.02 solo trae el CSV, con 12 columnas. Las fuentes nuevas de v2026.10 no tienen semilla: no estaban en v2026.02.
+La de Galicia es el Parquet que estuvo en Git LFS en el repositorio, del 26-feb-2026: el ZIP de v2026.02 solo trae el CSV, con 12 columnas. Sigue en la etiqueta `datos-lfs-v2026.02`:
+
+```bash
+mkdir -p v2026.02/galicia
+curl -L -o v2026.02/galicia/contratos_galicia.parquet https://media.githubusercontent.com/media/BquantFinance/licitaciones-espana/datos-lfs-v2026.02/galicia/contratos_galicia.parquet
+```
+ Las fuentes nuevas de v2026.10 no tienen semilla: no estaban en v2026.02.
 
 ## Cada fuente
 
@@ -63,7 +69,7 @@ Los comandos son los de una primera descarga completa en `datos/<fuente>/`. Los 
 | [C. Valenciana](fuentes/valencia.md) | ver abajo | — | ~20 min | `valencia.zip` |
 | [C. Valenciana, menores](fuentes/valencia_menores.md) | `python scripts/ccaa_valencia_menores.py --salida datos/valencia_menores` | — | 12 min | `valencia_menores.zip` |
 | [Extremadura](fuentes/extremadura.md) | `python scripts/ccaa_extremadura.py --salida datos/extremadura` | — | 2 min | `extremadura.zip` |
-| [Galicia](fuentes/galicia.md) | ver abajo | `galicia/contratos_galicia.parquet` (Git LFS) | 9 h | `contratos_galicia.zip` |
+| [Galicia](fuentes/galicia.md) | ver abajo | `v2026.02/galicia/contratos_galicia.parquet` (etiqueta `datos-lfs-v2026.02`) | 9 h | `contratos_galicia.zip` |
 | [La Rioja](fuentes/la_rioja.md) | `python scripts/ccaa_la_rioja.py --salida datos/la_rioja` | — | 1 min | `la_rioja.zip` |
 | [Comunidad de Madrid](fuentes/comunidad_madrid.md) | ver abajo | `contratacion_comunidad_madrid_completo.parquet` | 4 h 20 min | `comunidad_madrid.zip` |
 | [Ayuntamiento de Madrid](fuentes/madrid_ayuntamiento.md) | `python comunidad_madrid/ccaa_madrid_ayuntamiento.py --output-dir datos/madrid_ayuntamiento` | — | 8 min | `madrid_ayuntamiento.zip` |
@@ -126,7 +132,7 @@ python scripts/ccaa_valencia_parquet.py --entrada datos/valencia/crudo --salida 
 
 ```bash
 python galicia/scraper_galicia.py base --output datos/galicia --workers 3 --resume
-python galicia/scraper_galicia.py merge --output datos/galicia --semilla galicia/contratos_galicia.parquet --origen-semilla "LFS 2026-02-26"
+python galicia/scraper_galicia.py merge --output datos/galicia --semilla v2026.02/galicia/contratos_galicia.parquet --origen-semilla "LFS 2026-02-26"
 ```
 
 La release v2026.10 no ejecutó la fase `detail` (las columnas `detail_*` van vacías). Con `all` se ejecutan las tres fases: `base`, `detail` y `merge`.

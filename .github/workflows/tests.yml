@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          lfs: false              # el código, sin los 6,8 GB de datos de Git LFS
+          lfs: false              # el árbol no lleva datos (los de v2026.02 siguen en la etiqueta datos-lfs-v2026.02)
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:

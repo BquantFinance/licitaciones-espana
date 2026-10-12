@@ -28,7 +28,7 @@ En `v2026.02/` van, tal cual, las categorías que no son contratación (subvenci
 
 Datos del portal [Transparència Catalunya](https://analisi.transparenciacatalunya.cat) (Socrata API).
 
-En v2026.10 solo se ha actualizado la contratación: `catalunya.zip` (14 tablas, 8,05M filas) y `catalunya_menores.zip` (contratos menores de la PSCP, 1,43M filas). La tabla y el árbol de abajo son los de v2026.02 (los del repositorio en Git LFS); las demás categorías van tal cual, como en v2026.02, en la carpeta `v2026.02/` de `catalunya.zip`.
+En v2026.10 solo se ha actualizado la contratación: `catalunya.zip` (14 tablas, 8,05M filas) y `catalunya_menores.zip` (contratos menores de la PSCP, 1,43M filas). La tabla y el árbol de abajo son los de v2026.02 (los que estuvieron en Git LFS en el repositorio, ahora en la etiqueta `datos-lfs-v2026.02`); las demás categorías van tal cual, como en v2026.02, en la carpeta `v2026.02/` de `catalunya.zip`.
 
 | Categoría | Registros | Período |
 |-----------|-----------|---------|

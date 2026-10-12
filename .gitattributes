@@ -1,8 +1,5 @@
-# Git LFS - Archivos Parquet
+# Los datos no van en el repositorio: se publican en las releases
+# (https://github.com/BquantFinance/licitaciones-espana/releases). Los de v2026.02 que estuvieron
+# en Git LFS siguen en la etiqueta datos-lfs-v2026.02. Esta regla es una red: si alguien añade un
+# Parquet a la fuerza, va a Git LFS y no a la historia de git.
 *.parquet filter=lfs diff=lfs merge=lfs -text
-comunidad_madrid/*.csv filter=lfs diff=lfs merge=lfs -text
-borme/data/borme_empresas_pub.parquet filter=lfs diff=lfs merge=lfs -text
-borme/data/borme_cargos_pub.parquet filter=lfs diff=lfs merge=lfs -text
-galicia/*.parquet filter=lfs diff=lfs merge=lfs -text
-ccaa_asturias/*.parquet filter=lfs diff=lfs merge=lfs -text
-calidad/*.parquet filter=lfs diff=lfs merge=lfs -text

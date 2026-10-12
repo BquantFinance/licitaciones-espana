@@ -101,20 +101,22 @@ calidad/
 
 ## Uso
 
+`-i` es la tabla principal de la PLACSP: la salida de `nacional/licitaciones.py` o las 6 partes de la release juntas en un fichero ([cómo](ted.md#cruce-placsp--ted-cross-validation)).
+
 ```bash
 # Solo indicadores base (19)
-python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet
+python calidad/calidad_licitaciones.py -i nacional/licitaciones_completo.parquet
 
 # Completo con TED + BORME (21 indicadores)
-python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet \
+python calidad/calidad_licitaciones.py -i nacional/licitaciones_completo.parquet \
   --ted ted/crossval_sara.parquet \
   --borme borme_empresas.parquet
 
 # Una evaluación por licitación (versión más reciente)
-python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet --solo-ultima-version
+python calidad/calidad_licitaciones.py -i nacional/licitaciones_completo.parquet --solo-ultima-version
 
 # Sin el registro de errores de la fuente (solo las reglas de escala)
-python calidad/calidad_licitaciones.py -i nacional/licitaciones_espana.parquet --errores-fuente ''
+python calidad/calidad_licitaciones.py -i nacional/licitaciones_completo.parquet --errores-fuente ''
 ```
 
 Sobre el Parquet de la release (`calidad_licitaciones_resultado.zip`, el de v2026.02): una fila por **entrada** de

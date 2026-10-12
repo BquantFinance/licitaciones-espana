@@ -14,7 +14,7 @@ Red flags:
   6. Empresa fantasma: sin actividad BORME previa al contrato
 
 Uso:
-  python borme_placsp_match.py --borme D:\Licitaciones --placsp D:\Licitaciones\nacional\licitaciones_espana.parquet --output D:\Licitaciones\anomalias
+  python borme_placsp_match.py --borme D:\Licitaciones --placsp D:\Licitaciones\nacional\licitaciones_completo.parquet --output D:\Licitaciones\anomalias
 """
 
 import re

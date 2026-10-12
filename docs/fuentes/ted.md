@@ -37,7 +37,7 @@ ted/
 └── ted_es_can.parquet               # Consolidado (v2026.10: 857K filas, 156 MB; en ted.zip, con el cruce de v2026.02 en v2026.02/)
 ```
 
-Los `ted_can_*.parquet` del árbol del repositorio (Git LFS) son las cachés de v2026.02: CSV bulk de 2010 a 2019 y API de 2020 a 2025, con los errores de arriba.
+Los `ted_can_*.parquet` que estuvieron en Git LFS en el repositorio, ahora en la etiqueta `datos-lfs-v2026.02`, son las cachés de v2026.02: CSV bulk de 2010 a 2019 y API de 2020 a 2025, con los errores de arriba.
 
 **Sin sesgo del superviviente.**
 - Las cachés por año y el consolidado se guardan con `guardar_version`: si TED cambia algo, la versión anterior pasa a `_historico/`.
@@ -98,6 +98,17 @@ Pipeline para validar si los contratos SARA españoles se publican efectivamente
 ### Resultados
 
 > ⚠️ Calculado con `licitaciones_espana.parquet` de `v2026.02` contando cada entrada del ATOM como un contrato: cada versión adjudicada de una misma licitación contaba como un contrato SARA distinto, la suma de lotes por expediente sumaba versiones repetidas y "negociado sin publicidad" era en realidad el código de negociado *con* publicidad. `run_ted_crossvalidation.py` ahora cruza solo la versión más reciente de cada licitación (`es_ultima_version`; el parquet de entrada no se modifica); las cifras cambiarán al regenerar.
+
+**Entradas.** `run_ted_crossvalidation.py` lee la PLACSP de `nacional/licitaciones_completo.parquet` (la tabla principal: la salida de `nacional/licitaciones.py` o las 6 partes de la release juntas en un fichero) y el TED de `ted/ted_es_can.parquet` (lo que escribe `ted_module.py`), las dos rutas relativas a la raíz del repositorio. Para juntar las partes de la release (34 s y 3,7 GB de memoria con DuckDB; leerla después con `leer_placsp` pide unos 12 GB):
+
+```python
+import duckdb
+
+con = duckdb.connect()
+con.execute("SET preserve_insertion_order = false")   # el orden de las filas no importa y así pide menos memoria
+con.execute("""COPY (SELECT * FROM 'nacional_licitaciones_*/licitaciones_completo/*.parquet')
+               TO 'licitaciones-espana/nacional/licitaciones_completo.parquet' (FORMAT parquet)""")
+```
 
 El cruce guarda `id`, `fecha_updated`, `_ano` y `_ted_anio_cubierto` en `crossval_sara.parquet`: calidad une el resultado por versión, y un SARA de un año sin avisos en el snapshot TED no cuenta como *missing* (ni en `_ted_missing` ni en `crossval_missing.parquet`) porque ese snapshot no puede decir si se publicó.
 
