@@ -156,9 +156,12 @@ TITULO = "REGIÓN DE MURCIA - CONTRATACIÓN PÚBLICA"
 
 
 # ============================================================================
-# UTILIDADES COMUNES (mismo bloque en ccaa_castilla_leon.py, ccaa_murcia.py y
-# ccaa_navarra.py): descarga con reintentos, versiones, lectura como texto,
-# acumulación de registros y Parquet.
+# UTILIDADES COMUNES (la misma base en ccaa_castilla_leon.py, ccaa_murcia.py,
+# ccaa_extremadura.py y ccaa_la_rioja.py): descarga con reintentos, versiones,
+# lectura como texto, acumulación de registros y Parquet. Aquí además:
+# la codificación de un byte se elige entre cp1252, latin-1 y cp850 por las
+# letras del castellano que da (_detectar_codificacion), y los CSV del
+# exportador JSON del portal se leen aparte (_formato_json, texto_sin_cortes).
 # Lo que era idéntico en varios scripts está en comun/red.py, comun/lectura.py y
 # comun/salida.py: se importa con el mismo nombre o se envuelve aquí.
 # ============================================================================

@@ -166,10 +166,11 @@ TITULO = "LA RIOJA - CONTRATOS MENORES"
 
 
 # ============================================================================
-# UTILIDADES COMUNES (mismo bloque en ccaa_castilla_leon.py, ccaa_murcia.py y
-# ccaa_navarra.py): descarga con reintentos, versiones, lectura como texto,
-# acumulación de registros y Parquet. Única diferencia: la codificación de 8
-# bits de los CSV sale de CODIFICACIONES_8_BITS (aquí ISO-8859-15).
+# UTILIDADES COMUNES (la misma base en ccaa_castilla_leon.py, ccaa_murcia.py,
+# ccaa_extremadura.py y ccaa_la_rioja.py): descarga con reintentos, versiones,
+# lectura como texto, acumulación de registros y Parquet. Única diferencia: la
+# codificación de 8 bits de los CSV sale de CODIFICACIONES_8_BITS (aquí
+# ISO-8859-15).
 # Lo que era idéntico en varios scripts está en comun/red.py, comun/lectura.py y
 # comun/salida.py: se importa con el mismo nombre o se envuelve aquí.
 # ============================================================================

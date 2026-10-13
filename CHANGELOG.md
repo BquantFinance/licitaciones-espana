@@ -31,6 +31,7 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 - **Calidad:** `calcular_score` rellena con `False` sin el FutureWarning de pandas 2.2; el resultado es el mismo en cada versión de pandas (Parquet de salida idéntico byte a byte).
 - **Tests:** el fixture de Canarias llevaba el NIF real de una persona física; ahora uno inventado con su letra de control válida (`12345678Z`).
 - `ted/cross-validation_ted_placsp.py` se marca como versión anterior del cruce PLACSP↔TED; la vigente es `run_ted_crossvalidation.py`.
+- **Comentarios que citaban scripts que no existen:** las cabeceras de `ccaa_castilla_leon.py`, `ccaa_murcia.py`, `ccaa_extremadura.py` y `ccaa_la_rioja.py` decían compartir su bloque de utilidades con `ccaa_navarra.py`, que no se llegó a escribir. Ahora nombran los cuatro scripts que lo comparten y lo que cada uno tiene de más. También el «Uso» de `scripts/ccaa_cataluna_contratosmenores.py` y `ted/run_ted_crossvalidation.py`, que citaba scripts con otro nombre, y el plan de Navarra en `docs/COBERTURA.md`. Solo cambian comentarios y docstrings (`scripts/comprobar_ast.py`: árbol sintáctico idéntico), y `tests/test_referencias_scripts.py` comprueba que cada script citado en un comentario o un docstring exista.
 
 ### Eliminado
 

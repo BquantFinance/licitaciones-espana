@@ -8,10 +8,10 @@ Changes in v4:
 - Optional cleanup with --cleanup flag
 
 Usage:
-    python contractacio_scraper_v4.py --output data.parquet
-    python contractacio_scraper_v4.py --output data.parquet --resume
-    python contractacio_scraper_v4.py --output data.parquet --cleanup  # Delete incremental files after
-    python contractacio_scraper_v4.py --output data.parquet --incloure-placsp  # + publicaciones de PLACSP
+    python scripts/ccaa_cataluna_contratosmenores.py --output data.parquet
+    python scripts/ccaa_cataluna_contratosmenores.py --output data.parquet --resume
+    python scripts/ccaa_cataluna_contratosmenores.py --output data.parquet --cleanup  # Delete incremental files after
+    python scripts/ccaa_cataluna_contratosmenores.py --output data.parquet --incloure-placsp  # + publicaciones de PLACSP
 
 Duplicados: una misma publicación sale en varias consultas (una por cada fase
 vigente que tenga, ambos órdenes, recuperación de huecos) y esas copias son
