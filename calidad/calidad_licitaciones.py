@@ -29,7 +29,14 @@ es_ultima_version / n_versiones para agregar por licitacion;
 Los indicadores evaluan los importes tal como se publican. Al lado, la salida
 lleva su version corregida y el motivo (calidad/correcciones.py): los errores
 de la fuente verificados a mano en calidad/errores_fuente.csv y los saltos de
-escala de la adjudicacion (INT-FIA-12). Las columnas publicadas no se tocan.
+escala de la adjudicacion (PROPIO-FIA-01). Las columnas publicadas no se tocan.
+
+Numeracion: los INT-... son los identificadores del Sistema de Indicadores de
+Transparencia en Contratacion Publica de la Fundacion Hay Derecho (anexo digital 1:
+1.a criterio legal, 1.b calidad del dato); PROPIO-... es un indicador del proyecto
+que no esta en ese sistema. Con la numeracion anterior, INT-VAL-13, INT-COM-31 y
+PROPIO-FIA-01 se llamaban INT-VAL-14, INT-CONS-20 e INT-FIA-12, que en el anexo son
+otros indicadores (CHANGELOG.md y docs/fuentes/calidad.md).
 ============================================================================
 """
 import pandas as pd
@@ -66,28 +73,32 @@ CONFIG = {
     "pbl_outlier": 50_000_000,
 }
 
+# Nombre de cada indicador tal como lo da el anexo de Hay Derecho (tests/test_calidad.py lo comprueba); lo que
+# calcula exactamente el pipeline, en docs/fuentes/calidad.md. COM-31 es del criterio legal (anexo 1.a), los
+# demas INT- de la calidad del dato (anexo 1.b).
 CATALOGO = {
-    "INT-VAL-01": {"nombre": "Importe de licitacion en formato valido", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-02": {"nombre": "Importe de adjudicacion en formato valido", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-03": {"nombre": "Importe minimo plausible", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-04": {"nombre": "Numero de licitadores es entero", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-05": {"nombre": "Numero de licitadores no negativo", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-06": {"nombre": "Fecha de publicacion en formato valido", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-07": {"nombre": "Fecha de adjudicacion en formato valido", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-09": {"nombre": "Codigo CPV valido", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-10": {"nombre": "Codigo territorial valido", "dimension": "Validez", "fuente": "PPDS"},
-    "INT-VAL-12": {"nombre": "Identificacion valida del adjudicatario (NIF/NIE)", "dimension": "Validez", "fuente": "Yo con asistencia de la IA"},
-    "INT-VAL-14": {"nombre": "Clasificacion correcta procedimiento segun cuantia", "dimension": "Validez", "fuente": "Jaime Gomez-Obregon"},
-    "INT-CONS-01": {"nombre": "Si hay adjudicacion, num ofertas >= 1", "dimension": "Consistencia", "fuente": "PPDS"},
-    "INT-CONS-08": {"nombre": "Importe coherente entre licitacion y adjudicacion", "dimension": "Consistencia", "fuente": "PPDS"},
-    "INT-CONS-18": {"nombre": "Adjudicatario existe en BORME (Registro Mercantil)", "dimension": "Consistencia", "fuente": "Yo con asistencia de la IA"},
-    "INT-CONS-20": {"nombre": "Contrato SARA publicado en TED", "dimension": "Consistencia", "fuente": "PPDS"},
-    "INT-FIA-01": {"nombre": "Num ofertas dentro de rango razonable", "dimension": "Fiabilidad", "fuente": "PPDS"},
-    "INT-FIA-04": {"nombre": "Plazo de presentacion de ofertas razonable", "dimension": "Fiabilidad", "fuente": "PPDS"},
-    "INT-FIA-08": {"nombre": "PBL atipico/inverosimil (outlier)", "dimension": "Fiabilidad", "fuente": "PPDS"},
-    "INT-FIA-09": {"nombre": "PA plausible respecto a comparables por CPV", "dimension": "Fiabilidad", "fuente": "PPDS"},
-    "INT-FIA-11": {"nombre": "Trazabilidad minima del expediente", "dimension": "Fiabilidad", "fuente": "PPDS"},
-    "INT-FIA-12": {"nombre": "PBL y PA del mismo orden de magnitud (PA < 100 x PBL)", "dimension": "Fiabilidad", "fuente": "Issue #22"},
+    "INT-VAL-01": {"nombre": "Importe de licitación en formato válido", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-02": {"nombre": "Importe de adjudicación en formato válido", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-03": {"nombre": "Importe mínimo plausible", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-04": {"nombre": "Número de licitadores es entero", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-05": {"nombre": "Número de licitadores no negativo", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-06": {"nombre": "Fecha de publicación en formato válido", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-07": {"nombre": "Fecha de adjudicación en formato válido", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-09": {"nombre": "Código CPV válido", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-10": {"nombre": "Código territorial válido", "dimension": "Validez", "fuente": "PPDS"},
+    "INT-VAL-12": {"nombre": "Identificación válida del adjudicatario (NIF/NIE)", "dimension": "Validez", "fuente": "Yo con asistencia de la IA"},
+    "INT-VAL-13": {"nombre": "Clasificación correcta del procedimiento según cuantía", "dimension": "Validez", "fuente": "Jaime Gomez-Obregon"},
+    "INT-CONS-01": {"nombre": "Si hay adjudicación, nº de ofertas ≥ 1", "dimension": "Consistencia", "fuente": "PPDS"},
+    "INT-CONS-08": {"nombre": "Importe coherente entre licitación y adjudicación", "dimension": "Consistencia", "fuente": "PPDS"},
+    "INT-CONS-18": {"nombre": "Consistencia NIF/razón social del contratista: PLCSP vs BORME", "dimension": "Consistencia", "fuente": "Yo con asistencia de la IA"},
+    "INT-COM-31": {"nombre": "Publicación del anuncio de formalización en el DOUE (cuando el contrato esté sujeto a regulación armonizada)", "dimension": "Completitud legal", "fuente": "LCSP art. 154.1"},
+    "INT-FIA-01": {"nombre": "Nº de ofertas dentro de un rango razonable", "dimension": "Fiabilidad", "fuente": "PPDS"},
+    "INT-FIA-04": {"nombre": "Plazo de presentación de ofertas razonable", "dimension": "Fiabilidad", "fuente": "PPDS"},
+    "INT-FIA-08": {"nombre": "PBL atípico/inverosímil (outlier)", "dimension": "Fiabilidad", "fuente": "PPDS"},
+    "INT-FIA-09": {"nombre": "PA (precio adjudicación) plausible respecto a comparables", "dimension": "Fiabilidad", "fuente": "PPDS"},
+    "INT-FIA-11": {"nombre": "Trazabilidad mínima del expediente (IDs y enlaces)", "dimension": "Fiabilidad", "fuente": "PPDS"},
+    # Del proyecto, no del anexo (en el anexo, INT-FIA-12 es la trazabilidad de las consultas preliminares de mercado)
+    "PROPIO-FIA-01": {"nombre": "PBL y PA del mismo orden de magnitud (PA < 100 x PBL)", "dimension": "Fiabilidad", "fuente": "Issue #22"},
 }
 
 # ======================================================================
@@ -233,7 +244,7 @@ def calcular_indicadores_base(df):
     # VAL-12
     r["INT-VAL-12"] = df["nif_adjudicatario"].apply(validar_nif) if "nif_adjudicatario" in df.columns else np.nan
 
-    # VAL-14
+    # VAL-13 (procedimiento segun cuantia: falla un contrato menor por encima del umbral de su tipo)
     if all(c in df.columns for c in ["tipo_contrato"]):
         ci = "importe_adjudicacion" if "importe_adjudicacion" in df.columns else "importe_sin_iva" if "importe_sin_iva" in df.columns else None
         if ci:
@@ -248,9 +259,9 @@ def calcular_indicadores_base(df):
             umbral = pd.Series(CONFIG["umbral_menor_servicios"],index=df.index,dtype=float)
             umbral[tipo.str.contains("obra",na=False)] = CONFIG["umbral_menor_obras"]
             umbral[tipo.str.contains("suministro",na=False)] = CONFIG["umbral_menor_suministros"]
-            r["INT-VAL-14"] = ~es_menor|imp.isna()|(imp<=umbral)
-        else: r["INT-VAL-14"] = np.nan
-    else: r["INT-VAL-14"] = np.nan
+            r["INT-VAL-13"] = ~es_menor|imp.isna()|(imp<=umbral)
+        else: r["INT-VAL-13"] = np.nan
+    else: r["INT-VAL-13"] = np.nan
 
     # CONS-01
     if all(c in df.columns for c in ["estado","num_ofertas"]):
@@ -298,17 +309,17 @@ def calcular_indicadores_base(df):
     has_id = df["id"].notna() if "id" in df.columns else pd.Series(False,index=df.index)
     r["INT-FIA-11"] = has_exp&(has_url|has_id)
 
-    # FIA-12 (salto de escala: la adjudicacion es 100 veces el presupuesto o mas,
+    # PROPIO-FIA-01 (salto de escala: la adjudicacion es 100 veces el presupuesto o mas,
     # como la coma decimal perdida en origen del issue #22 o un presupuesto de
     # 1 EUR). Mismo par que CONS-08; sin evaluar si falta alguno o la
-    # adjudicacion no es positiva
-    r["INT-FIA-12"] = ~correcciones.salto_escala(lic_par, adj_par) if lic_par is not None else np.nan
+    # adjudicacion no es positiva. No esta en el anexo de Hay Derecho.
+    r["PROPIO-FIA-01"] = ~correcciones.salto_escala(lic_par, adj_par) if lic_par is not None else np.nan
 
     return r
 
 
 # ======================================================================
-# CONS-20 (TED) y CONS-18 (BORME)
+# COM-31 (TED) y CONS-18 (BORME)
 # ======================================================================
 
 def _clave_version(df):
@@ -319,7 +330,7 @@ def _clave_version(df):
                          "_t": f.astype("int64").to_numpy()})
 
 
-def _cons20_por_version(df, path_ted, columnas):
+def _com31_por_version(df, path_ted, columnas):
     """El resultado del cruce (una versión por id: la última) se une por id y
     fecha_updated: solo esa versión lo recibe, no las anteriores ni otro
     expediente homónimo. Sin coincidencia en un año que el snapshot TED no
@@ -346,11 +357,11 @@ def _cons20_por_version(df, path_ted, columnas):
     return res
 
 
-def calcular_cons20(df, path_ted):
+def calcular_com31(df, path_ted):
     print(f"  Cargando TED: {path_ted}")
     columnas = pq.read_schema(path_ted).names
     if {"id", "fecha_updated"} <= set(columnas) and {"id", "fecha_updated"} <= set(df.columns):
-        return _cons20_por_version(df, path_ted, columnas)
+        return _com31_por_version(df, path_ted, columnas)
     print("  Cruce TED sin id/fecha_updated (anterior a la unión por versión): "
           "se une por expediente|adjudicatario")
     ted = pd.read_parquet(path_ted, columns=["expediente","nif_adjudicatario",
@@ -463,8 +474,8 @@ def run(args):
     sc = calcular_indicadores_base(df)
 
     if args.ted and os.path.exists(args.ted):
-        print(f"\n  Calculando INT-CONS-20 (TED SARA)...")
-        sc["INT-CONS-20"] = calcular_cons20(df, args.ted)
+        print(f"\n  Calculando INT-COM-31 (TED SARA)...")
+        sc["INT-COM-31"] = calcular_com31(df, args.ted)
 
     if empresas_borme is not None:
         print(f"\n  Calculando INT-CONS-18 (BORME)...")

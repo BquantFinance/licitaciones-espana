@@ -1,11 +1,11 @@
 # Calidad: 21 indicadores sobre la PLACSP
 
-- **En la release:** `calidad_licitaciones_resultado.zip`: el Parquet de v2026.02 tal cual, en su carpeta `v2026.02/` (8.693.891 filas, 70 columnas, 20 indicadores: INT-FIA-12 es posterior), sin regenerar: está calculado sobre los datos nacionales de v2026.02, con sus errores. En v2026.02 iba en `calidad_licitaciones_resultado.rar`.
+- **En la release:** `calidad_licitaciones_resultado.zip`: el Parquet de v2026.02 tal cual, en su carpeta `v2026.02/` (8.693.891 filas, 70 columnas, 20 indicadores con la [numeración anterior](#numeración-de-los-indicadores): el de salto de escala, hoy PROPIO-FIA-01, es posterior), sin regenerar: está calculado sobre los datos nacionales de v2026.02, con sus errores. En v2026.02 iba en `calidad_licitaciones_resultado.rar`.
 - **Script:** [`calidad/calidad_licitaciones.py`](../../calidad/calidad_licitaciones.py) y [`calidad/correcciones.py`](../../calidad/correcciones.py).
 - **Portal:** calculado por el proyecto sobre la PLACSP, el TED y el BORME.
 - **Licencia o condiciones del portal:** [`DATA_LICENSE.md`](../../DATA_LICENSE.md#lo-que-calcula-el-proyecto).
 
-**21 indicadores** = 19 sobre la propia PLACSP + INT-CONS-20 (cruce con el TED) + INT-CONS-18 (cruce con el BORME). Sin `--ted` ni `--borme`, el pipeline evalúa los 19 base.
+**21 indicadores** = 19 sobre la propia PLACSP + INT-COM-31 (cruce con el TED) + INT-CONS-18 (cruce con el BORME). Sin `--ted` ni `--borme`, el pipeline evalúa los 19 base. Los identificadores son los del sistema de indicadores de la Fundación Hay Derecho, salvo PROPIO-FIA-01, que es del proyecto ([numeración](#numeración-de-los-indicadores)).
 
 Pipeline de calidad que aplica **21 indicadores** de validez, consistencia y fiabilidad sobre el dataset nacional (PLACSP), cruzando con TED y BORME. Al lado de cada importe publicado deja su versión corregida y el motivo ([importes publicados y corregidos](#importes-publicados-y-corregidos-issue-22)).
 
@@ -22,20 +22,38 @@ Evalúa todas las entradas del parquet PLACSP tal como se publican: cada fila de
 | INT-VAL-07 | 39.2% | 12.3% | Fecha de adjudicación válida |
 | INT-VAL-09 | 23.3% | 41.4% | Código CPV válido (sube porque los contratos menores, 60 % sin CPV, casi no tienen versiones: son el 38 % de las entradas pero el 68 % de las licitaciones) |
 | INT-VAL-12 | 33.4% | 7.8% | NIF/CIF adjudicatario válido (checksum) |
-| INT-VAL-14 | 1.3% | 0.5% | Contrato menor coherente con cuantía (LCSP art. 118); antes 162K derivados de acuerdo marco contaban como menores |
+| INT-VAL-13 | 1.3% | 0.5% | Contrato menor coherente con cuantía (LCSP art. 118); antes 162K derivados de acuerdo marco contaban como menores |
 | INT-CONS-01 | 1.1% | 1.4% | Si adjudicado, nº ofertas ≥ 1 |
 | INT-CONS-08 | 0.3% | 0.4% | Importe adjudicación ≤ licitación (+5%) |
 | INT-CONS-18 | 51.3% | 52.4% | Adjudicatario existe en BORME (3.3M empresas) |
-| INT-CONS-20 | 77.5% | pendiente | Contrato SARA publicado en TED (requiere regenerar el cruce PLACSP↔TED). Se une por versión (`id` + `fecha_updated`): solo la versión evaluada recibe resultado, y un año sin avisos en el snapshot TED (p.ej. 2026 con TED hasta 2025) queda sin evaluar, no como fallo |
+| INT-COM-31 | 77.5% | pendiente | Contrato SARA publicado en TED, es decir, formalización en el DOUE (requiere regenerar el cruce PLACSP↔TED). Se une por versión (`id` + `fecha_updated`): solo la versión evaluada recibe resultado, y un año sin avisos en el snapshot TED (p.ej. 2026 con TED hasta 2025) queda sin evaluar, no como fallo |
 | INT-FIA-01 | 0.6% | 0.7% | Nº ofertas en rango razonable (P99 por CPV) |
 | INT-FIA-04 | 21.3% | 21.8% | Plazo presentación ofertas razonable (0-365 días) |
 | INT-FIA-08 | 0.4% | 0.0% | PBL no outlier (≤ 50M€); antes se evaluaba el valor estimado |
 | INT-FIA-09 | 0.8% | 1.2% | PA plausible por segmento CPV (P1-P99) |
-| INT-FIA-12 | — | — | PBL y PA del mismo orden de magnitud (PA < 100 × PBL). Nuevo ([issue #22](https://github.com/BquantFinance/licitaciones-espana/issues/22)); en la regeneración de 2026-09 falla en 495 de 4,83M licitaciones (0,010 %) |
+| PROPIO-FIA-01 | — | — | PBL y PA del mismo orden de magnitud (PA < 100 × PBL). Nuevo ([issue #22](https://github.com/BquantFinance/licitaciones-espana/issues/22)); en la regeneración de 2026-09 falla en 495 de 4,83M licitaciones (0,010 %) |
 
 Los 6 indicadores restantes (formato numérico, no negativos, NUTS, trazabilidad) dan 0.0% de fallo — checks de sanidad que se aplican pero no revelan problemas.
 
 Los indicadores se basan en el marco de calidad de PPDS, con contribuciones de Jaime Gómez-Obregón (umbrales LCSP) y OIRESCON (benchmarks PBL).
+
+## Numeración de los indicadores
+
+Los identificadores `INT-…` y sus nombres (los de `CATALOGO` en el script) son los del anexo digital 1 del *Sistema de Indicadores de Transparencia en Contratación Pública* de la Fundación Hay Derecho: el 1.a (criterio legal) y el 1.b (calidad del dato). `PROPIO-FIA-01` es un indicador del proyecto que no está en ese sistema. [`tests/test_calidad.py`](../../tests/test_calidad.py) comprueba la numeración contra una tabla de referencia.
+
+Tres columnas llevaban antes el número de otro indicador del anexo:
+
+| Antes | Ahora | Qué mide | En el anexo, el número anterior es |
+|---|---|---|---|
+| `INT-VAL-14` | `INT-VAL-13` | Clasificación correcta del procedimiento según cuantía (aquí, un contrato menor por encima del umbral de su tipo) | La identificación válida de la financiación del PRTR |
+| `INT-CONS-20` | `INT-COM-31` | Publicación del anuncio de formalización en el DOUE de los contratos SARA (cruce con el TED; criterio legal, anexo 1.a) | La consistencia de la clasificación entre la PLACSP y el portal autonómico |
+| `INT-FIA-12` | `PROPIO-FIA-01` | Presupuesto y adjudicación del mismo orden de magnitud (adjudicación < 100 × presupuesto). No está en el anexo: lo más cercano es INT-CONS-13 (coherencia PBL–VEC–PA), del que cubre un solo caso | La trazabilidad de las consultas preliminares de mercado |
+
+Solo cambian los nombres: los valores, el orden de las columnas y el score son los mismos. El Parquet de la release (`calidad_licitaciones_resultado.zip`, el de v2026.02) es anterior y conserva los nombres de antes (`INT-VAL-14` e `INT-CONS-20`; no trae el de salto de escala). La salida del pipeline actual usa los nuevos. Para leer los dos con los mismos nombres:
+
+```python
+df = df.rename(columns={'INT-VAL-14': 'INT-VAL-13', 'INT-CONS-20': 'INT-COM-31', 'INT-FIA-12': 'PROPIO-FIA-01'})
+```
 
 ## Menores vs Regulares
 
@@ -129,6 +147,7 @@ import pandas as pd
 df = pd.read_parquet('calidad_licitaciones_resultado/v2026.02/calidad_licitaciones_resultado.parquet',
                      columns=['expediente', 'organo_contratante', 'importe_adjudicacion', 'INT-CONS-20', 'INT-VAL-14'])
 
+# En este fichero, con la numeración anterior: INT-CONS-20 es hoy INT-COM-31, e INT-VAL-14, INT-VAL-13
 # Contratos SARA no publicados en TED (entradas de v2026.02, no licitaciones)
 df[df['INT-CONS-20'] == False].groupby('organo_contratante').size().nlargest(10)
 

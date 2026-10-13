@@ -22,7 +22,7 @@ los agregados (rankings, concentracion) y el modelo usen la corregida:
                    veces o mas: suele ser un precio unitario o simbolico (1 EUR);
                    se deja vacio el presupuesto y la adjudicacion se mantiene
 
-El salto de escala se mide sobre el mismo par que INT-CONS-08 e INT-FIA-12:
+El salto de escala se mide sobre el mismo par que INT-CONS-08 y PROPIO-FIA-01:
 presupuesto y adjudicacion sin IVA y, si faltan, con IVA; solo se corrige el
 par sin IVA.
 """
