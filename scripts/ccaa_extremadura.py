@@ -267,11 +267,12 @@ TITULO = "EXTREMADURA - REGISTRO DE CONTRATOS DE LA JUNTA"
 
 
 # ============================================================================
-# UTILIDADES COMUNES (mismo bloque en ccaa_castilla_leon.py, ccaa_murcia.py y
-# ccaa_navarra.py): descarga con reintentos, versiones, lectura como texto,
-# acumulación de registros y Parquet. Aquí además: columnas de origen propias
-# (METADATOS_ORIGEN), PDF en formato_contenido/validar_contenido e informes en
-# el Resumen.
+# UTILIDADES COMUNES (la misma base en ccaa_castilla_leon.py, ccaa_murcia.py,
+# ccaa_extremadura.py y ccaa_la_rioja.py): descarga con reintentos, versiones,
+# lectura como texto, acumulación de registros y Parquet. Aquí además: columnas
+# de origen propias (METADATOS_ORIGEN), PDF en formato_contenido/validar_contenido,
+# informes en el Resumen, columnas calculadas sobre la tabla entera (derivar en
+# construir_parquet) y un _como_texto que devuelve siempre tipo object.
 # Lo que era idéntico en varios scripts está en comun/red.py, comun/lectura.py y
 # comun/salida.py: se importa con el mismo nombre o se envuelve aquí.
 # ============================================================================

@@ -142,9 +142,12 @@ TITULO = "CASTILLA Y LEÓN - CONTRATACIÓN PÚBLICA"
 
 
 # ============================================================================
-# UTILIDADES COMUNES (mismo bloque en ccaa_castilla_leon.py, ccaa_murcia.py y
-# ccaa_navarra.py): descarga con reintentos, versiones, lectura como texto,
-# acumulación de registros y Parquet.
+# UTILIDADES COMUNES (la misma base en ccaa_castilla_leon.py, ccaa_murcia.py,
+# ccaa_extremadura.py y ccaa_la_rioja.py): descarga con reintentos, versiones,
+# lectura como texto, acumulación de registros y Parquet. Aquí además:
+# validar_contenido descarta el aviso de «sin datos» que sirve el portal
+# (SIN_DATOS), y los XLS y XLSX se leen con un _hoja_a_df propio, que no
+# detecta las hojas sin fila de cabecera como el de comun/lectura.py.
 # Lo que era idéntico en varios scripts está en comun/red.py, comun/lectura.py y
 # comun/salida.py: se importa con el mismo nombre o se envuelve aquí.
 # ============================================================================

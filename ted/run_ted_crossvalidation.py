@@ -27,7 +27,7 @@ Estrategias de matching:
   E6:  Propagacion por expediente (si 1 lote matched -> todos matched)
 
 Uso:
-    python crossvalidation_ted.py
+    python ted/run_ted_crossvalidation.py
 
 Outputs:
     ted/crossval_sara.parquet           - Todos los contratos SARA
@@ -146,7 +146,7 @@ MATCH_TOL_ABS_WIDE = 20_000
 MATCH_YEAR_WINDOW = 1
 
 # Tabla de equivalencias nombre PLACSP → nombre(s) TED (normalizados, truncados 40 chars)
-# Construida a partir del diagnostico_missing_hc.py
+# Construida con un script de diagnóstico que no está en el repositorio
 ORGAN_ALIASES = {
     'ADIF PRESIDENCIA':
         ['ADMINISTRADOR DE INFRAESTRUCTURAS FERROV', 'ADIF'],
