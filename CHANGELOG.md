@@ -29,6 +29,7 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 
 - **Galicia:** `scope_from_report` construye el día con `pd.Timedelta(1, unit="D")` en lugar de `pd.Timedelta(days=1)`: el mismo valor y la misma comparación, sin los 6.928 avisos de numpy («unidad genérica») que daba en los tests con pandas 2.2 y numpy 2.5 y que un numpy futuro convertirá en error.
 - **Calidad:** `calcular_score` rellena con `False` sin el FutureWarning de pandas 2.2; el resultado es el mismo en cada versión de pandas (Parquet de salida idéntico byte a byte).
+- **Calidad:** `calcular_score` daba `ZeroDivisionError` con pandas 3 si una fila no tenía ningún indicador evaluado y alguna columna era `object` (la suma por fila quedaba en `object` y 0 / 0 se dividía con enteros de Python). Ahora esa fila queda sin score (NaN), como con pandas 2.2. En el pipeline no ocurría, porque siempre hay indicadores booleanos evaluados, y la salida no cambia: Parquet idéntico byte a byte con pandas 3.0.6 y 2.2.3, también sobre la PLACSP hasta 2019 de la release v2026.10.
 - **Tests:** el fixture de Canarias llevaba el NIF real de una persona física; ahora uno inventado con su letra de control válida (`12345678Z`).
 - `ted/cross-validation_ted_placsp.py` se marca como versión anterior del cruce PLACSP↔TED; la vigente es `run_ted_crossvalidation.py`.
 

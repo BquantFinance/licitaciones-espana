@@ -407,8 +407,11 @@ def _rellenar_con_false(sc):
         return sc.fillna(False).infer_objects(copy=False)
 
 def calcular_score(sc):
+    """% de indicadores que pasan entre los evaluados de cada fila; NaN si no hay ninguno evaluado.
+    Se divide entre ev.where(ev > 0), con NaN en esas filas: con pandas 3 la suma de columnas object queda
+    en object y 0 / 0 daba ZeroDivisionError (enteros de Python). En las demás filas, el mismo cociente."""
     ev=sc.notna().sum(axis=1); pa=_rellenar_con_false(sc).sum(axis=1)
-    s=(pa/ev*100).round(1); s[ev==0]=np.nan; return s
+    s=(pa/ev.where(ev > 0)*100).round(1); s[ev==0]=np.nan; return s
 
 def imprimir_resumen(sc, n, df):
     print(f"\n{'='*95}\n  RESUMEN ({n:,} contratos)\n{'='*95}")
