@@ -84,7 +84,7 @@ nacional/
 
 Los dos Parquet de v2026.02 que estuvieron aquí en Git LFS, `licitaciones_espana.parquet` (8,7M entradas = todas las versiones de 4,7M licitaciones, 965 MB) y `licitaciones_completo_2012_2026.parquet` (4,7M filas, una por licitación, no siempre la más reciente, 762 MB), siguen en la etiqueta `datos-lfs-v2026.02`.
 
-El scraper escribe `licitaciones_completo.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**. Además escribe `_adjudicatarios` (cada `WinningParty`), `_lotes`, `_criterios`, `_modificaciones`, `_borrados` (entradas `at:deleted-entry`) y, con `--semilla`, `_semilla_contenido`: se cruzan con la principal por `id` + `fecha_updated`. Con el rango completo (`--anos` del 2012 al año en curso, el de por defecto) el nombre es fijo; el nombre con años de cada año (`licitaciones_completo_2012_<año>...`, el de antes) es un enlace simbólico a cada tabla. La primera ejecución con el nombre fijo le pasa la salida con años más reciente, sea del año que sea, sin copiarla y con su historia de `_historico/`; las de otros años van a `_historico/` (no se borra nada). Con un rango parcial, `licitaciones_completo_{inicio}_{fin}`; si ese nombre es uno de los enlaces (p.ej. `--anos 2012-2026` lanzado en 2027), el script se para sin escribir nada: nunca escribe a través de un enlace.
+El scraper escribe `licitaciones_completo.parquet/.csv`, con una fila por entrada publicada en los ATOM (`n_versiones`, `es_ultima_version`), y `licitaciones_completo_resultados.parquet/.csv`, con una fila por resultado (`cac:TenderResult`, uno por lote) de cada entrada: las columnas de adjudicación de la tabla principal corresponden al **primer lote**. Además escribe `_adjudicatarios` (cada `WinningParty`), `_lotes`, `_criterios`, `_modificaciones`, `_borrados` (entradas `at:deleted-entry`), con `--semilla`, `_semilla_contenido` y las cuatro tablas de la [ampliación del CODICE](#ampliación-del-codice-periodo-prórrogas-garantías-solvencia-anuncios-y-documentos) (`_ampliado`, `_condiciones`, `_anuncios` y `_documentos`): se cruzan con la principal por `id` + `fecha_updated`. Con el rango completo (`--anos` del 2012 al año en curso, el de por defecto) el nombre es fijo; el nombre con años de cada año (`licitaciones_completo_2012_<año>...`, el de antes) es un enlace simbólico a cada tabla. La primera ejecución con el nombre fijo le pasa la salida con años más reciente, sea del año que sea, sin copiarla y con su historia de `_historico/`; las de otros años van a `_historico/` (no se borra nada). Con un rango parcial, `licitaciones_completo_{inicio}_{fin}`; si ese nombre es uno de los enlaces (p.ej. `--anos 2012-2026` lanzado en 2027), el script se para sin escribir nada: nunca escribe a través de un enlace.
 
 **No leas la salida por patrón.** Los nombres con años son enlaces al mismo fichero: un glob lee cada tabla varias veces. En 2027, `*_resultados.parquet` casa con `licitaciones_completo_resultados`, `licitaciones_completo_2012_2026_resultados` y `licitaciones_completo_2012_2027_resultados`: el triple de filas (medido con DuckDB en una muestra: 180.309 filas frente a 60.103). Léela por el nombre fijo: `licitaciones_completo.parquet`, `licitaciones_completo_resultados.parquet`...
 
@@ -120,6 +120,69 @@ Cada tabla vuelve a `licitaciones_completo_2012_<año en curso>`, sin copiarla y
 **Procedimiento** (`procedimiento_code`): 1 Abierto · 2 Restringido · 3 Negociado sin publicidad · 4 Negociado con publicidad · 5 Diálogo competitivo · 6 Contrato menor · 7 Derivado de acuerdo marco · 8 Concurso de proyectos · 9 Abierto simplificado · 10 Asociación para la innovación · 11 Derivado de asociación para la innovación · 12 Sistema dinámico de adquisición · 13 Licitación con negociación · 100 Normas internas · 999 Otros.
 
 **Tipo de contrato** (`tipo_contrato_code`): 1 Suministros · 2 Servicios · 3 Obras · 7 Administrativo especial · 8 Privado · 21 Gestión de servicios públicos · 22 Concesión de servicios · 31 Concesión de obras públicas · 32 Concesión de obras · 40 Colaboración público-privada · 50 Patrimonial · 999 Otros.
+
+## Ampliación del CODICE: periodo, prórrogas, garantías, solvencia, anuncios y documentos
+
+El ATOM de la PLACSP publica más de lo que leen la tabla principal y sus tablas de detalle. El scraper lo guarda en cuatro tablas nuevas, sin tocar las de antes: la principal, `_resultados`, `_adjudicatarios`, `_lotes`, `_criterios`, `_modificaciones`, `_borrados` y `_semilla_contenido` salen idénticas byte a byte (comprobado reprocesando todo el histórico de ZIP: mismo SHA-256 que con el código anterior). Sale de los mismos ZIP que ya se descargaban: ninguna petición nueva a la plataforma.
+
+| Tabla | Una fila por | Qué trae |
+|---|---|---|
+| `licitaciones_completo_ampliado` | entrada (las mismas que la principal, salvo las de una semilla) | periodo de ejecución «del … al …», prórrogas previstas, recursos, subasta electrónica, variantes, subcontratación, límites de lotes y tipo y actividad del órgano |
+| `licitaciones_completo_condiciones` | garantía, criterio de solvencia, clasificación, requisito o condición especial de ejecución, del expediente o de un lote | código, descripción y porcentaje, importe o umbral |
+| `licitaciones_completo_anuncios` | referencia de cada anuncio (`ValidNoticeInfo`) en cada medio | tipo de anuncio, medio, fecha de publicación, envío al DOUE o al BOE y, si lo trae, el documento del anuncio (la resolución de adjudicación, el acta de formalización…) |
+| `licitaciones_completo_documentos` | documento de la entrada (pliegos, otros documentos y documentos generales) | lo que la principal no guarda: el `DocumentTypeCode`, el hash y el identificador de cada documento general |
+
+- **Claves.** Como las demás tablas de detalle, empiezan por `id`, `expediente` y `conjunto` y acaban en `fecha_updated`, `es_ultima_version` y `entrada_repetida`: se cruzan con la principal por `id` + `fecha_updated`. `lote` es el `ProcurementProjectLot/ID`, el mismo de `_lotes` y `_criterios`. En `_documentos`, la fila de `elemento` = `pliego_tecnico` y `orden` = k es el documento k de las listas `pliego_tecnico` / `pliego_tecnico_url` de la principal (igual con `pliego_administrativo`, `otros_documentos` y `documentos_generales`).
+- **`textos_originales`**, delante de las marcas, es el de cada fila: el texto publicado de un número, un booleano o una fecha que no se pudo convertir (la columna queda vacía). Si leer la ampliación de una entrada fallase, la entrada no se descarta ni cambia nada de las tablas de antes: su fila de `_ampliado` queda vacía con `{"error_ampliacion": "…"}` y no tiene filas en las otras tres.
+- **Tal cual.** Los códigos se sirven como se publican, sin etiquetas propias (las etiquetas que publica la PLACSP en un atributo `name` van en su columna).
+
+### `_ampliado`
+
+| Columna | Elemento CODICE | |
+|---|---|---|
+| `fecha_inicio_ejecucion`, `fecha_fin_ejecucion` | `ProcurementProject/PlannedPeriod/StartDate`, `EndDate` | El periodo «del … al …». La duración ya estaba en la principal (`duracion`, `duracion_unidad`) |
+| `prorroga_descripcion` | `ProcurementProject/ContractExtension/OptionsDescription` | Prórrogas previstas, texto libre |
+| `prorroga_periodo` | `ProcurementProject/ContractExtension/OptionValidityPeriod/Description` | Texto libre |
+| `num_recursos` | `TenderingTerms/ReceivedAppealQuantity` | Recursos recibidos |
+| `subasta_electronica` | `TenderingProcess/AuctionTerms/AuctionConstraintIndicator` | |
+| `variantes` | `TenderingTerms/VariantConstraintIndicator` | Se admiten variantes |
+| `subcontratacion_porcentaje`, `subcontratacion_descripcion` | `TenderingTerms/AllowedSubcontractTerms/Rate`, `Description` | Subcontratación permitida |
+| `presentacion_lotes_code`, `presentacion_lotes` | `TenderingProcess/PartPresentationCode` y su `name` | 1 «A un solo lote», 2 «A todos los lotes», 3 «A uno o varios lotes» |
+| `max_lotes_oferta` | `TenderingProcess/MaximumLotPresentationQuantity` | Lotes a los que puede presentarse un licitador |
+| `max_lotes_adjudicatario` | `TenderingProcess/MaximumTendererAwardedLotsQuantity` | Lotes que puede ganar un licitador |
+| `combinacion_lotes` | `TenderingProcess/LotsCombinationContractingAuthorityRights` | Texto libre |
+| `tipo_organo_code` | `LocatedContractingParty/ContractingPartyTypeCode` | Tipo de poder adjudicador |
+| `actividad_organo_code` | `LocatedContractingParty/ActivityCode` | Actividad; si hay varias, separadas por ` \| ` |
+
+Son campos del expediente: en los ZIP no aparecen dentro de los lotes.
+
+### `_condiciones`
+
+Columnas: `lote` (vacío = el expediente), `grupo`, `orden` (numera las filas del expediente o del lote), `orden_solicitud` (el `TendererQualificationRequest` del que sale una fila de solvencia), `codigo`, `nombre`, `descripcion`, `porcentaje`, `importe` y `umbral`.
+
+| `grupo` | Elemento CODICE (en `TenderingTerms`) | Columnas |
+|---|---|---|
+| `garantia` | `RequiredFinancialGuarantee` | `codigo` (`GuaranteeTypeCode`), `porcentaje` (`AmountRate`), `importe` (`LiabilityAmount`) |
+| `solvencia_economica` | `TendererQualificationRequest/FinancialEvaluationCriteria` | `codigo` (`EvaluationCriteriaTypeCode`), `descripcion`, `umbral` (`ThresholdQuantity`) |
+| `solvencia_tecnica` | `TendererQualificationRequest/TechnicalEvaluationCriteria` | ídem |
+| `requisito` | `TendererQualificationRequest/SpecificTendererRequirement` | `codigo` (`RequirementTypeCode`), `descripcion` |
+| `clasificacion` | `TendererQualificationRequest/RequiredBusinessClassificationScheme` | `nombre` (su `ID`), `codigo` (cada `ClassificationCategory/CodeValue`: grupo, subgrupo y categoría exigidos, p. ej. `U1-1`) |
+| `solvencia_descripcion` | `TendererQualificationRequest/Description` | `descripcion` |
+| `situacion_personal` | `TendererQualificationRequest/PersonalSituation` | `descripcion` |
+| `plantilla_minima` | `TendererQualificationRequest/EmployeeQuantity` y `EmployeeQuantityDescription` | `umbral`, `descripcion` |
+| `anos_actividad` | `TendererQualificationRequest/OperatingYearsQuantity` y `OperatingYearsDescription` | `umbral`, `descripcion` |
+| `condicion_ejecucion` | `ContractExecutionRequirement` | `codigo` (`ExecutionRequirementCode`), `nombre`, `descripcion` |
+
+### `_anuncios`
+
+Cada anuncio (`ValidNoticeInfo`) puede publicarse en varios medios (`AdditionalPublicationStatus`: el perfil del contratante, el BOE, el DOUE…) y cada medio trae una o varias referencias (`AdditionalPublicationDocumentReference`). Una fila por referencia: `orden_anuncio`, `tipo_anuncio_code` (`NoticeTypeCode`), `fecha_emision` (`NoticeIssueDate`), `orden_publicacion`, `medio_publicacion` (`PublicationMediaName`), `envio_agencia`, `envio_fecha` y `envio_hora` (`AdditionalPublicationRequest`: la solicitud de publicación al DOUE o al BOE, del medio; texto tal cual, la fecha con su zona, y si el medio tiene varias, separadas por ` \| ` en el mismo orden en las tres columnas), `orden_referencia`, `fecha_publicacion` (`IssueDate`), `documento_tipo_code` y `documento_tipo` (`DocumentTypeCode` y su `name`), `documento_nombre` y `documento_url` (`Attachment/ExternalReference/FileName` y `URI`).
+
+- En los ZIP, cada referencia trae **o** la fecha de publicación **o** un documento, nunca las dos. Un medio sin referencias, o un anuncio sin medios, da una fila con esas columnas vacías: ningún anuncio se pierde.
+- `fecha_publicacion` de la principal sale de aquí: la más antigua de los anuncios `DOC_CN` (licitación) o, si no hay ninguno, la del primer anuncio de cualquier tipo. Con esta tabla se sabe de qué tipo es cada fecha.
+
+### `_documentos`
+
+Columnas: `elemento` (`pliego_administrativo`, `pliego_tecnico`, `otros_documentos` o `documentos_generales`, como las columnas de la principal), `orden`, `id_documento` (el `ID` de un documento general; en los demás, el `ID` es el nombre), `tipo_documento_code` y `tipo_documento` (`DocumentTypeCode` y su `name`) y `hash` (`DocumentHash`). El nombre y la URL no se repiten: son los de la principal en la posición `orden` de su lista (con la URL y el nombre, la tabla ocupaba el triple). Para separar las listas, la de URL es la segura: una URL no lleva ` | `, y un hueco (un documento sin URL) también ocupa su posición.
 
 ## v2026.02
 

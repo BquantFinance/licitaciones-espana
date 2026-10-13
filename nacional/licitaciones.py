@@ -131,6 +131,17 @@ veces). Para volver a un código sin nombre fijo: --deshacer-nombre-fijo antes
     <nombre>_modificaciones.parquet/.csv  (una por ContractModification)
     <nombre>_borrados.parquet/.csv        (una por entrada borrada, at:deleted-entry; al final
                                            textos_originales: el @when que no es un instante)
+    Ampliación del CODICE (lo que las tablas anteriores no leían; ellas no cambian):
+    <nombre>_ampliado.parquet/.csv        (una por entrada: periodo de ejecución, prórrogas,
+                                           recursos, subasta, variantes, subcontratación, lotes,
+                                           tipo de órgano)
+    <nombre>_condiciones.parquet/.csv     (una por garantía, solvencia, clasificación, requisito o
+                                           condición de ejecución, del expediente o de un lote)
+    <nombre>_anuncios.parquet/.csv        (una por referencia de cada anuncio: tipo, medio, fecha y
+                                           documento del anuncio)
+    <nombre>_documentos.parquet/.csv      (una por documento, con DocumentTypeCode y hash)
+                                          Llevan al final su propio textos_originales (ver
+                                          parsear_ampliacion y tabla_ampliacion)
     <nombre>_semilla_contenido.parquet/.csv (solo con --semilla: filas sin fecha de la
                                            semilla con el contenido de una fila de la descarga)
     Las tablas de detalle llevan id, expediente y conjunto de su entrada y, al
@@ -889,6 +900,238 @@ def fecha_publicacion_licitacion(status):
         return min(validas, key=lambda f: f[:10])[:10]
     return min(candidatas, key=lambda f: f[:10])
 
+# ============================================================================
+# AMPLIACIÓN DEL CODICE: TABLAS NUEVAS
+# ============================================================================
+# Lo que el CODICE publica y la tabla principal y sus tablas de detalle no leían va en tablas
+# propias (TABLAS_AMPLIACION), para que las anteriores no cambien ni en un byte:
+#   _ampliado     una fila por entrada: periodo de ejecución, prórrogas previstas, recursos,
+#                 subasta, variantes, subcontratación, límites de lotes y tipo de órgano
+#   _condiciones  una fila por garantía, criterio de solvencia, clasificación, requisito o
+#                 condición especial de ejecución, del expediente o de un lote
+#   _anuncios     una fila por referencia de cada anuncio publicado (ValidNoticeInfo): su tipo,
+#                 medio, fecha y, si lo trae, el documento (la resolución de adjudicación...)
+#   _documentos   una fila por documento (pliegos, otros, generales) con su DocumentTypeCode y hash
+# Cada fila guarda sus propios textos no convertidos (columna textos_originales de la tabla): los
+# de la tabla principal no cambian. Un error al leer la ampliación no descarta la entrada
+# (parsear_ampliacion). Verificado con todas las entradas de las copias actuales de los ZIP de
+# 2012-2026 (9,8 millones): estos elementos cuelgan donde se buscan, los del expediente no aparecen
+# en los lotes y los namespaces son estos; con {*}, los de namespace sin cotejar en una entrada real
+# (PersonalSituation, EmployeeQuantity, OperatingYears*, NoticeIssueDate).
+
+def booleano(elem, xpath, perdidos, campo):
+    """xs:boolean de un elemento (safe_bool); un texto que no lo es queda en perdidos[campo]."""
+    texto = safe_text(elem, xpath)
+    valor = safe_bool(texto)
+    if texto and valor is None:
+        perdidos[campo] = texto
+    return valor
+
+def _con_textos(fila, perdidos):
+    """Fila de una tabla de la ampliación con sus textos no convertidos (si los hay)."""
+    if perdidos:
+        fila['_textos_originales'] = perdidos
+    return fila
+
+COLUMNAS_AMPLIADO = [
+    'fecha_inicio_ejecucion', 'fecha_fin_ejecucion', 'prorroga_descripcion', 'prorroga_periodo',
+    'num_recursos', 'subasta_electronica', 'variantes', 'subcontratacion_porcentaje',
+    'subcontratacion_descripcion', 'presentacion_lotes_code', 'presentacion_lotes', 'max_lotes_oferta',
+    'max_lotes_adjudicatario', 'combinacion_lotes', 'tipo_organo_code', 'actividad_organo_code',
+]
+
+def parsear_ampliado(status):
+    """Fila de _ampliado: campos del expediente (no de sus lotes) que la tabla principal no lee."""
+    perdidos = {}
+    project = status.find('cac:ProcurementProject', NS)
+    terms = status.find('cac:TenderingTerms', NS)
+    process = status.find('cac:TenderingProcess', NS)
+    party = status.find('cac-place-ext:LocatedContractingParty', NS)
+    fila = {
+        # Periodo de ejecución «del … al …» (la duración ya está en la principal)
+        'fecha_inicio_ejecucion': safe_text(project, 'cac:PlannedPeriod/cbc:StartDate'),
+        'fecha_fin_ejecucion': safe_text(project, 'cac:PlannedPeriod/cbc:EndDate'),
+        # Prórrogas previstas (ContractExtension): descripción y periodo, texto libre
+        'prorroga_descripcion': unir(textos(project, 'cac:ContractExtension/cbc:OptionsDescription')),
+        'prorroga_periodo': unir(textos(project, 'cac:ContractExtension/cac:OptionValidityPeriod/cbc:Description')),
+        'num_recursos': numero(terms, 'cbc:ReceivedAppealQuantity', perdidos, 'num_recursos', safe_int),
+        'subasta_electronica': booleano(process, 'cac:AuctionTerms/cbc:AuctionConstraintIndicator',
+                                        perdidos, 'subasta_electronica'),
+        'variantes': booleano(terms, 'cbc:VariantConstraintIndicator', perdidos, 'variantes'),
+        'subcontratacion_porcentaje': numero(terms, 'cac:AllowedSubcontractTerms/cbc:Rate', perdidos,
+                                             'subcontratacion_porcentaje'),
+        'subcontratacion_descripcion': unir(textos(terms, 'cac:AllowedSubcontractTerms/cbc:Description')),
+        'presentacion_lotes_code': safe_text(process, 'cbc:PartPresentationCode'),
+        'presentacion_lotes': safe_attr(process, 'cbc:PartPresentationCode', 'name'),
+        'max_lotes_oferta': numero(process, 'cbc:MaximumLotPresentationQuantity', perdidos, 'max_lotes_oferta',
+                                   safe_int),
+        'max_lotes_adjudicatario': numero(process, 'cbc:MaximumTendererAwardedLotsQuantity', perdidos,
+                                          'max_lotes_adjudicatario', safe_int),
+        'combinacion_lotes': unir(textos(process, 'cbc:LotsCombinationContractingAuthorityRights')),
+        'tipo_organo_code': safe_text(party, 'cbc:ContractingPartyTypeCode'),
+        'actividad_organo_code': unir(textos(party, 'cbc:ActivityCode')),
+    }
+    return _con_textos(fila, perdidos)
+
+def parsear_condiciones(terms, lote=None):
+    """Filas de _condiciones de unos TenderingTerms, del expediente (lote=None) o de un lote.
+
+    grupo y qué lleva cada columna (lo demás, nulo):
+      garantia              codigo GuaranteeTypeCode, porcentaje AmountRate, importe LiabilityAmount
+      solvencia_economica   codigo EvaluationCriteriaTypeCode, descripcion, umbral ThresholdQuantity
+      solvencia_tecnica     ídem (TechnicalEvaluationCriteria)
+      requisito             codigo RequirementTypeCode, descripcion (SpecificTendererRequirement)
+      clasificacion         nombre RequiredBusinessClassificationScheme/ID, codigo ClassificationCategory/CodeValue
+      solvencia_descripcion descripcion (TendererQualificationRequest/Description)
+      situacion_personal    descripcion (PersonalSituation)
+      plantilla_minima      umbral EmployeeQuantity, descripcion EmployeeQuantityDescription
+      anos_actividad        umbral OperatingYearsQuantity, descripcion OperatingYearsDescription
+      condicion_ejecucion   codigo ExecutionRequirementCode, nombre Name, descripcion (ContractExecutionRequirement)
+    orden numera las filas del ámbito (expediente o lote): las garantías, después cada
+    TendererQualificationRequest (en el orden de los grupos de arriba) y al final las condiciones de
+    ejecución; dentro de cada grupo, en el orden del CODICE. orden_solicitud es el
+    TendererQualificationRequest del que sale cada fila de solvencia (1, 2...).
+    """
+    filas = []
+    if terms is None:
+        return filas
+
+    def anadir(grupo, elem, solicitud=None, codigo=None, nombre=None, descripcion=None,
+               porcentaje=None, importe=None, umbral=None):
+        perdidos = {}
+        filas.append(_con_textos({
+            'lote': lote,
+            'grupo': grupo,
+            'orden': len(filas) + 1,
+            'orden_solicitud': solicitud,
+            'codigo': safe_text(elem, codigo) if codigo else None,
+            'nombre': safe_text(elem, nombre) if nombre else None,
+            'descripcion': unir(textos(elem, descripcion)) if descripcion else None,
+            'porcentaje': numero(elem, porcentaje, perdidos, 'porcentaje') if porcentaje else None,
+            'importe': numero(elem, importe, perdidos, 'importe') if importe else None,
+            'umbral': numero(elem, umbral, perdidos, 'umbral') if umbral else None,
+        }, perdidos))
+
+    for garantia in terms.findall('cac:RequiredFinancialGuarantee', NS):
+        anadir('garantia', garantia, codigo='cbc:GuaranteeTypeCode', porcentaje='cbc:AmountRate',
+               importe='cbc:LiabilityAmount')
+    for s, solicitud in enumerate(terms.findall('cac:TendererQualificationRequest', NS), 1):
+        if textos(solicitud, 'cbc:Description'):
+            anadir('solvencia_descripcion', solicitud, s, descripcion='cbc:Description')
+        if textos(solicitud, '{*}PersonalSituation'):
+            anadir('situacion_personal', solicitud, s, descripcion='{*}PersonalSituation')
+        if solicitud.find('{*}EmployeeQuantity') is not None or textos(solicitud, '{*}EmployeeQuantityDescription'):
+            anadir('plantilla_minima', solicitud, s, umbral='{*}EmployeeQuantity',
+                   descripcion='{*}EmployeeQuantityDescription')
+        if solicitud.find('{*}OperatingYearsQuantity') is not None or textos(solicitud, '{*}OperatingYearsDescription'):
+            anadir('anos_actividad', solicitud, s, umbral='{*}OperatingYearsQuantity',
+                   descripcion='{*}OperatingYearsDescription')
+        for esquema in solicitud.findall('cac:RequiredBusinessClassificationScheme', NS):
+            categorias = esquema.findall('cac:ClassificationCategory', NS)
+            for categoria in categorias:
+                anadir('clasificacion', categoria, s, codigo='cbc:CodeValue')
+                filas[-1]['nombre'] = safe_text(esquema, 'cbc:ID')
+            if not categorias:
+                anadir('clasificacion', esquema, s, nombre='cbc:ID')
+        for grupo, xpath in [('solvencia_economica', 'cac:FinancialEvaluationCriteria'),
+                             ('solvencia_tecnica', 'cac:TechnicalEvaluationCriteria')]:
+            for criterio in solicitud.findall(xpath, NS):
+                anadir(grupo, criterio, s, codigo='cbc:EvaluationCriteriaTypeCode', descripcion='cbc:Description',
+                       umbral='cbc:ThresholdQuantity')
+        for requisito in solicitud.findall('cac:SpecificTendererRequirement', NS):
+            anadir('requisito', requisito, s, codigo='cbc:RequirementTypeCode', descripcion='cbc:Description')
+    for condicion in terms.findall('cac:ContractExecutionRequirement', NS):
+        anadir('condicion_ejecucion', condicion, codigo='cbc:ExecutionRequirementCode', nombre='cbc:Name',
+               descripcion='cbc:Description')
+    return filas
+
+def parsear_anuncios(status):
+    """Filas de _anuncios: una por AdditionalPublicationDocumentReference de cada anuncio
+    (ValidNoticeInfo) y medio (AdditionalPublicationStatus).
+
+    Verificado con los datos reales: cada referencia trae o la fecha de publicación (IssueDate)
+    o un documento (DocumentTypeCode, p.ej. ACTA_ADJ en los anuncios de adjudicación, con su
+    FileName y URI), nunca las dos. Un anuncio sin medios, o un medio sin referencias, da una
+    fila con esas columnas nulas: ningún anuncio se pierde. Los envíos (AdditionalPublicationRequest:
+    la solicitud de publicación al DOUE o al BOE) son del medio y se repiten en cada una de sus
+    filas; un medio puede tener varios (159.236 en las copias actuales de los ZIP), así que van como
+    texto, tal cual (envio_fecha con su zona, '2018-12-26+01:00'), separados por ' | ' en el
+    mismo orden en envio_agencia, envio_fecha y envio_hora.
+    """
+    filas = []
+    for i, anuncio in enumerate(status.findall('cac-place-ext:ValidNoticeInfo', NS), 1):
+        base = {'orden_anuncio': i,
+                'tipo_anuncio_code': safe_text(anuncio, 'cbc-place-ext:NoticeTypeCode'),
+                'fecha_emision': safe_text(anuncio, '{*}NoticeIssueDate')}
+        medios = anuncio.findall('cac-place-ext:AdditionalPublicationStatus', NS)
+        for j, medio in enumerate(medios or [None], 1):
+            envios = medio.findall('cac-place-ext:AdditionalPublicationRequest', NS) if medio is not None else []
+            publicacion = {
+                'orden_publicacion': j if medio is not None else None,
+                'medio_publicacion': safe_text(medio, 'cbc-place-ext:PublicationMediaName'),
+                'envio_agencia': unir([safe_text(e, 'cbc:AgencyID') for e in envios]),
+                'envio_fecha': unir([safe_text(e, 'cbc-place-ext:SendDate') for e in envios]),
+                'envio_hora': unir([safe_text(e, 'cbc-place-ext:SendTime') for e in envios]),
+            }
+            referencias = (medio.findall('cac-place-ext:AdditionalPublicationDocumentReference', NS)
+                           if medio is not None else [])
+            for k, ref in enumerate(referencias or [None], 1):
+                filas.append({
+                    **base, **publicacion,
+                    'orden_referencia': k if ref is not None else None,
+                    'fecha_publicacion': safe_text(ref, 'cbc:IssueDate'),
+                    'documento_tipo_code': safe_text(ref, 'cbc:DocumentTypeCode'),
+                    'documento_tipo': safe_attr(ref, 'cbc:DocumentTypeCode', 'name'),
+                    'documento_nombre': safe_text(ref, 'cac:Attachment/cac:ExternalReference/cbc:FileName'),
+                    'documento_url': safe_text(ref, 'cac:Attachment/cac:ExternalReference/cbc:URI'),
+                })
+    return filas
+
+# Documentos de la tabla principal: (elemento, xpath) con los mismos xpath que sus columnas
+# (pliego_administrativo, pliego_tecnico, otros_documentos, documentos_generales y sus _url): la fila
+# de orden k es el documento k de la lista ' | ' de esa columna, que ya trae su nombre y su URL
+ELEMENTOS_DOCUMENTO = [
+    ('pliego_administrativo', 'cac:LegalDocumentReference'),
+    ('pliego_tecnico', 'cac:TechnicalDocumentReference'),
+    ('otros_documentos', 'cac:AdditionalDocumentReference'),
+    ('documentos_generales', 'cac-place-ext:GeneralDocument/cac-place-ext:GeneralDocumentDocumentReference'),
+]
+
+def parsear_documentos(status):
+    """Filas de _documentos: una por documento de la entrada, con lo que la principal no guarda:
+    el cbc:ID de un documento general (en los demás el cbc:ID es el nombre, que ya está en la
+    principal), su DocumentTypeCode (y su @name) y el DocumentHash. El nombre y la URL no se
+    repiten: son los de la principal en la posición `orden` de su lista (medido en los ZIP de 2025,
+    la URL y el nombre eran el 68 % del tamaño de esta tabla)."""
+    filas = []
+    for elemento, xpath in ELEMENTOS_DOCUMENTO:
+        for k, doc in enumerate(status.findall(xpath, NS), 1):
+            filas.append({
+                'elemento': elemento,
+                'orden': k,
+                'id_documento': safe_text(doc, 'cbc:ID') if elemento == 'documentos_generales' else None,
+                'tipo_documento_code': safe_text(doc, 'cbc:DocumentTypeCode'),
+                'tipo_documento': safe_attr(doc, 'cbc:DocumentTypeCode', 'name'),
+                'hash': safe_text(doc, './/cac:ExternalReference/cbc:DocumentHash'),
+            })
+    return filas
+
+def parsear_ampliacion(status):
+    """Listas de las tablas de la ampliación de una entrada ('_ampliado', '_condiciones',
+    '_anuncios', '_documentos'). Un error al leerlas no descarta la entrada ni toca sus demás
+    tablas: queda su fila de _ampliado con los campos nulos y el error en sus textos_originales
+    ({"error_ampliacion": ...}), sin filas en las otras tres."""
+    try:
+        condiciones = parsear_condiciones(status.find('cac:TenderingTerms', NS))
+        for lot in status.findall('cac:ProcurementProjectLot', NS):
+            condiciones += parsear_condiciones(lot.find('cac:TenderingTerms', NS), safe_text(lot, 'cbc:ID'))
+        return {'_ampliado': [parsear_ampliado(status)], '_condiciones': condiciones,
+                '_anuncios': parsear_anuncios(status), '_documentos': parsear_documentos(status)}
+    except Exception as e:
+        fila = dict.fromkeys(COLUMNAS_AMPLIADO)
+        fila['_textos_originales'] = {'error_ampliacion': f'{type(e).__name__}: {e}'[:200]}
+        return {'_ampliado': [fila], '_condiciones': [], '_anuncios': [], '_documentos': []}
+
 def parsear_entry(entry, descartes=None):
     """Parsea una entrada del ATOM: licitación (cac-place-ext:ContractFolderStatus)
     o consulta preliminar de mercado (cac-place-ext:PreliminaryMarketConsultationStatus,
@@ -1128,6 +1371,8 @@ def _parsear_status(entry, status, es_cpm):
         '_lotes': lotes,
         '_criterios': criterios,
         '_modificaciones': modificaciones,
+        # Tablas de la ampliación (TABLAS_AMPLIACION): no tocan perdidos ni nada de lo anterior
+        **parsear_ampliacion(status),
     }
     if perdidos:
         # Textos que no son un número (con las fechas, a textos_originales al exportar)
@@ -1504,8 +1749,12 @@ FECHAS = ['fecha_limite', 'fecha_adjudicacion', 'fecha_publicacion', 'fecha_plan
           'fecha_limite_respuestas', 'fecha_inicio_presentacion', 'fecha_limite_solicitudes',
           'fecha_limite_pliegos']
 FECHAS_DETALLE = ['fecha_adjudicacion', 'fecha_formalizacion', 'fecha_inicio_contrato']
+# Tablas de la ampliación del CODICE (ver parsear_ampliacion): como las de detalle, pero cada fila
+# lleva sus propios textos_originales (tabla_ampliacion) y sus fechas son FECHAS_AMPLIACION
+TABLAS_AMPLIACION = ('ampliado', 'condiciones', 'anuncios', 'documentos')
+FECHAS_AMPLIACION = ['fecha_inicio_ejecucion', 'fecha_fin_ejecucion', 'fecha_emision', 'fecha_publicacion']
 # Tablas de detalle: cada entrada lleva su lista en '_<tabla>'
-TABLAS_DETALLE = ('resultados', 'adjudicatarios', 'lotes', 'criterios', 'modificaciones')
+TABLAS_DETALLE = ('resultados', 'adjudicatarios', 'lotes', 'criterios', 'modificaciones') + TABLAS_AMPLIACION
 # Todas las tablas que escribe la exportación (_semilla_contenido: ver --semilla)
 TABLAS_SALIDA = ('principal',) + TABLAS_DETALLE + ('borrados', 'semilla_contenido')
 
@@ -2058,6 +2307,18 @@ def _convertir_fechas(df, columnas, convertir, textos, clave=None):
             n, campo = (i, col) if clave is None else clave(i, col)
             textos.setdefault(n, {})[campo] = crudo.iloc[i]
 
+def tabla_ampliacion(filas):
+    """DataFrame de las filas de una tabla de la ampliación (TABLAS_AMPLIACION) con sus fechas
+    convertidas (FECHAS_AMPLIACION, como parsear_fechas) y, al final, textos_originales: JSON con
+    los textos de esa fila que no se pudieron convertir a número, booleano o fecha (nulo si no
+    hay). Nunca toca los textos_originales de la tabla principal."""
+    textos = {i: dict(t) for i, t in enumerate(f.pop('_textos_originales', None) for f in filas) if t}
+    tabla = pd.DataFrame(filas)
+    _convertir_fechas(tabla, FECHAS_AMPLIACION, parsear_fechas, textos)
+    tabla['textos_originales'] = [json.dumps(textos[i], ensure_ascii=False) if i in textos else None
+                                  for i in range(len(tabla))]
+    return tabla
+
 def escribir_parte(dir_partes, prefijo, licitaciones, borrados=None):
     """Escribe un lote como partes parquet temporales y devuelve su descripción.
 
@@ -2077,6 +2338,9 @@ def escribir_parte(dir_partes, prefijo, licitaciones, borrados=None):
         tablas = {}
         for nombre, filas in detalle.items():
             if not filas:
+                continue
+            if nombre in TABLAS_AMPLIACION:
+                tablas[nombre] = tabla_ampliacion(filas)
                 continue
             tabla = pd.DataFrame(filas)
             orden = tabla.groupby('_n', sort=False).cumcount().to_numpy() + 1

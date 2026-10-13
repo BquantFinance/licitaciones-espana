@@ -60,7 +60,7 @@ Lo raro que trae el fichero publicado se conserva y se marca: nada se borra ni s
 | `_lineas_unidas` | Registro partido por un salto de línea sin comillas, vuelto a unir: cuántas líneas ocupaba | Andalucía, menores |
 | `_<columna>_sin_cortes`, `_resto_json` | Texto sin los cortes de línea del exportador y restos de la lista JSON que no son de ningún campo; la columna original se sirve tal cual | Región de Murcia |
 | `_fila_vacia` | Fila sin datos, conservada | Ayuntamiento de Madrid |
-| `textos_originales` | JSON con el texto publicado de cada importe o fecha que no se puede convertir (la columna queda vacía y el valor no se pierde) | PLACSP |
+| `textos_originales` | JSON con el texto publicado de cada importe o fecha que no se puede convertir (la columna queda vacía y el valor no se pierde) | PLACSP: en la principal, `_borrados` y, el de cada fila, en las tablas de la [ampliación del CODICE](fuentes/placsp.md#ampliación-del-codice-periodo-prórrogas-garantías-solvencia-anuncios-y-documentos) |
 
 ## Versiones de la PLACSP
 
@@ -73,7 +73,7 @@ La PLACSP publica una entrada nueva cada vez que se actualiza una licitación. S
 | `es_ultima_version` | `True` en una fila por `id`: la de `fecha_updated` más reciente | **Para contar o sumar licitaciones: `df[df.es_ultima_version]`.** En v2026.02, que no la tenía, sumar sin filtrar multiplicaba la adjudicación por 4,7 |
 | `entrada_repetida` | La misma versión publicada más de una vez: se conserva y se marca | |
 
-Las tablas de detalle (`_resultados`, `_adjudicatarios`, `_lotes`, `_criterios`, `_modificaciones`) llevan las mismas
+Las tablas de detalle (`_resultados`, `_adjudicatarios`, `_lotes`, `_criterios`, `_modificaciones` y las de la ampliación del CODICE: `_ampliado`, `_condiciones`, `_anuncios`, `_documentos`) llevan las mismas
 marcas y se cruzan con la principal por `id` + `fecha_updated`.
 
 ## Importes corregidos

@@ -1053,7 +1053,9 @@ def _exportar_referencia(licitaciones, destino, nombre_base, borrados=None):
     for nombre, filas in detalle.items():
         if not filas:
             continue
-        tabla = pd.DataFrame(filas).merge(marcas, on="_n", how="left").drop(columns="_n")
+        # Las tablas de la ampliación llevan sus fechas y sus textos_originales (tabla_ampliacion)
+        crear = lic.tabla_ampliacion if nombre in lic.TABLAS_AMPLIACION else pd.DataFrame
+        tabla = crear(filas).merge(marcas, on="_n", how="left").drop(columns="_n")
         for col in lic.FECHAS_DETALLE:
             if col in tabla.columns:
                 tabla[col] = lic.parsear_fechas(tabla[col])
@@ -1960,7 +1962,10 @@ class TestNombreFijo:
         self._zip(base, [self.L1])
         self._exportar(base, "licitaciones_completo", alias="licitaciones_completo_2012_2026")
         enlaces = sorted(f.name for f in salida.iterdir() if f.is_symlink())
-        assert enlaces == ["licitaciones_completo_2012_2026.parquet", "licitaciones_completo_2012_2026_lotes.parquet"]
+        # (y las tablas de la ampliación que produce: _ampliado y _anuncios)
+        assert enlaces == ["licitaciones_completo_2012_2026.parquet", "licitaciones_completo_2012_2026_ampliado.parquet",
+                           "licitaciones_completo_2012_2026_anuncios.parquet",
+                           "licitaciones_completo_2012_2026_lotes.parquet"]
         # Rango parcial: nombre con años, ficheros reales y ningún enlace nuevo
         self._exportar(base, "licitaciones_completo_2024_2024")
         assert (salida / "licitaciones_completo_2024_2024.parquet").is_file()
