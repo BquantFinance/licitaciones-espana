@@ -214,9 +214,9 @@ python -m pytest -q -p no:cacheprovider     # sin red: los portales se simulan
 
 ## Calidad
 
-[`calidad/calidad_licitaciones.py`](calidad/calidad_licitaciones.py) evalúa la PLACSP con **21 indicadores** de validez, consistencia y fiabilidad: 19 sobre la propia PLACSP, uno que la cruza con el TED (INT-CONS-20, contratos SARA publicados en el DOUE) y otro con el BORME (INT-CONS-18, el adjudicatario existe en el Registro Mercantil). Al lado de cada importe deja su versión corregida y el motivo ([`calidad/correcciones.py`](calidad/correcciones.py) y el registro de errores verificados de la fuente, [`calidad/errores_fuente.csv`](calidad/errores_fuente.csv)).
+[`calidad/calidad_licitaciones.py`](calidad/calidad_licitaciones.py) evalúa la PLACSP con **21 indicadores** de validez, consistencia y fiabilidad: 19 sobre la propia PLACSP, uno que la cruza con el TED (INT-COM-31, formalización de los contratos SARA en el DOUE) y otro con el BORME (INT-CONS-18, el adjudicatario existe en el Registro Mercantil). Los identificadores son los del sistema de indicadores de transparencia de la Fundación Hay Derecho, salvo PROPIO-FIA-01, que es del proyecto ([numeración](docs/fuentes/calidad.md#numeración-de-los-indicadores)). Al lado de cada importe deja su versión corregida y el motivo ([`calidad/correcciones.py`](calidad/correcciones.py) y el registro de errores verificados de la fuente, [`calidad/errores_fuente.csv`](calidad/errores_fuente.csv)).
 
-`calidad_licitaciones_resultado.zip` es el Parquet de v2026.02 sin regenerar: 20 indicadores (INT-FIA-12 es posterior), calculados sobre los datos nacionales de v2026.02, con sus errores, y sin los importes corregidos. Resultados, reglas y ejemplos: [ficha de calidad](docs/fuentes/calidad.md).
+`calidad_licitaciones_resultado.zip` es el Parquet de v2026.02 sin regenerar: 20 indicadores con la numeración anterior (el de salto de escala, hoy PROPIO-FIA-01, es posterior), calculados sobre los datos nacionales de v2026.02, con sus errores, y sin los importes corregidos. Resultados, reglas y ejemplos: [ficha de calidad](docs/fuentes/calidad.md).
 
 ## Licencias
 

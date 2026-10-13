@@ -1,6 +1,6 @@
 # Regeneración de la PLACSP y de la calidad para el issue #6 (2026-09-27)
 
-> **Documento histórico.** Describe una regeneración de prueba del 2026-09-27 que no se publicó. Los datos regenerados se publicaron después, con descargas más recientes, en la release v2026.10. Las cifras de aquí sirven para contrastar una regeneración equivalente (§6).
+> **Documento histórico.** Describe una regeneración de prueba del 2026-09-27 que no se publicó. Los datos regenerados se publicaron después, con descargas más recientes, en la release v2026.10. Las cifras de aquí sirven para contrastar una regeneración equivalente (§6). Los indicadores llevan la numeración de entonces: INT-VAL-14, INT-CONS-20 e INT-FIA-12 son hoy INT-VAL-13, INT-COM-31 y PROPIO-FIA-01 ([numeración](../fuentes/calidad.md#numeración-de-los-indicadores)).
 
 Regeneración completa del conjunto nacional (PLACSP) con el código corregido de entonces y con `--semilla` de `v2026.02`, más el cruce con TED y los 20 indicadores de calidad. Se hizo para el issue #6, como release en **borrador** que no tocaba `v2026.02`.
 

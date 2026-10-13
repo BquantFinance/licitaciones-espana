@@ -56,10 +56,10 @@ def test_run_evalua_todas_las_filas_con_la_semantica_correcta(tmp_path):
     # comparaba 300k sin IVA con el valor estimado (500k) y pasaba
     assert not a["INT-CONS-08"]
     assert a["INT-VAL-01"]
-    # El código 7 es 'Derivado de acuerdo marco': ya no cuenta como contrato menor (VAL-14)
+    # El código 7 es 'Derivado de acuerdo marco': ya no cuenta como contrato menor (VAL-13)
     b = res.iloc[1]
     assert b["procedimiento"] == "Derivado de acuerdo marco"
-    assert b["INT-VAL-14"]
+    assert b["INT-VAL-13"]
     assert res.iloc[2]["procedimiento"] == "Contrato menor"
 
 
@@ -73,6 +73,62 @@ def test_solo_ultima_version(tmp_path):
     assert res["id"].tolist() == ["a", "b", "c"]
 
 
+# Tabla de referencia: identificador y nombre de cada indicador que calcula el pipeline, tal como los da el anexo digital
+# 1 del Sistema de Indicadores de Transparencia en Contratación Pública de la Fundación Hay Derecho (1.a, criterio legal;
+# 1.b, calidad del dato). Un número que cambie aquí hay que comprobarlo antes en el anexo.
+ANEXO_HAY_DERECHO = {
+    "INT-VAL-01": "Importe de licitación en formato válido",
+    "INT-VAL-02": "Importe de adjudicación en formato válido",
+    "INT-VAL-03": "Importe mínimo plausible",
+    "INT-VAL-04": "Número de licitadores es entero",
+    "INT-VAL-05": "Número de licitadores no negativo",
+    "INT-VAL-06": "Fecha de publicación en formato válido",
+    "INT-VAL-07": "Fecha de adjudicación en formato válido",
+    "INT-VAL-09": "Código CPV válido",
+    "INT-VAL-10": "Código territorial válido",
+    "INT-VAL-12": "Identificación válida del adjudicatario (NIF/NIE)",
+    "INT-VAL-13": "Clasificación correcta del procedimiento según cuantía",
+    "INT-CONS-01": "Si hay adjudicación, nº de ofertas ≥ 1",
+    "INT-CONS-08": "Importe coherente entre licitación y adjudicación",
+    "INT-CONS-18": "Consistencia NIF/razón social del contratista: PLCSP vs BORME",
+    "INT-COM-31": "Publicación del anuncio de formalización en el DOUE (cuando el contrato esté sujeto a regulación "
+                  "armonizada)",
+    "INT-FIA-01": "Nº de ofertas dentro de un rango razonable",
+    "INT-FIA-04": "Plazo de presentación de ofertas razonable",
+    "INT-FIA-08": "PBL atípico/inverosímil (outlier)",
+    "INT-FIA-09": "PA (precio adjudicación) plausible respecto a comparables",
+    "INT-FIA-11": "Trazabilidad mínima del expediente (IDs y enlaces)",
+}
+# Los números que llevaban antes tres de ellos, que en el anexo son otros indicadores que el pipeline no calcula
+NUMERACION_ANTERIOR = {"INT-VAL-14": "INT-VAL-13", "INT-CONS-20": "INT-COM-31", "INT-FIA-12": "PROPIO-FIA-01"}
+
+
+def test_numeracion_de_los_indicadores_coincide_con_el_anexo(tmp_path):
+    """Cada columna INT-… de la salida lleva el número que tiene en el anexo ese indicador, con su nombre en CATALOGO,
+    y los del proyecto que no están en el anexo (PROPIO-…) no usan un número del anexo."""
+    entrada, ted, borme = tmp_path / "nacional.parquet", tmp_path / "ted.parquet", tmp_path / "borme.parquet"
+    pub = _publicado().assign(adjudicatario=["ACME, S.L."] * 4, nif_adjudicatario=["B12345678"] * 4)
+    pub.to_parquet(entrada, index=False)
+    pd.DataFrame({"id": ["a", "b"], "fecha_updated": pub["fecha_updated"].iloc[[1, 2]].to_numpy(),
+                  "_ted_validated": [True, False]}).to_parquet(ted, index=False)
+    pd.DataFrame({"empresa_norm": ["ACME"]}).to_parquet(borme, index=False)
+    calidad.run(argparse.Namespace(input=str(entrada), output=str(tmp_path / "out"), sample=None,
+                                   ted=str(ted), borme=str(borme), solo_ultima_version=False))
+    res = pd.read_parquet(tmp_path / "out" / "calidad_licitaciones_resultado.parquet")
+
+    indicadores = [c for c in res.columns if c.startswith(("INT-", "PROPIO-"))]
+    assert len(indicadores) == 21 and set(indicadores) == set(calidad.CATALOGO)
+    assert {c: calidad.CATALOGO[c]["nombre"] for c in indicadores if c.startswith("INT-")} == ANEXO_HAY_DERECHO
+    assert [c for c in indicadores if c.startswith("PROPIO-")] == ["PROPIO-FIA-01"]
+    assert not set(NUMERACION_ANTERIOR) & set(res.columns)
+    # El cruce TED da INT-COM-31 (formalización en el DOUE de los SARA): a, última versión, sí; b, no
+    assert _lista(res["INT-COM-31"]) == [None, True, False, None]
+    # INT-VAL-13: un contrato menor de servicios por encima de 15.000 € está mal clasificado
+    menor = pd.DataFrame({"tipo_contrato": ["Servicios", "Servicios"], "procedimiento": ["Contrato menor"] * 2,
+                          "importe_adjudicacion": [14000.0, 20000.0]})
+    assert calidad.calcular_indicadores_base(menor)["INT-VAL-13"].tolist() == [True, False]
+
+
 def test_cons08_usa_el_par_con_iva_si_falta_sin_iva():
     df = pd.DataFrame({
         "importe_sin_iva": [np.nan, 100.0],
@@ -84,7 +140,7 @@ def test_cons08_usa_el_par_con_iva_si_falta_sin_iva():
     assert r["INT-CONS-08"].tolist() == [False, True]
 
 
-def test_fia12_salto_de_escala_entre_presupuesto_y_adjudicacion():
+def test_propio_fia01_salto_de_escala_entre_presupuesto_y_adjudicacion():
     df = pd.DataFrame({
         # URDINBERRI (issue #22), normal, justo 100 veces, sin presupuesto,
         # presupuesto 0, adjudicación 0 y el par con IVA si falta el sin IVA
@@ -93,7 +149,7 @@ def test_fia12_salto_de_escala_entre_presupuesto_y_adjudicacion():
         "importe_con_iva": [np.nan] * 6 + [121.0],
         "importe_adj_con_iva": [np.nan] * 6 + [12100.0],
     })
-    r = calidad.calcular_indicadores_base(df)["INT-FIA-12"]
+    r = calidad.calcular_indicadores_base(df)["PROPIO-FIA-01"]
     assert r.tolist()[:3] == [False, True, False]
     assert r.iloc[3:6].isna().all()
     assert r.iloc[6] == False  # noqa: E712
@@ -142,7 +198,7 @@ def test_run_sirve_lo_publicado_y_al_lado_lo_corregido(tmp_path):
     assert np.isnan(res["importe_sin_iva_corregido"].iloc[2])
     assert _lista(res["correccion_importe_sin_iva"]) == [None, None, "no_comparable"]
     # Los indicadores evalúan lo publicado
-    assert _lista(res["INT-FIA-12"]) == [None, False, False]
+    assert _lista(res["PROPIO-FIA-01"]) == [None, False, False]
     assert not res["INT-CONS-08"].iloc[1]
 
     # Sin registro, la regla de escala corrige igual la adjudicación
@@ -153,7 +209,7 @@ def test_run_sirve_lo_publicado_y_al_lado_lo_corregido(tmp_path):
     assert res["correccion_valor_estimado_contrato"].isna().all()
 
 
-def _nacional_cons20():
+def _nacional_com31():
     return pd.DataFrame({
         "id": ["a", "a", "b", "e", "d"],
         "expediente": ["E1", "E1", "E2", "E2", "E4"],
@@ -163,7 +219,7 @@ def _nacional_cons20():
     })
 
 
-def test_cons20_se_une_por_version_y_respeta_la_cobertura_de_ted(tmp_path):
+def test_com31_se_une_por_version_y_respeta_la_cobertura_de_ted(tmp_path):
     ted = pd.DataFrame({
         "id": ["a", "b", "d"], "expediente": ["E1", "E2", "E4"], "nif_adjudicatario": ["B1", "B2", "B4"],
         # otra resolución que el nacional: la unión no depende de ella
@@ -176,7 +232,7 @@ def test_cons20_se_une_por_version_y_respeta_la_cobertura_de_ted(tmp_path):
     })
     ruta = tmp_path / "crossval_sara.parquet"
     ted.to_parquet(ruta, index=False)
-    res = calidad.calcular_cons20(_nacional_cons20(), str(ruta))
+    res = calidad.calcular_com31(_nacional_com31(), str(ruta))
     # a: solo la versión evaluada (la última); b: missing; e: mismo expediente y
     # adjudicatario que b pero otro id, no hereda; d: 2026 sin TED, sin evaluar
     assert res.tolist()[1:3] == [True, False]
@@ -185,7 +241,7 @@ def test_cons20_se_une_por_version_y_respeta_la_cobertura_de_ted(tmp_path):
     # Un cruce antiguo (sin id ni fecha_updated) sigue uniéndose por expediente|adjudicatario
     ruta_antigua = tmp_path / "crossval_antiguo.parquet"
     ted.drop(columns=["id", "fecha_updated", "_ted_anio_cubierto"]).to_parquet(ruta_antigua, index=False)
-    antiguo = calidad.calcular_cons20(_nacional_cons20(), str(ruta_antigua))
+    antiguo = calidad.calcular_com31(_nacional_com31(), str(ruta_antigua))
     assert antiguo.tolist() == [True, True, False, False, False]
 
 
