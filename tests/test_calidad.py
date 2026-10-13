@@ -202,3 +202,23 @@ def test_calcular_score_sin_avisos():
         warnings.simplefilter("error")
         s = calidad.calcular_score(sc)
     assert [float(x) for x in s] == [100.0, 50.0, 0.0, 50.0]
+
+
+def test_calcular_score_fila_sin_ningun_indicador_evaluado():
+    """Una fila sin ningún indicador evaluado se queda sin score (NaN). Con pandas 3 daba ZeroDivisionError si alguna
+    columna era object (como la del cruce TED, con <NA>): la suma por fila queda en object y 0 / 0 se dividía con
+    enteros de Python. En el pipeline no pasaba porque siempre hay indicadores booleanos evaluados."""
+    sc = pd.DataFrame({
+        "A": pd.Series([True, pd.NA, False, None], dtype=object),
+        "B": pd.array([True, None, None, None], dtype="boolean"),
+        "C": [np.nan] * 4,                                      # indicador sin evaluar en ninguna fila
+    })
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        s = calidad.calcular_score(sc)
+    assert [float(x) for x in s.iloc[[0, 2]]] == [100.0, 0.0]
+    assert s.iloc[[1, 3]].isna().all()
+
+    # Solo columnas object y ninguna fila evaluada
+    vacio = calidad.calcular_score(pd.DataFrame({"A": pd.Series([None, pd.NA], dtype=object)}))
+    assert vacio.isna().all() and len(vacio) == 2
