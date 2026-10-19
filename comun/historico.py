@@ -185,7 +185,10 @@ def _archivadas(destino):
         m = patron.fullmatch(ruta.name)
         if not m or ruta.is_symlink() or not ruta.is_file():
             continue
-        fecha = datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        try:
+            fecha = datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:                # un sello imposible (mes 13...): no es una versión
+            continue
         sufijos = tuple(int(n) for n in m.group(2).split("_")[1:])
         encontradas.append((fecha, sufijos, ruta))
     return [(ruta, fecha) for fecha, _, ruta in sorted(encontradas)]

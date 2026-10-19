@@ -294,7 +294,8 @@ def test_podar_solo_cuenta_las_versiones_de_su_tabla(tmp_path):
               "tabla__20231114T221320Z.zip",                  # un ZIP con el mismo nombre
               "tabla__copia.parquet",                         # nombre puesto a mano: no es una versión
               "tabla__20231114T221320Z.parquet.bak",
-              "tabla__20231114T221320.parquet"]               # sello incompleto
+              "tabla__20231114T221320.parquet",               # sello incompleto
+              "tabla__20231314T221320Z.parquet"]              # sello imposible (mes 13)
     for nombre in ajenos:
         (carpeta / nombre).write_bytes(b"ajeno")
     assert len(h.podar(destino, 2)) == 4
