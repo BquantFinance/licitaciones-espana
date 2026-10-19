@@ -12,6 +12,7 @@ Reglas que cumple todo scraper y todo cambio del repositorio. El código las cit
    - **Capa cruda:** toda escritura de una descarga que pueda existir pasa por `guardar_version`; la versión anterior va a `_historico/`.
    - **Salidas:** se construyen con el código actual desde **todas** las versiones de los crudos (`versiones()`), usando `acumular(anterior, nuevos, fecha, ambito=...)`. Los registros retirados o modificados se conservan con `_en_ultima_descarga=False`. Una descarga vacía o fallida no retira nada.
    - **Re-ejecuciones:** incrementales y reanudables.
+   - **Retención:** la capa cruda no se poda nunca. Una salida derivada, que se regenera desde ella, puede podar su `_historico/` a las últimas versiones solo si lo pide de forma explícita (`podar`; hoy, la PLACSP con `--conservar-versiones`). La versión vigente no se toca nunca.
 4. **Las releases publicadas (v2026.02 y v2026.10) son la copia histórica.** El repositorio no lleva datos: se publican solo en las releases.
    - No modificar ni borrar ficheros de datos publicados.
    - Cada scraper debe aceptar `--semilla <parquet publicado>`. Añade, **por clave estable**, solo las claves que no aparecen en la nueva descarga, marcadas con `_origen='release v2026.02'` y `_en_ultima_descarga=False`. Nunca modifica ni duplica filas nuevas. Hay que documentar los errores conocidos del publicado de esa fuente, en su ficha de [`docs/fuentes/`](fuentes/).

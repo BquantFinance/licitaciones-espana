@@ -38,11 +38,19 @@ compatible con el actual (si no, las mismas filas no casarían).
    seleccionar_semilla decide qué filas se añaden sin cargar la descarga
    entera (la usa nacional/licitaciones.py, por lotes); archivar() guarda en
    _historico/ una salida que la ejecución nueva ya no produce.
+
+5. Retención (podar): guardar_version y archivar no borran nunca nada. Solo
+   una salida DERIVADA (un Parquet que se regenera desde la capa cruda, que
+   se conserva entera) puede podar su _historico/ a las últimas N versiones,
+   y solo si quien la escribe lo pide de forma explícita (hoy, la salida de
+   nacional/licitaciones.py con --conservar-versiones). La capa cruda no se
+   poda nunca y la versión vigente nunca se toca.
 """
 
 import glob
 import hashlib
 import os
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -153,6 +161,97 @@ def versiones(destino):
     patron = f"{glob.escape(destino.stem)}__*{glob.escape(destino.suffix)}"
     antiguas = sorted(carpeta.glob(patron)) if carpeta.is_dir() else []
     return antiguas + ([destino] if destino.exists() else [])
+
+
+# Retención (podar): solo los Parquet derivados; la capa cruda no se poda nunca
+PODABLES = (".parquet",)
+# Sello de una versión archivada y, si coincidió con otra, sus sufijos _n (archivar, mover_historia)
+_SELLO_VERSION = r"__(\d{8}T\d{6}Z)((?:_\d+)*)"
+
+
+def _archivadas(destino):
+    """Versiones de `destino` en _historico/ con el nombre que les da archivar
+    (<nombre>__<AAAAMMDDTHHMMSSZ>[_n...]<ext>), de la más antigua a la más
+    reciente: [(ruta, fecha UTC)], ordenadas por sello y, con el mismo sello,
+    por sus sufijos _n (en el orden en que se archivaron). Solo ficheros
+    reales: un enlace simbólico de _historico/ no es una versión."""
+    destino = Path(destino)
+    carpeta = destino.parent / HISTORICO
+    if not carpeta.is_dir():
+        return []
+    patron = re.compile(re.escape(destino.stem) + _SELLO_VERSION + re.escape(destino.suffix))
+    encontradas = []
+    for ruta in carpeta.iterdir():
+        m = patron.fullmatch(ruta.name)
+        if not m or ruta.is_symlink() or not ruta.is_file():
+            continue
+        fecha = datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        sufijos = tuple(int(n) for n in m.group(2).split("_")[1:])
+        encontradas.append((fecha, sufijos, ruta))
+    return [(ruta, fecha) for fecha, _, ruta in sorted(encontradas)]
+
+
+def _misma(ruta, otras):
+    """Si `ruta` es el mismo fichero que alguna de `otras` (que existan)."""
+    for otra in otras:
+        try:
+            if os.path.samefile(ruta, otra):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def podar(destino, conservar, *, simular=False, proteger=()):
+    """Retención del histórico de una salida DERIVADA: deja en _historico/ las
+    `conservar` versiones anteriores más recientes de `destino` y borra las
+    demás. Opcional y explícita: guardar_version y archivar no borran nunca
+    nada y ningún scraper poda si no lo pide. Con simular=True no se borra
+    nada y se devuelve lo mismo: lo que se borraría.
+
+    Devuelve [{'ruta', 'bytes', 'fecha'}] de las versiones borradas (o que se
+    borrarían), de la más antigua a la más reciente; 'fecha' es la de esa
+    versión (su sello en _historico/, ver ruta_historica). Si una no se puede
+    borrar, lleva además 'error' y sigue en su sitio.
+
+    - Solo un Parquet (PODABLES): la capa cruda (ZIP y demás descargas) es de
+      donde se regenera la salida y no se poda nunca: ValueError.
+    - La versión vigente (`destino`) no cuenta entre las `conservar` y nunca
+      se borra, tampoco si _historico/ tiene otro nombre del mismo fichero.
+    - Solo cuentan las versiones con el nombre que les da archivar
+      (<nombre>__<AAAAMMDDTHHMMSSZ>[_n]<ext>), por orden de sello: un fichero
+      con otro nombre (puesto a mano, de otra tabla, un CSV) no se toca.
+    - Enlaces: un `destino` que es un enlace simbólico da ValueError sin
+      borrar nada (como _sin_enlace); un enlace de _historico/ no es una
+      versión (no es un dato) y no se toca.
+    - `proteger`: rutas que no se borran nunca (p. ej. una versión que la
+      ejecución lee como semilla).
+    - `conservar`: entero mayor que 0 (con 0 no quedaría ninguna versión
+      anterior a la vigente): ValueError.
+    """
+    destino = Path(destino)
+    if isinstance(conservar, bool) or not isinstance(conservar, int) or conservar < 1:
+        raise ValueError(f"conservar debe ser un entero mayor que 0: {conservar!r}")
+    if destino.suffix.lower() not in PODABLES:
+        raise ValueError(f"{destino.name}: solo se poda el histórico de una salida derivada "
+                         f"({', '.join(PODABLES)}); la capa cruda (ZIP y demás descargas) no se poda nunca")
+    if destino.is_symlink():
+        raise ValueError(f"{destino} es un enlace simbólico (→ {os.readlink(destino)}): no se poda a través "
+                         "de él; no se ha borrado nada")
+    archivadas = _archivadas(destino)
+    intocables = [destino, *map(Path, proteger)]
+    podadas = []
+    for ruta, fecha in archivadas[:max(len(archivadas) - conservar, 0)]:
+        if _misma(ruta, intocables):
+            continue
+        version = {"ruta": ruta, "bytes": ruta.stat().st_size, "fecha": fecha}
+        if not simular:
+            try:
+                ruta.unlink()
+            except OSError as e:
+                version["error"] = str(e)
+        podadas.append(version)
+    return podadas
 
 
 # ─────────────────────────────────────────────────────────────
