@@ -19,6 +19,7 @@ Uso:
     python nacional/licitaciones.py --anos 2012-2026 --solo-procesar --data-dir ./datos_placsp --output-dir ./nacional
     python nacional/licitaciones.py --solo-procesar --procesos 3 --sin-csv \
         --semilla licitaciones_espana.parquet --semilla licitaciones_completo_2012_2026.parquet
+    python nacional/licitaciones.py --solo-podar --conservar-versiones 4 --simular-poda --output-dir ./nacional
 
 Descarga (sin perder nada de lo publicado):
     Por año se pide primero el ZIP anual y, si da 404, los mensuales de ese año.
@@ -50,10 +51,22 @@ Procesado por lotes (memoria acotada):
     Una ejecución interrumpida no deja tablas a medias: se publican solo
     cuando están todas escritas. El parquet anterior de cada tabla no se
     pierde: pasa a <salida>/_historico/ (comun.historico.guardar_version; si
-    no cambió no se toca), porque puede tener entradas de ZIP que ya no están
-    en disco; el CSV se sustituye (tiene los mismos datos que su parquet; un
-    CSV sin parquet también pasa a _historico/). Sin ninguna entrada leída no
-    se escribe ni se publica ninguna tabla (tampoco _borrados).
+    no cambió no se toca; ver Retención), porque puede tener entradas de ZIP
+    que ya no están en disco; el CSV se sustituye (tiene los mismos datos
+    que su parquet; un CSV sin parquet también pasa a _historico/). Sin
+    ninguna entrada leída no se escribe ni se publica ninguna tabla
+    (tampoco _borrados).
+
+Retención del histórico de la salida (--conservar-versiones N; opcional):
+    Cada versión de la salida pasa entera a <salida>/_historico/. Con
+    --conservar-versiones N, tras publicar quedan ahí las N versiones
+    anteriores más recientes de cada tabla parquet y se borran las demás
+    (podar_salida, comun.historico.podar), cada una anotada en el registro con
+    su tamaño y su fecha. Se pueden regenerar: salen de los ZIP, que se
+    conservan siempre con su _historico/ (no se podan nunca), y de las
+    semillas. La vigente nunca se toca. Sin la opción no se borra nada.
+    --simular-poda solo lista qué se borraría y cuánto ocupa; --solo-podar
+    aplica la retención a la salida que ya hay, sin descargar ni procesar.
 
 Semilla (--semilla, repetible; el orden es la prioridad):
     Un parquet publicado (p.ej. licitaciones_espana.parquet de v2026.02) se
@@ -1881,6 +1894,53 @@ def deshacer_nombre_fijo(dir_salida, con_anos):
                 enlace.unlink()
     return movidas
 
+
+def podar_salida(dir_salida, nombre_base, conservar, simular=False, proteger=()):
+    """Retención del histórico de la salida (--conservar-versiones; opcional: sin ella no se borra nada).
+    Cada versión de cada tabla se archiva entera en <salida>/_historico/ y se regenera desde los ZIP, que
+    se conservan todos con su propio _historico/. De cada tabla parquet de la salida de nombre base
+    `nombre_base` (TABLAS_SALIDA) deja en _historico/ las `conservar` versiones anteriores más recientes y
+    borra las demás (comun.historico.podar): la vigente no cuenta y nunca se toca. No se podan nunca los
+    ZIP descargados (están en --data-dir), los CSV, las versiones de otros nombres (los nombres con años,
+    otro rango) ni las rutas de `proteger` (las semillas de la ejecución). Cada versión borrada queda en el
+    registro de la ejecución con su tamaño y su fecha; con simular=True solo se lista qué se borraría y
+    cuánto ocupa. Una tabla de salida que es un enlace simbólico da ValueError antes de borrar nada.
+    Devuelve las versiones borradas (o que se borrarían), como comun.historico.podar."""
+    hist = _historico()
+    destinos = [Path(dir_salida) / f'{_nombre_tabla(nombre_base, tabla)}.parquet' for tabla in TABLAS_SALIDA]
+    enlaces = [destino for destino in destinos if destino.is_symlink()]
+    if enlaces:
+        raise ValueError(f"{enlaces[0].name} es un enlace simbólico (→ {os.readlink(enlaces[0])}): no se poda "
+                         "a través de él; no se ha borrado nada")
+    print("\n🗄 RETENCIÓN DEL HISTÓRICO DE LA SALIDA" + (" (simulación: no se borra nada)" if simular else ""))
+    print("=" * 60)
+    anteriores = ("la versión anterior más reciente" if conservar == 1
+                  else f"las {conservar} versiones anteriores más recientes")
+    print(f"   Se conservan la vigente y {anteriores} de cada tabla en {hist.HISTORICO}/; los ZIP descargados no se tocan")
+    podadas = []
+    for destino in destinos:
+        podadas += hist.podar(destino, conservar, simular=simular, proteger=proteger)
+    for version in podadas:
+        ruta = version['ruta']
+        detalle = (f"{ruta.parent.name}/{ruta.name} ({version['bytes']:,} bytes, "
+                   f"{version['bytes'] / 1024 ** 3:.2f} GiB; versión del {version['fecha']:%Y-%m-%d %H:%M:%S} UTC)")
+        if 'error' in version:
+            print(f"   ⚠ No se pudo borrar {detalle}: {version['error']}")
+        else:
+            print(f"   {'· Borraría' if simular else '🗑 Borrada'} {detalle}")
+    hechas = [version for version in podadas if 'error' not in version]
+    total = sum(version['bytes'] for version in hechas)
+    if not podadas:
+        print(f"   ✓ Nada que borrar: ninguna tabla tiene más de {conservar} "
+              f"{'versión anterior' if conservar == 1 else 'versiones anteriores'} en {hist.HISTORICO}/")
+    elif simular:
+        print(f"   ℹ Simulación: se borrarían {len(hechas)} versiones, {total:,} bytes ({total / 1024 ** 3:.2f} GiB)")
+    else:
+        print(f"   ✓ {len(hechas)} versiones borradas, {total:,} bytes ({total / 1024 ** 3:.2f} GiB) liberados"
+              + (f"; {len(podadas) - len(hechas)} no se pudieron borrar (siguen en su sitio)"
+                 if len(hechas) < len(podadas) else ""))
+    return podadas
+
 # Rango de datetime64[ns] (1677-09-21 a 2262-04-11). Fuera de él (años mal
 # escritos como '0202-07-03' o '24-12-27') pandas 2 da NaT y pandas 3 lee la
 # fecha tal cual (año 202, con otra resolución): para que las dos versiones
@@ -3350,8 +3410,25 @@ def main():
                              f'salida del rango completo de --output-dir vuelve a {NOMBRE_SALIDA}_{PRIMER_ANO_PLACSP}'
                              f'_<año en curso>, con su historia de _historico/, y se quitan los enlaces con años. '
                              f'No descarga ni procesa nada (ver deshacer_nombre_fijo)')
+    parser.add_argument('--conservar-versiones', type=_entero_positivo, default=None, metavar='N',
+                        help='Retención del histórico de la salida (opcional; por defecto no se borra nada): tras '
+                             'publicar, deja en <output-dir>/_historico/ las N versiones anteriores más recientes de '
+                             'cada tabla parquet de la salida y borra las demás, cada una anotada en el registro con '
+                             'su tamaño y su fecha. La vigente no cuenta y nunca se toca; los ZIP descargados no se '
+                             'podan nunca (ver podar_salida)')
+    parser.add_argument('--simular-poda', action='store_true',
+                        help='Con --conservar-versiones: solo lista qué versiones borraría y cuánto ocupan, sin '
+                             'borrar nada')
+    parser.add_argument('--solo-podar', action='store_true',
+                        help='Con --conservar-versiones: solo aplica la retención a la salida que ya hay en '
+                             '--output-dir; no descarga ni procesa nada')
 
     args = parser.parse_args()
+    if (args.simular_poda or args.solo_podar) and args.conservar_versiones is None:
+        parser.error('--simular-poda y --solo-podar necesitan --conservar-versiones N')
+    if args.solo_podar and (args.solo_descargar or args.solo_procesar or args.deshacer_nombre_fijo):
+        parser.error('--solo-podar no descarga ni procesa nada: no se combina con --solo-descargar, '
+                     '--solo-procesar ni --deshacer-nombre-fijo')
 
     if args.data_dir is not None:
         DATA_DIR = args.data_dir
@@ -3380,6 +3457,11 @@ def main():
     enlaces = enlaces_en_salida(OUTPUT_DIR, nombre_base)
     if enlaces and not args.solo_descargar:
         parser.error(mensaje_enlaces(enlaces))
+
+    if args.solo_podar:
+        podar_salida(OUTPUT_DIR, nombre_base, args.conservar_versiones, simular=args.simular_poda,
+                     proteger=args.semilla)
+        return
 
     # Las tablas de salida y, con el rango completo, las de todos los nombres con años: el de esta ejecución y
     # los de otros años (enlaces al fijo, o aún el fichero real de antes, que _migrar_alias pasa al fijo o a
@@ -3444,6 +3526,9 @@ def main():
         # Sin ninguna entrada casi siempre es un fallo (--data-dir equivocado,
         # descarga caída): la salida anterior no se ha tocado; termina con error
         sys.exit(1)
+    if args.conservar_versiones is not None:
+        podar_salida(OUTPUT_DIR, nombre_base, args.conservar_versiones, simular=args.simular_poda,
+                     proteger=args.semilla)
     print("\n✅ SCRAPING COMPLETADO")
 
 if __name__ == '__main__':

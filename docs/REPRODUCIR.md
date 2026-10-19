@@ -15,7 +15,7 @@ python -m pytest -q -p no:cacheprovider     # sin red: comprueba que el entorno 
 - **Python 3.12** y las versiones de [`constraints.txt`](../constraints.txt), que son las de los tests. La suite pasa también con pandas 2.2.3.
 - **RAR** (Castilla-La Mancha): libarchive (la usa `libarchive-c`) o uno de `unar`, `unrar`, `bsdtar` o `7z`.
 - **Memoria:** todas las descargas de la release v2026.10 se hicieron con 4 CPU y 10 GB de memoria; la PLACSP, con 12 GB.
-- **Disco:** la primera descarga completa de todo ocupa unos 45 GB con las capas crudas (la PLACSP sola, unos 20 GB entre sus ZIP y su salida), y crece con cada versión que se guarda en `_historico/`. La release, ya en Parquet, ocupa 11,5 GB descomprimida.
+- **Disco:** la primera descarga completa de todo ocupa unos 45 GB con las capas crudas (la PLACSP sola, unos 20 GB entre sus ZIP y su salida), y crece con cada versión que se guarda en `_historico/`. En la PLACSP, el histórico de la salida se puede acotar con `--conservar-versiones` ([ficha](fuentes/placsp.md#retención-del-histórico-de-la-salida)). La release, ya en Parquet, ocupa 11,5 GB descomprimida.
 - **Red:** cada script pide a su portal con pausas y reintentos. Respeta esas pausas: algunos portales cortan a quien pide demasiado deprisa.
 
 ## Cómo funciona cada script

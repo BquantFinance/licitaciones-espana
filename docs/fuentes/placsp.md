@@ -70,9 +70,32 @@ python nacional/licitaciones.py --data-dir <zips PLACSP> --output-dir <salida> -
 ## Ejecución: memoria, histórico y semilla
 
 - **Memoria acotada.** Los ZIP se leen sin extraerlos y las entradas se escriben por lotes (`--lote`, 50.000 por defecto): con agregación 2025 (250.652 entradas) el pico baja de 2,7 GB a 1,2 GB con la misma salida. `--procesos N` lee N ZIP a la vez y `--sin-csv` omite los CSV (con todos los conjuntos pasan de 10 GB).
-- **Nada se machaca.** Un ZIP que cambia deja su versión anterior en `<data-dir>/<conjunto>/_historico/` y se leen todas las versiones: una entrada que la PLACSP deja de servir sigue en la salida con `_en_ultima_descarga=False`. La salida anterior de cada tabla pasa a `<salida>/_historico/`.
+- **Nada se machaca.** Un ZIP que cambia deja su versión anterior en `<data-dir>/<conjunto>/_historico/` y se leen todas las versiones: una entrada que la PLACSP deja de servir sigue en la salida con `_en_ultima_descarga=False`. La salida anterior de cada tabla pasa a `<salida>/_historico/` (sin límite, salvo con la [retención](#retención-del-histórico-de-la-salida)).
 - **`--semilla`** incorpora un parquet publicado como la instantánea más antigua: solo añade, marcadas con `_origen='release v2026.02'` y `_en_ultima_descarga=False`, las filas cuya clave (`id`, `fecha_updated`) no está en la descarga, y solo de los conjuntos y años de ZIP leídos. Las 35.627 filas de `licitaciones_espana.parquet` sin `fecha_updated` (el código antiguo no leía los `atom:updated` sin milisegundos) se casan por contenido. Si coinciden con una fila de la descarga van a la tabla `_semilla_contenido`, para no perderlas ni duplicar la principal.
 - **`textos_originales`** (JSON) guarda el texto publicado de cada importe o fecha que no se puede convertir (p.ej. `"fecha_adjudicacion": "0202-07-03"`): la columna queda vacía y el valor no se pierde.
+
+### Retención del histórico de la salida
+
+Cada ejecución que cambia la salida archiva entera la versión anterior de cada tabla en `<salida>/_historico/`. Con el histórico completo, una versión de la principal y sus tablas de detalle ocupa unos 10 GB (9,8 GB en octubre de 2026) y crece con cada versión de los ZIP, porque la salida las lee todas. La [ampliación del CODICE](#ampliación-del-codice-periodo-prórrogas-garantías-solvencia-anuncios-y-documentos) le suma 4,6 GiB. Sin límite, `_historico/` crece unos 15 GB con cada ejecución.
+
+Esas versiones se pueden regenerar: salen de los ZIP, que se conservan siempre, todos y con su propio `_historico/`, y de las semillas de la release v2026.02. Por eso la salida, y solo ella, admite una retención opcional:
+
+```bash
+# Qué borraría y cuánto ocupa, sin borrar nada (no descarga ni procesa)
+python nacional/licitaciones.py --output-dir <salida> --solo-podar --conservar-versiones 4 --simular-poda
+
+# En cada ejecución: tras publicar, quedan en <salida>/_historico/ las 4 versiones anteriores más recientes de cada tabla
+python nacional/licitaciones.py --data-dir <zips PLACSP> --output-dir <salida> --procesos 3 --sin-csv \
+    --semilla licitaciones_espana.parquet --semilla licitaciones_completo_2012_2026.parquet --conservar-versiones 4
+```
+
+- **Se conserva siempre:**
+  - la versión vigente de cada tabla y sus `N` versiones anteriores más recientes, por la fecha de su sello en `_historico/`;
+  - todos los ZIP descargados y sus versiones;
+  - los CSV, las semillas de la ejecución y cualquier fichero de `_historico/` que no tenga el nombre de una versión (`<tabla>__<AAAAMMDDTHHMMSSZ>.parquet`).
+- **Se borran** solo las versiones más antiguas de los Parquet de la salida (`licitaciones_completo.parquet` y sus tablas). Cada borrado queda en el registro de la ejecución con el fichero, su tamaño y la fecha de la versión, y al final, el total liberado.
+- **Sin `--conservar-versiones` no se borra nada**, como hasta ahora. Ningún otro scraper poda su histórico. La regla está en [`comun/historico.py`](../../comun/historico.py) (`podar`), que solo acepta un Parquet: la capa cruda no se poda nunca.
+- **Margen para recuperar una versión.** Si una ejecución avisa de que una tabla tiene menos filas que la versión anterior (p. ej., porque faltan ZIP en disco), esa versión anterior sigue en `_historico/` hasta que la desplazan `N` versiones más recientes. Con `--conservar-versiones 4` y una ejecución por semana, unas cuatro semanas.
 
 ## Archivos
 

@@ -1,5 +1,8 @@
 """Tests de comun/historico.py (control del sesgo del superviviente)."""
+import ast
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -193,6 +196,217 @@ def test_archivar_mueve_a_historico_sin_sustituir(tmp_path):
     destino.write_bytes(b"v2")
     _mtime(destino, 1_700_000_000)                       # mismo sello: no se pisa
     assert h.archivar(destino).read_bytes() == b"v2" and archivo.read_bytes() == b"v1"
+
+
+
+# ── podar: retención de una salida derivada ──────────────────
+
+T0 = 1_700_000_000                                       # 2023-11-14T22:13:20Z
+
+
+def _con_versiones(tmp_path, n, nombre="tabla.parquet"):
+    """`nombre` con n versiones en _historico/, archivadas con archivar (una por día desde T0, la i-ésima
+    con el contenido 'v<i>' repetido i + 1 veces) y la vigente ('vigente')."""
+    destino = tmp_path / nombre
+    for i in range(n):
+        destino.write_bytes(f"v{i}".encode() * (i + 1))
+        _mtime(destino, T0 + i * 86400)
+        h.archivar(destino)
+    destino.write_bytes(b"vigente")
+    return destino
+
+
+def _contenido(carpeta):
+    return {f.name: (os.readlink(f) if f.is_symlink() else f.read_bytes()) for f in sorted(carpeta.iterdir())}
+
+
+@pytest.mark.parametrize("n", [0, 1, 2, 3, 4, 5, 10])    # 2 y 3: menos que conservar, pero más de la mitad
+def test_podar_deja_las_ultimas_versiones_y_la_vigente(tmp_path, n):
+    destino = _con_versiones(tmp_path, n)
+    antes = h.versiones(destino)
+    assert len(antes) == n + 1
+    sobran = max(n - 4, 0)
+    podadas = h.podar(destino, 4)
+    # Las más antiguas, en orden, con su tamaño y la fecha de su versión (el sello)
+    assert [v["ruta"] for v in podadas] == antes[:sobran]
+    assert [v["bytes"] for v in podadas] == [2 * (i + 1) for i in range(sobran)]
+    assert [v["fecha"] for v in podadas] == [datetime.fromtimestamp(T0 + i * 86400, timezone.utc)
+                                              for i in range(sobran)]
+    assert not any("error" in v for v in podadas) and not any(r.exists() for r in antes[:sobran])
+    # Quedan las 4 más recientes, intactas, y la vigente
+    assert h.versiones(destino) == antes[sobran:]
+    assert [r.read_bytes() for r in antes[sobran:-1]] == [f"v{i}".encode() * (i + 1) for i in range(sobran, n)]
+    assert destino.read_bytes() == b"vigente"
+    if n == 0:
+        assert not (tmp_path / h.HISTORICO).exists()     # no crea _historico/
+    assert h.podar(destino, 4) == []                     # otra vez: nada que borrar
+
+
+def test_podar_sin_vigente_conserva_las_ultimas(tmp_path):
+    """Una tabla que la ejecución ya no produce (archivar la pasó entera a _historico/): las últimas siguen."""
+    destino = _con_versiones(tmp_path, 6)
+    h.archivar(destino)
+    assert len(h.podar(destino, 4)) == 3 and len(h.versiones(destino)) == 4 and not destino.exists()
+
+
+def test_podar_simulado_no_borra_nada_y_dice_lo_que_borra(tmp_path):
+    destino = _con_versiones(tmp_path, 10)
+    carpeta = tmp_path / h.HISTORICO
+    antes = _contenido(carpeta)
+    simulado = h.podar(destino, 4, simular=True)
+    assert len(simulado) == 6 and sum(v["bytes"] for v in simulado) == 2 * (1 + 2 + 3 + 4 + 5 + 6)
+    assert _contenido(carpeta) == antes and destino.read_bytes() == b"vigente"
+    assert h.podar(destino, 4) == simulado               # borra exactamente lo que dijo la simulación
+    assert len(h.versiones(destino)) == 5
+
+
+@pytest.mark.parametrize("nombre", ["licitacionesPerfilesContratanteCompleto3_2024.zip", "contratos.csv",
+                                    "datos.json", "CM_2021[1].ods", "anuncio.xml", "sin_extension"])
+def test_podar_nunca_toca_la_capa_cruda(tmp_path, nombre):
+    """Los ZIP y demás descargas son de donde se regenera la salida: no se podan nunca."""
+    destino = tmp_path / nombre
+    for i in range(6):
+        h.guardar_version(destino, f"v{i}".encode())
+        _mtime(destino, T0 + i * 86400)
+    carpeta = tmp_path / h.HISTORICO
+    antes = _contenido(carpeta)
+    for simular in (False, True):
+        with pytest.raises(ValueError, match="la capa cruda"):
+            h.podar(destino, 1, simular=simular)
+    assert _contenido(carpeta) == antes and len(h.versiones(destino)) == 6
+
+
+def test_guardar_version_y_archivar_no_podan_nunca(tmp_path):
+    """Ningún scraper cambia de comportamiento: sin pedir la poda, todas las versiones se quedan."""
+    destino = tmp_path / "tabla.parquet"
+    for i in range(10):
+        h.guardar_version(destino, f"v{i}".encode())
+        _mtime(destino, T0 + i * 86400)
+    assert [r.read_bytes() for r in h.versiones(destino)] == [f"v{i}".encode() for i in range(10)]
+
+
+def test_podar_solo_cuenta_las_versiones_de_su_tabla(tmp_path):
+    destino = _con_versiones(tmp_path, 6)
+    carpeta = tmp_path / h.HISTORICO
+    ajenos = ["tabla_lotes__20231114T221320Z.parquet",        # otra tabla con el mismo prefijo
+              "tabla_2012_2026__20231114T221320Z.parquet",    # un nombre con años: otra cadena
+              "tabla__20231114T221320Z.csv",                  # el CSV de la misma tabla
+              "tabla__20231114T221320Z.zip",                  # un ZIP con el mismo nombre
+              "tabla__copia.parquet",                         # nombre puesto a mano: no es una versión
+              "tabla__20231114T221320Z.parquet.bak",
+              "tabla__20231114T221320.parquet",               # sello incompleto
+              "tabla__20231314T221320Z.parquet"]              # sello imposible (mes 13)
+    for nombre in ajenos:
+        (carpeta / nombre).write_bytes(b"ajeno")
+    assert len(h.podar(destino, 2)) == 4
+    assert all((carpeta / nombre).read_bytes() == b"ajeno" for nombre in ajenos)
+    assert sorted(set(f.name for f in carpeta.iterdir()) - set(ajenos)) == [
+        f"tabla__202311{d}T221320Z.parquet" for d in (18, 19)]
+
+
+def test_podar_ordena_por_el_sello_y_sus_sufijos(tmp_path):
+    """El orden es el del sello (la fecha de la versión) y, con el mismo sello, el de archivar (_1, _1_2) o
+    mover_historia (_2, _10: '_10' va antes que '_2' por nombre). Ni el nombre ni el mtime cuentan."""
+    destino = tmp_path / "tabla.parquet"
+    for i in range(3):                                   # el mismo sello: tabla__S, tabla__S_1, tabla__S_1_2
+        destino.write_bytes(f"s{i}".encode())
+        _mtime(destino, T0)
+        h.archivar(destino)
+    carpeta = tmp_path / h.HISTORICO
+    assert sorted(f.name for f in carpeta.iterdir()) == [
+        "tabla__20231114T221320Z.parquet", "tabla__20231114T221320Z_1.parquet", "tabla__20231114T221320Z_1_2.parquet"]
+    (carpeta / "tabla__20231115T000000Z_2.parquet").write_bytes(b"m2")
+    (carpeta / "tabla__20231115T000000Z_10.parquet").write_bytes(b"m10")
+    (carpeta / "tabla__20231001T000000Z.parquet").write_bytes(b"vieja")
+    for k, f in enumerate(sorted(carpeta.iterdir(), reverse=True)):
+        _mtime(f, T0 + k * 86400)                        # mtime al revés: no cuenta
+    destino.write_bytes(b"vigente")
+    podadas = h.podar(destino, 1)
+    assert [v["ruta"].name for v in podadas] == [
+        "tabla__20231001T000000Z.parquet", "tabla__20231114T221320Z.parquet", "tabla__20231114T221320Z_1.parquet",
+        "tabla__20231114T221320Z_1_2.parquet", "tabla__20231115T000000Z_2.parquet"]
+    # La fecha de cada versión es la de su sello, no la de su mtime
+    assert [v["fecha"] for v in podadas] == [datetime(2023, 10, 1, tzinfo=timezone.utc)] + [
+        datetime.fromtimestamp(T0, timezone.utc)] * 3 + [datetime(2023, 11, 15, tzinfo=timezone.utc)]
+    assert [f.read_bytes() for f in carpeta.iterdir()] == [b"m10"]
+    assert destino.read_bytes() == b"vigente"
+
+
+def test_podar_y_los_enlaces(tmp_path):
+    """Como _sin_enlace: no se poda a través de un enlace (ValueError sin borrar nada). Un enlace de
+    _historico/ no es una versión: ni cuenta ni se borra. Otro nombre de la vigente en _historico/ (un enlace
+    duro) tampoco se borra."""
+    destino = _con_versiones(tmp_path, 6)
+    carpeta = tmp_path / h.HISTORICO
+    enlace = tmp_path / "tabla_2012_2026.parquet"        # como el nombre con años de la PLACSP
+    enlace.symlink_to(destino.name)
+    for i in range(3):
+        (carpeta / f"tabla_2012_2026__2023010{i + 1}T000000Z.parquet").write_bytes(b"cadena con anos")
+    antes = _contenido(carpeta)
+    for simular in (False, True):
+        with pytest.raises(ValueError, match="enlace simbólico"):
+            h.podar(enlace, 1, simular=simular)
+    assert _contenido(carpeta) == antes and enlace.is_symlink() and destino.read_bytes() == b"vigente"
+
+    roto = carpeta / "tabla__20200101T000000Z.parquet"   # el más antiguo por sello, pero es un enlace
+    roto.symlink_to("no_existe.parquet")
+    a_vigente = carpeta / "tabla__20200102T000000Z.parquet"
+    a_vigente.symlink_to(os.path.join("..", destino.name))
+    duro = carpeta / "tabla__20200103T000000Z.parquet"
+    os.link(destino, duro)
+    reales = [r for r in h.versiones(destino) if not r.is_symlink() and r != duro][:-1]
+    podadas = h.podar(destino, 4)
+    assert [v["ruta"] for v in podadas] == reales[:2]
+    assert roto.is_symlink() and a_vigente.is_symlink() and duro.read_bytes() == b"vigente"
+    assert destino.read_bytes() == b"vigente"
+
+
+def test_podar_no_borra_lo_protegido(tmp_path):
+    destino = _con_versiones(tmp_path, 6)
+    semilla = h.versiones(destino)[0]                    # p. ej. una versión que la ejecución lee como semilla
+    podadas = h.podar(destino, 4, proteger=[semilla, tmp_path / "no_existe.parquet"])
+    assert [v["ruta"].name for v in podadas] == ["tabla__20231115T221320Z.parquet"] and semilla.exists()
+
+
+@pytest.mark.parametrize("conservar", [0, -1, True, 2.5, "4", None])
+def test_podar_exige_conservar_mayor_que_cero(tmp_path, conservar):
+    destino = _con_versiones(tmp_path, 3)
+    with pytest.raises(ValueError, match="conservar"):
+        h.podar(destino, conservar)
+    assert len(h.versiones(destino)) == 4
+
+
+def test_podar_anota_lo_que_no_pudo_borrar(tmp_path, monkeypatch):
+    destino = _con_versiones(tmp_path, 6)
+    rebelde = h.versiones(destino)[0]
+    unlink = Path.unlink
+
+    def sin_permiso(self, *args, **kwargs):
+        if self == rebelde:
+            raise PermissionError("sin permiso")
+        return unlink(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", sin_permiso)
+    podadas = h.podar(destino, 4)
+    assert podadas[0]["ruta"] == rebelde and podadas[0]["error"] == "sin permiso" and rebelde.exists()
+    assert "error" not in podadas[1] and not podadas[1]["ruta"].exists()
+
+
+def test_solo_la_placsp_poda():
+    """Ningún otro scraper cambia: solo nacional/licitaciones.py llama a podar (fuera de los tests)."""
+    raiz = Path(__file__).resolve().parent.parent
+    usan = set()
+    for ruta in raiz.rglob("*.py"):
+        partes = ruta.relative_to(raiz).parts
+        if partes[0] == "tests" or any(d.startswith(".") or "venv" in d for d in partes[:-1]):
+            continue
+        for nodo in ast.walk(ast.parse(ruta.read_text(encoding="utf-8"))):
+            nombre = (nodo.func.id if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
+                      else nodo.func.attr if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute)
+                      else None)
+            importa = isinstance(nodo, ast.ImportFrom) and any(a.name == "podar" for a in nodo.names)
+            if nombre in ("podar", "podar_salida") or importa:
+                usan.add("/".join(partes))
+    assert usan == {"nacional/licitaciones.py"}
 
 
 # ── sembrar: la instantánea publicada como la más antigua ────

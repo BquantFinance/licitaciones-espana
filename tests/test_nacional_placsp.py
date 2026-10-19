@@ -2159,3 +2159,196 @@ class TestNombreFijo:
         self._exportar(base, con_anos)
         assert self._versiones(salida / f"{con_anos}.parquet") == cadena + [["urn:L1", "urn:L2", "urn:L3"]]
         assert not [f for f in (salida / "_historico").iterdir() if f.is_symlink()]
+
+
+class TestRetencionHistorico:
+    """--conservar-versiones: retención opcional del histórico de la salida. Cada versión de la salida pasa
+    entera a <salida>/_historico/ (unos 7 GB por versión en el histórico completo, unos 12 GB con la
+    ampliación) y se regenera desde los ZIP, que se conservan siempre. Se podan solo los parquet de la
+    salida, nunca los ZIP ni la vigente; sin la opción no se borra nada."""
+    P = "licitacionesPerfilesContratanteCompleto3_"
+    ENTRADAS = [_xml(f"urn:L{i}", f"2024-01-{i:02d}T00:00:00Z", "PUB", lotes=1) for i in range(1, 8)]
+    T0 = 1_700_000_000                                   # 2023-11-14T22:13:20Z
+
+    @pytest.fixture
+    def base(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        monkeypatch.setattr(lic, "OUTPUT_DIR", tmp_path / "salida")
+        monkeypatch.setattr(lic.time, "sleep", lambda s: None)
+        return tmp_path
+
+    def _zip(self, base, k, zips="zips"):
+        """El ZIP de 2024 con las k primeras entradas, por guardar_version como la descarga: la versión
+        anterior queda en zips/licitaciones/_historico/ con su sello (uno por día)."""
+        ruta = base / zips / "licitaciones" / f"{self.P}2024.zip"
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        historico.guardar_version(ruta, _zip_contenido({"a.atom": _atom(self.ENTRADAS[:k])}))
+        os.utime(ruta, (self.T0 + k * 86400,) * 2)
+
+    def _main(self, base, monkeypatch, *argumentos, salida="salida", zips="zips"):
+        monkeypatch.setattr(sys, "argv", ["licitaciones.py", "--solo-procesar", "--conjunto", "licitaciones",
+                                          "--data-dir", str(base / zips), "--output-dir", str(base / salida),
+                                          "--sin-csv", *argumentos])
+        lic.main()
+
+    def _ejecuciones(self, base, monkeypatch, n, *argumentos, salida="salida", zips="zips"):
+        """n ejecuciones, la k-ésima con k entradas; la salida de cada una, con fecha del día k (el sello
+        con que la siguiente la archiva)."""
+        for k in range(1, n + 1):
+            self._zip(base, k, zips)
+            self._main(base, monkeypatch, *argumentos, salida=salida, zips=zips)
+            for f in (base / salida).glob("*.parquet"):
+                if not f.is_symlink():
+                    os.utime(f, (self.T0 + k * 86400,) * 2)
+
+    @staticmethod
+    def _foto(carpeta):
+        return {str(f.relative_to(carpeta)): (os.readlink(f) if f.is_symlink() else f.read_bytes())
+                for f in sorted(carpeta.rglob("*")) if f.is_symlink() or f.is_file()}
+
+    @staticmethod
+    def _ids(ruta):
+        return pd.read_parquet(ruta)["id"].tolist()
+
+    def _tablas(self, salida):
+        return sorted(f for f in salida.glob("*.parquet") if not f.is_symlink())
+
+    def test_conserva_las_ultimas_versiones_y_nunca_toca_los_zip(self, base, monkeypatch, capsys):
+        salida, zips = base / "salida", base / "zips"
+        ids = [f"urn:L{i}" for i in range(1, 8)]
+        for k in range(1, 7):
+            self._zip(base, k)
+            antes_zips = self._foto(zips)
+            self._main(base, monkeypatch, "--conservar-versiones", "2")
+            assert self._foto(zips) == antes_zips, k           # ni un ZIP ni una versión de ZIP cambia
+            for f in self._tablas(salida):
+                os.utime(f, (self.T0 + k * 86400,) * 2)
+        principal = salida / "licitaciones_completo.parquet"
+        # (cada salida lleva las entradas de todas las versiones del ZIP: los ids distintos)
+        assert [sorted(set(self._ids(v))) for v in historico.versiones(principal)] == [ids[:4], ids[:5], ids[:6]]
+        tablas = self._tablas(salida)
+        assert {"licitaciones_completo.parquet", "licitaciones_completo_lotes.parquet"} <= {f.name for f in tablas}
+        for tabla in tablas:
+            assert len(historico.versiones(tabla)) == 3, tabla.name      # la vigente y las 2 anteriores
+        assert len(list((zips / "licitaciones" / "_historico").glob("*.zip"))) == 5   # todas las del ZIP
+        # Los enlaces con años siguen apuntando a la vigente
+        enlace = salida / f"licitaciones_completo_2012_{datetime.now().year}.parquet"
+        assert enlace.is_symlink() and os.readlink(enlace) == "licitaciones_completo.parquet"
+        # Cada borrado, en el registro: fichero, tamaño y fecha de la versión (la de la ejecución del día 3)
+        out = capsys.readouterr().out
+        assert out.count("RETENCIÓN DEL HISTÓRICO DE LA SALIDA") == 6
+        assert ("🗑 Borrada _historico/licitaciones_completo__20231117T221320Z.parquet (" in out
+                and "versión del 2023-11-17 22:13:20 UTC)" in out)
+        assert "Nada que borrar: ninguna tabla tiene más de 2 versiones anteriores en _historico/" in out
+
+    def test_sin_la_opcion_no_se_borra_nada_y_la_salida_es_la_misma(self, base, monkeypatch, capsys):
+        """La opción no cambia la salida: las tablas vigentes son idénticas byte a byte con ella y sin ella,
+        y lo que queda en _historico/ son las versiones más recientes de las de sin ella."""
+        self._ejecuciones(base, monkeypatch, 5, salida="sin", zips="zips_sin")
+        self._ejecuciones(base, monkeypatch, 5, "--conservar-versiones", "1", salida="con", zips="zips_con")
+        sin, con = base / "sin", base / "con"
+        ejecuciones = capsys.readouterr().out.split("SCRAPING COMPLETADO")
+        assert not any("RETENCIÓN" in texto for texto in ejecuciones[:5])
+        assert all("RETENCIÓN" in texto for texto in ejecuciones[5:10])
+        assert [f.name for f in self._tablas(sin)] == [f.name for f in self._tablas(con)]
+        for tabla in self._tablas(sin):
+            assert tabla.read_bytes() == (con / tabla.name).read_bytes(), tabla.name
+            versiones_sin, versiones_con = historico.versiones(tabla), historico.versiones(con / tabla.name)
+            assert len(versiones_sin) == 5 and len(versiones_con) == 2, tabla.name
+            assert [v.name for v in versiones_sin[-2:]] == [v.name for v in versiones_con]
+            assert [v.read_bytes() for v in versiones_sin[-2:]] == [v.read_bytes() for v in versiones_con]
+
+    def test_solo_podar_simulado_y_de_verdad(self, base, monkeypatch, capsys):
+        salida = base / "salida"
+        self._ejecuciones(base, monkeypatch, 5)
+        capsys.readouterr()
+        antes = self._foto(base)
+        argv = ["licitaciones.py", "--output-dir", str(salida), "--data-dir", str(base / "no_existe"),
+                "--solo-podar", "--conservar-versiones", "2"]
+        monkeypatch.setattr(sys, "argv", argv + ["--simular-poda"])
+        lic.main()
+        assert self._foto(base) == antes                       # la simulación no borra nada
+        simulado = capsys.readouterr().out
+        lineas = [linea for linea in simulado.splitlines() if "· Borraría _historico/" in linea]
+        n_tablas = len(self._tablas(salida))
+        assert len(lineas) == 2 * n_tablas and "Simulación: se borrarían" in simulado
+        monkeypatch.setattr(sys, "argv", argv)
+        lic.main()
+        real = capsys.readouterr().out
+        assert [linea.replace("· Borraría", "🗑 Borrada") for linea in lineas] == [
+            linea for linea in real.splitlines() if "🗑 Borrada _historico/" in linea]
+        assert f"✓ {2 * n_tablas} versiones borradas" in real
+        assert not (base / "no_existe").exists()               # no descarga ni procesa: no crea --data-dir
+        borradas = set(antes) - set(self._foto(base))
+        assert borradas and all(nombre.startswith("salida/_historico/licitaciones_completo") for nombre in borradas)
+        assert {k: v for k, v in antes.items() if k not in borradas} == self._foto(base)
+        for tabla in self._tablas(salida):
+            assert len(historico.versiones(tabla)) == 3
+
+    def test_simular_en_una_ejecucion_no_borra_nada(self, base, monkeypatch, capsys):
+        salida = base / "salida"
+        self._ejecuciones(base, monkeypatch, 4)
+        self._zip(base, 5)
+        capsys.readouterr()
+        self._main(base, monkeypatch, "--conservar-versiones", "1", "--simular-poda")
+        out = capsys.readouterr().out
+        n_tablas = len(self._tablas(salida))
+        assert out.count("· Borraría _historico/") == 3 * n_tablas and "🗑" not in out
+        for tabla in self._tablas(salida):
+            assert len(historico.versiones(tabla)) == 5, tabla.name
+
+    def test_una_semilla_en_historico_no_se_borra(self, base, monkeypatch, capsys):
+        salida = base / "salida"
+        self._ejecuciones(base, monkeypatch, 4)
+        semilla = historico.versiones(salida / "licitaciones_completo.parquet")[0]
+        self._zip(base, 5)
+        self._main(base, monkeypatch, "--conservar-versiones", "1", "--semilla", str(semilla),
+                   "--origen-semilla", "prueba")
+        assert semilla.exists()
+        assert [v.name for v in historico.versiones(salida / "licitaciones_completo.parquet")] == [
+            semilla.name, "licitaciones_completo__20231118T221320Z.parquet", "licitaciones_completo.parquet"]
+
+    @pytest.mark.parametrize("argumentos", [
+        ["--simular-poda"], ["--solo-podar"], ["--conservar-versiones", "0"], ["--conservar-versiones", "-1"],
+        ["--solo-podar", "--conservar-versiones", "2", "--solo-procesar"],
+        ["--solo-podar", "--conservar-versiones", "2", "--solo-descargar"],
+        ["--solo-podar", "--conservar-versiones", "2", "--deshacer-nombre-fijo"]])
+    def test_opciones_mal_combinadas_no_tocan_nada(self, base, monkeypatch, argumentos):
+        self._ejecuciones(base, monkeypatch, 3)
+        antes = self._foto(base)
+        monkeypatch.setattr(sys, "argv", ["licitaciones.py", "--output-dir", str(base / "salida"), *argumentos])
+        with pytest.raises(SystemExit) as error:
+            lic.main()
+        assert error.value.code == 2 and self._foto(base) == antes
+
+    def test_podar_salida_solo_toca_sus_tablas(self, base, capsys):
+        """Solo las versiones de los parquet de la salida: ni los CSV, ni los nombres con años, ni otro rango,
+        ni un ZIP que alguien haya dejado en _historico/."""
+        salida = base / "salida"
+        carpeta = salida / "_historico"
+        carpeta.mkdir(parents=True)
+        (salida / "licitaciones_completo.parquet").write_bytes(b"vigente")
+        propias = [f"licitaciones_completo{t}__2023111{d}T000000Z.parquet" for t in ("", "_lotes", "_ampliado")
+                   for d in range(5)]
+        ajenas = ([f"licitaciones_completo__2023111{d}T000000Z.csv" for d in range(5)]
+                  + [f"licitaciones_completo_2012_2026__2023111{d}T000000Z.parquet" for d in range(5)]
+                  + [f"licitaciones_completo_2024_2024__2023111{d}T000000Z.parquet" for d in range(5)]
+                  + [f"{self.P}2024__2023111{d}T000000Z.zip" for d in range(5)]
+                  + [f"licitaciones_completo_otra__2023111{d}T000000Z.parquet" for d in range(5)])
+        for nombre in propias + ajenas:
+            (carpeta / nombre).write_bytes(b"x" * 10)
+        podadas = lic.podar_salida(salida, "licitaciones_completo", 2)
+        assert sorted(v["ruta"].name for v in podadas) == sorted(
+            n for n in propias if any(f"2023111{d}T" in n for d in "012"))   # las 3 más antiguas de cada tabla
+        assert all((carpeta / nombre).exists() for nombre in ajenas)
+        assert (salida / "licitaciones_completo.parquet").read_bytes() == b"vigente"
+        assert "✓ 9 versiones borradas, 90 bytes" in capsys.readouterr().out
+
+    def test_podar_salida_con_una_tabla_que_es_un_enlace_no_borra_nada(self, base, monkeypatch):
+        salida = base / "salida"
+        self._ejecuciones(base, monkeypatch, 4)
+        (salida / "licitaciones_completo_borrados.parquet").symlink_to("licitaciones_completo.parquet")
+        antes = self._foto(base)
+        with pytest.raises(ValueError, match="enlace simbólico"):
+            lic.podar_salida(salida, "licitaciones_completo", 1)
+        assert self._foto(base) == antes
