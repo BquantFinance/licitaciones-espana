@@ -3800,3 +3800,192 @@ def test_cam_a_failure_of_the_date_route_does_not_stop_todo(cam_dirs, portal_fec
     assert {b["entidad_adjudicadora"] for b in portal_fechas.busquedas} >= {"38", "5", "120"}
     assert any(b.get("f[0]") == f"tipo_publicacion:{cam.TIPOS_NO_MENORES[0]}" for b in portal_fechas.busquedas)
     assert d.stats["error"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Modo «fichas» (opcional): la ficha de cada menor con el importe sin IVA
+# ---------------------------------------------------------------------------
+# Estructura de la ficha de un menor del portal (/contrato/<Referencia>), con datos
+# inventados: pares div.field__label / div.field__item dentro de li
+FICHA_MENOR = """<html><body>
+<div id="pcon-convocatoria"><h2>Datos del expediente</h2><ul class="pcon-convocatoria">
+<li><div class="field__label">Tipo de publicación</div><div class="field__item">Contratos menores</div></li>
+<li><div class="field__label">Referencia</div><div class="field__item">{ref}</div></li>
+<li><div class="field__label">Código de la entidad adjudicadora</div><div class="field__item">A13999999</div></li>
+<li><div class="field__label">Entidad adjudicadora</div><div class="field__item">Consejería Inventada··>Hospital Inventado</div></li>
+<li><div class="field__label">Objeto del contrato</div><div class="field__item">MATERIAL INVENTADO</div></li>
+</ul></div>
+<div id="pcon-convocatoria-menores-adj"><h2>Adjudicación</h2><div><ul class="pcon-convocatoria">
+<li class="clearfix"><div class="field__label">Nº Ofertas</div>
+  <div class="field__item">2</div></li>
+<li class="clearfix"><div class="field__label">NIF del adjudicatario</div><div class="field__item">B00000000</div></li>
+<li class="clearfix"><div class="field__label">Nombre o razón social del adjudicatario</div>
+  <div class="field__item">EMPRESA INVENTADA, S.L.</div></li>
+<li class="clearfix"><div class="field__label">Fecha del contrato</div><div class="field__item">01 de agosto del 2025</div></li>
+<li class="clearfix"><div class="field__label">Importe adjudicación (sin IVA)</div><div class="field__item">{sin}</div></li>
+<li class="clearfix"><div class="field__label">Importe adjudicación (con IVA)</div><div class="field__item">{con}</div></li>
+<li class="clearfix"><div class="field__label">Duración del contrato</div><div class="field__item">7 Días</div></li>
+{extra}
+</ul></div></div></body></html>"""
+
+
+def _ficha(ref="D1_1", sin="12.806,00", con="13.318,24", extra=""):
+    return FICHA_MENOR.format(ref=ref, sin=sin, con=con, extra=extra)
+
+
+class _RespFicha:
+    def __init__(self, status, text=""):
+        self.status_code, self.text = status, text
+
+
+class _SesionFichas:
+    """Sirve /contrato/<ref> desde un dict {ref: (estado, html)}; lo que no está, 404.
+    Una entrada con una excepción la lanza (fallo de red)."""
+    def __init__(self, paginas):
+        self.paginas, self.pedidas = paginas, []
+
+    def get(self, url, timeout=None):
+        ref = url.rsplit("/", 1)[1]
+        self.pedidas.append(ref)
+        r = self.paginas.get(ref, (404, ""))
+        if isinstance(r, Exception):
+            raise r
+        return _RespFicha(*r)
+
+
+def _tabla_menores(carpeta, filas):
+    """La tabla consolidada (texto, _en_ultima_descarga booleana) con las columnas que lee la fase."""
+    columnas = ["Tipo de Publicación", "Referencia", "Entidad Adjudicadora", "Fecha del contrato",
+                "Importe de adjudicación", "_en_ultima_descarga"]
+    df = pd.DataFrame(filas, columns=columnas)
+    df.to_parquet(Path(carpeta) / cam.SALIDA_PARQUET, index=False)
+
+
+MENOR = cam.MENORES
+TABLA_FICHAS = [
+    (MENOR, "D1_1", "Hospital Inventado", "01 de agosto del 2025", "15.488,24", True),     # en la franja de 15.000
+    (MENOR, "D1_2", "Hospital Inventado", "02 de agosto del 2025", "1.210,00", True),      # fuera de las franjas
+    (MENOR, "D1_3", "Hospital Inventado", "03 de agosto del 2018", "16.000,00", True),     # en la franja, otro año
+    (MENOR, "D1_4", "Hospital Inventado", "04 de agosto del 2025", "45.000,00", True),     # franja de obras
+    (MENOR, "D1_5", "Hospital Inventado", "05 de agosto del 2025", "15.000,00", False),    # ya no se publica
+    (MENOR, "D1_6", "Hospital Inventado", "06 de agosto del 2025", "15.000,00", True),     # Referencia compartida
+    (MENOR, "D1_6", "Otra Entidad Inventada", "06 de agosto del 2025", "15.000,00", True),
+    (MENOR, None, "Hospital Inventado", "07 de agosto del 2025", "15.000,00", True),        # sin Referencia
+    ("Convocatoria anunciada a licitación", "C77", "Hospital Inventado", "08 de agosto del 2025", "15.000,00", True),
+]
+
+
+def test_cam_ficha_importe_and_parse():
+    assert cam.importe_ficha("12.806,00") == 12806.0
+    assert cam.importe_ficha("806,5") == 806.5
+    assert cam.importe_ficha("1.234.567,89 €") == 1234567.89
+    assert cam.importe_ficha("") is None and cam.importe_ficha(None) is None and cam.importe_ficha("n/d") is None
+    c = cam.parsear_ficha(_ficha())["campos"]
+    assert (c["importe_sin_iva"], c["importe_con_iva"]) == (12806.0, 13318.24)
+    assert (c["codigo_entidad"], c["duracion"], c["num_ofertas_ficha"]) == ("A13999999", "7 Días", "2")
+    assert (c["referencia_ficha"], c["tipo_publicacion"]) == ("D1_1", "Contratos menores")
+    assert c["n_importes"] == 1 and c["importes_json"] is None
+    # dos adjudicaciones: el campo es la primera y van todas en importes_json
+    otra = ('<li><div class="field__label">Importe adjudicación (sin IVA)</div><div class="field__item">100,00</div></li>'
+            '<li><div class="field__label">Importe adjudicación (con IVA)</div><div class="field__item">121,00</div></li>')
+    c2 = cam.parsear_ficha(_ficha(extra=otra))["campos"]
+    assert c2["importe_sin_iva"] == 12806.0 and c2["n_importes"] == 2
+    assert json.loads(c2["importes_json"]) == [{"sin_iva": "12.806,00", "con_iva": "13.318,24"},
+                                               {"sin_iva": "100,00", "con_iva": "121,00"}]
+    # una página sin los campos: todo vacío
+    vacia = cam.parsear_ficha("<html><body><p>Página no encontrada</p></body></html>")["campos"]
+    assert vacia["importe_sin_iva"] is None and vacia["n_importes"] == 0
+
+
+def test_cam_fichas_choose_present_menores_with_own_reference(tmp_path):
+    _tabla_menores(tmp_path, TABLA_FICHAS)
+    todos, info = cam.menores_para_fichas(tmp_path / cam.SALIDA_PARQUET)
+    assert sorted(todos["Referencia"]) == ["D1_1", "D1_2", "D1_3", "D1_4"]
+    assert (info["menores"], info["compartidas"], info["fuera_de_filtro"]) == (4, 1, 0)
+    en_anios, _ = cam.menores_para_fichas(tmp_path / cam.SALIDA_PARQUET, anios=(2019, 2025))
+    assert sorted(en_anios["Referencia"]) == ["D1_1", "D1_2", "D1_4"]
+    franjas, info = cam.menores_para_fichas(tmp_path / cam.SALIDA_PARQUET, anios=(2019, 2025), franjas=cam.FRANJAS_CON_IVA)
+    assert sorted(franjas["Referencia"]) == ["D1_1", "D1_4"] and info["fuera_de_filtro"] == 2
+    # cero resultados
+    nada, _ = cam.menores_para_fichas(tmp_path / cam.SALIDA_PARQUET, anios=(2030, 2031))
+    assert len(nada) == 0
+
+
+def test_cam_fichas_cache_never_replaces_a_good_one(tmp_path):
+    conn = cam.abrir_fichas_db(tmp_path / cam.FICHAS_DB)
+    s = _SesionFichas({"D1_1": (200, _ficha())})
+    buena = cam.pedir_ficha(s, "D1_1", "Hospital Inventado")
+    assert buena["estado"] == "ok" and cam.guardar_ficha(conn, buena) == "guardada"
+    # un error o una página sin importes después: se conserva la buena
+    s.paginas["D1_1"] = (500, "")
+    assert cam.guardar_ficha(conn, cam.pedir_ficha(s, "D1_1", "Hospital Inventado")) == "conservada"
+    s.paginas["D1_1"] = (200, "<html><body>en mantenimiento</body></html>")
+    vacia = cam.pedir_ficha(s, "D1_1", "Hospital Inventado")
+    assert vacia["estado"] == "vacia" and cam.guardar_ficha(conn, vacia) == "conservada"
+    assert conn.execute("SELECT estado, intentos FROM fichas").fetchall() == [("ok", 3)]
+    # la misma otra vez: sin cambios; otra distinta: la anterior al histórico
+    s.paginas["D1_1"] = (200, _ficha())
+    assert cam.guardar_ficha(conn, cam.pedir_ficha(s, "D1_1", "Hospital Inventado")) == "sin_cambios"
+    s.paginas["D1_1"] = (200, _ficha(sin="12.900,00", con="13.416,00"))
+    assert cam.guardar_ficha(conn, cam.pedir_ficha(s, "D1_1", "Hospital Inventado")) == "guardada"
+    assert conn.execute("SELECT count(*) FROM fichas_historico").fetchone()[0] == 1
+    assert json.loads(conn.execute("SELECT campos_json FROM fichas").fetchone()[0])["importe_sin_iva"] == 12900.0
+    # un fallo de red es un error que se guarda (si no había buena), no para la fase
+    s.paginas["D9_9"] = requests.ConnectionError("sin red")
+    r = cam.pedir_ficha(s, "D9_9", "Hospital Inventado")
+    assert r["estado"] == "error" and "ConnectionError" in r["error"]
+
+
+def test_cam_fichas_stop_at_429_and_keep_the_pace(tmp_path):
+    conn = cam.abrir_fichas_db(tmp_path / cam.FICHAS_DB)
+    pendientes = pd.DataFrame({"Referencia": ["A1", "A2", "A3", "A4"], "Entidad Adjudicadora": ["E"] * 4})
+    s = _SesionFichas({"A1": (200, _ficha("A1")), "A2": (404, ""), "A3": (429, ""), "A4": (200, _ficha("A4"))})
+    pausas = []
+    r = cam.descargar_fichas(s, pendientes, conn, pausa=1.5, hilos=1, dormir=pausas.append)
+    assert s.pedidas == ["A1", "A2", "A3"]                      # A4 no se pide: el portal dijo 429
+    assert (r["pedidas"], r["ok"], r["errores"]) == (2, 1, 1) and "429" in r["parada"]
+    assert pausas == [1.5, 1.5]                                 # una pausa antes de cada petición, no antes de la primera
+    assert dict(conn.execute("SELECT referencia, estado FROM fichas").fetchall()) == {"A1": "ok", "A2": "error"}
+    # 403 también para; sin pendientes, ninguna petición
+    s403 = _SesionFichas({"A4": (403, "")})
+    assert cam.descargar_fichas(s403, pendientes.iloc[3:], conn, dormir=lambda x: None)["parada"]
+    vacio = cam.descargar_fichas(_SesionFichas({}), pendientes.iloc[0:0], conn, dormir=lambda x: None)
+    assert vacio == {"pedidas": 0, "ok": 0, "errores": 0, "conservadas": 0, "parada": None}
+
+
+def test_cam_fichas_phase_end_to_end_and_resumes(tmp_path):
+    _tabla_menores(tmp_path, TABLA_FICHAS)
+    paginas = {r: (200, _ficha(r)) for r in ("D1_1", "D1_2", "D1_3", "D1_4")}
+    s = _SesionFichas(paginas)
+    with patch.object(cam.time, "sleep"):
+        res = cam.fase_fichas(anios=(2019, 2025), franjas=True, sesion=s, carpeta=tmp_path)
+    assert sorted(s.pedidas) == ["D1_1", "D1_4"] and res["ok"] == 2 and res["salida"] == "nuevo"
+    df = pd.read_parquet(tmp_path / cam.SALIDA_FICHAS)
+    assert list(df.columns) == cam.COLUMNAS_FICHAS
+    assert sorted(df["Referencia"]) == ["D1_1", "D1_4"] and set(df["importe_sin_iva"]) == {12806.0}
+    assert set(df["Entidad Adjudicadora"]) == {"Hospital Inventado"} and set(df["codigo_entidad"]) == {"A13999999"}
+    # otra pasada: nada que pedir y la salida no cambia
+    s2 = _SesionFichas(paginas)
+    with patch.object(cam.time, "sleep"):
+        res2 = cam.fase_fichas(anios=(2019, 2025), franjas=True, sesion=s2, carpeta=tmp_path)
+    assert s2.pedidas == [] and res2["pendientes"] == 0 and res2["salida"] == "sin_cambios"
+    # sin la tabla consolidada no se pide nada
+    assert cam.fase_fichas(sesion=s2, carpeta=tmp_path / "vacia") is None
+
+
+def test_cam_fichas_mode_is_optional_and_parses_its_flags():
+    texto = CAM_PATH.read_text(encoding="utf-8")
+    assert 'elif args.modo == "fichas":' in texto
+    # ninguna otra fase la lanza
+    assert texto.count("fase_fichas(") == 2          # la definición y la llamada del modo «fichas»
+    assert cam.FICHAS_PAUSA >= 1 and cam.FICHAS_HILOS == 1
+
+
+def test_cam_fichas_with_two_threads_ask_each_once(tmp_path):
+    conn = cam.abrir_fichas_db(tmp_path / cam.FICHAS_DB)
+    refs = [f"B{i}" for i in range(7)]
+    s = _SesionFichas({r: (200, _ficha(r)) for r in refs})
+    r = cam.descargar_fichas(s, pd.DataFrame({"Referencia": refs, "Entidad Adjudicadora": ["E"] * 7}), conn,
+                             hilos=2, dormir=lambda x: None)
+    assert sorted(s.pedidas) == refs and r["ok"] == 7 and r["parada"] is None
+    assert conn.execute("SELECT count(*) FROM fichas WHERE estado = 'ok'").fetchone()[0] == 7
