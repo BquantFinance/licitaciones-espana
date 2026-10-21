@@ -207,6 +207,118 @@ RESULTANTE_RE = re.compile(r'Resultante Suscrito[.:]\s*([\d.,]+)\s*Euros')
 OBJETO_RE = re.compile(r'Objeto social[.:]\s*(.+?)(?:[.]\s*Domicilio[.:]|$)', re.DOTALL)
 COMIENZO_RE = re.compile(r'Comienzo de operaciones[.:]\s*(\d(?:[\d.]*\d)?)')
 
+# ---------------------------------------------------------------------
+# actos_detalle: el texto calificador de cada acto ("Disolución. Voluntaria.",
+# "Auto de conclusión del concurso. Insuficiencia de la masa activa.") que la
+# lista `actos` pierde. Un elemento por acto, en el orden y con el separador de
+# `actos`: "Disolución=Voluntaria|Extinción=". Sin datos de personas:
+#  - los cargos (Nombramientos, Ceses...) no llevan detalle;
+#  - de los actos concursales solo se guarda el tipo de resolución, su
+#    calificador y la fecha, nunca el juzgado, el juez, el administrador
+#    concursal ni el texto libre de "Resoluciones:";
+#  - "Otros conceptos" (texto libre) solo da las palabras clave que contiene
+#    (OTROS_CONCEPTOS_CLAVE), no el texto;
+#  - un calificador con dos palabras seguidas en mayúsculas (forma de los
+#    nombres en el BORME) se sustituye por DETALLE_OMITIDO, salvo en los actos
+#    cuyo calificador son denominaciones de sociedades (DETALLE_SOCIEDADES).
+# ---------------------------------------------------------------------
+DETALLE_SOCIEDADES = frozenset({
+    "Fusión por absorción", "Fusión", "Escisión", "Transformación de sociedad"})
+DETALLE_ACTOS = DETALLE_SOCIEDADES | frozenset({
+    "Disolución", "Extinción", "Situación concursal", "Auto de declaración de concurso",
+    "Auto de apertura de la fase de liquidación", "Auto de conclusión del concurso",
+    "Otros conceptos"})
+DETALLE_OMITIDO = "(omitido)"
+DETALLE_MAX = 300
+# Palabras clave de "Otros conceptos" (sin tildes, en minúsculas) -> etiqueta
+OTROS_CONCEPTOS_CLAVE = (
+    ("concurs", "concurso"), ("liquidacion", "liquidación"), ("fusion", "fusión"),
+    ("escision", "escisión"), ("cesion global", "cesión global"), ("cierre", "cierre"),
+    ("microempresa", "microempresas"),
+)
+# Inicio de un acto: su nombre tras un punto o dos puntos (o al principio del cuerpo)
+_ACTO_INICIO_RE = re.compile(
+    r'(?:(?<=[.:]\s)|^)(?:' + '|'.join(re.escape(a) for a in sorted(ACTOS, key=len, reverse=True))
+    + r'|Datos registrales)[.:]')
+# Fin del calificador: datos del juzgado, del juez o texto libre de la resolución
+_DETALLE_CORTE_RE = re.compile(r'\s*(?:Juzgado|Juez|Resoluciones|Administrador Concursal)\s*:')
+# Marca lateral "Verificable en https://www.boe.es" que pdfplumber extrae invertida
+_MARCA_LATERAL_RE = re.compile(r'\s*se\.eob\.www//:sptth ne elbacifireV\s*')
+# Dos palabras seguidas en mayúsculas: así escribe el BORME los nombres de personas
+_NOMBRE_RE = re.compile(r'\b[A-ZÁÉÍÓÚÑÜ]{2,}[,.]?\s+[A-ZÁÉÍÓÚÑÜ]{2,}\b')
+# Fin de una "Situación concursal": el juzgado, la siguiente o los datos registrales
+_FIN_SITUACION_RE = re.compile(r'Juzgado\s*:|Juez\s*:|Situación concursal\.|Datos registrales')
+_SITUACION_RE = re.compile(
+    # El número del procedimiento puede llevar puntos ("1.022/2022")
+    r'(?:Procedimiento concursal.*?\.\s*(?=FIRME|Fecha de resolución))?(?:FIRME:\s*\w+,\s*)?'
+    r'(?:Fecha de resolución\s*(\d{1,2})/(\d{1,2})/(\d{4})\.?\s*)?')
+
+
+def _limpiar_detalle(s: str) -> str:
+    s = _MARCA_LATERAL_RE.sub(' ', s)
+    s = _DETALLE_CORTE_RE.split(s, maxsplit=1)[0]
+    s = re.sub(r'\s+', ' ', s).strip().rstrip('.').strip().replace('|', '/')
+    return s[:DETALLE_MAX]
+
+
+def _seguro(acto: str, s: str) -> str:
+    """El calificador, o DETALLE_OMITIDO si puede llevar el nombre de una persona.
+    En DETALLE_SOCIEDADES ("Sociedades absorbidas: X SL. Y SL") se corta antes de
+    una segunda etiqueta con dos puntos (p.ej. un cargo "Apoderado: ...")."""
+    if acto in DETALLE_SOCIEDADES:
+        cabeza, dos_puntos, resto = s.partition(':')
+        if ':' in resto:
+            resto = resto[:max(resto.rfind('. ', 0, resto.index(':')), 0)]
+        return (cabeza + dos_puntos + resto).strip().rstrip('.').strip()
+    if s and _NOMBRE_RE.search(s):
+        return DETALLE_OMITIDO
+    return s
+
+
+def _detalle_situacion(texto: str) -> str:
+    """"Situación concursal": tipo de resolución, su calificador y su fecha
+    ("Auto de declaración de concurso. Voluntario (2026-05-04)")."""
+    m = _SITUACION_RE.match(texto)
+    resto = texto[m.end():]
+    fecha = f" ({m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d})" if m.group(1) else ""
+    partes = [p.strip() for p in resto.split('. ') if p.strip()][:2]
+    tipo = _seguro("Situación concursal", ". ".join(partes))
+    return (tipo + fecha).strip()
+
+
+def _actos_detalle(body: str, actos: list) -> str:
+    """actos_detalle de un anuncio: "acto=calificador" por cada acto de `actos`
+    (mismo orden), separados por "|". Ver DETALLE_ACTOS."""
+    # El cuerpo sin saltos ni la marca lateral, y cortado en los inicios de acto
+    texto = _MARCA_LATERAL_RE.sub(' ', body)
+    inicios = list(_ACTO_INICIO_RE.finditer(texto))
+    segmentos = {}
+    for j, m in enumerate(inicios):
+        nombre = m.group(0)[:-1]
+        if nombre not in DETALLE_ACTOS:
+            continue
+        fin = inicios[j + 1].start() if j + 1 < len(inicios) else len(texto)
+        bruto = texto[m.end():fin]
+        if nombre == "Situación concursal":
+            # El tipo de resolución puede ser otro acto de ACTOS (Auto de declaración
+            # de concurso...) o no ("Sentencia de aprobación del convenio"): se toma
+            # hasta el juzgado
+            fin = _FIN_SITUACION_RE.search(texto, m.end())
+            valor = _detalle_situacion(_limpiar_detalle(texto[m.end():fin.start() if fin else len(texto)]) + ". ")
+        elif nombre == "Otros conceptos":
+            plano = _quitar_tildes(_DETALLE_CORTE_RE.split(bruto, maxsplit=1)[0]).lower()
+            valor = ",".join(etiqueta for clave, etiqueta in OTROS_CONCEPTOS_CLAVE if clave in plano)
+        else:
+            valor = _seguro(nombre, _limpiar_detalle(bruto))
+        if valor:
+            segmentos.setdefault(nombre, []).append(valor)
+    return "|".join(f"{a}=" + "; ".join(segmentos.get(a, [])).replace('|', '/') for a in actos)
+
+
+def _quitar_tildes(s: str) -> str:
+    return s.translate(str.maketrans("áéíóúÁÉÍÓÚüÜ", "aeiouAEIOUuU"))
+
+
 _SKIP_LINES = frozenset([
     "SECCIÓN PRIMERA","Empresarios","Actos inscritos",
     "SECCIÓN SEGUNDA","Anuncios y avisos legales",
@@ -419,6 +531,8 @@ def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
                 actos.append(acto)
 
         row["actos"] = "|".join(actos)
+        # Calificador de cada acto (Disolución=Voluntaria...): ver _actos_detalle
+        row["actos_detalle"] = _actos_detalle(body, actos)
 
         m = DATOS_REG_RE.search(body)
         if m:

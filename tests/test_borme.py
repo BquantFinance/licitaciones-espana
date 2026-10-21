@@ -303,6 +303,130 @@ def test_validate_find_empresa_sociedad_unipersonal():
     assert empresa == "OMEGA. Sociedad Anónima"
 
 
+# Formas reales del calificador de los actos (texto de pdfplumber; nombres de
+# personas, juzgados y sociedades ficticios). La marca lateral "Verificable en
+# https://www.boe.es" sale invertida y partida en medio de un anuncio.
+PAG_DETALLE = """BOLETÍN OFICIAL DEL REGISTRO MERCANTIL
+Núm. 85 Lunes 4 de mayo de 2026 Pág. 2001
+82-58-6202-A-EMROB
+:evc
+SECCIÓN PRIMERA
+Empresarios
+Actos inscritos
+MADRID
+2001 - ABSORBENTE GRUPO SA.
+Fusión por absorción. Sociedades absorbidas: FILIAL UNO SL. FILIAL DOS SL. Datos registrales. T 100 , F 1, S 8, H M 1, I/A 9
+(28.04.26).
+2002 - FILIAL UNO SL.
+Ceses/Dimisiones. Adm. Unico: FULANO MENGANO JUAN. Disolución. Fusion. Extinción. Datos registrales. T 101 , F 2, S 8, H M 2,
+I/A 5 (28.04.26).
+2003 - CERRADA VOLUNTARIA SL.
+Ceses/Dimisiones. Adm. Unico: ZUTANO PERENGANO ANA. Nombramientos. Liquidador: ZUTANO PERENGANO ANA. Disolución. Voluntaria.
+Datos registrales. T 102 , F 3, S 8, H M 3, I/A 4 (28.04.26).
+2004 - CERRADA JUDICIAL SL.
+Disolución. Judicial. Extinción. Datos registrales. T 103 , F 4, S 8, H M 4, I/A 6 (28.04.26).
+2005 - CONCURSADA SL.
+Situación concursal. Procedimiento concursal 275/2026. FIRME: No, Fecha de resolución 4/05/2026. Auto de declaración de concurso.
+Voluntario. Juzgado: num. 0 SECCION DE LO MERCANTIL DEL TRIBUNAL DE INSTANCIA DE MADRID. Juez: PRUEBA EJEMPLO LUIS.
+Resoluciones: Se declara en concurso voluntario a CONCURSADA SL. Situación concursal. Procedimiento concursal 275/2026.
+se.eob.www//:sptth ne elbacifireV
+Fecha de resolución 4/05/2026. Nombramiento de administradores. Juzgado: num. 0 SECCION DE LO MERCANTIL DEL TRIBUNAL DE
+INSTANCIA DE MADRID. Juez: PRUEBA EJEMPLO LUIS. Administrador Concursal. Fecha 4/05/2026, NIF/CIF 00000000T. MENGANO ZUTANO
+PEDRO. Datos registrales. T 104 , F 5, S 8, H M 5, I/A 7 (30.04.26).
+2006 - CONVENIADA SL.
+Situación concursal. Procedimiento concursal 12/2025. FIRME: SI, Fecha de resolución 02/03/2025. Auto de declaración de concurso.
+Necesario. Juzgado: num. 1 JUZGADO DE LO MERCANTIL DE MADRID. Juez: PRUEBA EJEMPLO LUIS. Situación concursal. Procedimiento
+concursal 12/2025. FIRME: Si, Fecha de resolución 1/07/2025. Sentencia de aprobación del convenio. Juzgado: num. 1 JUZGADO DE LO
+MERCANTIL DE MADRID. Juez: PRUEBA EJEMPLO LUIS. Resoluciones: Se aprueba el convenio. Datos registrales. T 105 , F 6, S 8, H M 6,
+I/A 8 (30.04.26).
+2007 - LIQUIDADA SL.
+Situación concursal. Procedimiento concursal 9/2024. FIRME: Si, Fecha de resolución 10/04/2026. Auto de conclusión del concurso.
+Insuficiencia de la masa activa. Juzgado: num. 2 JUZGADO DE LO MERCANTIL DE MADRID. Juez: PRUEBA EJEMPLO LUIS. Extinción. Datos
+registrales. T 106 , F 7, S 8, H M 7, I/A 9 (30.04.26).
+2008 - OTROS CONCEPTOS SL.
+Otros conceptos: MENGANO ZUTANO PEDRO ha sido nombrado administrador concursal en el concurso de la sociedad. Datos registrales. T
+107 , F 8, S 8, H M 8, I/A 3 (30.04.26).
+https://www.boe.es BOLETÍN OFICIAL DEL REGISTRO MERCANTIL D.L.: M-5188/1990 - ISSN: 1989-3079"""
+PDF_DETALLE = "BORME-A-2026-85-28.pdf"
+NOMBRES_DETALLE = ["FULANO", "MENGANO", "ZUTANO", "PERENGANO", "PRUEBA", "EJEMPLO", "00000000T", "TRIBUNAL", "JUZGADO"]
+
+
+@pytest.fixture
+def emp_detalle(fake_pdf, tmp_path):
+    fake_pdf[PDF_DETALLE] = [PAG_DETALLE]
+    e, _ = bparser.parse_single_pdf(str(_pdf_file(tmp_path, dt.date(2026, 5, 4), PDF_DETALLE)))
+    return pd.DataFrame(e).set_index("num_entrada")
+
+
+def _detalle(emp, num):
+    """actos_detalle como lista de (acto, calificador)."""
+    return [tuple(x.split("=", 1)) for x in emp.loc[num, "actos_detalle"].split("|")]
+
+
+def test_actos_detalle_mismo_orden_y_actos_que_actos(emp_detalle):
+    assert list(emp_detalle.index) == [str(n) for n in range(2001, 2009)]
+    for num in emp_detalle.index:
+        assert [a for a, _ in _detalle(emp_detalle, num)] == emp_detalle.loc[num, "actos"].split("|"), num
+
+
+def test_actos_detalle_fusion_y_disolucion(emp_detalle):
+    # La absorbente: qué sociedades absorbe; la absorbida: «Disolución. Fusion.»
+    assert dict(_detalle(emp_detalle, "2001"))["Fusión por absorción"] == "Sociedades absorbidas: FILIAL UNO SL. FILIAL DOS SL"
+    assert _detalle(emp_detalle, "2002") == [("Disolución", "Fusion"), ("Extinción", ""), ("Ceses/Dimisiones", "")]
+    assert dict(_detalle(emp_detalle, "2003"))["Disolución"] == "Voluntaria"
+    assert _detalle(emp_detalle, "2004") == [("Disolución", "Judicial"), ("Extinción", "")]
+
+
+def test_actos_detalle_concurso(emp_detalle):
+    d = dict(_detalle(emp_detalle, "2005"))
+    assert d["Auto de declaración de concurso"] == "Voluntario"
+    assert d["Situación concursal"] == ("Auto de declaración de concurso. Voluntario (2026-05-04); "
+                                        "Nombramiento de administradores (2026-05-04)")
+    # Convenio publicado el mismo día que la declaración: lo que la lista de actos perdía
+    d = dict(_detalle(emp_detalle, "2006"))
+    assert d["Auto de declaración de concurso"] == "Necesario"
+    assert d["Situación concursal"] == ("Auto de declaración de concurso. Necesario (2025-03-02); "
+                                        "Sentencia de aprobación del convenio (2025-07-01)")
+    d = dict(_detalle(emp_detalle, "2007"))
+    assert d["Auto de conclusión del concurso"] == "Insuficiencia de la masa activa"
+    assert d["Situación concursal"] == "Auto de conclusión del concurso. Insuficiencia de la masa activa (2026-04-10)"
+    # Otros conceptos: solo las palabras clave, nunca el texto
+    assert _detalle(emp_detalle, "2008") == [("Otros conceptos", "concurso")]
+
+
+def test_actos_detalle_sin_personas_ni_juzgados(emp_detalle):
+    textos = " ".join(emp_detalle["actos_detalle"])
+    for nombre in NOMBRES_DETALLE:
+        assert nombre not in textos, nombre
+    assert "elbacifireV" not in textos
+    # Las columnas de siempre no cambian
+    assert emp_detalle.loc["2002", "actos"] == "Disolución|Extinción|Ceses/Dimisiones"
+
+
+@pytest.mark.parametrize("acto, texto, esperado", [
+    ("Disolución", " Otras Causas. ", "Otras Causas"),
+    ("Disolución", " Cesión global de activo y pasivo. ", "Cesión global de activo y pasivo"),
+    # Un calificador con forma de nombre de persona no se guarda
+    ("Disolución", " Judicial. PRUEBA EJEMPLO LUIS. ", "(omitido)"),
+    # En las sociedades absorbidas, nada después de otra etiqueta (un cargo)
+    ("Fusión por absorción", " Sociedades absorbidas: FILIAL UNO SL. Apoderado: FULANO MENGANO JUAN. ",
+     "Sociedades absorbidas: FILIAL UNO SL"),
+])
+def test_actos_detalle_calificadores(acto, texto, esperado):
+    assert bparser._actos_detalle(". " + acto + "." + texto + "Datos registrales. T 1", [acto]) == f"{acto}={esperado}"
+
+
+def test_actos_detalle_procedimiento_con_puntos():
+    body = (". Situación concursal. Procedimiento concursal 1.022/2022. FIRME: SI, Fecha de resolución 21/04/2026. "
+            "Auto de apertura de la fase de liquidación. Juzgado: num. 1 JUZGADO DE LO MERCANTIL DE MADRID. Datos registrales. T 1")
+    assert bparser._actos_detalle(body, ["Situación concursal", "Auto de apertura de la fase de liquidación"]) == (
+        "Situación concursal=Auto de apertura de la fase de liquidación (2026-04-21)|Auto de apertura de la fase de liquidación=")
+
+
+def test_actos_detalle_sin_actos():
+    assert bparser._actos_detalle("", []) == ""
+
+
 class TestRunBatch:
     def _emp(self, out):
         return pd.read_parquet(out / "borme_empresas.parquet")
@@ -854,6 +978,7 @@ def _empresas_privadas():
         "cod_provincia": ["28"] * 3,
         "tipo_borme": ["A"] * 3,
         "actos": ["Constitución|Nombramientos", "Empresario Individual", "Nombramientos"],
+        "actos_detalle": ["Constitución=|Nombramientos=", "Empresario Individual=", "Nombramientos="],
         "domicilio": ["C/ MAYOR 5 2º B (MADRID)",
                       "C/ LUNA 3 MADRID. Estado Civil : Soltero . Datos registrales. T 1 , F 1",
                       None],
@@ -903,6 +1028,7 @@ def test_anonymize_cli_solo_hashea_personas(monkeypatch, tmp_path):
     emp = pd.read_parquet(out / "borme_empresas_pub.parquet")
     car = pd.read_parquet(out / "borme_cargos_pub.parquet")
     assert "objeto_social" not in emp.columns
+    assert emp["actos_detalle"].tolist() == emp_priv["actos_detalle"].tolist()
     assert "persona" not in car.columns and "persona_hash" in car.columns
     textos = _textos(emp) | _textos(car)
     for nombre in ["ZUTANO", "PRUEBA"]:
@@ -1882,6 +2008,8 @@ def test_anonimizar_da_lo_mismo_que_antes(monkeypatch, tmp_path):
     src = tmp_path / "parse"
     src.mkdir()
     emp, car = _tablas_privadas_con_semilla()
+    # Una salida del parser anterior (sin actos_detalle) se publica byte a byte como antes
+    emp = emp.drop(columns="actos_detalle")
     emp.to_parquet(src / "borme_empresas.parquet", index=False)
     car.to_parquet(src / "borme_cargos.parquet", index=False)
     _anonimizar_anterior(src, tmp_path / "antes")
