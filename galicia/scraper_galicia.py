@@ -604,6 +604,9 @@ DETAIL_EXPORT_FIELDS = [
     "detail_documentos_count",
     "detail_adjudicaciones_count",
     "detail_cambios_count",
+    "detail_num_licitadores",
+    "detail_licitadores_por_lote_json",
+    "detail_participantes",
     "detail_pairs_count",
     "detail_tables_count",
     "detail_adjudicaciones_json",
@@ -775,6 +778,23 @@ def normalize_table_row(values):
     return values
 
 
+# Tabla «Relación de licitadores presentados» (ventana de la resolución): Lote, NIF y
+# Nome/Nombre. Sus columnas, normalizadas, son todas de este conjunto y está el NIF
+LICITADORES_COLUMNAS = {"lote", "nif", "nome", "nombre", "razon_social"}
+# Columna «Part.» (participantes) de la tabla de la resolución, junto al adjudicatario
+PARTICIPANTES_COLUMNA = "part"
+ADJUDICATARIO_COLUMNAS = ("adjudicatario", "adxudicatario")
+
+
+def es_tabla_licitadores(headers):
+    return bool(headers) and "nif" in headers and set(headers) <= LICITADORES_COLUMNAS
+
+
+def entero_o_none(value):
+    texto = str(value or "").strip()
+    return int(texto) if re.fullmatch(r"\d{1,5}", texto) else None
+
+
 def map_table_fields(tables):
     cpv_codes = []
     nuts_codes = []
@@ -782,10 +802,34 @@ def map_table_fields(tables):
     documentos_count = 0
     adjudicaciones_count = 0
     cambios_count = 0
+    licitadores = 0
+    licitadores_por_lote = {}
+    participantes = []
 
     for table in tables:
         headers = tuple(normalize_label(header) for header in table.get("headers", []))
         normalized_rows = [normalize_table_row(row["values"]) for row in table.get("rows", [])]
+
+        # Licitadores presentados: una fila por licitador (con NIF o nombre) y lote
+        if es_tabla_licitadores(headers):
+            for row in normalized_rows:
+                if not isinstance(row, dict):
+                    continue
+                nombre = row.get("nome") or row.get("nombre") or row.get("razon_social")
+                if not (str(row.get("nif") or "").strip() or str(nombre or "").strip()):
+                    continue
+                licitadores += 1
+                lote = str(row.get("lote") or "").strip() or "-"
+                licitadores_por_lote[lote] = licitadores_por_lote.get(lote, 0) + 1
+            continue
+
+        # Participantes por lote que da la propia tabla de la resolución («Part.»)
+        if PARTICIPANTES_COLUMNA in headers and any(c in headers for c in ADJUDICATARIO_COLUMNAS):
+            for row in normalized_rows:
+                if isinstance(row, dict):
+                    n = entero_o_none(row.get(PARTICIPANTES_COLUMNA))
+                    if n is not None:
+                        participantes.append(n)
 
         if "codigo_cpv" in headers:
             for row in normalized_rows:
@@ -825,6 +869,9 @@ def map_table_fields(tables):
         "detail_documentos_count": documentos_count or None,
         "detail_adjudicaciones_count": adjudicaciones_count or None,
         "detail_cambios_count": cambios_count or None,
+        "detail_num_licitadores": licitadores or None,
+        "detail_licitadores_por_lote_json": compact_json(licitadores_por_lote) if licitadores_por_lote else None,
+        "detail_participantes": sum(participantes) if participantes else None,
     }
 
 
@@ -2292,6 +2339,12 @@ def iter_base_chunks(base_csv_path, chunksize=BASE_READ_CHUNKSIZE, as_text=False
     )
 
 
+def en_anios(publicado, years):
+    """El año de `publicado` ('2024-12-23' o '2024-12-23T06:49:00') está en [desde, hasta]."""
+    match = re.match(r"^(\d{4})-\d{2}-\d{2}", str(publicado or ""))
+    return bool(match) and years[0] <= int(match.group(1)) <= years[1]
+
+
 def iter_detail_batches(
     base_csv_path,
     conn,
@@ -2302,11 +2355,13 @@ def iter_detail_batches(
     retryable_only=False,
     retryable_ignore_max_attempts=False,
     ignore_max_attempts=False,
+    years=None,
 ):
     """Lotes (por organismo) de registros del CSV base cuyo detalle hay que pedir:
     los que no están en la caché, los que no están 'done' (hasta
     DETAIL_MAX_ATTEMPTS intentos, salvo ignore_max_attempts: 'detail' sin
-    --resume) y, con force, también los 'done'."""
+    --resume) y, con force, también los 'done'. years (desde, hasta): solo los
+    publicados esos años (por el año de `publicado`; sin fecha legible, fuera)."""
     batch = []
     current_org = None
 
@@ -2343,6 +2398,8 @@ def iter_detail_batches(
     for chunk in iter_base_chunks(base_csv_path):
         for record in chunk.to_dict("records"):
             if only_type != "all" and record["_tipo"] != only_type:
+                continue
+            if years is not None and not en_anios(record.get("publicado"), years):
                 continue
             org_id = int(record["_organismo_id"])
             if only_org_id is not None and org_id != int(only_org_id):
@@ -2582,6 +2639,7 @@ def run_detail_enrichment(
     retryable_only=False,
     retryable_ignore_max_attempts=False,
     ignore_max_attempts=False,
+    years=None,
 ):
     conn = init_detail_db(output_dir)
     pending_batches = iter_detail_batches(
@@ -2594,6 +2652,7 @@ def run_detail_enrichment(
         retryable_only=retryable_only,
         retryable_ignore_max_attempts=retryable_ignore_max_attempts,
         ignore_max_attempts=ignore_max_attempts,
+        years=years,
     )
 
     submitted = {}
@@ -3494,6 +3553,14 @@ def build_parser():
         help="Limitar el enriquecimiento a LIC, CM o ambos",
     )
     parser.add_argument(
+        "--detail-years",
+        type=int,
+        nargs=2,
+        metavar=("DESDE", "HASTA"),
+        default=None,
+        help="Limitar el enriquecimiento a los registros publicados esos años (por el año de 'publicado')",
+    )
+    parser.add_argument(
         "--force-detail",
         action="store_true",
         help=(
@@ -3552,6 +3619,8 @@ def main(argv=None):
         f"delay={args.detail_delay}s jitter={args.detail_jitter}s"
     )
     print(f"  Solo detalle:  {args.only_type}")
+    if args.detail_years:
+        print(f"  Años detalle:  {args.detail_years[0]}-{args.detail_years[1]}")
     if args.retryable_only:
         print("  Rescue mode:   solo retryable")
         print(
@@ -3621,6 +3690,7 @@ def main(argv=None):
                 retryable_only=args.retryable_only,
                 retryable_ignore_max_attempts=args.retryable_ignore_max_attempts,
                 ignore_max_attempts=not args.resume,
+                years=tuple(args.detail_years) if args.detail_years else None,
             )
 
         if args.mode in ("all", "merge"):

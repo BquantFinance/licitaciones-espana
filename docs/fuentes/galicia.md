@@ -54,6 +54,7 @@ galicia/
 - `detail_nuts_codes`
 - `detail_documentos_count`
 - `detail_adjudicaciones_count`
+- `detail_num_licitadores`: filas de la ventana «Relación de licitadores presentados» de la resolución (Lote, NIF, Nome) con NIF o nombre; `detail_licitadores_por_lote_json`, las mismas por lote (`{"1": 3, "2": 1}`); y `detail_participantes`, la suma de la columna «Part.» (participantes) de la tabla de la resolución, que el portal da por lote. Las dos cifras salen de la ficha: el listado de contratos menores no trae el número de ofertas
 - `detail_status`, `detail_attempts`, `detail_last_error`
 
 Además, la caché SQLite puede guardar comprimidos los `pairs` y `tables` crudos de cada ficha HTML para no perder información aunque no todo se aplane a columnas.
@@ -88,7 +89,7 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
 
 - `all`: ejecuta `base -> detail -> merge`
 - `base`: reconstruye solo el dataset base de tabla
-- `detail`: enriquece HTML sobre el base ya descargado
+- `detail`: enriquece HTML sobre el base ya descargado. Con `--only-type CM --detail-years 2019 2025` solo pide las fichas de los contratos menores publicados esos años (por el año de `publicado`)
 - `merge`: junta base + detalle en el dataset final
 
 El progreso base se guarda por organismo en `contratos_galicia_base_progress.json` y el detalle se cachea en `contratos_galicia_detail.sqlite3`, de forma que si la ejecución se corta o el portal devuelve `403/429`, se puede retomar con `--resume`.

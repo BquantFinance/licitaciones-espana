@@ -109,6 +109,46 @@ DETAIL_HTML_WITH_AWARDS = """
 </html>
 """
 
+# Ficha de un contrato menor con la estructura de la real (en gallego): la tabla de la
+# resolución con «Part.» (participantes) y la ventana «Relación de licitadores presentados»
+# (Lote, NIF, Nome) con una fila por licitador. Nombres y NIF inventados
+DETAIL_HTML_CM_LICITADORES = """
+<html>
+  <head>
+    <title>Detalle procedemento: CM9999999 - Contratos Públicos de Galicia</title>
+  </head>
+  <body>
+    <h2>Información do procedemento</h2>
+    <dl>
+      <dt>Obxecto</dt><dd>MATERIAL DE OFICINA</dd>
+      <dt>Tipo de contrato</dt><dd>Subministracións</dd>
+    </dl>
+    <div class="panel-title">Datos da resolución do procedemento</div>
+    <table>
+      <thead><tr><th><a href="#">Lote</a></th><th><a href="#" title="Participantes">Part.</a></th>
+        <th>Resolución</th><th>Adxudicatario</th><th>Importe</th><th>Data difusión</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>3 <a href="#" title="Relación de licitadores presentados"><span></span></a></td>
+          <td>Adxudicado</td><td>EMPRESA INVENTADA UNO SL</td><td>1.000,00 €</td><td>02-01-2025 10:00</td></tr>
+        <tr><td>2</td><td>1 <a href="#"><span></span></a></td>
+          <td>Adxudicado</td><td>EMPRESA INVENTADA DOUS SA</td><td>500,00 €</td><td>02-01-2025 10:00</td></tr>
+      </tbody>
+    </table>
+    <div class="titulo-modal">Relación de licitadores presentados</div>
+    <table>
+      <thead><tr><th scope="col">Lote</th><th scope="col">NIF</th><th scope="col">Nome</th></tr></thead>
+      <tbody>
+        <tr class="filasLicitadores hidden"><td>1</td><td>B00000001</td><td>EMPRESA INVENTADA UNO SL</td></tr>
+        <tr class="filasLicitadores hidden"><td>1</td><td>B00000002</td><td>EMPRESA INVENTADA TRES SL</td></tr>
+        <tr class="filasLicitadores hidden"><td>1</td><td></td><td>EMPRESA INVENTADA CATRO SL</td></tr>
+        <tr class="filasLicitadores hidden"><td>2</td><td>A00000003</td><td>EMPRESA INVENTADA DOUS SA</td></tr>
+        <tr class="filasLicitadores hidden"><td>2</td><td></td><td></td></tr>
+      </tbody>
+    </table>
+  </body>
+</html>
+"""
+
 PORTAL_DETAIL_TEMPLATE = """
 <html>
   <head>
@@ -516,6 +556,53 @@ class GaliciaScraperTests(unittest.TestCase):
                       stdout.getvalue())
         self.assertEqual(sorted(record["id"] for record in got), [1, 2])
         self.assertEqual(informe["LIC"], {"declarados": 3, "filas": 2, "unicos": 2, "completo": False})
+
+    def test_parse_detail_html_counts_licitadores_and_participantes(self):
+        mapped = scraper_galicia.parse_detail_html(DETAIL_HTML_CM_LICITADORES)["mapped"]
+        # cuatro filas con NIF o nombre (la vacía no cuenta), por lote
+        self.assertEqual(mapped["detail_num_licitadores"], 4)
+        self.assertEqual(json.loads(mapped["detail_licitadores_por_lote_json"]), {"1": 3, "2": 1})
+        # la columna «Part.» de la resolución: 3 + 1
+        self.assertEqual(mapped["detail_participantes"], 4)
+        self.assertEqual(mapped["detail_tipo_contrato"], "Subministracións")
+        # la tabla de licitadores no se toma por la de adjudicaciones
+        self.assertIsNone(mapped["detail_adjudicaciones_json"])
+        for campo in ("detail_num_licitadores", "detail_licitadores_por_lote_json", "detail_participantes"):
+            self.assertIn(campo, scraper_galicia.DETAIL_EXPORT_FIELDS)
+
+    def test_parse_detail_html_without_licitadores_leaves_them_empty(self):
+        mapped = scraper_galicia.parse_detail_html(DETAIL_HTML)["mapped"]
+        self.assertIsNone(mapped["detail_num_licitadores"])
+        self.assertIsNone(mapped["detail_licitadores_por_lote_json"])
+        self.assertIsNone(mapped["detail_participantes"])
+
+    def test_iter_detail_batches_filters_by_publication_year(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            scraper_galicia.append_base_records(
+                [
+                    {"id": 1, "_tipo": "CM", "_organismo_id": 48, "objeto": "Uno", "publicado": "2018-12-31"},
+                    {"id": 2, "_tipo": "CM", "_organismo_id": 48, "objeto": "Dos", "publicado": "2019-01-01"},
+                    {"id": 3, "_tipo": "CM", "_organismo_id": 48, "objeto": "Tres", "publicado": "2025-12-31T23:00:00"},
+                    {"id": 4, "_tipo": "CM", "_organismo_id": 48, "objeto": "Cuatro", "publicado": "2026-01-01"},
+                    {"id": 5, "_tipo": "CM", "_organismo_id": 48, "objeto": "Cinco", "publicado": ""},
+                    {"id": 6, "_tipo": "LIC", "_organismo_id": 48, "objeto": "Seis", "publicado": "2020-05-05"},
+                ],
+                output_dir,
+            )
+            conn = scraper_galicia.init_detail_db(output_dir)
+            base = output_dir / scraper_galicia.BASE_CSV_NAME
+            batches = list(scraper_galicia.iter_detail_batches(base, conn, only_type="CM", years=(2019, 2025)))
+            self.assertEqual([item["id"] for batch in batches for item in batch], ["2", "3"])
+            # sin filtro, todos los CM; con años sin registros, ninguno (cero lotes)
+            todos = list(scraper_galicia.iter_detail_batches(base, conn, only_type="CM"))
+            self.assertEqual([item["id"] for batch in todos for item in batch], ["1", "2", "3", "4", "5"])
+            self.assertEqual(list(scraper_galicia.iter_detail_batches(base, conn, only_type="CM", years=(2030, 2031))), [])
+
+    def test_build_parser_accepts_detail_years(self):
+        args = scraper_galicia.build_parser().parse_args(["detail", "--only-type", "CM", "--detail-years", "2019", "2025"])
+        self.assertEqual(args.detail_years, [2019, 2025])
+        self.assertIsNone(scraper_galicia.build_parser().parse_args(["detail"]).detail_years)
 
     def test_parse_detail_html_tolerates_malformed_links(self):
         parsed = scraper_galicia.parse_detail_html(DETAIL_HTML_WITH_MALFORMED_LINK)
@@ -1266,10 +1353,11 @@ class GaliciaScraperTests(unittest.TestCase):
         self.assertIn(("C", "824000", "48"), payloads)
         self.assertIn(("CM", "CM500000", "48"), payloads)
 
-        # Final: 12 + el nombre del organismo + 52 columnas (las 62 de docs/fuentes/galicia.md +
-        # adjudicaciones y campos extra en JSON) y, al final, las 3 de control de
-        # comun/historico.py; mismas filas, detalle mapeado.
-        self.assertEqual(len(final_text.columns), 68)
+        # Final: 12 + el nombre del organismo + 55 columnas (las 62 de docs/fuentes/galicia.md +
+        # adjudicaciones y campos extra en JSON + licitadores, licitadores por lote y
+        # participantes) y, al final, las 3 de control de comun/historico.py; mismas filas,
+        # detalle mapeado.
+        self.assertEqual(len(final_text.columns), 71)
         self.assertEqual(final_text.columns[12], scraper_galicia.ORG_NAME_COLUMN)
         self.assertEqual(
             list(final_text.columns[-3:]), ["_primera_descarga", "_ultima_descarga", "_en_ultima_descarga"]
