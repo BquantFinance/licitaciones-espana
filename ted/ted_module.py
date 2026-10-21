@@ -2047,6 +2047,27 @@ _TEXTOS_NULOS_PANDAS = ('', '#N/A', '#N/A N/A', '#NA', '-1.#IND', '-1.#QNAN', '-
 _NIF_NULOS = frozenset(t.upper() for t in _TEXTOS_NULOS_PANDAS)
 
 
+# El CSV bulk publica las fechas como texto en dos formas: «21-DEC-18» (2006-2019) y «30/12/19»
+# (2020-2023, día/mes/año). format='mixed' sin dayfirst lee la segunda como mes/día cuando el día es
+# <= 12 («05/12/19» salía como el 12 de mayo) y como día/mes cuando no: la mitad de las fechas de esos
+# años quedaban con el día y el mes cambiados, sin error. Las de esa forma se leen como día/mes/año
+# con formato explícito (una fecha imposible, como 31/02, queda vacía); el resto (dd-MON-aa del CSV
+# antiguo y aaaa-mm-dd de la API) sigue con format='mixed': dayfirst intercambiaría las ISO.
+_RE_FECHA_DMA = r'^\s*\d{1,2}/\d{1,2}/(?:\d{2}|\d{4})\s*$'
+
+
+def _fechas_ted(texto):
+    """Serie de texto → fechas: dd/mm/aa y dd/mm/aaaa como día/mes/año; el resto, format='mixed'."""
+    dma = texto.str.match(_RE_FECHA_DMA).fillna(False).astype(bool)
+    fechas = pd.to_datetime(texto.where(~dma), errors='coerce', format='mixed')
+    if dma.any():
+        limpio = texto[dma].str.strip()
+        corto = pd.to_datetime(limpio, errors='coerce', format='%d/%m/%y')
+        largo = pd.to_datetime(limpio, errors='coerce', format='%d/%m/%Y')
+        fechas.loc[dma] = corto.fillna(largo)
+    return fechas
+
+
 def _normalize_ted_data(df):
     """Normaliza campos del DataFrame TED a formato uniforme."""
     
@@ -2210,7 +2231,9 @@ def _normalize_ted_data(df):
             # +01:00 (invierno) y +02:00 (verano)
             if df[col].dtype == object or pd.api.types.is_string_dtype(df[col].dtype):
                 df[col] = df[col].astype(str).str.replace(r'(?:Z|[+-]\d{2}:\d{2})$', '', regex=True)
-            df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
+                df[col] = _fechas_ted(df[col])
+            else:
+                df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
     
     # ── Año ──
     if 'year' in df.columns:

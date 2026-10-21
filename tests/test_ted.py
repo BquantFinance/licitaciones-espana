@@ -568,6 +568,47 @@ class TestNormalize:
         assert pd.api.types.is_datetime64_any_dtype(df["dt_award"])
         assert df.loc[df["ted_notice_id"] == "100001-2024", "dt_award"].iloc[0] == pd.Timestamp("2024-03-15")
 
+    def test_fechas_del_csv_dia_mes_anio_no_se_intercambian(self):
+        # El CSV bulk publica las fechas como texto en dos formas: «21-DEC-18» hasta 2019 y «30/12/19»
+        # (día/mes/año) de 2020 a 2023. Leídas con format='mixed' sin dayfirst, las de día <= 12 salían
+        # como mes/día: «05/12/19» era el 12 de mayo y no el 5 de diciembre
+        df = tm._normalize_ted_data(tm._renombrar_csv(pd.DataFrame({
+            "ID_NOTICE_CAN": ["2019000001", "2020000001", "2020000002", "2020000003", "2021000004", "2021000005"],
+            "YEAR": ["2019", "2020", "2020", "2020", "2021", "2021"],
+            "DT_DISPATCH": ["21-DEC-18", "05/12/19", "30/12/19", "05/12/2019", "07/07/21", ""],
+            "DT_AWARD": ["03-DEC-18", "01/02/19", "13/12/19", "02/03/2019", "31/02/21", "11/01/21"],
+        })))
+        assert df["dt_dispatch"].tolist()[:5] == [pd.Timestamp(f) for f in (
+            "2018-12-21", "2019-12-05", "2019-12-30", "2019-12-05", "2021-07-07")]
+        assert pd.isna(df["dt_dispatch"].iloc[5])
+        assert df["dt_award"].tolist()[:4] == [pd.Timestamp(f) for f in (
+            "2018-12-03", "2019-02-01", "2019-12-13", "2019-03-02")]
+        assert pd.isna(df["dt_award"].iloc[4])   # 31/02: no es una fecha (antes, NaT también)
+        assert df["dt_award"].iloc[5] == pd.Timestamp("2021-01-11")
+
+    def test_fechas_iso_de_la_api_no_se_leen_como_dia_mes(self):
+        # Las fechas de la API (aaaa-mm-dd con zona) siguen como antes: el 5 de marzo, no el 3 de mayo
+        df = tm._normalize_ted_data(pd.DataFrame({
+            "ted_notice_id": ["1-2024", "2-2024"], "year": [2024, 2024],
+            "publication_date": ["2024-03-05+01:00", "2024-07-01Z"], "dt_award": ["2024-03-05+01:00", None]}))
+        assert df["publication_date"].tolist() == [pd.Timestamp("2024-03-05"), pd.Timestamp("2024-07-01")]
+        assert df["dt_award"].iloc[0] == pd.Timestamp("2024-03-05") and pd.isna(df["dt_award"].iloc[1])
+
+    def test_consolidado_con_csv_de_las_dos_formas_de_fecha(self, monkeypatch, tmp_path, no_sleep):
+        # De punta a punta: los CSV de 2019 (dd-MON-aa) y 2020 (dd/mm/aa) en el consolidado
+        cab = TED_CSV_2019.splitlines(keepends=True)[0]
+        csv_2019 = cab + ("2019/S 001-000001,2019,ES,Org,ESP1,3,Sevilla,S,79000000,1,1,"
+                          "EMP,ESB1,ES,3,05-FEB-19,03-JAN-19,0\n")
+        csv_2020 = cab + ("2020/S 001-000001,2020,ES,Org,ESP1,3,Sevilla,S,79000000,1,1,"
+                          "EMP,ESB1,ES,3,05/02/20,03/01/20,0\n")
+        monkeypatch.setattr(tm, "_descargar", _csv_anual_fake({"2019": csv_2019, "2020": csv_2020}))
+        monkeypatch.setattr(requests, "post", _api_prohibida)
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        tm.download_ted_spain(years=[2019, 2020], force_redownload=True)
+        df = pd.read_parquet(tmp_path / "ted_es_can.parquet").sort_values("year")
+        assert df["dt_dispatch"].tolist() == [pd.Timestamp("2019-02-05"), pd.Timestamp("2020-02-05")]
+        assert df["dt_award"].tolist() == [pd.Timestamp("2019-01-03"), pd.Timestamp("2020-01-03")]
+
     def test_numeric_and_importe(self):
         recs = []
         for _, n in _api_notices_2024():
