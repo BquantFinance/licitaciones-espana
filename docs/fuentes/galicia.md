@@ -28,6 +28,8 @@ galicia/
 ├── contratos_galicia_detail.sqlite3      # Caché incremental del detalle HTML
 ├── contratos_galicia.csv                 # Dataset final mergeado (62 columnas + nombre del organismo + 3 de control)
 ├── contratos_galicia.parquet             # Dataset final en parquet
+├── licitadores_galicia.csv               # Relación de licitadores presentados (una fila por licitador)
+├── licitadores_galicia.parquet           # La misma en parquet
 ├── _historico/                           # versiones anteriores de base y final
 ├── contratos_galicia_base_progress.json  # Checkpoint y ámbito leído de cada organismo
 └── scraper_galicia.py                    # Pipeline base + detail + merge
@@ -89,11 +91,37 @@ El portal usa jQuery DataTables con server-side processing y dos endpoints separ
 - `all`: ejecuta `base -> detail -> merge`
 - `base`: reconstruye solo el dataset base de tabla
 - `detail`: enriquece HTML sobre el base ya descargado
-- `merge`: junta base + detalle en el dataset final
+- `merge`: junta base + detalle en el dataset final y exporta la relación de licitadores
+- `licitadores`: solo exporta la relación de licitadores de la caché (no pide nada al portal)
 
 El progreso base se guarda por organismo en `contratos_galicia_base_progress.json` y el detalle se cachea en `contratos_galicia_detail.sqlite3`, de forma que si la ejecución se corta o el portal devuelve `403/429`, se puede retomar con `--resume`.
 
 **Salida reproducible**: otra persona puede rehacer la descarga completa ejecutando el mismo pipeline y obteniendo base, detalle cacheado y merge final.
+
+## Relación de licitadores
+
+La ficha trae, en una ventana oculta que se abre desde la columna «Part.» (participantes) de la tabla de la resolución, la **relación de licitadores presentados**: una fila por licitador con `Lote`, `NIF` y `Nombre` (`Nome` en gallego). Ya va en el crudo de la caché (`tables` de `raw_gzip`), así que se extrae sin volver a pedir ninguna ficha.
+
+- `detail` la escribe con cada lote de fichas que guarda en dos tablas de la caché: `licitadores` (una fila por licitador) y `licitadores_fichas` (las fichas leídas, con la versión de la que salen —`updated_at` y `html_sha256`— y si traían la ventana). Un fallo al leerla no para la descarga: esas fichas quedan pendientes.
+- `merge` y `licitadores` leen antes las fichas pendientes (las descargadas por una versión anterior del scraper o una ficha que el portal ha cambiado: sus filas se sustituyen) y exportan `licitadores_galicia.csv` y `.parquet` con `guardar_version`. Es reanudable: se confirma cada 2.000 fichas y la siguiente vuelta sigue por donde iba. Unas 100.000 fichas se leen en ~35 s; sin pendientes, la exportación tarda segundos.
+- Fichas descargadas con `--no-raw-detail` no tienen crudo: no se pueden leer.
+
+Columnas de `licitadores_galicia.csv` (una fila por licitador y lote; sin ninguno, solo las cabeceras):
+
+| Columna | Qué es |
+|---|---|
+| `_tipo`, `id`, `_organismo_id` | la ficha, con los nombres del CSV base (la tabla final se une por `_tipo` + `id`) |
+| `lote` | el lote tal cual; vacío en una ficha sin lotes (`-` en la ventana) |
+| `orden` | posición en la relación (1, 2…) |
+| `nif`, `nombre` | tal cual. Una UTE puede venir con el NIF provisional `U00000000` y los NIF de sus socios en el nombre; si la celda trae varios nombres (lista), van unidos por un espacio |
+| `importe_oferta`, `puntuacion` | **vacías**: la ficha no publica la oferta ni la puntuación de cada licitador (se mantienen para que el esquema sea el de otras fuentes que sí lo hacen) |
+| `situacion` | `presentado` (lo que dice la ventana: no publica admitidos ni excluidos) |
+| `es_adjudicatario`, `es_adjudicatario_via` | deducido de la propia ficha: `nif_formalizacion` (su NIF está en el contratista de la formalización de su lote) o `nombre_resolucion` (su nombre, sin tildes, signos ni espacios, es el adjudicatario de una resolución «Adjudicado» de su lote). `False` si su lote tiene resolución o formalización y no es él; vacío si la ficha no tiene ninguna (en plazo) |
+| `detail_updated_at` | cuándo se descargó la ficha de la que sale |
+
+Las filas sin NIF ni nombre no entran, y una fila repetida (mismo lote, NIF y nombre) entra una vez. La ventana marca sus filas con el lote y la resolución (`filaLic_<lote>_<resolución>`), pero el crudo no guarda esa marca: el lote sale de la columna `Lote`.
+
+Medido en una muestra de 45 fichas de 2024 y 2025 (37 menores y 8 licitaciones): las 45 traen la ventana, con tantas filas como dice «Part.», y las 45 tienen exactamente un licitador adjudicatario. En los menores la relación tiene un solo licitador, el adjudicatario (37 de 37); las licitaciones, de 1 a 5 (media 2,5). Ninguna ficha de la muestra tenía lotes.
 
 ## Validación del pipeline
 
