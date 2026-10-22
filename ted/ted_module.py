@@ -1101,7 +1101,11 @@ def _download_api_year(year, force=False, solo_eforms=False):
             cached = _read_cache(cache_path)
             if cached is not None and 'lot_result_id' in cached.columns:
                 # Avisos guardados sin XML (404 o error): se vuelven a pedir en cada ejecución
-                return _completar_xml(cached, cache_path, year) if _avisos_sin_xml(cached) else cached
+                if _avisos_sin_xml(cached):
+                    cached = _completar_xml(cached, cache_path, year)
+                # Avisos que el parser actual lee mejor desde el XML guardado (TED_EXPORT, resultados con
+                # ganador sin oferta ganadora): se releen del disco, sin pedir nada a TED
+                return _releer_xml(cached, cache_path, year)
             if cached is not None:
                 # De un parser anterior (filas por posición de las listas de la API, sin XML)
                 log.info(f"  {year}: cache {cache_path.name} de una versión anterior; se vuelve a descargar")
@@ -1684,6 +1688,16 @@ def _parse_eforms(contenido):
                 if citadas and all(ofertas.get(t, {}).get('_lote', '') not in ('', lote) for t in citadas) \
                         and any(empresas(t) == empresas(descritas[0]) for t in citadas):
                     ganadoras, por = descritas, 'contrato del resultado'
+            if not ganadoras and estado == 'selec-w' and len(descritas) == 1 \
+                    and not any(ofertas_de_contrato.get(c) for c in del_resultado):
+                # Resultado con ganador (BT-142 'selec-w') que describe una sola oferta y ningún contrato que
+                # cite una oferta suya: ni del resultado (falta o no cita ninguna, BT-3202 vacío) ni de otro
+                # resultado del aviso. Esa oferta es la ganadora: no hay otra candidata ni una cita que la
+                # contradiga (la API de TED, winner-*, también la cuenta). Medido en oct-2026: 2.275 resultados
+                # de 1.211 avisos de 2023-2025 quedaban sin adjudicataria (700433-2023: el lote 2 describe
+                # TEN-0002 y no tiene contrato; el lote 1 sí). Con dos o más ofertas descritas, o si el
+                # contrato del resultado cita la oferta de otro lote de otra empresa, no se sabe cuál ganó
+                ganadoras, por = descritas, 'oferta única del resultado'
         if not ganadoras:
             filas.append(base)   # resultado sin oferta ganadora: desierto, sin adjudicar, sin contrato...
             continue
@@ -1715,6 +1729,122 @@ def _parse_eforms(contenido):
             fila['contract_award_dates'] = '---'.join(fechas) if len(fechas) > 1 else ''
             filas.append(fila)
     return {'aviso': aviso, 'filas': filas}
+
+
+# ── XML del esquema anterior a eForms (TED_EXPORT R2.0.9) ──
+# A principios de 2024 TED aún publicaba avisos con el esquema anterior: 1.523 de España en la caché de 2024
+# (924 F03, 432 F20 de modificación, 147 F06 de sectores especiales, 6 F15, 4 F21, 3 F25, 1 F13 y 6 sin
+# formulario). La API no da de ellos adjudicatario, importe, expediente ni título, pero su XML sí: una sección
+# V (AWARD_CONTRACT) por contrato o lote con la adjudicación (AWARDED_CONTRACT: fecha de celebración,
+# ofertas recibidas, contratistas, importe) o el motivo de no adjudicarlo (NO_AWARDED_CONTRACT). Antes quedaban
+# como una fila con los datos del aviso, sin adjudicatario ni importe. Una fila por AWARD_CONTRACT, con la clave
+# lot_result_id = tender_id = 'AWARD_CONTRACT-<ITEM>' y ganadora_por = 'contrato' (la sección es el contrato
+# adjudicado); los contratistas de un grupo en una fila, unidos por '---' en el orden publicado (el esquema no
+# marca líder), como en el CSV.
+_PREFIJO_TED_EXPORT = 'AWARD_CONTRACT-'
+
+
+def _local(e):
+    return e.tag.rsplit('}', 1)[-1] if isinstance(e.tag, str) else ''
+
+
+def _hijo(e, *nombres):
+    """Descendiente directo por nombres locales (sin espacio de nombres): _hijo(e, 'A', 'B') = e/A/B."""
+    for nombre in nombres:
+        if e is None:
+            return None
+        e = next((x for x in e if _local(x) == nombre), None)
+    return e
+
+
+def _hijo_o_vacio(e, *nombres):
+    """_hijo, o un elemento vacío si no está (sin probar la verdad de un Element, que depende de sus hijos)."""
+    x = _hijo(e, *nombres)
+    return x if x is not None else ET.Element('vacio')
+
+
+def _texto_te(e, *nombres):
+    x = _hijo(e, *nombres) if nombres else e
+    return ' '.join(''.join(x.itertext()).split()) if x is not None else ''
+
+
+def _parse_ted_export(contenido):
+    """Lee el XML TED_EXPORT de un aviso de adjudicación: {'aviso': {...}, 'filas': [...]} con las columnas de
+    _parse_eforms, o None si no es TED_EXPORT. Lanza ET.ParseError si no es XML."""
+    raiz = ET.fromstring(contenido)
+    if _local(raiz) != 'TED_EXPORT':
+        return None
+    seccion = _hijo(raiz, 'FORM_SECTION')
+    formularios = [f for f in (seccion if seccion is not None else []) if f.get('FORM') or _local(f).endswith('_2014')]
+    if not formularios:
+        return {'aviso': {}, 'filas': []}
+    # El original (CATEGORY="ORIGINAL"); si no, el castellano; si no, el primero (las traducciones repiten los datos)
+    form = next((f for f in formularios if f.get('CATEGORY') == 'ORIGINAL'), None)
+    if form is None:
+        form = next((f for f in formularios if f.get('LG') == 'ES'), formularios[0])
+    objeto = _hijo(form, 'OBJECT_CONTRACT')
+    total = _hijo(objeto, 'VAL_TOTAL')
+    aviso = {
+        'internal_id_proc': _texto_te(objeto, 'REFERENCE_NUMBER'),
+        'title_proc': _texto_te(objeto, 'TITLE'),
+        'description_proc': _texto_te(objeto, 'SHORT_DESCR'),
+        'notice_value': _texto_te(total), 'notice_value_cur': total.get('CURRENCY', '') if total is not None else '',
+    }
+    marco = 'true' if _hijo(form, 'PROCEDURE', 'FRAMEWORK') is not None else ''
+    filas = []
+    for i, ac in enumerate(x for x in form if _local(x) == 'AWARD_CONTRACT'):
+        clave = _PREFIJO_TED_EXPORT + (ac.get('ITEM') or str(i + 1))
+        fila = {'lot_result_id': clave, 'lot_id': _texto_te(ac, 'LOT_NO'), 'title_lot': _texto_te(ac, 'TITLE'),
+                'contract_id': _texto_te(ac, 'CONTRACT_NO'), 'contract_framework': marco}
+        adjudicado = _hijo(ac, 'AWARDED_CONTRACT')
+        if adjudicado is None:
+            no = _hijo(ac, 'NO_AWARDED_CONTRACT')
+            motivos = [_local(x) for x in (no if no is not None else []) if _local(x).startswith('PROCUREMENT_')]
+            motivo = motivos[0] if motivos else ''
+            filas.append(dict(fila, winner_selection_status='clos-nw' if no is not None else '',
+                              non_award_justification=motivo))
+            continue
+        valores = _hijo(adjudicado, 'VALUES')
+        importe, estimado, rango = (_hijo(valores, n) for n in ('VAL_TOTAL', 'VAL_ESTIMATED_TOTAL', 'VAL_RANGE_TOTAL'))
+        contratistas = [x for x in _hijo_o_vacio(adjudicado, 'CONTRACTORS') if _local(x) == 'CONTRACTOR']
+        if not contratistas:   # R2.0.9 S01-S02: los contratistas sin el contenedor CONTRACTORS
+            contratistas = [x for x in adjudicado if _local(x) == 'CONTRACTOR']
+
+        def unidos(valores):
+            """Los valores de los contratistas unidos por '---' ('' si ninguno lo publica)."""
+            return '---'.join(valores) if any(valores) else ''
+
+        def de_contratistas(*ruta):
+            return unidos([_texto_te(c, *ruta) for c in contratistas])
+        fecha = _texto_te(adjudicado, 'DATE_CONCLUSION_CONTRACT')
+        fila.update(
+            winner_selection_status='selec-w', tender_id=clave, ganadora_por='contrato',
+            number_offers=_texto_te(adjudicado, 'TENDERS', 'NB_TENDERS_RECEIVED'),
+            dt_award=fecha, contract_conclusion_date=fecha,
+            win_name=de_contratistas('ADDRESS_CONTRACTOR', 'OFFICIALNAME'),
+            win_nationalid=de_contratistas('ADDRESS_CONTRACTOR', 'NATIONALID'),
+            win_town=de_contratistas('ADDRESS_CONTRACTOR', 'TOWN'),
+            win_country=unidos([_hijo_o_vacio(c, 'ADDRESS_CONTRACTOR', 'COUNTRY').get('VALUE', '')
+                                for c in contratistas]),
+            # SME / NO_SME: los códigos de tamaño de eForms (el CSV da Y/N en B_CONTRACTOR_SME)
+            win_size=unidos(['sme' if _hijo(c, 'SME') is not None else 'large' if _hijo(c, 'NO_SME') is not None
+                             else '' for c in contratistas]),
+            tender_value=_texto_te(importe),
+            tender_value_cur=importe.get('CURRENCY', '') if importe is not None else '',
+            estimated_value_lot=_texto_te(estimado),
+            estimated_value_lot_cur=estimado.get('CURRENCY', '') if estimado is not None else '',
+            tender_value_lowest=_texto_te(rango, 'LOW'), tender_value_highest=_texto_te(rango, 'HIGH'),
+            tender_value_lowest_cur=rango.get('CURRENCY', '') if rango is not None else '',
+            tender_value_highest_cur=rango.get('CURRENCY', '') if rango is not None else '')
+        filas.append(fila)
+    return {'aviso': aviso, 'filas': filas}
+
+
+def _parse_xml_aviso(contenido):
+    """Filas del XML de un aviso: eForms (_parse_eforms) o TED_EXPORT (_parse_ted_export); None si no es de
+    ninguno de los dos esquemas."""
+    leido = _parse_eforms(contenido)
+    return leido if leido is not None else _parse_ted_export(contenido)
 
 
 def _aviso_api(notice):
@@ -1772,26 +1902,29 @@ def _aviso_api(notice):
 
 
 def _filas_aviso(aviso, contenido=None, estado='ok', detalle=''):
-    """Filas de un aviso: los datos del aviso de la API (_aviso_api) en cada fila del XML eForms
-    (_parse_eforms). Sin XML legible en eForms, una fila con los datos del aviso y el motivo en
-    _xml_eforms ('' si las filas salen del XML; 'sin XML: …' se vuelve a pedir en la siguiente
-    ejecución)."""
+    """Filas de un aviso: los datos del aviso de la API (_aviso_api) en cada fila del XML (eForms o
+    TED_EXPORT, _parse_xml_aviso). Los datos del aviso que trae el XML (valor del aviso; en TED_EXPORT
+    también expediente, título y descripción, que la API no da) solo llenan lo que la API deja vacío. Sin XML
+    legible, una fila con los datos del aviso y el motivo en _xml_eforms ('' si las filas salen del XML;
+    'sin XML: …' se vuelve a pedir en la siguiente ejecución)."""
     marca, leido = '', None
     if contenido is None:
         marca = ('sin XML: TED responde 404' if estado == 'no_disponible'
                  else f'sin XML: {detalle}' if detalle else 'sin XML')
     else:
         try:
-            leido = _parse_eforms(contenido)
+            leido = _parse_xml_aviso(contenido)
             if leido is None:
-                marca = 'XML del esquema anterior a eForms (TED_EXPORT): sin resultados por lote'
+                marca = 'XML de un esquema desconocido: sin resultados por lote'
         except ET.ParseError as e:
             marca = f'XML ilegible: {e}'
     filas = (leido or {}).get('filas') or [{}]
     datos_xml = (leido or {}).get('aviso', {})
     salida = []
     for i, fila in enumerate(filas):
-        todo = {**aviso, **datos_xml, **fila}
+        todo = dict(aviso)
+        todo.update({k: v for k, v in datos_xml.items() if todo.get(k) in (None, '')})
+        todo.update(fila)
         salida.append({c: todo.get(c, '') for c in _COLUMNAS_API})
         salida[-1].update(lot_index=i, n_filas_aviso=len(filas), _xml_eforms=marca,
                           source=aviso.get('source', 'api_v3'))
@@ -1991,6 +2124,63 @@ def _avisos_sin_xml(df):
     return list(dict.fromkeys(df.loc[sin, 'ted_notice_id'].astype(str)))
 
 
+# Marca de las filas que el parser de antes de octubre de 2026 no sabía leer (XML TED_EXPORT)
+_MARCA_TED_EXPORT_ANTES = 'XML del esquema anterior a eForms (TED_EXPORT): sin resultados por lote'
+
+
+def _avisos_a_releer(df):
+    """Avisos de una caché con filas que el parser actual puede leer de otra forma desde el XML guardado: los
+    TED_EXPORT que el parser anterior no leía (_MARCA_TED_EXPORT_ANTES) y los que tienen un resultado con
+    ganador (selec-w) sin oferta ganadora. Se releen del disco en cada ejecución, sin pedir nada a TED."""
+    if df is None or not {'_xml_eforms', 'ted_notice_id'} <= set(df.columns):
+        return []
+    marca = df['_xml_eforms'].fillna('').astype(str)
+    sin_ganadora = pd.Series(False, index=df.index)
+    if {'winner_selection_status', 'tender_id'} <= set(df.columns):
+        sin_ganadora = (marca.eq('') & df['winner_selection_status'].fillna('').astype(str).eq('selec-w')
+                        & df['tender_id'].fillna('').astype(str).eq(''))
+    releer = (marca.eq(_MARCA_TED_EXPORT_ANTES) | sin_ganadora).to_numpy(dtype=bool)
+    return list(dict.fromkeys(df.loc[releer, 'ted_notice_id'].astype(str)))
+
+
+def _rehacer_avisos(cached, nuevas, rehechos):
+    """La caché con las filas de los avisos `rehechos` sustituidas por `nuevas`, en el orden de siempre (por
+    aviso, el de la caché, y posición en el aviso)."""
+    ids = cached['ted_notice_id'].astype(str)
+    df = pd.concat([cached[~ids.isin(rehechos).to_numpy()], pd.DataFrame(nuevas, columns=_COLUMNAS_API)],
+                   ignore_index=True)
+    orden = {n: i for i, n in enumerate(dict.fromkeys(ids))}
+    df = df.iloc[np.lexsort((df['lot_index'].to_numpy(), df['ted_notice_id'].astype(str).map(orden).to_numpy()))]
+    return df.reset_index(drop=True)
+
+
+def _releer_xml(cached, cache_path, year):
+    """Vuelve a leer del disco el XML de los avisos de _avisos_a_releer con el parser actual y rehace sus filas
+    con los datos del aviso guardados. Si cambia alguna fila guarda la caché (la anterior queda en _historico/ y
+    el consolidado conserva las filas viejas con _en_ultima_descarga=False); si no, la caché no cambia. No pide
+    nada a TED: un aviso cuyo XML no está en disco se queda como estaba."""
+    numeros = [n for n in _avisos_a_releer(cached) if _ruta_xml(n).is_file()]
+    if not numeros:
+        return cached
+    ids = cached['ted_notice_id'].astype(str)
+    columnas_aviso = [c for c in _aviso_api({}) if c in cached.columns]
+    nuevas, rehechos = [], []
+    for n in numeros:
+        contenido = _leer_xml(n)
+        if contenido is None:
+            continue
+        fila = cached.loc[(ids == n).to_numpy()].iloc[0]
+        aviso = {c: ('' if pd.isna(fila[c]) else fila[c]) for c in columnas_aviso}
+        nuevas.extend(_filas_aviso(aviso, contenido))
+        rehechos.append(n)
+    df = _rehacer_avisos(cached, nuevas, rehechos)
+    if _mismas_filas(cached, df):
+        return cached
+    log.info(f"  {year}: {len(rehechos):,} avisos de {Path(cache_path).name} releídos del XML guardado")
+    _guardar_cache(df, cache_path)
+    return df
+
+
 def _completar_xml(cached, cache_path, year):
     """Vuelve a pedir el XML de los avisos que una caché de un año cerrado guardó sin él y, si llega
     alguno, rehace sus filas con los datos del aviso guardados y guarda la caché (la anterior queda
@@ -2008,12 +2198,7 @@ def _completar_xml(cached, cache_path, year):
         aviso = {c: ('' if pd.isna(fila[c]) else fila[c]) for c in columnas_aviso}
         estado, detalle = estados.get(n, ('error', ''))
         nuevas.extend(_filas_aviso(aviso, _leer_xml(n) if estado == 'ok' else None, estado, detalle))
-    df = pd.concat([cached[~ids.isin(numeros).to_numpy()], pd.DataFrame(nuevas, columns=_COLUMNAS_API)],
-                   ignore_index=True)
-    # El orden de siempre: por aviso (el de la caché) y posición en el aviso
-    orden = {n: i for i, n in enumerate(dict.fromkeys(ids))}
-    df = df.iloc[np.lexsort((df['lot_index'].to_numpy(), df['ted_notice_id'].astype(str).map(orden).to_numpy()))]
-    df = df.reset_index(drop=True)
+    df = _rehacer_avisos(cached, nuevas, numeros)
     _guardar_cache(df, cache_path)
     return df
 
@@ -2270,8 +2455,64 @@ def _normalize_ted_data(df):
     if 'type_of_contract' in df.columns:
         df['tipo_contrato'] = df['type_of_contract'].map(type_map).fillna('otros')
     
+    df = _columnas_derivadas(df)
+
     log.info(f"  Datos TED normalizados: {len(df):,} registros")
     
+    return df
+
+
+# Sufijo de lote al final del expediente: separador + L/LT/LOT/LOTE + número ('PSU/2020/0000098983 lote 4',
+# '0011-20PSU-L1', 'LICT/99/139/2023/0007/L6', 'AM 01/22 L08', '352/19 L.3'), 'LOTE' pegado ('EC/40/19LOTE4') o
+# L0n pegado a una cifra ('PSS/2023/0000038741L01'). La PLACSP publica el expediente sin él: medido en 2018-2026,
+# de 10.517 expedientes de adjudicaciones de TED con sufijo, 504 casan con un expediente del mismo órgano en la
+# PLACSP tal cual y 7.293 sin el sufijo. Sin separador ni la palabra LOTE no se quita ('1518L206', '2023-PL120')
+_RE_SUFIJO_LOTE = re.compile(r'(?:\s*[\s_\-/.]\s*(?:lotes?|lots?|lt|l)|\s*lotes?)[\s_\-.º°]*(?:n[º°.]?\s*)?'
+                             r'0*(\d{1,3})\s*$|(?<=\d)l0(\d{1,2})\s*$', re.IGNORECASE)
+# Importe simbólico: 0 o hasta 1 € (0,01 €, 1 €), lo que se publica en las adjudicaciones de un acuerdo marco sin
+# importe por empresa o con precios unitarios. Se conserva tal cual y se marca
+_IMPORTE_SIMBOLICO = 1.0
+
+
+def _expediente_sin_lote(valor):
+    """(expediente sin el sufijo de lote, número del lote del sufijo) de un expediente; el expediente tal cual
+    y '' si no lleva sufijo, y ('', lote) si sin el sufijo no queda nada."""
+    texto = '' if valor is None or (not isinstance(valor, str) and pd.isna(valor)) else str(valor).strip()
+    m = _RE_SUFIJO_LOTE.search(texto)
+    if not texto or not m:
+        return texto, ''
+    base = texto[:m.start()].rstrip(' _-/.–—')
+    return (base if sum(ch.isalnum() for ch in base) >= 3 else ''), str(int(m.group(1) or m.group(2)))
+
+
+def _columnas_derivadas(df):
+    """Columnas que añade el consolidado (no las cachés) sin tocar las publicadas:
+    - expediente_sin_lote / expediente_lote: el expediente (API: internal_id_proc, BT-22; CSV: CONTRACT_NUMBER
+      salvo el ordinal del contrato en el aviso, '1', '2'...) sin el sufijo de lote, y el número de ese lote;
+    - importe_ted_marca: en una adjudicación (con adjudicatario o, en el XML, con oferta ganadora),
+      'acuerdo_marco_simbolico' si importe_ted es 0 o simbólico (hasta 1 €) en un acuerdo marco o SDA (CSV:
+      is_framework, B_FRA_CONTRACT o B_DYN_PURCH_SYST = 'Y'; XML: contract_framework = 'true' o un máximo del
+      acuerdo marco del lote o del aviso), 'simbolico' si lo es fuera de ellos y '' si no (también en los lotes
+      sin adjudicar, que el CSV publica con 0). importe_ted no cambia."""
+    def col(c):
+        return df[c] if c in df.columns else pd.Series(np.nan, index=df.index, dtype=object)
+    api = col('source').astype(str).eq('api_v3')
+    contrato = col('CONTRACT_NUMBER').where(~col('CONTRACT_NUMBER').astype(str).str.fullmatch(r'\s*\d{1,3}\s*'))
+    expediente = col('internal_id_proc').where(api, contrato)
+    partes = [_expediente_sin_lote(v) for v in expediente.tolist()]
+    df['expediente_sin_lote'] = [p[0] for p in partes]
+    df['expediente_lote'] = [p[1] for p in partes]
+    si = lambda c: col(c).astype(str).str.upper().eq('Y')
+    marco = (si('is_framework') | si('B_FRA_CONTRACT') | si('B_DYN_PURCH_SYST')
+             | col('contract_framework').astype(str).str.lower().eq('true')
+             | (pd.to_numeric(col('framework_max_lot'), errors='coerce') > 0)
+             | (pd.to_numeric(col('notice_framework_max_value'), errors='coerce') > 0))
+    importe = pd.to_numeric(col('importe_ted'), errors='coerce')
+    vacio = lambda c: col(c).fillna('').astype(str).str.strip().isin(['', 'nan'])
+    adjudicada = ~vacio('win_name') | ~vacio('win_nationalid') | (api & ~vacio('tender_id'))
+    simbolico = importe.between(0, _IMPORTE_SIMBOLICO) & adjudicada
+    df['importe_ted_marca'] = np.where(simbolico & marco, 'acuerdo_marco_simbolico',
+                                       np.where(simbolico, 'simbolico', ''))
     return df
 
 
