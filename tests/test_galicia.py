@@ -2875,3 +2875,303 @@ class GaliciaVentanasContiguasTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Relación de licitadores presentados
+# ─────────────────────────────────────────────────────────────────────────────
+# Fichas con el marcado del portal (fichas reales de 2024-2025: la tabla de la
+# resolución con «Part.» y el enlace mostrarLicitadores, la ventana vacía
+# «Datos adjudicación» (Adjudicatario, NIF) que rellena el JavaScript, la ventana
+# «Relación de licitadores presentados» con una fila oculta por licitador y la
+# tabla de formalización con el NIF del contratista). Nombres y NIF inventados.
+LICITADORES_FICHA_TEMPLATE = """
+<html>
+  <head><title>Detalle procedemento: {n} - Contratos Públicos de Galicia</title></head>
+  <body>
+    <h2>Información del procedimiento</h2>
+    <dl><dt>Referencia</dt><dd>REF-{n}</dd></dl>
+    <table class="table">
+      <thead><tr>
+        <th scope="col" class="th_5"><a href="#">Lote</a></th>
+        <th scope="col" class="th_5"><a href="#" class="tooltip-cpg" title="Participantes">Part.</a></th>
+        <th scope="col" class="th_10"><a href="#">Resolución</a></th>
+        <th scope="col" class="th_30"><a href="#">Adjudicatario</a></th>
+        <th scope="col" class="th_10 text-center"><a href="#">Importe</a></th>
+        <th scope="col" class="th_10"><a href="#">Fecha difusión</a></th>
+        <th scope="col" class="th_5"><a href="#">Plazo de ejecución</a></th>
+        <th scope="col" class="th_5"><a href="#">Recurso/ Plazo</a></th>
+      </tr></thead>
+      <tbody>{resoluciones}</tbody>
+    </table>
+    <div class="modal fade" id="ventanaModalMultAdx"><div class="titulo-modal">Datos adjudicación</div>
+      <table class="table table-hover"><thead><tr><th scope="col">Adjudicatario</th><th scope="col">NIF</th></tr></thead>
+        <tbody id="tBodyMultAdx"></tbody></table>
+    </div>
+    {ventana}
+    {formalizacion}
+  </body>
+</html>
+"""
+
+RESOLUCION_FILA = """
+        <tr><td> {lote} </td>
+          <td> {part} <a href="#" onclick="mostrarLicitadores('0',0)" title="Relación de licitadores presentados">
+            <span class="glyphicon glyphicon-th-list"></span></a></td>
+          <td><span class="tooltip-cpg" title="{resolucion}">{resolucion}</span></td>
+          <td> {adjudicatario} </td><td class="text-right"> 10.000,00 &#8364; </td>
+          <td><a class="tooltip-cpg">09-02-2025 06:01</a></td><td> 4 meses </td><td class='text-center'></td></tr>"""
+
+VENTANA_LICITADORES = """
+    <div class="modal fade" tabindex="-1" id="ventanaModalLicitadores" role="dialog">
+      <div class="titulo-modal">Relación de licitadores presentados</div>
+      <table class="table table-hover" aria-describedby="titulo-modal">
+        <thead><tr><th scope="col">Lote</th><th scope="col">NIF</th><th scope="col">{nombre}</th></tr></thead>
+        <tbody>{filas}</tbody>
+      </table>
+    </div>"""
+
+LICITADOR_FILA = """
+          <tr class="filaLic_0_0 filasLicitadores hidden"><td> {lote} </td><td> {nif} </td>
+            <td><ul class='list-unstyled'>{lis}</ul></td></tr>"""
+
+FORMALIZACION = """
+    <table class="table">
+      <thead><tr><th>Fecha formalización</th><th>Lote</th><th>Contratista</th><th>Nacionalidad</th><th>Importe</th>
+        <th>Fecha difusión</th></tr></thead>
+      <tbody>{filas}</tbody>
+    </table>"""
+
+
+def ficha_licitadores(n, resoluciones=(), licitadores=None, formalizaciones=(), nombre_col="Nombre"):
+    """resoluciones: (lote, part, resolución, adjudicatario); licitadores: (lote, nif, [nombres]) o None (sin
+    ventana); formalizaciones: (lote, contratista con su NIF)."""
+    res = "".join(RESOLUCION_FILA.format(lote=l, part=p, resolucion=r, adjudicatario=a) for l, p, r, a in resoluciones)
+    ventana = ""
+    if licitadores is not None:
+        filas = "".join(
+            LICITADOR_FILA.format(lote=l, nif=nif, lis="".join(f"<li>{x}</li>" for x in nombres))
+            for l, nif, nombres in licitadores
+        )
+        ventana = VENTANA_LICITADORES.format(nombre=nombre_col, filas=filas)
+    formalizacion = ""
+    if formalizaciones:
+        formalizacion = FORMALIZACION.format(filas="".join(
+            f"<tr><td>30-09-2025</td><td>{l}</td><td>{c}</td><td>España</td><td>10.000,00 €</td><td>13-11-2025</td></tr>"
+            for l, c in formalizaciones))
+    return LICITADORES_FICHA_TEMPLATE.format(n=n, resoluciones=res, ventana=ventana, formalizacion=formalizacion)
+
+
+# Licitación con cuatro licitadores, uno de ellos una UTE (varios nombres en la celda), formalizada
+FICHA_LIC_CUATRO = ficha_licitadores(
+    900001,
+    resoluciones=[("_", "4", "Adjudicado", "CONSTRUCCIONES INVENTADAS, S.L.")],
+    licitadores=[
+        ("-", "B00000011", ["SERVIZOS FICTICIOS SL"]),
+        ("-", "00000001R", ["NOMBRE APELLIDO APELLIDO"]),
+        ("-", "B00000022", ["CONSTRUCCIONES INVENTADAS, S.L."]),
+        ("-", "U00000000", ["UTE EMPRESA UNO S.L. B00000033 - EMPRESA DOS S.L. B00000044", "EMPRESA DOS S.L."]),
+    ],
+    formalizaciones=[("_", "CONSTRUCCIONES INVENTADAS, S.L. B00000022")],
+)
+# Menor: un licitador, el adjudicatario (sin formalización: se casa por el nombre, con otra puntuación)
+FICHA_CM_UNO = ficha_licitadores(
+    1500001,
+    resoluciones=[("_", "1", "Adjudicado", "SUMINISTROS FICTICIOS S L")],
+    licitadores=[("-", "B00000055", ["Suministros Ficticios, S.L."])],
+)
+
+
+def licitadores_de(html):
+    return scraper_galicia.extract_licitadores(scraper_galicia.parse_detail_html(html)["tables"])
+
+
+def raw_de(html):
+    parsed = scraper_galicia.parse_detail_html(html)
+    return scraper_galicia.compress_text(
+        scraper_galicia.compact_json({"pairs": parsed["pairs"], "tables": parsed["tables"]})
+    )
+
+
+class GaliciaLicitadoresTests(unittest.TestCase):
+    def test_relacion_de_licitadores_de_una_licitacion(self):
+        tiene, filas = licitadores_de(FICHA_LIC_CUATRO)
+        self.assertTrue(tiene)
+        self.assertEqual([f["orden"] for f in filas], [1, 2, 3, 4])
+        self.assertEqual([f["nif"] for f in filas], ["B00000011", "00000001R", "B00000022", "U00000000"])
+        self.assertEqual(filas[0]["nombre"], "SERVIZOS FICTICIOS SL")
+        # La UTE: los nombres de la lista de la celda, unidos
+        self.assertEqual(
+            filas[3]["nombre"], "UTE EMPRESA UNO S.L. B00000033 - EMPRESA DOS S.L. B00000044 EMPRESA DOS S.L."
+        )
+        self.assertEqual({f["lote"] for f in filas}, {None})          # '-': sin lotes
+        self.assertEqual({f["situacion"] for f in filas}, {"presentado"})
+        self.assertEqual({f["importe_oferta"] for f in filas} | {f["puntuacion"] for f in filas}, {None})
+        # Adjudicataria por el NIF de la formalización; las demás, no
+        self.assertEqual(
+            [(f["es_adjudicatario"], f["es_adjudicatario_via"]) for f in filas],
+            [(False, None), (False, None), (True, "nif_formalizacion"), (False, None)],
+        )
+        self.assertEqual(sorted(scraper_galicia.LICITADORES_FIELDS), sorted(filas[0]))
+
+    def test_menor_con_el_adjudicatario_por_el_nombre_de_la_resolucion(self):
+        tiene, filas = licitadores_de(FICHA_CM_UNO)
+        self.assertTrue(tiene)
+        self.assertEqual(len(filas), 1)
+        self.assertEqual((filas[0]["es_adjudicatario"], filas[0]["es_adjudicatario_via"]), (True, "nombre_resolucion"))
+
+    def test_lotes_desierto_sin_resolucion_y_filas_repetidas(self):
+        # Lote 1 adjudicado, lote 2 desierto; 'Nome' (ficha en gallego); una fila repetida y una vacía
+        html = ficha_licitadores(
+            900002,
+            resoluciones=[("1", "2", "Adjudicado", "EMPRESA LOTE UNO SA"), ("2", "1", "Desierto", "")],
+            licitadores=[
+                ("1", "A00000066", ["EMPRESA LOTE UNO SA"]),
+                ("1", "B00000077", ["OTRA EMPRESA SL"]),
+                ("1", "B00000077", ["OTRA EMPRESA SL"]),
+                ("2", "B00000077", ["OTRA EMPRESA SL"]),
+                ("2", "", []),
+            ],
+            nombre_col="Nome",
+        )
+        tiene, filas = licitadores_de(html)
+        self.assertTrue(tiene)
+        self.assertEqual(
+            [(f["orden"], f["lote"], f["nif"], f["es_adjudicatario"]) for f in filas],
+            [(1, "1", "A00000066", True), (2, "1", "B00000077", False), (3, "2", "B00000077", False)],
+        )
+        # Sin resolución ni formalización (en plazo): no se sabe
+        _, filas = licitadores_de(ficha_licitadores(900003, licitadores=[("-", "B00000011", ["SERVIZOS FICTICIOS SL"])]))
+        self.assertEqual((filas[0]["es_adjudicatario"], filas[0]["es_adjudicatario_via"]), (None, None))
+
+    def test_ficha_sin_ventana_y_tabla_de_adjudicacion_que_no_es_de_licitadores(self):
+        tiene, filas = licitadores_de(ficha_licitadores(900004, resoluciones=[("_", "1", "Adjudicado", "X SL")]))
+        self.assertEqual((tiene, filas), (False, []))
+        # (Adjudicatario, NIF) y (Lote, Adjudicatario, NIF, Importe) no son la relación de licitadores
+        self.assertEqual(licitadores_de(DETAIL_HTML_WITH_AWARDS), (False, []))
+        # Ventana sin filas: la ficha la trae, sin licitadores
+        self.assertEqual(licitadores_de(ficha_licitadores(900005, licitadores=[])), (True, []))
+
+    def test_detail_guarda_los_licitadores_con_cada_lote_y_los_cambia_si_cambia_la_ficha(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = scraper_galicia.init_detail_db(Path(tmpdir))
+            row = detail_cache_row("LIC", 900001, 48, "done")
+            row["raw_gzip"] = raw_de(FICHA_LIC_CUATRO)
+            cm = detail_cache_row("CM", 1500001, 48, "done")
+            cm["raw_gzip"] = raw_de(FICHA_CM_UNO)
+            fallo = detail_cache_row("LIC", 900009, 48, "retryable")
+            scraper_galicia.persist_detail_results(conn, [row, cm, fallo])
+            filas = conn.execute(
+                "SELECT record_type, record_id, orden, nif, es_adjudicatario FROM licitadores ORDER BY 1, 2, 3"
+            ).fetchall()
+            self.assertEqual(len(filas), 5)
+            self.assertEqual(tuple(filas[0]), ("CM", "1500001", 1, "B00000055", 1))
+            fichas = conn.execute(
+                "SELECT record_id, tiene_tabla, n_licitadores FROM licitadores_fichas ORDER BY 1"
+            ).fetchall()
+            self.assertEqual([tuple(f) for f in fichas], [("1500001", 1, 1), ("900001", 1, 4)])
+            # El portal cambia la ficha: sus filas se sustituyen, no se suman
+            nueva = dict(row, updated_at="2026-04-01T00:00:00", html_sha256="def",
+                         raw_gzip=raw_de(ficha_licitadores(
+                             900001, resoluciones=[("_", "1", "Adjudicado", "SERVIZOS FICTICIOS SL")],
+                             licitadores=[("-", "B00000011", ["SERVIZOS FICTICIOS SL"])])),
+                         mapped_json=json.dumps({"detail_referencia": "REF-900001-B"}))
+            scraper_galicia.persist_detail_results(conn, [nueva])
+            self.assertEqual(
+                [tuple(f) for f in conn.execute(
+                    "SELECT nif, es_adjudicatario FROM licitadores WHERE record_id = '900001'")],
+                [("B00000011", 1)],
+            )
+            # Un error posterior no toca nada (la ficha 'done' se conserva)
+            scraper_galicia.persist_detail_results(conn, [detail_cache_row("LIC", 900001, 48, "retryable")])
+            self.assertEqual(conn.execute("SELECT count(*) FROM licitadores WHERE record_id = '900001'").fetchone()[0], 1)
+            self.assertEqual(scraper_galicia.sync_licitadores(conn)["fichas"], 0)   # nada pendiente
+            conn.close()
+
+    def test_un_fallo_al_leer_licitadores_no_para_la_descarga(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = scraper_galicia.init_detail_db(Path(tmpdir))
+            row = detail_cache_row("LIC", 900001, 48, "done")
+            row["raw_gzip"] = raw_de(FICHA_LIC_CUATRO)
+            with patch.object(scraper_galicia, "extract_licitadores", side_effect=RuntimeError("roto")), \
+                    patch.object(scraper_galicia, "_LOG_PATH", None), patch("sys.stdout", new_callable=io.StringIO):
+                scraper_galicia.persist_detail_results(conn, [row])
+            # La ficha está guardada y sus licitadores, pendientes: los lee la siguiente vuelta
+            self.assertEqual(conn.execute("SELECT status FROM detail_cache").fetchone()[0], "done")
+            self.assertEqual(conn.execute("SELECT count(*) FROM licitadores_fichas").fetchone()[0], 0)
+            self.assertEqual(scraper_galicia.sync_licitadores(conn)["licitadores"], 4)
+            conn.close()
+
+    def test_modo_licitadores_lee_la_cache_de_una_version_anterior_sin_pedir_nada(self):
+        """Caché escrita por el scraper anterior (sin las tablas de licitadores): el modo 'licitadores' las crea,
+        lee el crudo y exporta el CSV y el Parquet; repetirlo no cambia nada. Sin red: Session no se crea."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            conn = sqlite3.connect(output_dir / scraper_galicia.DETAIL_DB_NAME)
+            conn.execute(
+                "CREATE TABLE detail_cache (record_type TEXT NOT NULL, record_id TEXT NOT NULL, organismo_id INTEGER "
+                "NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, "
+                "last_http_status INTEGER, updated_at TEXT NOT NULL, detail_url TEXT, page_title TEXT, html_sha256 TEXT, "
+                "mapped_json TEXT, raw_gzip BLOB, PRIMARY KEY (record_type, record_id, organismo_id))"
+            )
+            for tipo, n, org, html in (("LIC", "900001", 48, FICHA_LIC_CUATRO), ("CM", "1500001", 11, FICHA_CM_UNO),
+                                       ("LIC", "900004", 48, ficha_licitadores(900004))):
+                conn.execute(
+                    "INSERT INTO detail_cache VALUES (?, ?, ?, 'done', 1, NULL, NULL, '2026-10-22T13:52:38.320326', "
+                    "NULL, 'Detalle procedemento', 'abc', '{}', ?)",
+                    (tipo, n, org, raw_de(html)),
+                )
+            conn.execute(
+                "INSERT INTO detail_cache VALUES ('LIC', '900005', 48, 'done', 1, NULL, NULL, '2026-10-22', NULL, "
+                "'Detalle', 'abc', '{}', NULL)"   # descargada con --no-raw-detail: no se puede leer
+            )
+            conn.commit()
+            conn.close()
+            log_path = output_dir / "scraper.log"
+            with patch.object(scraper_galicia, "Session", side_effect=AssertionError("sin red")), \
+                    patch.object(scraper_galicia, "_LOG_PATH", None), patch("sys.stdout", new_callable=io.StringIO):
+                rc = scraper_galicia.main(["licitadores", "--output", str(output_dir), "--log-path", str(log_path)])
+                self.assertEqual(rc, 0)
+                csv_path = output_dir / scraper_galicia.LICITADORES_CSV_NAME
+                primera = csv_path.read_bytes()
+                self.assertEqual(
+                    scraper_galicia.main(["licitadores", "--output", str(output_dir), "--log-path", str(log_path)]), 0
+                )
+            self.assertEqual(csv_path.read_bytes(), primera)                       # sin cambios: el mismo fichero
+            self.assertFalse((output_dir / "_historico").exists())
+            df = pd.read_csv(csv_path, sep=";", dtype=str, keep_default_na=False, encoding="utf-8-sig")
+            self.assertEqual(list(df.columns), scraper_galicia.LICITADORES_EXPORT_FIELDS)
+            self.assertEqual(len(df), 5)
+            self.assertEqual(df.iloc[0][["_tipo", "id", "_organismo_id", "orden", "nif"]].tolist(),
+                             ["CM", "1500001", "11", "1", "B00000055"])
+            self.assertEqual(df["es_adjudicatario"].tolist(), ["True", "False", "False", "True", "False"])
+            self.assertEqual(df["detail_updated_at"].iloc[0], "2026-10-22T13:52:38.320326")
+            if scraper_galicia.HAS_PYARROW:
+                pq = pd.read_parquet(output_dir / scraper_galicia.LICITADORES_PARQUET_NAME)
+                self.assertEqual(len(pq), 5)
+                self.assertEqual(str(pq["nif"].dtype), "string")
+                self.assertEqual(str(pq["es_adjudicatario"].dtype), "boolean")
+            conn = sqlite3.connect(output_dir / scraper_galicia.DETAIL_DB_NAME)
+            self.assertEqual(
+                conn.execute("SELECT count(*), sum(tiene_tabla) FROM licitadores_fichas").fetchone(), (3, 2)
+            )
+            conn.close()
+
+    def test_merge_exporta_los_licitadores_y_sin_ninguno_solo_cabeceras(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with patch("sys.stdout", new_callable=io.StringIO), patch.object(scraper_galicia, "_LOG_PATH", None):
+                scraper_galicia.append_base_records(
+                    [{"id": 900004, "_tipo": "LIC", "_organismo_id": 48, "objeto": "Obra"}], output_dir
+                )
+                conn = scraper_galicia.init_detail_db(output_dir)
+                row = detail_cache_row("LIC", 900004, 48, "done")
+                row["raw_gzip"] = raw_de(ficha_licitadores(900004))           # ficha sin ventana
+                scraper_galicia.persist_detail_results(conn, [row])
+                conn.close()
+                rc = scraper_galicia.main(["merge", "--output", str(output_dir),
+                                           "--log-path", str(output_dir / "scraper.log")])
+            self.assertEqual(rc, 0)
+            df = pd.read_csv(output_dir / scraper_galicia.LICITADORES_CSV_NAME, sep=";", encoding="utf-8-sig")
+            self.assertEqual((list(df.columns), len(df)), (scraper_galicia.LICITADORES_EXPORT_FIELDS, 0))
+            self.assertTrue((output_dir / scraper_galicia.FINAL_CSV_NAME).exists())

@@ -10,7 +10,9 @@ TODO el histórico, TODOS los organismos, TODOS los campos posibles.
 
 Fases: base (listados JSON de LIC y CM por organismo) -> detail (ficha HTML de
 cada contrato, en caché SQLite) -> merge (tabla final contratos_galicia.csv y
-.parquet). Todo se puede repetir y reanudar (--resume). La ficha es la única
+.parquet). La relación de licitadores presentados de cada ficha va
+aparte, a licitadores_galicia.csv y .parquet (merge, o el modo 'licitadores',
+que solo la exporta), leída del crudo de la caché. Todo se puede repetir y reanudar (--resume). La ficha es la única
 fuente del adjudicatario y del importe adjudicado de las licitaciones (y de su
 procedimiento, tipo, CPV y fecha de formalización); la descarga de producción
 aún no ejecuta 'detail'.
@@ -896,6 +898,167 @@ def parse_detail_html(html):
         "tables": tables,
         "mapped": mapped,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RELACIÓN DE LICITADORES (ventana «Relación de licitadores presentados»)
+# ─────────────────────────────────────────────────────────────────────────────
+# La ficha trae, oculta en una ventana modal que se abre desde la columna «Part.»
+# (participantes) de la tabla de la resolución, la relación de licitadores
+# presentados: una fila por licitador con Lote, NIF y Nombre (Nome en gallego).
+# No publica la oferta económica, la puntuación ni si el licitador fue admitido
+# o excluido: esas columnas van vacías (el esquema es el de otras fuentes que sí
+# las publican) y la situación es la que da el título de la ventana,
+# 'presentado'. La tabla ya va en el crudo de la caché (raw_gzip): se extrae de
+# ahí sin volver a pedir la ficha.
+RELACION_LICITADORES_COLUMNAS = {"lote", "nif", "nombre", "nome", "razon_social"}
+LICITADOR_SITUACION = "presentado"
+# Lote de una ficha sin lotes: '-' en la relación de licitadores, '_' en la
+# tabla de la resolución
+LOTES_SIN_LOTE = {"", "-", "_", "--"}
+LICITADORES_FIELDS = [
+    "lote",
+    "orden",
+    "nif",
+    "nombre",
+    "importe_oferta",
+    "puntuacion",
+    "situacion",
+    "es_adjudicatario",
+    "es_adjudicatario_via",
+]
+
+
+def tabla_relacion_licitadores(headers):
+    """Si las cabeceras (normalizadas) son las de la relación de licitadores:
+    todas de RELACION_LICITADORES_COLUMNAS, con el NIF y un nombre. La de la
+    adjudicación (Adjudicatario, NIF) no lo es."""
+    cols = set(headers)
+    return bool(cols) and "nif" in cols and bool(cols & {"nombre", "nome", "razon_social"}) \
+        and cols <= RELACION_LICITADORES_COLUMNAS
+
+
+def _lote_licitador(value):
+    texto = " ".join(str(value or "").split())
+    return None if texto in LOTES_SIN_LOTE else texto
+
+
+def _norm_empresa_nombre(value):
+    """Nombre para comparar licitador y adjudicatario: sin tildes, signos ni
+    espacios ('EMPRESA EJEMPLO S L' = 'Empresa Ejemplo, S.L.')."""
+    return re.sub(r"[^A-Z0-9]", "", strip_accents(str(value or "")).upper())
+
+
+def _row_as_dict(table, row):
+    values = row.get("values") if isinstance(row, dict) else row
+    if isinstance(values, dict):
+        return values
+    headers = table.get("headers", [])
+    if isinstance(values, list) and len(values) == len(headers):
+        return dict(zip(headers, values))
+    return None
+
+
+def _adjudicaciones_de_la_ficha(tables):
+    """(lote, nombre normalizado, resolución) de la tabla de la resolución y
+    (lote, texto del contratista) de la de formalización, para marcar al
+    licitador adjudicatario."""
+    resoluciones = []
+    formalizaciones = []
+    for table in tables:
+        headers = [normalize_label(h) for h in table.get("headers", [])]
+        es_resolucion = "resolucion" in headers and any(
+            c in headers for c in ("adjudicatario", "adxudicatario"))
+        es_formalizacion = "contratista" in headers
+        if not (es_resolucion or es_formalizacion):
+            continue
+        for row in table.get("rows", []):
+            values = _row_as_dict(table, row)
+            if not values:
+                continue
+            values = normalize_table_row(values)
+            lote = _lote_licitador(values.get("lote"))
+            if es_resolucion:
+                nombre = values.get("adjudicatario") or values.get("adxudicatario")
+                resoluciones.append((lote, _norm_empresa_nombre(nombre), str(values.get("resolucion") or "")))
+            else:
+                formalizaciones.append((lote, str(values.get("contratista") or "").upper()))
+    return resoluciones, formalizaciones
+
+
+def _mismo_lote(lote_licitador, lote_otro):
+    return lote_licitador is None or lote_otro is None or lote_licitador == lote_otro
+
+
+def _es_adjudicatario(lote, nif, nombre, resoluciones, formalizaciones):
+    """(es_adjudicatario, vía). Adjudicatario: su NIF está en el contratista
+    de una formalización de su lote ('nif_formalizacion') o su nombre es el
+    adjudicatario de una resolución de adjudicación de su lote
+    ('nombre_resolucion'). False si su lote tiene alguna resolución o
+    formalización y no es él; None si la ficha no tiene ninguna."""
+    nif = str(nif or "").strip().upper()
+    if nif and len(nif) >= 8:
+        patron = re.compile(r"(?<![A-Z0-9])" + re.escape(nif) + r"(?![A-Z0-9])")
+        for lote_f, contratista in formalizaciones:
+            if _mismo_lote(lote, lote_f) and patron.search(contratista):
+                return True, "nif_formalizacion"
+    norm = _norm_empresa_nombre(nombre)
+    if norm:
+        for lote_r, adjudicatario, resolucion in resoluciones:
+            if (_mismo_lote(lote, lote_r) and adjudicatario == norm
+                    and re.search(r"adjudic|adxudic", strip_accents(resolucion).lower())):
+                return True, "nombre_resolucion"
+    if any(_mismo_lote(lote, l) for l, _, _ in resoluciones) or any(_mismo_lote(lote, l) for l, _ in formalizaciones):
+        return False, None
+    return None, None
+
+
+def extract_licitadores(tables):
+    """Relación de licitadores presentados de una ficha (sus `tables`, como
+    las guarda la caché). Devuelve (tiene_tabla, filas): una fila por
+    licitador y lote con LICITADORES_FIELDS, en el orden de la ficha; las
+    filas sin NIF ni nombre y las repetidas (mismo lote, NIF y nombre) no
+    entran."""
+    tiene_tabla = False
+    filas = []
+    vistos = set()
+    resoluciones, formalizaciones = _adjudicaciones_de_la_ficha(tables)
+    for table in tables:
+        headers = tuple(normalize_label(h) for h in table.get("headers", []))
+        if not tabla_relacion_licitadores(headers):
+            continue
+        tiene_tabla = True
+        for row in table.get("rows", []):
+            values = _row_as_dict(table, row)
+            if not values:
+                continue
+            values = normalize_table_row(values)
+            nif = " ".join(str(values.get("nif") or "").split()) or None
+            nombre = " ".join(
+                str(values.get("nombre") or values.get("nome") or values.get("razon_social") or "").split()
+            ) or None
+            if not (nif or nombre):
+                continue
+            lote = _lote_licitador(values.get("lote"))
+            clave = (lote, nif, nombre)
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            adjudicatario, via = _es_adjudicatario(lote, nif, nombre, resoluciones, formalizaciones)
+            filas.append(
+                {
+                    "lote": lote,
+                    "orden": len(filas) + 1,
+                    "nif": nif,
+                    "nombre": nombre,
+                    "importe_oferta": None,
+                    "puntuacion": None,
+                    "situacion": LICITADOR_SITUACION,
+                    "es_adjudicatario": adjudicatario,
+                    "es_adjudicatario_via": via,
+                }
+            )
+    return tiene_tabla, filas
 
 
 def build_detail_payload(record_type, record_id, organismo_id, lang="es"):
@@ -2244,6 +2407,7 @@ def init_detail_db(output_dir):
         ON detail_cache_historico (record_type, record_id, organismo_id)
         """
     )
+    init_licitadores_tables(conn)
     conn.commit()
     return conn
 
@@ -2565,7 +2729,221 @@ def persist_detail_results(conn, results):
         results,
     )
     conn.commit()
+    # Relación de licitadores de las fichas guardadas (tablas licitadores y
+    # licitadores_fichas). Un fallo aquí no para la descarga: esas fichas quedan
+    # pendientes y las lee el siguiente 'merge' o 'licitadores'.
+    try:
+        sync_licitadores(
+            conn,
+            keys=[(r["record_type"], r["record_id"], r["organismo_id"]) for r in results if r["status"] == "done"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        log_warn(f"LICITADORES: no se han podido leer las fichas de este lote ({type(exc).__name__}: {exc})")
     return counts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LICITADORES: tabla en la caché y exportación (licitadores_galicia.csv/.parquet)
+# ─────────────────────────────────────────────────────────────────────────────
+# La caché de detalle lleva dos tablas derivadas de su crudo:
+# - licitadores: una fila por licitador de cada ficha (clave de la ficha + orden);
+# - licitadores_fichas: las fichas ya leídas, con la versión (updated_at y
+#   html_sha256) de la que salen sus filas y si traían la ventana.
+# Se rellenan solas: 'detail' las escribe con cada lote de fichas que guarda, y
+# 'merge' y 'licitadores' leen antes las fichas que falten (las descargadas por
+# una versión anterior del scraper, o una ficha que el portal ha cambiado). Todo
+# sale del crudo guardado: nada se vuelve a pedir al portal. Si una ficha cambia,
+# sus filas se sustituyen (la versión anterior queda en detail_cache_historico).
+LICITADORES_CSV_NAME = "licitadores_galicia.csv"
+LICITADORES_PARQUET_NAME = "licitadores_galicia.parquet"
+LICITADORES_SYNC_CHUNK = 2000
+# Columnas de la exportación: la clave de la ficha con los nombres del CSV base
+# (_tipo, id, _organismo_id: la clave de la tabla final es (_tipo, id)) y la
+# versión de la ficha de la que salen
+LICITADORES_EXPORT_FIELDS = ["_tipo", "id", "_organismo_id"] + LICITADORES_FIELDS + ["detail_updated_at"]
+
+
+def init_licitadores_tables(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS licitadores (
+            record_type TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            organismo_id INTEGER NOT NULL,
+            orden INTEGER NOT NULL,
+            lote TEXT,
+            nif TEXT,
+            nombre TEXT,
+            importe_oferta REAL,
+            puntuacion REAL,
+            situacion TEXT,
+            es_adjudicatario INTEGER,
+            es_adjudicatario_via TEXT,
+            PRIMARY KEY (record_type, record_id, organismo_id, orden)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS licitadores_fichas (
+            record_type TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            organismo_id INTEGER NOT NULL,
+            updated_at TEXT,
+            html_sha256 TEXT,
+            tiene_tabla INTEGER NOT NULL,
+            n_licitadores INTEGER NOT NULL,
+            PRIMARY KEY (record_type, record_id, organismo_id)
+        )
+        """
+    )
+
+
+def _licitadores_pendientes(conn, keys=None):
+    """Claves de las fichas 'done' con crudo cuyas filas de licitadores faltan
+    o salen de otra versión de la ficha (updated_at o html_sha256 distintos)."""
+    sql = (
+        "SELECT d.record_type, d.record_id, d.organismo_id FROM detail_cache d "
+        "LEFT JOIN licitadores_fichas f ON f.record_type = d.record_type "
+        "AND f.record_id = d.record_id AND f.organismo_id = d.organismo_id "
+        "WHERE d.status = 'done' AND d.raw_gzip IS NOT NULL AND (f.record_id IS NULL "
+        "OR f.updated_at IS NOT d.updated_at OR f.html_sha256 IS NOT d.html_sha256)"
+    )
+    if keys is None:
+        return [tuple(row) for row in conn.execute(sql)]
+    pendientes = []
+    keys = list(keys)
+    for start in range(0, len(keys), DETAIL_QUERY_BATCH_SIZE):
+        batch = keys[start : start + DETAIL_QUERY_BATCH_SIZE]
+        clauses = " OR ".join("(d.record_type=? AND d.record_id=? AND d.organismo_id=?)" for _ in batch)
+        params = [v for key in batch for v in (key[0], normalize_record_id(key[1]), int(key[2]))]
+        pendientes.extend(tuple(row) for row in conn.execute(f"{sql} AND ({clauses})", params))
+    return pendientes
+
+
+def sync_licitadores(conn, keys=None, chunk=LICITADORES_SYNC_CHUNK):
+    """Lee del crudo de la caché la relación de licitadores de las fichas
+    pendientes (todas, o solo las de `keys`) y la guarda en las tablas
+    licitadores y licitadores_fichas, con un commit cada `chunk` fichas: si se
+    corta, lo hecho queda y la siguiente vuelta sigue por donde iba.
+    Devuelve {'fichas', 'con_tabla', 'licitadores', 'crudo_ilegible'}."""
+    init_licitadores_tables(conn)
+    counts = {"fichas": 0, "con_tabla": 0, "licitadores": 0, "crudo_ilegible": 0}
+    pendientes = _licitadores_pendientes(conn, keys)
+    for start in range(0, len(pendientes), chunk):
+        batch = pendientes[start : start + chunk]
+        rows = []
+        # Consultas de DETAIL_QUERY_BATCH_SIZE claves (SQLite no admite miles de OR en una)
+        for sub in range(0, len(batch), DETAIL_QUERY_BATCH_SIZE):
+            keys_sub = batch[sub : sub + DETAIL_QUERY_BATCH_SIZE]
+            clauses = " OR ".join("(record_type=? AND record_id=? AND organismo_id=?)" for _ in keys_sub)
+            rows.extend(conn.execute(
+                "SELECT record_type, record_id, organismo_id, updated_at, html_sha256, raw_gzip "
+                f"FROM detail_cache WHERE {clauses}",
+                [v for key in keys_sub for v in key],
+            ).fetchall())
+        fichas = []
+        filas = []
+        for row in rows:
+            key = (row["record_type"], row["record_id"], row["organismo_id"])
+            try:
+                raw = json.loads(decompress_text(row["raw_gzip"]) or "{}")
+                tiene_tabla, licitadores = extract_licitadores(raw.get("tables", []))
+            except (ValueError, TypeError, AttributeError, zlib.error) as exc:
+                counts["crudo_ilegible"] += 1
+                log_warn(f"LICITADORES: crudo ilegible en {':'.join(map(str, key))}: {exc}")
+                continue
+            fichas.append(key + (row["updated_at"], row["html_sha256"], int(tiene_tabla), len(licitadores)))
+            for item in licitadores:
+                adjudicatario = item["es_adjudicatario"]
+                filas.append(
+                    key
+                    + (
+                        item["orden"],
+                        item["lote"],
+                        item["nif"],
+                        item["nombre"],
+                        item["importe_oferta"],
+                        item["puntuacion"],
+                        item["situacion"],
+                        None if adjudicatario is None else int(adjudicatario),
+                        item["es_adjudicatario_via"],
+                    )
+                )
+            counts["fichas"] += 1
+            counts["con_tabla"] += int(tiene_tabla)
+            counts["licitadores"] += len(licitadores)
+        conn.executemany(
+            "DELETE FROM licitadores WHERE record_type=? AND record_id=? AND organismo_id=?",
+            [f[:3] for f in fichas],
+        )
+        conn.executemany(
+            "INSERT INTO licitadores (record_type, record_id, organismo_id, orden, lote, nif, nombre, "
+            "importe_oferta, puntuacion, situacion, es_adjudicatario, es_adjudicatario_via) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            filas,
+        )
+        conn.executemany(
+            "INSERT INTO licitadores_fichas (record_type, record_id, organismo_id, updated_at, html_sha256, "
+            "tiene_tabla, n_licitadores) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(record_type, record_id, organismo_id) DO UPDATE SET "
+            "updated_at=excluded.updated_at, html_sha256=excluded.html_sha256, "
+            "tiene_tabla=excluded.tiene_tabla, n_licitadores=excluded.n_licitadores",
+            fichas,
+        )
+        conn.commit()
+    return counts
+
+
+def export_licitadores(output_dir, conn=None):
+    """Pone al día las tablas de licitadores de la caché (sync_licitadores) y
+    escribe licitadores_galicia.csv y .parquet (con guardar_version: sin
+    cambios no se toca nada). Una fila por licitador, ordenadas por ficha y
+    orden; sin ninguna, los ficheros llevan solo las cabeceras.
+    Devuelve (counts de sync_licitadores, ruta CSV, ruta Parquet o None)."""
+    own = conn is None
+    if own:
+        conn = init_detail_db(output_dir)
+    try:
+        counts = sync_licitadores(conn)
+        df = pd.read_sql_query(
+            "SELECT l.record_type AS _tipo, l.record_id AS id, l.organismo_id AS _organismo_id, "
+            "l.lote, l.orden, l.nif, l.nombre, l.importe_oferta, l.puntuacion, l.situacion, "
+            "l.es_adjudicatario, l.es_adjudicatario_via, f.updated_at AS detail_updated_at "
+            "FROM licitadores l JOIN licitadores_fichas f ON f.record_type = l.record_type "
+            "AND f.record_id = l.record_id AND f.organismo_id = l.organismo_id "
+            "ORDER BY l.record_type, l.record_id, l.organismo_id, l.orden",
+            conn,
+            dtype={"_tipo": "string", "id": "string", "lote": "string", "nif": "string", "nombre": "string",
+                   "situacion": "string", "es_adjudicatario_via": "string", "detail_updated_at": "string"},
+        )
+    finally:
+        if own:
+            conn.close()
+    df = df[LICITADORES_EXPORT_FIELDS]
+    df["_organismo_id"] = df["_organismo_id"].astype("Int64")
+    df["orden"] = df["orden"].astype("Int64")
+    df["importe_oferta"] = df["importe_oferta"].astype("Float64")
+    df["puntuacion"] = df["puntuacion"].astype("Float64")
+    df["es_adjudicatario"] = df["es_adjudicatario"].astype("Int64").astype("boolean")
+
+    output_dir = Path(output_dir)
+    csv_path = output_dir / LICITADORES_CSV_NAME
+    tmp_csv = csv_path.with_name(f".{csv_path.name}.nuevo")
+    df.to_csv(tmp_csv, index=False, encoding="utf-8-sig", sep=";")
+    state = guardar_version(csv_path, desde=tmp_csv)
+    log(f"LICITADORES: {csv_path} ({state}): {len(df):,} licitadores de "
+        f"{df[['_tipo', 'id', '_organismo_id']].drop_duplicates().shape[0]:,} fichas")
+    parquet_path = None
+    if HAS_PYARROW:
+        parquet_path = output_dir / LICITADORES_PARQUET_NAME
+        tmp_parquet = parquet_path.with_name(f".{parquet_path.name}.nuevo")
+        df.to_parquet(tmp_parquet, index=False, engine="pyarrow")
+        log(f"LICITADORES: {parquet_path} ({guardar_version(parquet_path, desde=tmp_parquet)})")
+    else:
+        log_warn("LICITADORES: Parquet no generado: falta pyarrow.")
+    return counts, csv_path, parquet_path
 
 
 def run_detail_enrichment(
@@ -3397,9 +3775,10 @@ def build_parser():
     parser.add_argument(
         "mode",
         nargs="?",
-        choices=["all", "base", "detail", "merge"],
+        choices=["all", "base", "detail", "merge", "licitadores"],
         default="all",
-        help="Fase a ejecutar (default: all)",
+        help="Fase a ejecutar (default: all). licitadores: solo exporta la relación de licitadores de la caché "
+        "(licitadores_galicia.csv/.parquet), sin pedir nada al portal",
     )
     parser.add_argument("--organismo", type=int, default=None)
     parser.add_argument(
@@ -3633,6 +4012,11 @@ def main(argv=None):
                 max_retirados=args.max_organismos_retirados,
             )
 
+        licitadores_stats = None
+        if args.mode in ("all", "merge", "licitadores"):
+            # Relación de licitadores de las fichas de la caché, sin pedir nada al portal
+            licitadores_stats = export_licitadores(output_dir)
+
         elapsed = time.time() - t0
         hours = int(elapsed // 3600)
         mins = int((elapsed % 3600) // 60)
@@ -3659,6 +4043,9 @@ def main(argv=None):
             print(f"  Final CSV:    {Path(final_csv_path).resolve()}")
         if final_parquet_path:
             print(f"  Final Parquet:{Path(final_parquet_path).resolve()}")
+        if licitadores_stats:
+            counts, licitadores_csv, _ = licitadores_stats
+            print(f"  Licitadores:  {Path(licitadores_csv).resolve()} (fichas leídas ahora: {counts['fichas']:,})")
         print("=" * 70)
         print()
         return 0
