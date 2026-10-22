@@ -38,6 +38,28 @@ borme/
     └── borme_placsp_match.py          # Cruza BORME × PLACSP → flags de anomalías
 ```
 
+## El calificador de cada acto (`actos_detalle`)
+
+`actos` es la lista de actos de cada anuncio («Disolución|Extinción»). El BORME dice además de qué tipo es cada uno, y la lista lo pierde: una extinción por fusión y una por liquidación se ven igual. `actos_detalle` lo guarda, con un elemento por acto, en el mismo orden y con el mismo separador que `actos`:
+
+```
+actos          Disolución|Extinción
+actos_detalle  Disolución=Fusion|Extinción=
+```
+
+| Acto | Qué se guarda | Ejemplos |
+|------|---------------|----------|
+| Disolución | el tipo | `Voluntaria`, `Judicial`, `Fusion`, `Escision`, `Otras Causas`, `Cesión global de activo y pasivo` |
+| Fusión por absorción, Escisión, Transformación de sociedad | las sociedades que nombra | `Sociedades absorbidas: X SL. Y SL` |
+| Situación concursal | por cada resolución: tipo, calificador y fecha de la resolución, separadas por `; ` | `Auto de declaración de concurso. Voluntario (2026-05-04); Sentencia de aprobación del convenio (2026-07-01)` |
+| Auto de declaración de concurso / de conclusión del concurso | el calificador | `Voluntario`, `Necesario`; `Insuficiencia de la masa activa`, `Cumplimiento de convenio` |
+| Otros conceptos | solo las palabras clave que contiene, no el texto | `concurso,liquidación` |
+| Los demás (cargos incluidos) | nada | `Nombramientos=` |
+
+Sin datos de personas: no se guardan cargos, juzgados, jueces, administradores concursales ni el texto libre de «Resoluciones:», y un calificador con forma de nombre de persona (dos palabras seguidas en mayúsculas) se sustituye por `(omitido)`. `borme_anonymize.py` lo publica.
+
+La columna sale de los PDF parseados con esta versión del parser. Las filas que vienen del release v2026.02 (`_origen`) no la tienen (nula): para rellenarla hacen falta los PDF de esos días.
+
 ## Detector de anomalías (BORME × PLACSP)
 
 | Flag | Señal | Descripción |

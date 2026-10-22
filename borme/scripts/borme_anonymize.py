@@ -78,7 +78,7 @@ def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
     keep_cols = [
         "fecha_borme", "num_borme", "num_entrada",
         "empresa", "empresa_norm", "provincia", "cod_provincia",
-        "tipo_borme", "actos", "domicilio", "capital_euros",
+        "tipo_borme", "actos", "actos_detalle", "domicilio", "capital_euros",
         "fecha_constitucion", "hoja_registral", "tomo", "inscripcion",
         "fecha_inscripcion", "pdf_filename",
     ]
@@ -86,6 +86,9 @@ def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
     # Sin .copy(): no se modifica y la copia duplicaba la tabla (9,6 M de filas con la semilla)
     df = df_emp[cols]
 
+    # actos_detalle (calificador de cada acto) se publica: borme_batch_parser.py no
+    # guarda en él cargos, juzgados, jueces ni administradores concursales, y
+    # sustituye por "(omitido)" lo que tiene forma de nombre de persona.
     # El domicilio social se publica tal cual en el BORME ("CALLE NUM (MUNICIPIO)")
     # y se conserva completo.
 
