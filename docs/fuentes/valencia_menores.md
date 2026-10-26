@@ -29,6 +29,7 @@ Los contratos menores de órganos valencianos que no llegan (o llegan muy poco) 
 - **Tablas dinámicas de la UV (2025-2026):** la hoja visible es un resumen por unidad y adjudicatario (`_tabla_dinamica="resumen"`); los registros uno a uno, leídos de la caché de la tabla dinámica, llevan `_tabla_dinamica="registros"`.
 - **NIF:** la UV lo trae en todos los años (97,9 % válido) y València en el 100 %, con las personas físicas enmascaradas; la Diputación, la UA y la UPV no lo traen ([`docs/COBERTURA.md`](../COBERTURA.md) §0.1).
 - **Sin semilla:** esta fuente no estaba en la release v2026.02.
+- **Diputación de Alicante, RP-922:** la sección de menores enlaza cuatro veces, sin texto (no se ve en la página), `RP-922-Adjudic-a-31-12-2024-cas.xlsx`, que da 404 desde la primera descarga (28-sep-2026), también en la raíz de `wp-content/uploads/`. No es un documento publicado: sale en «NO PUBLICADOS EN EL PORTAL», no en los avisos, y se sigue pidiendo. 2024 entero está en `RP-1076-Relacion-Contratos-Menores-2024-CAS.xlsx`. Un enlace con texto que da 404 sigue siendo un aviso («enlace roto»).
 
 ## Columnas añadidas
 
