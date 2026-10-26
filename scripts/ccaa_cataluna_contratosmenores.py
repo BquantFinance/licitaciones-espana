@@ -482,11 +482,14 @@ async def scrape_por_fechas(session: aiohttp.ClientSession, params: dict, stats:
                         f"órgano {params}")
         stats.anunciados += count
         registros = await scrape_with_segmentation(session, p, stats, depth + 1, organs_cache, count=count)
-        return unir_registros(leidos, registros)
+        return unir_registros(leidos, registros) if leidos else registros
     (desde_1, hasta_1), (desde_2, hasta_2) = partir_tramo(desde, hasta)
     antiguos = await scrape_por_fechas(session, params, stats, organs_cache, None, desde_1, hasta_1, depth + 1)
     recientes = await scrape_por_fechas(session, params, stats, organs_cache, None, desde_2, hasta_2, depth + 1)
-    return unir_registros(leidos, antiguos, recientes)
+    # Dos tramos no se solapan: solo hay copias que quitar si el tramo ya se había leído (corto). Sin
+    # copiar ni comparar las dos mitades, una fase de 1,9 M de registros no pide memoria de más (la
+    # copia de un registro que cambia de tramo durante la descarga se quita, como siempre, al unir el crudo)
+    return unir_registros(leidos, antiguos, recientes) if leidos else antiguos + recientes
 
 
 async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: dict,
