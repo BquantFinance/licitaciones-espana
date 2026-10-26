@@ -182,6 +182,10 @@ class TEDConfig:
     # aviso publicado no cambia (una corrección es otro aviso): solo se pide una vez
     TED_XML_URL = "https://ted.europa.eu/en/notice/{numero}/xml"
     XML_DIR = "xml"
+    # Tablas que salen de esos XML sin pedir nada (construir_licitadores): una fila por resultado de lote con
+    # todas las estadísticas de ofertas recibidas (BT-759/760) y una por oferta descrita con su licitador
+    RESULTADOS_LOTE = "ted_resultados_lote_es.parquet"
+    LICITADORES = "ted_licitadores_es.parquet"
     # Con 4 hilos se midieron 3,1 XML/s (493 en 160 s, ~1,3 s por petición): 8 hilos para llegar
     # al tope de 5/s. La primera ejecución pide unos 100.000 (2023-2026): ~6 h
     XML_WORKERS = 8            # peticiones a la vez
@@ -394,7 +398,14 @@ def download_ted_spain(
         return None
     estado = guardar_registros(df, output_path)   # la versión anterior queda en _historico/
     log.info(f"✅ Guardado ({estado}): {output_path} ({len(df):,} registros)")
-    
+    # Licitadores y estadísticas de ofertas desde los XML ya guardados (sin red). Un fallo no deshace el
+    # consolidado, ya guardado, pero la ejecución sale con 1 (main)
+    try:
+        construir_licitadores()
+    except Exception as e:  # noqa: BLE001
+        log.error(f"No se han podido construir las tablas de licitadores: {type(e).__name__}: {e}")
+        df.attrs['licitadores_error'] = f"{type(e).__name__}: {e}"
+
     _print_ted_summary(df)
     if irregulares:
         df.attrs['csv_irregular'] = irregulares   # main() sale con 1 (lo descargado ya está guardado)
@@ -1566,9 +1577,88 @@ def _id_organizacion(ids):
     return (propios[0] if propios else ''), plataforma
 
 
+# ── Licitadores y estadísticas de ofertas de cada resultado de lote ──
+# Además de las filas (una por oferta ganadora), el XML eForms da para cada resultado de lote:
+#   - las estadísticas de ofertas recibidas (efac:ReceivedSubmissionsStatistics: BT-760 el tipo, de la
+#     lista received-submission-type del SDK, y BT-759 el número). number_offers de las filas es solo
+#     'tenders'; el resto (pymes, por tamaño, electrónicas, de otro país del EEE o de fuera,
+#     solicitudes de participación, inadmisibles y no verificadas) no se guardaba;
+#   - todas las ofertas que describe (efac:LotResult/efac:LotTender, OPT-320), no solo la ganadora: su
+#     importe (BT-720), su rango (BT-171) y su parte licitadora (OPT-310 → efac:TenderingParty →
+#     efac:Tenderer → efac:Organization: nombre, identificador, país, tamaño).
+# Van a dos tablas aparte (construir_licitadores), sin tocar las filas ni las cachés: una fila por
+# resultado de lote (TEDConfig.RESULTADOS_LOTE) y una por oferta descrita (TEDConfig.LICITADORES). La
+# ganadora es la misma que en las filas (oferta que cita un contrato, 'contrato del resultado' u
+# 'oferta única del resultado'); es_ganadora vale 'false' para las demás ofertas de un resultado con
+# ganadora o sin adjudicar (clos-nw, open-nw) y '' si el aviso no deja saber cuál ganó (varias ofertas
+# descritas y ningún contrato que cite una). Un aviso describe a menudo solo la ganadora: cuántas
+# ofertas describe va en n_ofertas_descritas y cuántas se recibieron en st_tenders.
+
+# Códigos de received-submission-type (BT-760) del eForms SDK; cada uno, en la columna st_<código> (con
+# '_' por '-'). Un código fuera de la lista va a st_otros como 'código=número;...'
+_ESTADISTICAS = ('tenders', 't-sme', 't-micro', 't-small', 't-med', 't-esubm', 't-oth-eea', 't-no-eea',
+                 'part-req', 't-verif-inad', 't-verif-inad-low', 't-no-verif')
+
+
+def _columna_estadistica(codigo):
+    return 'st_' + codigo.replace('-', '_')
+
+
+_COLUMNAS_CABECERA = ['ted_notice_id', 'year', 'notice_type', 'notice_subtype', 'publication_date', 'buyer_country']
+_COLUMNAS_RESULTADO = ['lot_result_id', 'lot_id', 'internal_id_lot', 'winner_selection_status',
+                       'non_award_justification']
+# Todas texto ('' si el aviso no lo trae) salvo orden (entero, desde 1)
+_COLUMNAS_RESULTADOS_LOTE = (_COLUMNAS_CABECERA + _COLUMNAS_RESULTADO
+                             + ['n_ofertas_descritas', 'n_ganadoras', 'ganadora_por']
+                             + [_columna_estadistica(c) for c in _ESTADISTICAS] + ['st_otros'])
+_COLUMNAS_LICITADORES = (_COLUMNAS_CABECERA + _COLUMNAS_RESULTADO
+                         + ['number_offers', 'n_ofertas_descritas', 'orden', 'tender_id', 'es_ganadora',
+                            'ganadora_por', 'tender_value', 'tender_value_cur', 'tender_rank', 'tender_reference',
+                            'tendering_party_id', 'tendering_party_name', 'n_miembros', 'tenderer_name',
+                            'tenderer_nationalid', 'tenderer_platform_id', 'tenderer_country', 'tenderer_town',
+                            'tenderer_size'])
+
+
+def _resultado_lote(base, estadisticas, ganadoras, por):
+    """Fila de la tabla de resultados de lote: el resultado y todas sus estadísticas de ofertas."""
+    fila = {c: base.get(c, '') for c in _COLUMNAS_RESULTADO + ['n_ofertas_descritas']}
+    fila.update(n_ganadoras=str(len(ganadoras)), ganadora_por=por if ganadoras else '')
+    for codigo in _ESTADISTICAS:
+        fila[_columna_estadistica(codigo)] = estadisticas.get(codigo, '')
+    fila['st_otros'] = ';'.join(f'{c}={v}' for c, v in estadisticas.items() if c not in _ESTADISTICAS)
+    return fila
+
+
+def _licitadores_resultado(base, descritas, ganadoras, por, estado, ofertas, partes, orgs):
+    """Filas de la tabla de licitadores: una por oferta descrita en el resultado, en el orden del aviso,
+    con su parte licitadora y sus organizaciones (un grupo en una fila, '---' entre miembros, el líder
+    primero, como win_*)."""
+    se_sabe = bool(ganadoras) or estado in _SIN_GANADOR
+    salida = []
+    for orden, tid in enumerate(descritas, 1):
+        oferta = ofertas.get(tid, {})
+        nombre_parte, miembros = partes.get(oferta.get('_parte', ''), ('', []))
+        miembros = [orgs.get(o, {}) for o in miembros]
+        gana = tid in ganadoras
+        fila = {c: base.get(c, '') for c in _COLUMNAS_RESULTADO + ['number_offers', 'n_ofertas_descritas']}
+        fila.update(orden=orden, tender_id=tid, es_ganadora='true' if gana else 'false' if se_sabe else '',
+                    ganadora_por=por if gana else '', tender_value=oferta.get('tender_value', ''),
+                    tender_value_cur=oferta.get('tender_value_cur', ''), tender_rank=oferta.get('tender_rank', ''),
+                    tender_reference=oferta.get('tender_reference', ''), tendering_party_id=oferta.get('_parte', ''),
+                    tendering_party_name=nombre_parte, n_miembros=str(len(miembros)))
+        for campo, clave in (('tenderer_name', 'name'), ('tenderer_nationalid', 'id'), ('tenderer_country', 'country'),
+                             ('tenderer_town', 'town'), ('tenderer_size', 'size')):
+            fila[campo] = '---'.join(m.get(clave, '') for m in miembros)
+        de_plataforma = [m.get('platform_id', '') for m in miembros]
+        fila['tenderer_platform_id'] = '---'.join(de_plataforma) if any(de_plataforma) else ''
+        salida.append(fila)
+    return salida
+
+
 def _parse_eforms(contenido):
-    """Lee el XML eForms de un aviso: {'aviso': {...}, 'filas': [{...}, ...]}, o None si el XML no
-    es eForms (esquema anterior). Lanza ET.ParseError si no es XML."""
+    """Lee el XML eForms de un aviso: {'aviso': {...}, 'filas': [{...}, ...], 'cabecera': {...},
+    'resultados': [...], 'licitadores': [...]} (las tres últimas, para construir_licitadores), o None si
+    el XML no es eForms (esquema anterior). Lanza ET.ParseError si no es XML."""
     raiz = ET.fromstring(contenido)
     if not raiz.tag.startswith(_RAIZ_EFORMS):
         return None
@@ -1614,9 +1704,20 @@ def _parse_eforms(contenido):
             'award_criterion_weight': ';'.join(pesos),
         }
     aviso, filas = {}, []
+    # Del aviso, para las tablas de licitadores y de estadísticas (no van a las filas): tipo, subtipo,
+    # publicación y país del comprador (el de la organización del primer comprador)
+    compradores = _textos(raiz, 'cac:ContractingParty/cac:Party/cac:PartyIdentification/cbc:ID')
+    cabecera = {
+        'notice_type': _txt(raiz, 'cbc:NoticeTypeCode'),
+        'notice_subtype': _txt(raiz, ext + '/efac:NoticeSubType/cbc:SubTypeCode'),
+        'publication_date': _txt(raiz, ext + '/efac:Publication/efbc:PublicationDate'),
+        'buyer_country': orgs.get(compradores[0], {}).get('country', '') if compradores else '',
+    }
+    resultados, licitadores = [], []
     nr = raiz.find(ext + '/efac:NoticeResult', _NS_EFORMS)
     if nr is None:
-        return {'aviso': aviso, 'filas': filas}
+        return {'aviso': aviso, 'filas': filas, 'cabecera': cabecera, 'resultados': resultados,
+                'licitadores': licitadores}
     aviso.update(_importe('notice_value', nr, 'cbc:TotalAmount'))
     aviso.update(_importe('notice_framework_max_value', nr, 'efbc:OverallMaximumFrameworkContractsAmount'))
     aviso.update(_importe('notice_framework_approx_value', nr, 'efbc:OverallApproximateFrameworkContractsAmount'))
@@ -1668,7 +1769,7 @@ def _parse_eforms(contenido):
             'lot_result_id': _txt(r, 'cbc:ID'), 'lot_id': lote,
             'winner_selection_status': estado,
             'non_award_justification': _txt(r, 'efac:DecisionReason/efbc:DecisionReasonCode'),
-            # BT-760 del tipo 'tenders' (BT-759): ofertas recibidas para este lote
+            # BT-759 (número) del tipo 'tenders' (BT-760): ofertas recibidas para este lote
             'number_offers': estadisticas.get('tenders', ''),
             'n_ofertas_descritas': str(len(descritas)),
             **_importe('tender_value_lowest', r, 'cbc:LowerTenderAmount'),
@@ -1698,6 +1799,8 @@ def _parse_eforms(contenido):
                 # TEN-0002 y no tiene contrato; el lote 1 sí). Con dos o más ofertas descritas, o si el
                 # contrato del resultado cita la oferta de otro lote de otra empresa, no se sabe cuál ganó
                 ganadoras, por = descritas, 'oferta única del resultado'
+        resultados.append(_resultado_lote(base, estadisticas, ganadoras, por))
+        licitadores.extend(_licitadores_resultado(base, descritas, ganadoras, por, estado, ofertas, partes, orgs))
         if not ganadoras:
             filas.append(base)   # resultado sin oferta ganadora: desierto, sin adjudicar, sin contrato...
             continue
@@ -1728,7 +1831,8 @@ def _parse_eforms(contenido):
             fila['dt_award'] = min(fechas) if fechas else ''
             fila['contract_award_dates'] = '---'.join(fechas) if len(fechas) > 1 else ''
             filas.append(fila)
-    return {'aviso': aviso, 'filas': filas}
+    return {'aviso': aviso, 'filas': filas, 'cabecera': cabecera, 'resultados': resultados,
+            'licitadores': licitadores}
 
 
 # ── XML del esquema anterior a eForms (TED_EXPORT R2.0.9) ──
@@ -1845,6 +1949,58 @@ def _parse_xml_aviso(contenido):
     ninguno de los dos esquemas."""
     leido = _parse_eforms(contenido)
     return leido if leido is not None else _parse_ted_export(contenido)
+
+
+def _tablas_licitadores_xml(contenido, numero):
+    """(resultados de lote, licitadores) de un XML eForms con la clave del aviso (_COLUMNAS_RESULTADOS_LOTE,
+    _COLUMNAS_LICITADORES), o None si no es eForms. Lanza ET.ParseError si no es XML."""
+    leido = _parse_eforms(contenido)
+    if leido is None:
+        return None
+    clave = {'ted_notice_id': numero, 'year': numero.rsplit('-', 1)[-1] if re.fullmatch(r'\d+-\d{4}', numero) else '',
+             **leido['cabecera']}
+    return ([{c: {**clave, **r}.get(c, '') for c in _COLUMNAS_RESULTADOS_LOTE} for r in leido['resultados']],
+            [{c: {**clave, **f}.get(c, '') for c in _COLUMNAS_LICITADORES} for f in leido['licitadores']])
+
+
+def construir_licitadores():
+    """Tablas de resultados de lote y de licitadores (TEDConfig.RESULTADOS_LOTE, TEDConfig.LICITADORES) desde
+    los XML eForms guardados en <DATA_DIR>/xml/<año>/, sin pedir nada a TED. Se rehacen enteras en cada
+    ejecución (un XML guardado no cambia; uno nuevo añade sus filas) y se guardan con guardar_registros:
+    si no cambian no se tocan y, si cambian, la versión anterior queda en _historico/. Los XML del
+    esquema anterior (TED_EXPORT) no entran: su número de ofertas ya va en number_offers de las filas. Sin
+    ningún XML eForms no se escribe nada. Devuelve un resumen con los XML leídos y las filas."""
+    carpeta = TEDConfig.DATA_DIR / TEDConfig.XML_DIR
+    rutas = sorted(carpeta.glob('*/*.xml.gz')) if carpeta.is_dir() else []
+    resultados, licitadores, cuenta = [], [], Counter()
+    for ruta in rutas:
+        numero = ruta.name[:-len('.xml.gz')]
+        try:
+            tablas = _tablas_licitadores_xml(gzip.decompress(ruta.read_bytes()), numero)
+        except (OSError, EOFError, zlib.error, ET.ParseError):
+            cuenta['ilegibles'] += 1
+            continue
+        if tablas is None:
+            cuenta['otro_esquema'] += 1
+            continue
+        cuenta['eforms'] += 1
+        resultados.extend(tablas[0])
+        licitadores.extend(tablas[1])
+    resumen = {'xml': len(rutas), 'eforms': cuenta['eforms'], 'otro_esquema': cuenta['otro_esquema'],
+               'ilegibles': cuenta['ilegibles'], 'resultados': len(resultados), 'licitadores': len(licitadores)}
+    if not cuenta['eforms']:
+        log.info(f"Licitadores: ningún XML eForms en {carpeta}; no se escriben las tablas")
+        return resumen
+    df_res = pd.DataFrame(resultados, columns=_COLUMNAS_RESULTADOS_LOTE)
+    df_lic = pd.DataFrame(licitadores, columns=_COLUMNAS_LICITADORES)
+    df_lic['orden'] = df_lic['orden'].astype('int64')
+    for nombre, df in ((TEDConfig.RESULTADOS_LOTE, df_res), (TEDConfig.LICITADORES, df_lic)):
+        resumen[nombre] = guardar_registros(df, TEDConfig.DATA_DIR / nombre)
+    log.info(f"Licitadores: {resumen['eforms']:,} XML eForms ({resumen['otro_esquema']:,} de otro esquema, "
+             f"{resumen['ilegibles']:,} ilegibles) → {len(df_res):,} resultados de lote "
+             f"({resumen[TEDConfig.RESULTADOS_LOTE]}) y {len(df_lic):,} ofertas descritas "
+             f"({resumen[TEDConfig.LICITADORES]})")
+    return resumen
 
 
 def _aviso_api(notice):
@@ -3072,6 +3228,7 @@ def main():
         python ted_module.py validate FILE     # Validar contra pipeline
         python ted_module.py full              # Todo
         python ted_module.py download --semilla ted_es_can.parquet   # + avisos del release
+        python ted_module.py licitadores       # Solo las tablas de licitadores, desde los XML guardados
     """
     import argparse
     
@@ -3082,8 +3239,9 @@ def main():
     )
     
     parser = argparse.ArgumentParser(description='Módulo TED para pipeline v6.0')
-    parser.add_argument('command', choices=['download', 'validate', 'full'],
-                       help='Comando a ejecutar')
+    parser.add_argument('command', choices=['download', 'validate', 'full', 'licitadores'],
+                       help='Comando a ejecutar (licitadores: las tablas de licitadores y resultados de lote '
+                            'desde los XML eForms guardados, sin red)')
     # Por defecto todo lo que ofrecen las fuentes (antes '2010-2025' fijo: dejaba
     # fuera 2006-2009 del CSV bulk y el año en curso)
     default_years = _default_years()
@@ -3106,7 +3264,14 @@ def main():
         years = list(range(int(y_start), int(y_end) + 1))
     else:
         years = [int(y) for y in args.years.split(',')]
-    
+
+    if args.command == 'licitadores':
+        resumen = construir_licitadores()
+        if not resumen['eforms']:
+            log.error("No hay XML eForms guardados: la ejecución sale con código 1")
+            sys.exit(1)
+        return
+
     if args.command in ('download', 'full'):
         print("\n" + "=" * 70)
         print("  DESCARGA DATOS TED — ESPAÑA")
@@ -3138,6 +3303,10 @@ def main():
                 log.error(f"El CSV de {anios} trae registros irregulares (guardados en "
                           f"ted_can_<año>_registros_irregulares.csv; lo descargado sí se ha guardado): "
                           f"la ejecución sale con código 1")
+                sys.exit(1)
+            if df_ted.attrs.get('licitadores_error'):
+                log.error("El consolidado se ha guardado, pero no las tablas de licitadores "
+                          f"({df_ted.attrs['licitadores_error']}): la ejecución sale con código 1")
                 sys.exit(1)
     
     if args.command in ('validate', 'full'):
