@@ -56,7 +56,8 @@ def test_descarga_solo_las_categorias_pedidas(monkeypatch, tmp_path):
     monkeypatch.setattr(ccaa_cataluna, "OUTPUT_DIR", ccaa_cataluna.OUTPUT_DIR)
     monkeypatch.setattr(ccaa_cataluna, "CATEGORIAS", ccaa_cataluna.CATEGORIAS)
     descargados, bcn = [], []
-    monkeypatch.setattr(ccaa_cataluna, "fecha_actualizacion_socrata", lambda dataset_id: None)
+    # Metadatos sin red (200, sin fecha): con la red, los retirados en origen darían 404 y no se pedirían
+    monkeypatch.setattr(ccaa_cataluna, "metadatos_socrata", lambda dataset_id: (200, None))
     monkeypatch.setattr(ccaa_cataluna, "download_with_progress",
                         lambda url, *a, **k: descargados.append(url.split("/views/")[1].split("/")[0]) and False)
     monkeypatch.setattr(ccaa_cataluna, "download_socrata_metadata", lambda carpeta: None)
