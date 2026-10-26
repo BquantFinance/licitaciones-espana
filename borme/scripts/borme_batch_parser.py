@@ -160,6 +160,15 @@ _LEGAL_FORMS = frozenset({
 # ACTOS still used for detecting which actos are present in body text
 _ACTO_KW_RE = re.compile(
     r'(?:' + '|'.join(re.escape(a) for a in ACTOS) + r'|Datos registrales)[.:]')
+# Acto pegado al nombre sin el punto que lo separa: tras el sufijo del registro en las
+# provincias con varios ("HIERROS LOIS SL(R.M. A CORUÑA) Ceses/Dimisiones.") o tras la
+# última palabra del nombre ("... CANALES Y PUERTOS Ceses/Dimisiones."). Los nombres van
+# en mayúsculas y los actos no, así que el nombre de un acto seguido de "." o ":" y un
+# espacio (o el final) es el principio del cuerpo.
+_ACTO_PEGADO_RE = re.compile(
+    r'(?:(?<=\))\s*|(?<=[A-ZÁÉÍÓÚÑÜ0-9])\s+)(?=(?:'
+    + '|'.join(re.escape(a) for a in sorted(ACTOS, key=len, reverse=True))
+    + r'|Datos registrales)[.:](?:\s|$))')
 
 # Cargo generico: captura CUALQUIER abreviatura seguida de : y NOMBRES EN MAYUSCULAS
 CARGO_RE = re.compile(
@@ -192,12 +201,35 @@ SECTION_MAP = {
     'Cancelaciones de oficio de nombramientos': 'cancelacion',
 }
 
-# Variantes reales: "T 856, L 683, F 96, S 8, H CC 11959, I/A 2 (29.01.15)",
-# "T 16030 , F 160, S 8, H M 271304, I/A 6 ( 2.02.15)" (sin Libro, espacio antes
-# de la coma y tras el paréntesis), "H NA004126, I/A00037"
+# Datos registrales de cada asiento: tomo (T), libro (L), folio (F), sección (S), hoja (H),
+# inscripción o anotación (I/A) y su fecha. Variantes reales:
+#   "T 856, L 683, F 96, S 8, H CC 11959, I/A 2 (29.01.15)"       con libro
+#   "T 16030 , F 160, S 8, H M 271304, I/A 6 ( 2.02.15)"          sin libro
+#   "S 8 , H GC 63782, I/A 1 (13.01.25)"                          sin tomo ni folio (registro
+#                                                                 electrónico: desde 2024 en
+#                                                                 unas provincias, 2025 en todas)
+#   "H NA004126, I/A00037", "H SE106228", "H 605"                 hoja sin espacio o sin letras
+#   "I/A 1 B", "I/A N 2", "I/A C", "I/AN.Mar B", "I/A I2N4"       inscripción con letras
+#   "H M 82294,BIS , I/ 46 .(26.04.10)", "H 3,S-3 , I/ 80 .( 2.11.17)"  hoja con sufijo, "I/" sin A
+#   "H BI 12710,b , I/ 3 .(22.01.10)", "H M 380921,1 , I/ 5 .(28.01.09)" sufijo en minúsculas o cifras
+#   "H H 6286,H , I/ NOTA .B.", "H OR 57,NE , I/ 2 .N.", "I/ 1 ..."  un carácter entre puntos y sin fecha,
+#   "H BI 3350,A , I/ 10 .M.) 2 11 18."                           o con la fecha detrás, separada por espacios
+#   "I/A 3 Folio electrónico , Irus 1000114479877 ( 15/04/2025)"  folio electrónico, fecha con barras
 DATOS_REG_RE = re.compile(
-    r'Datos registrales[.:]\s*T\s*(\d+)\s*,\s*(?:L\s*(\d+)\s*,\s*)?F\s*(\d+)\s*,\s*S\s*(\d+)\s*,'
-    r'\s*H\s*([A-Z\s]*\d+)\s*,\s*I/A\s*(\d+)\s*\(\s*(\d{1,2}\.\d{2}\.\d{2,4})\s*\)')
+    r'Datos registrales\s*[.:]\s*'
+    r'(?:T\s*(?P<tomo>\d+)\s*,\s*)?'
+    r'(?:L\s*(?P<libro>\d+)\s*,\s*)?'
+    r'(?:F\s*(?P<folio>\d+)\s*,\s*)?'
+    r'(?:S\s*(?P<seccion>\d+)\s*,\s*)?'
+    r'H\s*(?P<hoja>[A-Z]{0,3}\s*\d+(?:\s*,\s*[^\s,()]{1,12})?)\s*,\s*'
+    r'I\s*/\s*A?\s*(?P<inscripcion>[^(]{0,60}?)\s*'
+    r'(?:\.?\s*\(\s*\(?\s*(?P<fecha>\d{1,2}[./]\d{1,2}[./]\d{2,4})\s*\)'
+    r'|\.\s*[A-Za-z0-9ªº.]?\s*\.(?:\s*\)\s*(?P<fecha_esp>\d{1,2}\s+\d{1,2}\s+\d{2,4})(?!\d))?)')
+# En el folio electrónico la inscripción sigue de "Folio electrónico , Irus <código>": solo la inscripción
+_FOLIO_ELECTRONICO_RE = re.compile(r'\s*,?\s*Folio electr.*$')
+# Columnas que salen de DATOS_REG_RE (grupo -> columna)
+DATOS_REG_COLUMNAS = {"tomo": "tomo", "libro": "libro", "folio": "folio", "seccion": "seccion",
+                      "hoja": "hoja_registral", "inscripcion": "inscripcion", "fecha": "fecha_inscripcion"}
 # El domicilio termina en "(MUNICIPIO)." si no le sigue "Capital:"
 DOMICILIO_RE = re.compile(
     r'Domicilio[.:]\s*(.+?)(?:[.]\s*Capital[.:]|(?<=\))\.(?=\s|$)|$)', re.DOTALL)
@@ -319,6 +351,29 @@ def _quitar_tildes(s: str) -> str:
     return s.translate(str.maketrans("áéíóúÁÉÍÓÚüÜ", "aeiouAEIOUuU"))
 
 
+def _datos_registrales(body: str) -> dict:
+    """{columna: valor} de los datos registrales del asiento (DATOS_REG_COLUMNAS), solo
+    los que trae; {} si no los trae o no se leen. La marca lateral "Verificable en
+    https://www.boe.es" puede caer en medio: se quita antes."""
+    m = DATOS_REG_RE.search(_MARCA_LATERAL_RE.sub(' ', body))
+    if not m:
+        return {}
+    datos = {}
+    for grupo, columna in DATOS_REG_COLUMNAS.items():
+        valor = m.group(grupo)
+        if grupo == "fecha" and valor is None and m.group("fecha_esp"):
+            valor = re.sub(r'\s+', '.', m.group("fecha_esp"))   # "2 11 18" -> "2.11.18"
+        if valor is not None:
+            valor = re.sub(r'\s+', ' ', valor).strip()
+            if grupo == "inscripcion":
+                valor = _FOLIO_ELECTRONICO_RE.sub('', valor).rstrip(').').strip()
+            elif grupo == "fecha":
+                valor = valor.replace('/', '.')
+            if valor:
+                datos[columna] = valor
+    return datos if "hoja_registral" in datos else {}
+
+
 _SKIP_LINES = frozenset([
     "SECCIÓN PRIMERA","Empresarios","Actos inscritos",
     "SECCIÓN SEGUNDA","Anuncios y avisos legales",
@@ -344,17 +399,47 @@ def _clean(raw: str) -> str:
     return "\n".join(lines)
 
 
+# Tras "NNNN - " un anuncio trae el nombre en mayúsculas; una línea del cuerpo como los
+# códigos CNAE del objeto social ("6820 - Alquiler de bienes...") sigue con una palabra en
+# minúsculas (ver _entry_starts)
+_TRAS_NUMERO_MINUSCULAS_RE = re.compile(r'[A-ZÁÉÍÓÚÑ][a-záéíóúñ]')
+
+
 def _entry_starts(text: str) -> list:
     """Inicios de anuncio. Un número de 1-3 cifras (primer BORME del año) solo se
     acepta con formato "N - " y si es el primero o continúa la numeración, para
-    no cortar en líneas que empiezan por p.ej. "12 - 2º B" dentro de un domicilio."""
+    no cortar en líneas que empiezan por p.ej. "12 - 2º B" dentro de un domicilio.
+    Uno de 4 o más cifras que no continúa la numeración (anterior + 1) es una línea
+    del cuerpo, y no abre anuncio, si sigue con una palabra en minúsculas, si la
+    numeración continúa más adelante, o si va hacia atrás y no le sigue su propio
+    número + 1: los códigos CNAE del objeto social a principio de línea ("6820 -
+    Alquiler de bienes inmobiliarios...") abrían un anuncio falso con ese texto por
+    nombre, dejaban sin el resto (datos registrales, cargos) al anuncio de verdad y,
+    en el primer BORME del año, hacían descartar los anuncios siguientes de 1-3
+    cifras. Si no, es un hueco en la numeración y el número abre anuncio, como antes."""
+    candidatos = list(ENTRY_START_RE.finditer(text))
+    minusculas = [bool(_TRAS_NUMERO_MINUSCULAS_RE.match(text, m.end())) for m in candidatos]
+    # número -> posiciones de los candidatos con ese número que pueden ser anuncios
+    posiciones = {}
+    for i, m in enumerate(candidatos):
+        if not minusculas[i]:
+            posiciones.setdefault(int(m.group(1)), []).append(i)
+
+    def despues(numero, i):
+        return any(j > i for j in posiciones.get(numero, ()))
+
     starts = []
-    for m in ENTRY_START_RE.finditer(text):
+    for i, m in enumerate(candidatos):
         num = m.group(1)
-        if len(num) < 4 and (
-                num.startswith("0") or not m.group(0).startswith(num + " ")
-                or (starts and int(num) != int(starts[-1].group(1)) + 1)):
-            continue
+        if len(num) < 4:
+            if (num.startswith("0") or not m.group(0).startswith(num + " ")
+                    or (starts and int(num) != int(starts[-1].group(1)) + 1)):
+                continue
+        elif starts and int(num) != int(starts[-1].group(1)) + 1:
+            sigue = int(starts[-1].group(1)) + 1
+            if (minusculas[i] or despues(sigue, i)
+                    or (int(num) < sigue and not despues(int(num) + 1, i))):
+                continue
         starts.append(m)
     return starts
 
@@ -457,6 +542,11 @@ def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
         if fe:
             body_pos = fe.start() + 1
 
+        # Acto pegado al nombre sin punto (tras "(R.M. ...)" o tras la última palabra)
+        pegado = _ACTO_PEGADO_RE.search(block)
+        if pegado and pegado.end() < body_pos:
+            body_pos = pegado.end()
+
         for bm in _BODY_START_RE.finditer(block):
             if bm.start() + 1 >= body_pos:
                 break
@@ -534,12 +624,8 @@ def parse_single_pdf(pdf_path: str) -> Tuple[List[Dict], List[Dict]]:
         # Calificador de cada acto (Disolución=Voluntaria...): ver _actos_detalle
         row["actos_detalle"] = _actos_detalle(body, actos)
 
-        m = DATOS_REG_RE.search(body)
-        if m:
-            row["hoja_registral"] = m.group(5).strip()
-            row["tomo"] = m.group(1)
-            row["inscripcion"] = m.group(6)
-            row["fecha_inscripcion"] = m.group(7)
+        # tomo, libro, folio, sección, hoja, inscripción y su fecha (los que traiga)
+        row.update(_datos_registrales(body))
 
         empresas_rows.append(row)
 

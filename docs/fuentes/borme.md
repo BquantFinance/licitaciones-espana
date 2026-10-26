@@ -60,6 +60,28 @@ Sin datos de personas: no se guardan cargos, juzgados, jueces, administradores c
 
 La columna sale de los PDF parseados con esta versión del parser. Las filas que vienen del release v2026.02 (`_origen`) no la tienen (nula): para rellenarla hacen falta los PDF de esos días.
 
+## Datos registrales de cada anuncio
+
+Cada anuncio termina con sus datos registrales: «Datos registrales. T 4343, L 3253, F 188, S 8, H MA 92480, I/A 5 (11.02.21).». El parser los separa en columnas, solo las que trae el anuncio:
+
+| Columna | Dato | Ejemplos |
+|---------|------|----------|
+| `tomo` | T | `4343` |
+| `libro` | L (solo en algunos registros) | `3253` |
+| `folio` | F | `188` |
+| `seccion` | S | `8`, `3` |
+| `hoja_registral` | H: la hoja de la sociedad en su registro | `MA 92480`, `SE142429`, `BI 2950,A`, `VI 20755,BIS` |
+| `inscripcion` | I/A: número de la inscripción o letra de la anotación | `5`, `6 D`, `N 2`, `A` |
+| `fecha_inscripcion` | fecha de la inscripción, como la publica el BORME | `11.02.21`, `5.04.19`, `05.05.2025` |
+
+- Desde 2024 en unos registros, y en todos desde 2025, el BORME publica el registro electrónico **sin tomo ni folio** («S 8 , H GC 63782, I/A 1 (13.01.25)»). El parser anterior exigía los dos y no leía la hoja de ningún anuncio desde 2025. Tampoco leía las inscripciones con letra («I/A 1 B», «I/A C»), las hojas con sufijo («H M 82294,BIS , I/ 46 .(…)»), las fechas tras una letra entre puntos («I/ 10 .M.) 2 11 18») ni el folio electrónico («I/A 5 Folio electrónico , Irus … ( 05/05/2025 )»).
+- `libro`, `folio` y `seccion` son columnas nuevas. Las filas que vienen del release v2026.02 (`_origen`) traen los datos registrales que leyó aquel parser (la hoja, en el 8 % de las filas).
+- La hoja identifica a la sociedad **dentro de su registro**: dos sociedades con el mismo nombre tienen hojas distintas, y una sociedad que cambia de provincia abre hoja nueva en el registro de destino.
+
+Dos correcciones más sobre cómo se separan los anuncios:
+- **Acto pegado al nombre.** En las provincias con varios registros el BORME añade «(R.M. <registro>)» al nombre, a veces sin punto detrás («HIERROS LOIS SL(R.M. A CORUÑA) Ceses/Dimisiones.»), y otras veces falta el punto tras la última palabra del nombre. El acto acababa dentro del nombre. Ahora el nombre de un acto en minúsculas tras el nombre en mayúsculas abre el cuerpo del anuncio.
+- **Códigos CNAE a principio de línea.** Una línea del objeto social como «6820 - Alquiler de bienes inmobiliarios por cuenta propia» se tomaba por un anuncio nuevo: creaba una sociedad con ese texto por nombre, le pasaba los datos registrales y los cargos del anuncio de verdad y, en el primer BORME del año, hacía descartar los anuncios siguientes de 1 a 3 cifras. Ahora un número de 4 cifras o más que no continúa la numeración no abre anuncio si le sigue una palabra en minúsculas (los nombres van en mayúsculas), si la numeración continúa más adelante o si va hacia atrás.
+
 ## Detector de anomalías (BORME × PLACSP)
 
 | Flag | Señal | Descripción |
@@ -90,7 +112,7 @@ python borme/scripts/borme_placsp_match.py --borme ./borme_pdfs --placsp naciona
 - `borme_batch_parser.py` es incremental: solo parsea los PDF nuevos o cambiados y acumula sobre la salida anterior con `acumular`.
   - Lo ya parseado no se pierde aunque falten PDF en disco.
   - Las tablas llevan `_primera_descarga`, `_ultima_descarga` y `_en_ultima_descarga`, y la versión anterior de cada tabla queda en `_historico/`.
-- `--reprocesar` vuelve a parsear con el código actual todo lo que hay en disco, para aplicar correcciones del parser: datos registrales, anuncios 1-999 de cada año, capital resultante.
+- `--reprocesar` vuelve a parsear con el código actual todo lo que hay en disco, para aplicar correcciones del parser: datos registrales (también sin tomo ni folio), anuncios 1-999 de cada año, capital resultante, actos pegados al nombre, cortes por códigos CNAE.
 - `--semilla <parquet publicado>` (empresas y cargos) añade los actos (`pdf_filename`, `num_entrada`) que no están en el parse local.
 - `borme_scraper.py` nunca sobrescribe un PDF. Los que están en el manifiesto pero faltan en disco se vuelven a bajar, y `--comprobar` vuelve a pedir los ya descargados: si alguno cambia, el anterior pasa a `<día>/_historico/`.
 - Errores conocidos del publicado, frente al parser actual (2.043 actos del 2024-01-04):

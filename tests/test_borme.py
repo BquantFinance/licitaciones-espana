@@ -10,6 +10,7 @@ import csv
 import datetime as dt
 import importlib.util
 import json
+import re
 import runpy
 import shutil
 import sys
@@ -301,6 +302,335 @@ def test_validate_find_empresa_sociedad_unipersonal():
     # Forma jurídica en minúsculas tras el nombre: sigue formando parte del nombre
     empresa, _ = validate.find_empresa("OMEGA. Sociedad Anónima. Nombramientos. Adm. Unico: X Y.")
     assert empresa == "OMEGA. Sociedad Anónima"
+
+
+# ─────────────────────────────────────────────
+#  Datos registrales completos, actos pegados al nombre y cortes por CNAE
+# ─────────────────────────────────────────────
+# Asientos REALES (texto tal cual lo extrae pdfplumber de los BORME-A de boe.es), de
+# varias provincias y años, elegidos sin personas: sin cargos, juzgados ni socio único.
+# (pdf, texto del asiento, empresa, datos registrales esperados)
+ASIENTOS_REGISTRALES = [
+    # León 2025: registro electrónico, sin tomo ni folio (antes: ninguna fila con hoja desde 2025)
+    ("BORME-A-2025-176-24.pdf",
+     "408049 - COMERCIAL GANADERA DEL RIEGO SL.\nModificaciones estatutarias. Fecha de Cierre de Ejercicio: 31/12. Cambio de "
+     "domicilio social. C/ ARRIBA 23 (VALDEFUENTES\nDEL PARAMO). Cambio de objeto social. Se MODIFICA el objeto en: GESTION DE "
+     "PATRIMONIO FINANCIERO PROPIO. CODIGO\nCNAE ACT.PRPAL: 6630. Datos registrales. S 8 , H LE 3495, I/A 10 (10.09.25).\n",
+     "COMERCIAL GANADERA DEL RIEGO SL",
+     {"seccion": "8", "hoja_registral": "LE 3495", "inscripcion": "10", "fecha_inscripcion": "10.09.25"}),
+    # Sevilla 2024: sin tomo y hoja sin espacio
+    ("BORME-A-2024-100-41.pdf",
+     "238939 - CAMIONES OLIVA SOCIEDAD LIMITADA.\nAmpliación de capital. Capital: 5.000,00 Euros. Resultante Suscrito: 14.000,00 "
+     "Euros. Modificaciones estatutarias. Artículo de los\nestatutos: 5. Capital social.-. Datos registrales. S 8 , H SE142429, "
+     "I/A 3 (20.05.24).\n",
+     "CAMIONES OLIVA SOCIEDAD LIMITADA",
+     {"seccion": "8", "hoja_registral": "SE142429", "inscripcion": "3", "fecha_inscripcion": "20.05.24"}),
+    # La Rioja 2026, primer BORME del año: la inscripción en la línea siguiente
+    ("BORME-A-2026-1-26.pdf",
+     "327 - FORMATT BUILDING PRODUCTS SPAIN SOCIEDAD LIMITADA.\nAmpliación de capital. Capital: 9.700.000,00 Euros. Resultante "
+     "Suscrito: 28.000.000,00 Euros. Datos registrales. S 8 , H LO 20004,\nI/A 7 (23.12.25).\n",
+     "FORMATT BUILDING PRODUCTS SPAIN SOCIEDAD LIMITADA",
+     {"seccion": "8", "hoja_registral": "LO 20004", "inscripcion": "7", "fecha_inscripcion": "23.12.25"}),
+    # Albacete 2018: con libro, el tomo partido de línea
+    ("BORME-A-2018-16-02.pdf",
+     "31988 - OCIO NEXT LEVEL SOCIEDAD LIMITADA.\nCambio de domicilio social. POLIG INDUSTRIAL CAMPOLLANO - CALLE B, NUMERO 10, "
+     "(ALBACETE). Datos registrales. T\n905, L 669, F 98, S 8, H AB 21948, I/A 2 (16.01.18).\n",
+     "OCIO NEXT LEVEL SOCIEDAD LIMITADA",
+     {"tomo": "905", "libro": "669", "folio": "98", "seccion": "8", "hoja_registral": "AB 21948", "inscripcion": "2",
+      "fecha_inscripcion": "16.01.18"}),
+    # Málaga 2021: con libro
+    ("BORME-A-2021-35-29.pdf",
+     "85604 - A&A AUTOHAUS GRUPPE SL.\nCambio de denominación social. MOTOR CATAURO SL. Cambio de domicilio social. C/ MALAGA "
+     "VIRGEN, LA CALA DEL\nMORAL 4 8º A - P-3 (RINCON DE LA VICTORIA). Datos registrales. T 4343, L 3253, F 188, S 8, H MA 92480, "
+     "I/A 5 (11.02.21).\n",
+     "A&A AUTOHAUS GRUPPE SL",
+     {"tomo": "4343", "libro": "3253", "folio": "188", "seccion": "8", "hoja_registral": "MA 92480", "inscripcion": "5",
+      "fecha_inscripcion": "11.02.21"}),
+    # Pontevedra 2019: la fecha en la línea siguiente, con espacio tras el paréntesis
+    ("BORME-A-2019-73-36.pdf",
+     "168607 - FACOSA EQUIPAMIENTO INDUSTRIAL SL.\nCambio de domicilio social. AVDA DE MONTSERRAT 9 (LALIN). Datos registrales. "
+     "T 3476, L 3476, F 131, S 8, H PO 46279, I/A 2\n( 5.04.19).\n",
+     "FACOSA EQUIPAMIENTO INDUSTRIAL SL",
+     {"tomo": "3476", "libro": "3476", "folio": "131", "seccion": "8", "hoja_registral": "PO 46279", "inscripcion": "2",
+      "fecha_inscripcion": "5.04.19"}),
+    # Sevilla 2018: inscripción con letra
+    ("BORME-A-2018-192-41.pdf",
+     "400193 - ALANO SOLAR SOCIEDAD LIMITADA.\nOtros conceptos: Extendida Diligencia Provisional de cierre de Hoja, por periodo "
+     "de seis meses, como consecuencia de haberse\nexpedido con fecha de hoy certificación literal para traslado de domicilio "
+     "social a Torrevieja -ALICANTE-. Datos registrales. T 4406 , F\n200, S 8, H SE 67895, I/A 6 D (27.09.18).\n",
+     "ALANO SOLAR SOCIEDAD LIMITADA",
+     {"tomo": "4406", "folio": "200", "seccion": "8", "hoja_registral": "SE 67895", "inscripcion": "6 D",
+      "fecha_inscripcion": "27.09.18"}),
+    # Granada 2025: inscripción con letra y la marca lateral detrás
+    ("BORME-A-2025-207-18.pdf",
+     "473536 - AFFINIS PROMOCIONES E INVERSIONES SL.\nOtros conceptos: Extendida diligencia provisional de cierre de hoja, por "
+     "periodo de seis meses al haberse expedido con fecha de hoy,\ncertificación literal para traslado de domicilio a la "
+     "provincia de MALAGA.- Datos registrales. S 8 , H GR 63264, I/A 2 T (21.10.25).\nse.eob.www//:sptth\nne\nelbacifireV\n",
+     "AFFINIS PROMOCIONES E INVERSIONES SL",
+     {"seccion": "8", "hoja_registral": "GR 63264", "inscripcion": "2 T", "fecha_inscripcion": "21.10.25"}),
+    # Barcelona 2017: anotación (solo letra) y la hoja partida de línea
+    ("BORME-A-2017-70-08.pdf",
+     "160496 - BARCELONA & CATALUNYA INVERSION SL.\nOtros conceptos: ANOTACION PREVENTIVA DE DECLARACION DE FALLIDO. Datos "
+     "registrales. T 37046 , F 186, S 8, H B\n296238, I/A A ( 3.04.17).\n",
+     "BARCELONA & CATALUNYA INVERSION SL",
+     {"tomo": "37046", "folio": "186", "seccion": "8", "hoja_registral": "B 296238", "inscripcion": "A",
+      "fecha_inscripcion": "3.04.17"}),
+    # Cádiz 2012: crédito incobrable, anotación A
+    ("BORME-A-2012-121-11.pdf",
+     "270952 - GESTIMIZA SL.\nCrédito incobrable. Datos registrales. T 1645 , F 100, S 8, H CA 26113, I/A A (23.09.11).\n",
+     "GESTIMIZA SL",
+     {"tomo": "1645", "folio": "100", "seccion": "8", "hoja_registral": "CA 26113", "inscripcion": "A",
+      "fecha_inscripcion": "23.09.11"}),
+    # Bizkaia 2021: hoja con sufijo y "I/" sin A
+    ("BORME-A-2021-116-48.pdf",
+     "299532 - TRANSPORTES ARGATXA SOCIEDAD ANONIMA.\nPérdida del caracter de unipersonalidad. Datos registrales. T 378 , F 198, "
+     "S 8, H BI 2950,A , I/ 19 .( 9.06.21).\n",
+     "TRANSPORTES ARGATXA SOCIEDAD ANONIMA",
+     {"tomo": "378", "folio": "198", "seccion": "8", "hoja_registral": "BI 2950,A", "inscripcion": "19",
+      "fecha_inscripcion": "9.06.21"}),
+    # Araba/Álava 2022: hoja «BIS»
+    ("BORME-A-2022-140-01.pdf",
+     "341367 - POWERFULTREE, S.L.\nAmpliación de capital. Capital: 16.050,00 Euros. Resultante Suscrito: 30.000,00 Euros. "
+     "Modificaciones estatutarias. Artículo de\nlos estatutos: 6. Capital social.-. Datos registrales. T 1748 , F 161, S 8, "
+     "H VI 20755,BIS , I/ 5 .( 1.07.22).\n",
+     "POWERFULTREE, S.L",
+     {"tomo": "1748", "folio": "161", "seccion": "8", "hoja_registral": "VI 20755,BIS", "inscripcion": "5",
+      "fecha_inscripcion": "1.07.22"}),
+    # Cantabria 2025: inscripción en letras y la fecha en otra línea
+    ("BORME-A-2025-204-39.pdf",
+     "465640 - NORGREN SL.\nCierre provisional hoja registral por baja en el índice de Entidades Jurídicas. Datos registrales. "
+     "S 8 , H S 6893,S , I/ BH .\n(15.10.25).\n",
+     "NORGREN SL",
+     {"seccion": "8", "hoja_registral": "S 6893,S", "inscripcion": "BH", "fecha_inscripcion": "15.10.25"}),
+    # Bizkaia 2018: la fecha tras ".M.)" separada por espacios
+    ("BORME-A-2018-216-48.pdf",
+     "448616 - AGUA Y SUELO SOCIEDAD ANONIMA.\nReapertura hoja registral. Datos registrales. T 440 , F 103, S 8, H BI 3350,A , "
+     "I/ 10 .M.) 2 11 18.\n",
+     "AGUA Y SUELO SOCIEDAD ANONIMA",
+     {"tomo": "440", "folio": "103", "seccion": "8", "hoja_registral": "BI 3350,A", "inscripcion": "10",
+      "fecha_inscripcion": "2.11.18"}),
+    # Málaga 2016: sección 3 y hoja sin letras
+    ("BORME-A-2016-239-29.pdf",
+     "511707 - MECASISTEMA SA.\nReapertura hoja registral. Datos registrales. T 696, L 534, F 162, S 3, H 4318,A , I/ 1 "
+     ".B.)12 12 16.\n",
+     "MECASISTEMA SA",
+     {"tomo": "696", "libro": "534", "folio": "162", "seccion": "3", "hoja_registral": "4318,A", "inscripcion": "1",
+      "fecha_inscripcion": "12.12.16"}),
+    # Las Palmas 2022: sufijo del registro, hoja «bis» y la fecha partida de línea
+    ("BORME-A-2022-115-35.pdf",
+     "284020 - CLUB CANARIO SOCIEDAD ANONIMA(R.M. LAS PALMAS).\nCierre provisional de la hoja registral por revocación del NIF. "
+     "Datos registrales. T 100, L 49, F 225, S 3, H 646,bis , I/ 1 .R.) 6 06\n22.\n",
+     "CLUB CANARIO SOCIEDAD ANONIMA(R.M. LAS PALMAS)",
+     {"tomo": "100", "libro": "49", "folio": "225", "seccion": "3", "hoja_registral": "646,bis", "inscripcion": "1",
+      "fecha_inscripcion": "6.06.22"}),
+    # Cádiz 2025: folio electrónico (código Irus y fecha con barras), y los datos repetidos
+    ("BORME-A-2025-90-11.pdf",
+     "216425 - ESPARRAGO DEL GUADALETE SL.\nModificaciones estatutarias. Refundición de estatutos sociales.. Fecha Cierre "
+     "Ejercicio: 31/7. Otros conceptos: B19804434 -\nESPARRAGO DEL GUADALETE SL Otros conceptos: Actividades C.N.A.E.: Principal "
+     "- 6832. Otras actividades inmobiliarias por\ncuenta de terceros. No Principal - 0113 , 4631 , 7210 Datos registrales.S 8, "
+     "H CA 64955, I/A 5 Folio electrónico , Irus 1000425693274\n( 05/05/2025 ). Datos registrales. S 8 , H CA 64955, I/A 5 "
+     "( 7.05.25).\n",
+     "ESPARRAGO DEL GUADALETE SL",
+     {"seccion": "8", "hoja_registral": "CA 64955", "inscripcion": "5", "fecha_inscripcion": "05.05.2025"}),
+    # Murcia 2024: la hoja partida tras la H
+    ("BORME-A-2024-137-30.pdf",
+     "319625 - RECICLADOS AICRAG 2020 SL.\nOtros conceptos: Declarado FALLIDO por la Agencia Tributaria Delegación Especial de "
+     "Murcia. Datos registrales. S 8 , H\nMU101920, I/A 3 (10.07.24).\n",
+     "RECICLADOS AICRAG 2020 SL",
+     {"seccion": "8", "hoja_registral": "MU101920", "inscripcion": "3", "fecha_inscripcion": "10.07.24"}),
+]
+
+COLUMNAS_REGISTRALES = ["tomo", "libro", "folio", "seccion", "hoja_registral", "inscripcion", "fecha_inscripcion"]
+
+
+def _parsear_asiento(fake_pdf, tmp_path, pdf, texto, fecha=dt.date(2025, 1, 2)):
+    fake_pdf[pdf] = [texto]
+    e, c = bparser.parse_single_pdf(str(_pdf_file(tmp_path, fecha, pdf)))
+    return e, c
+
+
+@pytest.mark.parametrize("pdf, texto, empresa, esperado", ASIENTOS_REGISTRALES,
+                         ids=[a[0][8:-4] for a in ASIENTOS_REGISTRALES])
+def test_datos_registrales_asientos_reales(fake_pdf, tmp_path, pdf, texto, empresa, esperado):
+    e, _ = _parsear_asiento(fake_pdf, tmp_path, pdf, texto)
+    assert len(e) == 1
+    assert e[0]["empresa"] == empresa
+    assert {k: e[0][k] for k in COLUMNAS_REGISTRALES if k in e[0]} == esperado
+
+
+def test_datos_registrales_tambien_en_los_cargos(fake_pdf, tmp_path):
+    # Las filas de cargos llevan la hoja del anuncio: desde 2025 iban vacías (estructura del BORME de 2025, nombres ficticios)
+    texto = ("400001 - ALFA DEMO SL.\nNombramientos. Adm. Unico: FULANO MENGANO JUAN. Datos registrales. S 8 , H M 790001, "
+             "I/A 2 (13.01.25).\n")
+    e, c = _parsear_asiento(fake_pdf, tmp_path, "BORME-A-2025-9-28.pdf", texto)
+    assert e[0]["hoja_registral"] == "M 790001"
+    assert [x["hoja_registral"] for x in c] == ["M 790001"]
+
+
+@pytest.mark.parametrize("texto, esperado", [
+    ("Datos registrales. S 8 , H GC 63782, I/A 1 (13.01.25).", ("GC 63782", "1", "13.01.25")),
+    ("Datos registrales. T 1346 , F 71, S 8, H GR 36261, I/AN.Mar B ( 2.08.17).", ("GR 36261", "N.Mar B", "2.08.17")),
+    ("Datos registrales. T 344 , F 154, S 8, H P 4263, I/A N 2 ( 4.05.22).", ("P 4263", "N 2", "4.05.22")),
+    ("Datos registrales. T 3670 , F 45, S 8, H C 30210, I/A I2N4 ( 3.05.21).", ("C 30210", "I2N4", "3.05.21")),
+    ("Datos registrales. T 25274 , F 213, S 8, H M 82294,BIS , I/ 46 .(26.04.10).", ("M 82294,BIS", "46", "26.04.10")),
+    ("Datos registrales. T 882 , F 75, S 8, H BI 12710,b , I/ 3 .(22.01.10).", ("BI 12710,b", "3", "22.01.10")),
+    ("Datos registrales. T 21418 , F 223, S 8, H M 380921,1 , I/ 5 .(28.01.09).", ("M 380921,1", "5", "28.01.09")),
+    ("Datos registrales. T 34891 , F 139, S 1, H 3,S-3 , I/ 80 .( 2.11.17).", ("3,S-3", "80", "2.11.17")),
+    ("Datos registrales. T 445 , F 156, S 8, H H 6286,H , I/ NOTA .B.", ("H 6286,H", "NOTA", None)),
+    ("Datos registrales. T 994 , F 217, S 8, H H 20461,H , I/ 1 ...", ("H 20461,H", "1", None)),
+    ("Datos registrales. T 2979 , F 141, S 8, H AS 26820, I/A A) (20.05.13).", ("AS 26820", "A", "20.05.13")),
+    # La marca lateral invertida en medio de los datos
+    ("Datos registrales. T se.eob.www//:sptth ne elbacifireV 10797, L 8076, F 221, S 8, H V 191001, I/A 3 (12.03.20).",
+     ("V 191001", "3", "12.03.20")),
+])
+def test_datos_registrales_variantes_nuevas(texto, esperado):
+    d = bparser._datos_registrales(texto)
+    assert (d.get("hoja_registral"), d.get("inscripcion"), d.get("fecha_inscripcion")) == esperado
+
+
+def test_datos_registrales_sin_hoja_no_dan_nada():
+    assert bparser._datos_registrales("Datos registrales. T 1 , F 2, S 8.") == {}
+    assert bparser._datos_registrales("Extinción.") == {}
+
+
+# Acto pegado al nombre sin el punto que lo separa. Asientos reales: tras el sufijo del
+# registro (Illes Balears, Santa Cruz de Tenerife, Las Palmas) y tras la última palabra
+# (Ciudad Real, Sevilla, Zaragoza).
+ASIENTOS_PEGADOS = [
+    ("BORME-A-2021-43-07.pdf",
+     "103313 - APLICACIONES Y SISTEMAS INTEGRALES PARA EL TRANSPORTE SA(R.M. PALMA DE MALLORCA)\nCambio de domicilio social. "
+     "CTRA PORTO PI 8 7 (PALMA DE MALLORCA). Datos registrales. T 2726 , F 181, S 8, H PM 38203,\nI/A 33 (17.02.21).\n"
+     "se.eob.www//:sptth\nne\nelbacifireV\n",
+     "APLICACIONES Y SISTEMAS INTEGRALES PARA EL TRANSPORTE SA(R.M. PALMA DE MALLORCA)", "PM 38203"),
+    ("BORME-A-2017-226-38.pdf",
+     "467504 - ASISTENCIA Y TRANSPORTE EN CARRETERA DE TENERIFE SL(R.M. SANTA CRUZ DE TENERIFE)\nAmpliación de capital. Capital: "
+     "80,00 Euros. Resultante Suscrito: 3.180,00 Euros. Datos registrales. T 3436 , F 126, S 8, H TF\n57025, I/A 2 (15.11.17).\n",
+     "ASISTENCIA Y TRANSPORTE EN CARRETERA DE TENERIFE SL(R.M. SANTA CRUZ DE TENERIFE)", "TF 57025"),
+    ("BORME-A-2021-22-35.pdf",
+     "52348 - TALLER DE CERAMICA ARTISTICA MODELCOR SOCIEDAD LIMITADA(R.M. PUERTO DE ARRECIFE)\nModificaciones estatutarias. "
+     "Artículo 7º. Retribución del Organo de Administración.- . Datos registrales. T 29 , F 182, S 8, H IL 998,\nI/A 5 (26.01.21).\n",
+     "TALLER DE CERAMICA ARTISTICA MODELCOR SOCIEDAD LIMITADA(R.M. PUERTO DE ARRECIFE)", "IL 998"),
+    ("BORME-A-2023-135-13.pdf",
+     "323889 - EDIFICACIONES Y PROMOCIONES DE VIVIENDA DE CASTILLA LA MANCHA, SOCIEDAD LIMITADA\nReapertura hoja registral. "
+     "Datos registrales. T 518 , F 111, S 8, H CR 20428, I/ACANCB (10.07.23).\n",
+     "EDIFICACIONES Y PROMOCIONES DE VIVIENDA DE CASTILLA LA MANCHA, SOCIEDAD LIMITADA", "CR 20428"),
+    ("BORME-A-2022-4-41.pdf",
+     "7981 - SOCIEDAD PARA EL CONTROL Y CERTIFICACION EN AGRICULTURA ECOLOGICA E INTEGRADA SA\nModificaciones estatutarias. "
+     "Artículo de los estatutos: 3. Domicilio social.-. Cambio de domicilio social. C/ ALCALDE\nFERNANDEZ HEREDIA 20 (UTRERA). "
+     "Datos registrales. T 7146 , F 142, S 8, H SE132952, I/A 2 (30.12.21).\n",
+     "SOCIEDAD PARA EL CONTROL Y CERTIFICACION EN AGRICULTURA ECOLOGICA E INTEGRADA SA", "SE132952"),
+    ("BORME-A-2018-74-50.pdf",
+     "168703 - CENTRO CLINICO DE TERAPIA MANUAL ORTOPEDICA-ESPAÑA SOCIEDAD LIMITADA PROFESIONAL\nAmpliación de capital. Capital: "
+     "1.500,00 Euros. Resultante Suscrito: 7.500,00 Euros. Datos registrales. T 4068 , F 204, S 8, H Z\n57366, I/A 6 (10.04.18).\n",
+     "CENTRO CLINICO DE TERAPIA MANUAL ORTOPEDICA-ESPAÑA SOCIEDAD LIMITADA PROFESIONAL", "Z 57366"),
+]
+
+
+@pytest.mark.parametrize("pdf, texto, empresa, hoja", ASIENTOS_PEGADOS, ids=[a[0][8:-4] for a in ASIENTOS_PEGADOS])
+def test_acto_pegado_al_nombre_asientos_reales(fake_pdf, tmp_path, pdf, texto, empresa, hoja):
+    e, _ = _parsear_asiento(fake_pdf, tmp_path, pdf, texto)
+    assert [r["empresa"] for r in e] == [empresa]
+    acto = texto.split("\n")[1].split(".")[0]
+    assert acto in e[0]["actos"].split("|")   # el acto ya no se pierde en el nombre
+    assert e[0]["hoja_registral"] == hoja
+    # El validador separa igual
+    bloque = re.sub(r"\s{2,}", " ", texto.split(" - ", 1)[1].replace("\n", " ")).strip()
+    assert validate.find_empresa(bloque)[0] == empresa
+
+
+def test_acto_pegado_con_cargos_y_capital(fake_pdf, tmp_path):
+    # Estructura real de BORME-A-2017-*-35 (Las Palmas), sociedad y personas ficticias
+    texto = ("70001 - DEMO DENTAL SOCIEDAD CIVIL PROFESIONAL(R.M. PUERTO DEL ROSARIO) Ceses/Dimisiones. Adm. Unico: FULANO "
+             "MENGANO JUAN. Nombramientos. Adm. Solid.: ZUTANO PERENGANO ANA. Datos registrales. T 900 , F 9, S 8, H GC 9999, "
+             "I/A 4 (10.03.17).\n")
+    e, c = _parsear_asiento(fake_pdf, tmp_path, "BORME-A-2017-50-35.pdf", texto)
+    assert e[0]["empresa"] == "DEMO DENTAL SOCIEDAD CIVIL PROFESIONAL(R.M. PUERTO DEL ROSARIO)"
+    assert e[0]["actos"] == "Ceses/Dimisiones|Nombramientos"
+    assert {(x["tipo_acto"], x["persona"]) for x in c} == {("cese", "FULANO MENGANO JUAN"),
+                                                         ("nombramiento", "ZUTANO PERENGANO ANA")}
+
+
+def test_nombre_en_mayusculas_con_palabra_de_acto_no_se_corta():
+    # Los nombres van en mayúsculas: "CONSTITUCION" o "FUSION" en el nombre no son actos
+    for nombre in ("CONSTITUCION Y REFORMAS SL", "FUSION GASTRONOMICA SL", "OMEGA. Sociedad Anónima"):
+        empresa, _ = validate.find_empresa(f"{nombre}. Extinción. Datos registrales. S 8 , H M 1, I/A 1 (1.01.25).")
+        assert empresa == nombre
+
+
+def test_validador_y_parser_usan_el_mismo_patron_de_acto_pegado():
+    assert validate._ACTO_PEGADO_RE.pattern == bparser._ACTO_PEGADO_RE.pattern
+    assert validate._TRAS_NUMERO_MINUSCULAS_RE.pattern == bparser._TRAS_NUMERO_MINUSCULAS_RE.pattern
+
+
+# Códigos CNAE a principio de línea dentro del objeto social. Estructura real (líneas
+# «NNNN - Actividad» de BORME-A-2022-7-50 Zaragoza y BORME-A-2024-43-07 Illes Balears),
+# sociedades y personas ficticias.
+CNAE_MITAD_DE_ANO = """13106 - ALFA RECICLAJE SL.
+Ceses/Dimisiones. Adm. Unico: FULANO MENGANO JUAN. Nombramientos. Adm. Unico: ZUTANO PERENGANO ANA. Cambio de domicilio
+social. CTRA MADRID Km 230 (CALATAYUD). Cambio de objeto social. Actividad Principal: CNAE
+3832 - Valorización de materiales ya clasificados, b) Separación y clasificación de materiales. Datos registrales. T 4566 , F 107,
+S 8, H Z 69562, I/A 2 ( 5.01.22).
+13107 - BETA TALLERES SL.
+Extinción. Datos registrales. T 100 , F 1, S 8, H Z 100, I/A 9 ( 5.01.22).
+"""
+CNAE_PRIMER_BORME = """1 - GAMMA OBRAS SL.
+Constitución. Comienzo de operaciones: 19.12.23. Objeto social: La sociedad tiene por objeto las actividades de la
+Clasificación Nacional de Actividades Económicas: Actividad principal:
+4121 - Construcción de edificios residenciales. Otras actividades: 4122 - ... Domicilio: C/ MAYOR 1 (CIUTADELLA DE MENORCA).
+Capital: 3.000,00 Euros. Nombramientos. Adm. Unico: FULANO MENGANO JUAN. Datos registrales. T 212 , F 88, S
+8, H IM 8049, I/A 1 (28.12.23).
+2 - DELTA SERVICIOS SL.
+Extinción. Datos registrales. T 213 , F 89, S 8, H IM 8050, I/A 7 (28.12.23).
+"""
+
+
+def test_cnae_a_principio_de_linea_no_abre_anuncio(fake_pdf, tmp_path):
+    e, c = _parsear_asiento(fake_pdf, tmp_path, "BORME-A-2022-7-50.pdf", CNAE_MITAD_DE_ANO)
+    # Antes: tres anuncios, uno falso "3832" llamado "Valorización de materiales..." con la hoja del de verdad
+    assert [r["num_entrada"] for r in e] == ["13106", "13107"]
+    assert e[0]["empresa"] == "ALFA RECICLAJE SL"
+    assert e[0]["hoja_registral"] == "Z 69562"
+    assert {x["num_entrada"] for x in c} == {"13106"}
+
+
+def test_cnae_en_el_primer_borme_del_ano_no_se_come_el_anuncio_siguiente(fake_pdf, tmp_path):
+    e, _ = _parsear_asiento(fake_pdf, tmp_path, "BORME-A-2024-1-07.pdf", CNAE_PRIMER_BORME, dt.date(2024, 1, 2))
+    # Antes: "4121" abría anuncio y "2" ya no seguía la numeración: se perdía DELTA SERVICIOS SL
+    assert [r["num_entrada"] for r in e] == ["1", "2"]
+    assert [r["empresa"] for r in e] == ["GAMMA OBRAS SL", "DELTA SERVICIOS SL"]
+    assert [r["hoja_registral"] for r in e] == ["IM 8049", "IM 8050"]
+    assert [m.group(1) for m in validate.entry_starts(validate.clean(CNAE_PRIMER_BORME))] == ["1", "2"]
+
+
+@pytest.mark.parametrize("texto, esperado", [
+    # Hueco real en la numeración (nada la continúa): el número abre anuncio, como antes
+    ("57315 - ALFA SL.\nExtinción.\n57317 - GAMMA SL.\nExtinción.", ["57315", "57317"]),
+    # Número hacia atrás en el último anuncio: es una línea del cuerpo
+    ("57315 - ALFA SL.\nObjeto social: Actividad:\n4121 - Construcción de edificios.", ["57315"]),
+    # Número hacia delante con la numeración siguiendo después: también
+    ("5000 - ALFA SL.\nObjeto:\n6820 - Alquiler de bienes.\n5001 - BETA SL.\nExtinción.", ["5000", "5001"]),
+    # Muchas líneas CNAE seguidas (más que cualquier ventana) en el primer BORME del año
+    ("5000 - ALFA SL.\n" + "".join(f"{6800 + i} - Alquiler de bienes.\n" for i in range(15)) + "5001 - BETA SL.",
+     ["5000", "5001"]),
+    # Línea en mayúsculas del cuerpo ("1234 - BAJO" de un domicilio) con la numeración siguiendo después
+    ("1000 - ALFA SL.\nDomicilio: C/ MAYOR\n1234 - BAJO (MADRID).\n1001 - BETA SL.", ["1000", "1001"]),
+    # ...o hacia atrás en el último anuncio
+    ("57315 - ALFA SL.\nDomicilio: C/ MAYOR\n1234 - BAJO (MADRID).", ["57315"]),
+    # Un hueco tras un número que no sigue: el anuncio de verdad no se pierde
+    ("5000 - ALFA SL.\nExtinción.\n5002 - GAMMA SL.\nExtinción.\n5003 - DELTA SL.", ["5000", "5002", "5003"]),
+])
+def test_numeracion_fuera_de_secuencia(texto, esperado):
+    assert [m.group(1) for m in bparser._entry_starts(texto)] == esperado
+    assert [m.group(1) for m in validate.entry_starts(texto)] == esperado
+
+
+def test_anonimizar_conserva_libro_folio_y_seccion():
+    df = pd.DataFrame({"fecha_borme": ["2025-01-02"], "num_entrada": ["1"], "empresa": ["ALFA SL"],
+                       "empresa_norm": ["ALFA"], "hoja_registral": ["M 1"], "tomo": ["10"], "libro": ["2"], "folio": ["3"],
+                       "seccion": ["8"], "objeto_social": ["texto libre"], "pdf_filename": ["BORME-A-2025-1-28.pdf"]})
+    out = anon.anonymize_empresas(df)
+    assert {"libro", "folio", "seccion", "tomo", "hoja_registral"} <= set(out.columns)
+    assert "objeto_social" not in out.columns
 
 
 # Formas reales del calificador de los actos (texto de pdfplumber; nombres de
