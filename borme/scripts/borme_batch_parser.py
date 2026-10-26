@@ -215,12 +215,13 @@ SECTION_MAP = {
 #   "H H 6286,H , I/ NOTA .B.", "H OR 57,NE , I/ 2 .N.", "I/ 1 ..."  un carácter entre puntos y sin fecha,
 #   "H BI 3350,A , I/ 10 .M.) 2 11 18."                           o con la fecha detrás, separada por espacios
 #   "I/A 3 Folio electrónico , Irus 1000114479877 ( 15/04/2025)"  folio electrónico, fecha con barras
+#   "T 4561 , F , S , H AS 62018", "T , F , S 8, H M 593951", ", H M 491540"  campos vacíos (mayo-junio de 2024)
 DATOS_REG_RE = re.compile(
-    r'Datos registrales\s*[.:]\s*'
-    r'(?:T\s*(?P<tomo>\d+)\s*,\s*)?'
-    r'(?:L\s*(?P<libro>\d+)\s*,\s*)?'
-    r'(?:F\s*(?P<folio>\d+)\s*,\s*)?'
-    r'(?:S\s*(?P<seccion>\d+)\s*,\s*)?'
+    r'Datos registrales\s*[.:]\s*,?\s*'
+    r'(?:T\s*(?P<tomo>\d+)?\s*,\s*)?'
+    r'(?:L\s*(?P<libro>\d+)?\s*,\s*)?'
+    r'(?:F\s*(?P<folio>\d+)?\s*,\s*)?'
+    r'(?:S\s*(?P<seccion>\d+)?\s*,\s*)?'
     r'H\s*(?P<hoja>[A-Z]{0,3}\s*\d+(?:\s*,\s*[^\s,()]{1,12})?)\s*,\s*'
     r'I\s*/\s*A?\s*(?P<inscripcion>[^(]{0,60}?)\s*'
     r'(?:\.?\s*\(\s*\(?\s*(?P<fecha>\d{1,2}[./]\d{1,2}[./]\d{2,4})\s*\)'

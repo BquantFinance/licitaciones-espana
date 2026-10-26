@@ -479,6 +479,10 @@ def test_datos_registrales_tambien_en_los_cargos(fake_pdf, tmp_path):
     ("Datos registrales. T 445 , F 156, S 8, H H 6286,H , I/ NOTA .B.", ("H 6286,H", "NOTA", None)),
     ("Datos registrales. T 994 , F 217, S 8, H H 20461,H , I/ 1 ...", ("H 20461,H", "1", None)),
     ("Datos registrales. T 2979 , F 141, S 8, H AS 26820, I/A A) (20.05.13).", ("AS 26820", "A", "20.05.13")),
+    # Campos vacíos (mayo-junio de 2024)
+    ("Datos registrales. T 4561 , F , S , H AS 62018, I/A 2 ( 6.05.24).", ("AS 62018", "2", "6.05.24")),
+    ("Datos registrales. T , F , S 8, H M 593951, I/A 23 (10.05.24).", ("M 593951", "23", "10.05.24")),
+    ("Datos registrales. , H M 491540, I/A 52 ( 7.06.24).", ("M 491540", "52", "7.06.24")),
     # La marca lateral invertida en medio de los datos
     ("Datos registrales. T se.eob.www//:sptth ne elbacifireV 10797, L 8076, F 221, S 8, H V 191001, I/A 3 (12.03.20).",
      ("V 191001", "3", "12.03.20")),
