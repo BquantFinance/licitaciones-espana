@@ -120,7 +120,7 @@ python scripts/ccaa_cataluna_parquet.py --entrada datos/catalunya/crudo --salida
 
 Sin `--categorias contratacion` se descargan también subvenciones, presupuestos y el resto: las concesiones RAISC pesan 19 GB por descarga. La conversión a Parquet va por trozos: con las tres versiones de la PSCP, el pico de memoria es de 3,6 GiB.
 
-En los menores de la PSCP, `--resume` solo en la primera ejecución: el punto de control se conserva al terminar, y con `--resume` una ejecución posterior daría todas las fases por hechas. La consolidación de la primera descarga completa (4,8 M de filas) pide 6,4-6,8 GiB.
+En los menores de la PSCP, `--resume` solo en la primera ejecución: el punto de control se conserva al terminar, y con `--resume` una ejecución posterior daría todas las fases por hechas. La consolidación de la primera descarga completa (4,8 M de filas) pide 6,4-6,8 GiB; con los tramos de fecha (26-oct-2026) se leen unos 5,6 M de filas, así que hay que contar con más (el ensayo no llegó a consolidar).
 
 ### Comunitat Valenciana
 

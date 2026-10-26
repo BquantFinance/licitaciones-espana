@@ -7,10 +7,12 @@ Cubre:
 """
 
 import asyncio
+import gzip
 import importlib.util
 import json
 import logging
 import os
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -521,12 +523,15 @@ FILTROS = {'faseVigent': '_fase', 'ambit': '_ambit', 'tipusContracte': '_tipus',
 FASES_AGREGADAS_FALSAS = (800,)
 
 
-def _registros(n, fase, inicio, organs=(1,), proc=401, tipus=393, ambit=1500001):
+def _registros(n, fase, inicio, organs=(1,), proc=401, tipus=393, ambit=1500001, dia=None):
+    """n registros de la API falsa, repartidos en los 28 primeros días de enero de 2024 (con
+    dia='AAAA-MM-DD', todos ese día: la fecha de su última publicación)."""
     regs = []
     agregada = fase in FASES_AGREGADAS_FALSAS
     for i in range(n):
         rid = inicio + i
         organ = organs[i % len(organs)]
+        fecha = dia or f'2024-01-{i % 28 + 1:02d}'
         regs.append({
             'id': rid, 'titol': f'T{rid}', 'descripcio': f'Desc {rid}',
             'pressupostLicitacio': 100.0 + i, 'pressupostAdjudicacio': 90.0 + i,
@@ -534,10 +539,10 @@ def _registros(n, fase, inicio, organs=(1,), proc=401, tipus=393, ambit=1500001)
             'expedientId': f'uuid-{rid};{rid}' if agregada else f'uuid-{rid}',
             'esAgregatContractes': True if agregada else None,
             'fasesVigents': {NOMBRES_FASE[fase]: {
-                'lotsActius': 1, 'dataPublicacio': f'2024-01-{i % 28 + 1:02d}T10:00:00', 'idPublicacio': rid * 10}},
+                'lotsActius': 1, 'dataPublicacio': f'{fecha}T10:00:00', 'idPublicacio': rid * 10}},
             # Atributos internos para filtrar/ordenar en la API falsa (no se devuelven)
             '_fase': fase, '_ambit': ambit, '_tipus': tipus, '_proc': proc, '_organ': organ,
-            '_orden': f'{i:08d}',
+            '_orden': f'{i:08d}', '_fecha': fecha,
         })
     return regs
 
@@ -547,28 +552,51 @@ def _publicado(registros):
     return pd.json_normalize([{k: v for k, v in r.items() if not k.startswith('_')} for r in registros], sep='_')
 
 
+FECHA_FILTRO = 'dataUltimaPublicacio'
+FECHA_DESDE = 'intervalIniciUltimaPublicacio'
+FECHA_HASTA = 'intervalFiUltimaPublicacio'
+
+
 class APIFalsa:
-    """Imita /cerca-avancada (filtros, orden, paginación, ventana de 10k) y /organs/noms.
+    """Imita /cerca-avancada (filtros, también el de fecha, orden, paginación, ventana de 10k) y
+    /organs/noms, con las respuestas reales de tests/fixtures/pscp_menores/respuestas_api.json:
+    las mismas claves, páginas de 2.000 como mucho ("size" dice el tamaño servido) y HTTP 500
+    con errorData fuera de la ventana. El filtro de fecha (dataUltimaPublicacio=3) toma los
+    dos extremos incluidos, por días, y uno de los dos puede faltar.
 
-    tope_total: como la API real, totalElements no pasa de ese valor (10.000 en la real)."""
+    tope_total: como la API real, totalElements no pasa de ese valor (10.000 en la real).
+    sin_filtro_fecha: ignora el filtro de fecha (como si la API lo hubiera quitado).
+    inestable: los registros con el mismo '_orden' (en la real, la misma dataUltimaPublicacio)
+    salen en un orden distinto en cada petición, como las líneas de una publicación agregada."""
 
-    def __init__(self, registros, organs=None, fallo=None, ventana=10000, tope_total=None):
+    def __init__(self, registros, organs=None, fallo=None, ventana=10000, tope_total=None, tamano_max=2000,
+                 sin_filtro_fecha=False, inestable=False):
         self.registros = registros
         self.organs = organs or {}
         self.fallo = fallo or (lambda query: None)
         self.ventana = ventana
         self.tope_total = tope_total
+        self.tamano_max = tamano_max
+        self.sin_filtro_fecha = sin_filtro_fecha
+        self.inestable = inestable
         self.peticiones = []
         self._consultas = {}
 
     def _filtrados(self, q):
-        clave = tuple((p, q[p]) for p in FILTROS if p in q) + (q.get('sortOrder'),)
-        if clave not in self._consultas:
+        fecha = () if self.sin_filtro_fecha else tuple(q.get(p) for p in (FECHA_FILTRO, FECHA_DESDE, FECHA_HASTA))
+        clave = tuple((p, q[p]) for p in FILTROS if p in q) + (q.get('sortOrder'),) + fecha
+        if self.inestable or clave not in self._consultas:
             regs = self.registros
             for param, campo in FILTROS.items():
                 if param in q:
                     regs = [r for r in regs if r[campo] == int(q[param])]
-            self._consultas[clave] = sorted(regs, key=lambda r: r['_orden'], reverse=q.get('sortOrder') == 'desc')
+            if not self.sin_filtro_fecha and q.get(FECHA_FILTRO) == '3':
+                desde, hasta = q.get(FECHA_DESDE), q.get(FECHA_HASTA)
+                regs = [r for r in regs if (desde is None or r.get('_fecha', '2024-01-01') >= desde)
+                        and (hasta is None or r.get('_fecha', '2024-01-01') <= hasta)]
+            azar = random.Random(len(self.peticiones))
+            orden = (lambda r: (r['_orden'], azar.random())) if self.inestable else (lambda r: r['_orden'])
+            self._consultas[clave] = sorted(regs, key=orden, reverse=q.get('sortOrder') == 'desc')
         return self._consultas[clave]
 
     async def cerca(self, request):
@@ -578,12 +606,20 @@ class APIFalsa:
         if error is not None:
             return error
         regs = self._filtrados(q)
-        page, size = int(q['page']), int(q['size'])
+        page, size = int(q['page']), min(int(q['size']), self.tamano_max)
         if (page + 1) * size > self.ventana:
-            return web.json_response({'errorData': {'missatge': 'Result window is too large'}})
+            return web.json_response({'errorData': 'ZmFsc2E='}, status=500)
         contenido = [{k: v for k, v in r.items() if not k.startswith('_')} for r in regs[page * size:(page + 1) * size]]
         total = len(regs) if self.tope_total is None else min(len(regs), self.tope_total)
-        return web.json_response({'content': contenido, 'totalElements': total})
+        paginas = -(-total // size)
+        orden = {'sorted': False, 'unsorted': True, 'empty': True}
+        return web.json_response({
+            'content': contenido,
+            'pageable': {'pageNumber': page, 'pageSize': size, 'sort': orden, 'offset': page * size,
+                         'paged': True, 'unpaged': False},
+            'totalPages': paginas, 'totalElements': total, 'last': page + 1 >= paginas,
+            'numberOfElements': len(contenido), 'size': size, 'number': page, 'sort': orden,
+            'first': page == 0, 'empty': not contenido})
 
     async def organs_noms(self, request):
         q = request.query
@@ -633,6 +669,27 @@ class _EjecucionMenores:
 
         asyncio.run(run())
 
+    def _leer_segmento(self, api, params, **kwargs):
+        """cat_menores.scrape_segment(params) contra la API falsa: (registros, stats)."""
+        stats = cat_menores.ScraperStats()
+
+        async def run():
+            app = web.Application()
+            app.router.add_get('/portal-api/cerca-avancada', api.cerca)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '127.0.0.1', 0)
+            await site.start()
+            base = f"http://127.0.0.1:{runner.addresses[0][1]}/portal-api"
+            try:
+                with patch.object(cat_menores, 'BASE_URL', base):
+                    async with cat_menores.aiohttp.ClientSession() as session:
+                        return await cat_menores.scrape_segment(session, params, stats, **kwargs)
+            finally:
+                await runner.cleanup()
+
+        return asyncio.run(run()), stats
+
     def _checkpoint(self):
         return json.loads((self.dir / "cm_checkpoint.json").read_text())
 
@@ -654,11 +711,12 @@ class _EjecucionMenores:
 class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
 
     def test_main_segmenta_hasta_organo_y_ambos_ordenes_sin_perder_registros(self):
-        # Fase 20: 10.060 registros -> ambit -> tipus -> procediment -> organ;
-        # el órgano 7 sigue >10k (10.020) y se descarga en orden desc + asc
+        # Fase 20: 10.060 registros el mismo día -> tramos de fecha hasta ese día -> ambit ->
+        # tipus -> procediment -> organ; el órgano 7 sigue >10k (10.020) y se descarga en
+        # orden desc + asc
         regs = (_registros(250, 10, 1)
-                + _registros(10020, 20, 100000, organs=(7,))
-                + _registros(40, 20, 200000, organs=(8,))
+                + _registros(10020, 20, 100000, organs=(7,), dia='2024-02-01')
+                + _registros(40, 20, 200000, organs=(8,), dia='2024-02-01')
                 + _registros(30, 800, 900000))
         duplicado = dict(regs[0], _fase=800)  # mismo (id, descripcio) en dos fases
         api = APIFalsa(regs + [duplicado], organs={1500001: [7, 8]})
@@ -694,8 +752,9 @@ class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
         for q in cerca:
             self.assertEqual(q['inclourePublicacionsPlacsp'], 'false')
             self.assertEqual(q['sortField'], 'dataUltimaPublicacio')
-            self.assertIn(q['size'], ('1', '100'))
-        self.assertTrue(any(q.get('organ') == '7' and q['sortOrder'] == 'asc' for q in cerca))
+            self.assertIn(q['size'], ('1', '2000'))
+        self.assertTrue(any(q.get('organ') == '7' and q['sortOrder'] == 'asc'
+                            and q.get(FECHA_DESDE) == q.get(FECHA_HASTA) == '2024-02-01' for q in cerca))
         self.assertTrue(any(tipo == 'organs' and q['ambitId'] == '1500001' for tipo, q in api.peticiones))
 
     def test_recuento_fallido_no_marca_la_fase_como_completa_y_resume_la_recupera(self):
@@ -715,11 +774,12 @@ class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
 
     def test_pagina_fallida_aborta_en_vez_de_devolver_segmento_truncado(self):
         def falla_pagina_1(q):
-            if q.get('faseVigent') == '10' and q.get('size') == '100' and q.get('page') == '1':
+            if q.get('faseVigent') == '10' and q.get('size') == '2000' and q.get('page') == '1':
                 return web.Response(status=500)
 
+        regs = _registros(2500, 10, 1) + _registros(300, 20, 100000)
         with self.assertRaises(RuntimeError):
-            self._ejecutar(APIFalsa(self._basicos(), fallo=falla_pagina_1))
+            self._ejecutar(APIFalsa(regs, fallo=falla_pagina_1))
         self.assertFalse((self.dir / "cm_checkpoint.json").exists())
 
     def test_error_no_reintentable_tambien_aborta(self):
@@ -736,7 +796,7 @@ class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
             if 'ambitId' in q:
                 return web.Response(status=500)
 
-        regs = _registros(10050, 20, 100000, organs=(7, 8))
+        regs = _registros(10050, 20, 100000, organs=(7, 8), dia='2024-02-01')
         with self.assertRaises(RuntimeError):
             self._ejecutar(APIFalsa(regs, organs={1500001: [7, 8]}, fallo=falla_organos))
         self.assertEqual(self._checkpoint()['completed_fases'], [10])
@@ -778,9 +838,11 @@ class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
                          ['cm.parquet', 'cm_duplicate_analysis.json', 'cm_raw.parquet'])
 
     def test_hueco_de_cobertura_en_segmentacion_se_avisa_y_se_recupera(self):
-        # 60 registros con un procediment que no está en PROCEDIMENTS: no salen en ningún
-        # sub-segmento; el segmento (10.020 <= 2 ventanas) se pide entero en los dos órdenes
-        regs = _registros(9960, 20, 100000) + _registros(60, 20, 300000, proc=999999)
+        # Un día con 10.020 registros, 60 con un procediment que no está en PROCEDIMENTS: no
+        # salen en ningún sub-segmento; el segmento (10.020 <= 2 ventanas) se pide entero en
+        # los dos órdenes
+        regs = (_registros(9960, 20, 100000, dia='2024-02-01')
+                + _registros(60, 20, 300000, proc=999999, dia='2024-02-01'))
         api = APIFalsa(regs)
         with self.assertLogs(cat_menores.logger, level=logging.INFO) as logs:
             self._ejecutar(api)
@@ -797,9 +859,9 @@ class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
     def test_hueco_grande_se_recupera_segmentando_por_organo(self):
         # 20.110 registros (> 2 ventanas): 50 con un tipus fuera de TIPUS_CONTRACTE.
         # No caben en dos ventanas: se vuelve a pedir el segmento por órgano.
-        regs = (_registros(10030, 20, 100000, organs=(7,))
-                + _registros(10030, 20, 200000, organs=(8,))
-                + _registros(50, 20, 300000, organs=(8,), tipus=999999))
+        regs = (_registros(10030, 20, 100000, organs=(7,), dia='2024-02-01')
+                + _registros(10030, 20, 200000, organs=(8,), dia='2024-02-01')
+                + _registros(50, 20, 300000, organs=(8,), tipus=999999, dia='2024-02-01'))
         api = APIFalsa(regs, organs={1500001: [7, 8]})
         with self.assertLogs(cat_menores.logger, level=logging.INFO) as logs:
             self._ejecutar(api)
@@ -854,13 +916,270 @@ class ContratosMenoresTests(_EjecucionMenores, unittest.TestCase):
         self.assertTrue(all(q['inclourePublicacionsPlacsp'] == 'true' for q in cerca))
 
 
+FIXTURES_PSCP = REPO_ROOT / "tests" / "fixtures" / "pscp_menores"
+
+
+def _respuestas_reales():
+    """tests/fixtures/pscp_menores/respuestas_api.json: {descripción: respuesta}."""
+    datos = json.loads((FIXTURES_PSCP / "respuestas_api.json").read_text(encoding="utf-8"))
+    return {r['desc']: r for r in datos['respuestas']}
+
+
+def _publicacion_real():
+    """Las 699 líneas reales de una publicación agregada (misma dataUltimaPublicacio), como
+    registros de la API falsa: todas con el mismo '_orden', como en la real."""
+    with gzip.open(FIXTURES_PSCP / "publicacion_agregada_699.json.gz", "rt", encoding="utf-8") as f:
+        fixture = json.load(f)
+    p = fixture['params']
+    regs = []
+    for r in fixture['json']['content']:
+        regs.append(dict(r, _fase=800, _ambit=int(p['ambit']), _tipus=int(p['tipusContracte']),
+                         _proc=int(p['procedimentAdjudicacio']), _organ=r['idOrgan'], _orden='0',
+                         _fecha=r['fasesVigents']['ADJUDICACIO']['dataPublicacio'][:10]))
+    return fixture, regs
+
+
+class TramosFechaMenoresTests(_EjecucionMenores, unittest.TestCase):
+    """Cada fase se lee por tramos de fecha de la última publicación (scrape_por_fechas), con la
+    API falsa ajustada a las respuestas reales guardadas (tope de 10.000 en el recuento,
+    páginas de 2.000, filtro de fecha) y a las 699 líneas reales de una publicación agregada."""
+
+    def _cerca(self, api):
+        return [q for t, q in api.peticiones if t == 'cerca']
+
+    def test_la_api_falsa_responde_como_la_real(self):
+        reales = _respuestas_reales()
+        pagina = reales['página pedida de 2500: sirve 2000']
+        self.assertEqual((pagina['status'], pagina['json']['size'], pagina['json']['numberOfElements']),
+                         (200, 2000, 2000))
+        fuera = reales['página 5 de 2000: fuera de la ventana']
+        self.assertEqual(fuera['status'], 500)
+        self.assertIn('errorData', fuera['json'])
+        # Fase 900: ningún procedimiento tiene registros, aunque la fase llega al tope
+        base = reales['recuento fase 900 sin procedimiento (tope)']['json']['totalElements']
+        por_proc = {r['params']['procedimentAdjudicacio']: r['json']['totalElements']
+                    for d, r in reales.items() if d.startswith('recuento fase 900 procedimiento')}
+        self.assertEqual(base, 10000)
+        self.assertEqual(set(map(int, por_proc)), set(cat_menores.PROCEDIMENTS))
+        self.assertEqual(set(por_proc.values()), {0})
+        # El filtro de fecha: días incluidos, las dos mitades suman el año
+        mitades = [reales[f'recuento tramo {t}']['json']['totalElements']
+                   for t in ('2024-01-01..2024-06-30', '2024-07-01..2024-12-31')]
+        self.assertEqual(sum(mitades), reales['recuento tramo 2024-01-01..2024-12-31']['json']['totalElements'])
+        self.assertEqual(reales['recuento tramo 2024-01-01..2024-06-30']['params'][cat_menores.DESDE], '2024-01-01')
+        # La API falsa da las mismas claves y el mismo tamaño de página
+        api = APIFalsa(_registros(2500, 20, 1), tope_total=10000)
+        respuestas = {}
+
+        def guardar(q):
+            respuestas.setdefault((q['page'], q['size']), None)
+
+        api.fallo = guardar
+        self._ejecutar(api)
+        self.assertEqual(len(self._salida()), 2500)
+        self.assertIn(('1', '2000'), respuestas)
+        regs = api._filtrados({'faseVigent': '20', 'sortOrder': 'desc'})
+        self.assertEqual(len(regs), 2500)
+
+        async def pedir():
+            app = web.Application()
+            app.router.add_get('/c', api.cerca)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '127.0.0.1', 0)
+            await site.start()
+            base_url = f"http://127.0.0.1:{runner.addresses[0][1]}/c"
+            try:
+                async with cat_menores.aiohttp.ClientSession() as s:
+                    async with s.get(base_url, params={'faseVigent': 20, 'page': 0, 'size': 2500}) as r:
+                        pagina_falsa = (r.status, await r.json())
+                    async with s.get(base_url, params={'faseVigent': 20, 'page': 5, 'size': 2000}) as r:
+                        fuera_falsa = (r.status, await r.json())
+            finally:
+                await runner.cleanup()
+            return pagina_falsa, fuera_falsa
+
+        (st, js), (st_fuera, js_fuera) = asyncio.run(pedir())
+        self.assertEqual(st, 200)
+        self.assertEqual(set(js) - {'_nota'}, set(pagina['json']) - {'_nota'})
+        self.assertEqual((js['size'], js['numberOfElements']), (2000, 2000))
+        self.assertEqual(st_fuera, 500)
+        self.assertIn('errorData', js_fuera)
+
+    def test_fase_mas_grande_que_el_tope_se_lee_entera_por_tramos(self):
+        # 25.000 registros en 28 días, recuento topado a 10.000 como en la real: sin órganos
+        # ni dos órdenes; el recuento de los tramos suma la fase
+        regs = _registros(25000, 20, 100000, organs=(7, 8)) + _registros(30, 800, 900000)
+        api = APIFalsa(regs, organs=ORGANOS_7_8, tope_total=10000)
+        self._ejecutar(api)
+        salida = self._salida()
+        self.assertEqual(len(salida), 25030)
+        self.assertEqual(set(salida['id']), {r['id'] for r in regs})
+        analisis = self._analisis()
+        self.assertEqual(analisis['fases_incompletas'], {})
+        self.assertEqual(analisis['anunciados_por_fase']['20'], {'anunciados': 25000, 'dias_en_tope': 0})
+        self.assertEqual(analisis['anunciados_por_fase']['10'], {'anunciados': 0, 'dias_en_tope': 0})
+        cerca = self._cerca(api)
+        self.assertFalse(any('organ' in q or 'ambit' in q or q['sortOrder'] == 'asc' for q in cerca))
+        tramos = [q for q in cerca if q.get('faseVigent') == '20' and q['size'] == '2000']
+        self.assertTrue(tramos)
+        self.assertTrue(all(q[FECHA_FILTRO] == '3' for q in tramos))
+        # Los tramos leídos no se solapan ni dejan días fuera: cada registro, una sola vez
+        self.assertEqual(len(pd.read_parquet(self.dir / "cm_fase_20.parquet")), 25000)
+        # La fase 10, vacía: un solo recuento
+        self.assertEqual(len([q for q in cerca if q.get('faseVigent') == '10']), 1)
+
+    def test_fase_sin_procedimiento_como_la_900_se_lee_entera(self):
+        # Como la fase 900 real (respuestas_api.json): ningún registro tiene procedimiento y
+        # la fase pasa de dos ventanas. Antes quedaban 2 ventanas leídas de 22.000
+        regs = _registros(22000, 800, 900000, organs=(7, 8), proc=None) + _registros(250, 10, 1)
+        api = APIFalsa(regs, organs=ORGANOS_7_8, tope_total=10000)
+        self._ejecutar(api)
+        self.assertEqual(len(self._salida()), 22250)
+        self.assertEqual(self._analisis()['fases_incompletas'], {})
+        self.assertFalse(any('procedimentAdjudicacio' in q for q in self._cerca(api)))
+
+    def test_dia_en_el_tope_sin_procedimiento_se_lee_por_organo(self):
+        # Un día de la fase 900 con más de 10.000 (el 4-jul-2023 en la real): por ámbito y tipo
+        # llega al tope, los procedimientos dan 0 y se recupera por órgano
+        regs = (_registros(12000, 800, 900000, organs=(7, 8), proc=None, dia='2023-07-04')
+                + _registros(500, 800, 950000, organs=(7,), proc=None) + _registros(250, 10, 1))
+        api = APIFalsa(regs, organs=ORGANOS_7_8, tope_total=10000)
+        with self.assertLogs(cat_menores.logger, level=logging.INFO) as logs:
+            self._ejecutar(api)
+        self.assertTrue(any("got 0 of 10000" in m for m in logs.output), logs.output)
+        self.assertTrue(any("Gap recovery by organ" in m for m in logs.output), logs.output)
+        self.assertFalse(any("Coverage gap remains" in m or "ventana de la API" in m for m in logs.output))
+        self.assertEqual(len(self._salida()), 12750)
+        analisis = self._analisis()
+        self.assertEqual(analisis['fases_incompletas'], {})
+        self.assertEqual(analisis['anunciados_por_fase']['800']['dias_en_tope'], 1)
+        self.assertTrue(any(q.get('organ') == '8' and q.get(FECHA_DESDE) == '2023-07-04'
+                            for q in self._cerca(api)))
+
+    def test_publicacion_agregada_real_con_orden_inestable_se_lee_entera(self):
+        # Las 699 líneas reales de una publicación (misma fecha) cambian de orden en cada
+        # petición. Con páginas de 100 (antes) faltan líneas; en una página de 2.000, ninguna
+        fixture, regs = _publicacion_real()
+        self.assertEqual(fixture['json']['totalElements'], 699)
+        self.assertEqual(len({cat_menores.clave_registro({k: v for k, v in r.items() if not k.startswith('_')})
+                              for r in regs}), 699)
+        segmento = {'faseVigent': 800, 'organ': int(fixture['params']['organ'])}
+        with patch.object(cat_menores, 'TAMANO_PAGINA', 100):
+            leidos, _ = self._leer_segmento(APIFalsa(regs, inestable=True, tope_total=10000), segmento)
+        self.assertLess(len(leidos), 699)
+        leidos, _ = self._leer_segmento(APIFalsa(regs, inestable=True, tope_total=10000), segmento)
+        self.assertEqual(len(leidos), 699)
+
+        api = APIFalsa(regs + _registros(250, 10, 1), inestable=True, tope_total=10000)
+        self._ejecutar(api)
+        salida = self._salida()
+        self.assertEqual(len(salida), 699 + 250)
+        self.assertEqual(set(salida.loc[salida['id'] == fixture['json']['content'][0]['id'], 'expedientId']),
+                         {r['expedientId'] for r in fixture['json']['content']})
+        self.assertEqual(self._analisis()['fases_incompletas'], {})
+        paginas_800 = [q for q in self._cerca(api) if q.get('faseVigent') == '800' and q['size'] == '2000']
+        self.assertEqual(len(paginas_800), 1)
+
+    def test_tramo_que_devuelve_menos_se_vuelve_a_leer_partido(self):
+        # 6.000 registros en cuatro días, empatados dentro de cada día y en otro orden en cada
+        # petición: en páginas de 2.000 se repiten unos y faltan otros; partido, cada día (1.500)
+        # cabe en una página. Nada queda como hueco
+        dia_1 = [dict(r, _orden='0') for r in _registros(1500, 20, 100000, dia='2024-03-01')]
+        dia_2 = [dict(r, _orden='1') for r in _registros(1500, 20, 200000, dia='2024-03-02')]
+        dia_3 = [dict(r, _orden='2') for r in _registros(1500, 20, 300000, dia='2024-03-03')]
+        dia_4 = [dict(r, _orden='3') for r in _registros(1500, 20, 400000, dia='2024-03-04')]
+        regs = dia_1 + dia_2 + dia_3 + dia_4
+        api = APIFalsa(regs, inestable=True, tope_total=10000)
+        with self.assertLogs(cat_menores.logger, level=logging.INFO) as logs:
+            self._ejecutar(api)
+        self.assertTrue(any("se lee partido" in m for m in logs.output), logs.output)
+        self.assertEqual(len(self._salida()), 6000)
+        self.assertEqual(self._analisis()['fases_incompletas'], {})
+
+    def test_pagina_mas_pequena_que_la_pedida_no_se_toma_por_la_ultima(self):
+        # Si la API sirviera páginas de 500, una página llena de 500 no es la última y la ventana
+        # son 20 páginas: se leen las 3.000 sin pasar de ella
+        api = APIFalsa(_registros(3000, 20, 100000) + _registros(250, 10, 1), tamano_max=500)
+        with self.assertLogs(cat_menores.logger, level=logging.INFO) as logs:
+            self._ejecutar(api)
+        self.assertEqual(len(self._salida()), 3250)
+        self.assertTrue(all(int(q['page']) < 20 for q in self._cerca(api)))
+        # Se lee de una vez, sin volver a pedirlo partido: 6 páginas llenas y una vacía
+        self.assertFalse(any("se lee partido" in m for m in logs.output), logs.output)
+        paginas = [int(q['page']) for q in self._cerca(api) if q.get('faseVigent') == '20' and q['size'] != '1']
+        self.assertEqual(paginas, list(range(7)))
+
+    def test_filtro_de_fecha_ignorado_para_antes_de_descargar(self):
+        # Si la API dejara de filtrar por fecha, cada tramo daría la fase entera y partirlo no
+        # acabaría: se para antes de pedir ninguna fase
+        api = APIFalsa(_registros(12000, 20, 100000) + _registros(250, 10, 1), tope_total=10000,
+                       sin_filtro_fecha=True)
+        with self.assertRaisesRegex(RuntimeError, 'no filtra'):
+            self._ejecutar(api)
+        self.assertFalse(any('faseVigent' in q for q in self._cerca(api)))
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), [])
+
+    def test_recuento_fallido_de_un_tramo_no_marca_la_fase_como_completa(self):
+        def falla_tramo(q):
+            if q.get('faseVigent') == '20' and q.get(FECHA_FILTRO) == '3' and q.get('size') == '1':
+                return web.Response(status=503)
+
+        regs = _registros(250, 10, 1) + _registros(12000, 20, 100000)
+        with self.assertRaises(RuntimeError):
+            self._ejecutar(APIFalsa(regs, fallo=falla_tramo, tope_total=10000))
+        self.assertEqual(self._checkpoint()['completed_fases'], [10])
+        self.assertFalse(self.out.exists())
+
+    def test_valores_fuera_de_las_listas_se_leen_sin_hueco(self):
+        # Ámbito, tipo y procedimiento que no están en las listas fijas, repartidos en el mes:
+        # antes no salían si el segmento sumaba 10.000 o más con los demás; ahora, sí
+        regs = (_registros(9000, 20, 100000) + _registros(2000, 20, 200000, ambit=1599999)
+                + _registros(1500, 20, 300000, tipus=999999, proc=None) + _registros(30, 800, 900000))
+        api = APIFalsa(regs, tope_total=10000)
+        self._ejecutar(api)
+        salida = self._salida()
+        self.assertEqual(len(salida), 12530)
+        self.assertEqual(self._analisis()['fases_incompletas'], {})
+        self.assertEqual(self._analisis()['ambito'], {'normales': {'organos_excluidos': []},
+                                                      'agregadas': {'organos_excluidos': []}})
+
+
+class PartirTramoTests(unittest.TestCase):
+    def test_mitades_sin_hueco_ni_solape(self):
+        d = cat_menores.date
+        hoy = d(2026, 10, 26)
+        uno = cat_menores.timedelta(days=1)
+        for desde, hasta in [(None, None), (None, d(2017, 5, 29)), (d(2017, 5, 30), None), (d(2024, 1, 1), d(2024, 1, 2)),
+                             (d(2024, 1, 1), d(2024, 12, 31)), (d(2027, 1, 1), None), (None, d(2001, 3, 1)),
+                             (hoy, None)]:
+            with self.subTest(desde=desde, hasta=hasta):
+                (d1, h1), (d2, h2) = cat_menores.partir_tramo(desde, hasta, hoy)
+                self.assertEqual((d1, h2), (desde, hasta))
+                self.assertEqual(d2, h1 + uno)
+                if desde is not None:
+                    self.assertLessEqual(desde, h1)
+                if hasta is not None:
+                    self.assertLessEqual(d2, hasta)
+        self.assertEqual(cat_menores.partir_tramo(None, None, hoy), ((None, d(2017, 5, 29)), (d(2017, 5, 30), None)))
+
+    def test_con_tramo(self):
+        d = cat_menores.date
+        self.assertEqual(cat_menores.con_tramo({'faseVigent': 50}, None, None), {'faseVigent': 50})
+        self.assertEqual(cat_menores.con_tramo({'faseVigent': 50}, d(2024, 1, 1), None),
+                         {'faseVigent': 50, 'dataUltimaPublicacio': 3, 'intervalIniciUltimaPublicacio': '2024-01-01'})
+        p = cat_menores.con_tramo({'faseVigent': 50, 'intervalIniciUltimaPublicacio': 'x'}, None, d(2024, 2, 1))
+        self.assertEqual(p, {'faseVigent': 50, 'dataUltimaPublicacio': 3, 'intervalFiUltimaPublicacio': '2024-02-01'})
+
+
 META = ['_primera_descarga', '_ultima_descarga', '_en_ultima_descarga']
 ORGANOS_7_8 = {1500001: [7, 8]}
 
 
 def _datos_organos(n7, sin=()):
-    """Fase 20 con el órgano 7 (n7 registros) y el 8 (300), más las fases 10 y 800."""
-    regs = (_registros(250, 10, 1) + _registros(n7, 20, 100000, organs=(7,))
+    """Fase 20 con el órgano 7 (n7 registros, todos el mismo día: los tramos de fecha no lo
+    parten) y el 8 (300), más las fases 10 y 800."""
+    regs = (_registros(250, 10, 1) + _registros(n7, 20, 100000, organs=(7,), dia='2024-02-01')
             + _registros(300, 20, 200000, organs=(8,)) + _registros(30, 800, 900000))
     return [r for r in regs if r['id'] not in set(sin)]
 
@@ -1082,11 +1401,13 @@ class SesgoSupervivienteMenoresTests(_EjecucionMenores, unittest.TestCase):
         self.assertTrue(set(range(101000, 101500)) <= set(salida.loc[salida['_en_ultima_descarga'], 'id']))
 
     def test_hueco_que_no_es_de_un_solo_organo_no_retira_nada_de_su_grupo(self):
-        # Registros de un ámbito que no está en AMBITS: solo salen al pedir la fase entera en
-        # los dos órdenes; con 2.500 no se llega al medio y el hueco no es de un órgano
+        # Registros de un ámbito que no está en AMBITS, todos el mismo día: ese día solo salen
+        # al pedirlo entero en los dos órdenes; con 2.500 no se llega al medio y el hueco no es
+        # de un órgano
         def datos(n_fuera, sin=()):
             regs = (_registros(250, 10, 1) + _registros(300, 20, 200000, organs=(8,))
-                    + _registros(n_fuera, 20, 300000, ambit=1599999) + _registros(30, 800, 900000))
+                    + _registros(n_fuera, 20, 300000, ambit=1599999, dia='2024-02-01')
+                    + _registros(30, 800, 900000))
             return [r for r in regs if r['id'] not in set(sin)]
 
         self._ejecutar_ventana_1000(datos(500))
