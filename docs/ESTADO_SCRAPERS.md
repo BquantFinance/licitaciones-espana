@@ -15,7 +15,8 @@ Qué scripts están **cerrados** (revisados, con tests en pandas 3 y 2.2 y con e
 | `scripts/ccaa_aragon.py` | Cerrado | `90978d2` | Sí (cabecera `<TH>` de los .xls del Gobierno, euro en 0xA4 y `_razon_social_es_pais` del Registro, con los crudos de producción del 28-sep: +17 filas, 11 filas marcadas en mayores, 40 en menores y 19 en encargos, y el resto igual salvo 178 celdas por la codificación) |
 | `scripts/ccaa_castilla_leon.py` | Cerrado | `0263faf` | Sí |
 | `scripts/ccaa_extremadura.py` | Cerrado | `4163d85` | Sí |
-| `scripts/ccaa_la_rioja.py`, `scripts/ccaa_valencia_menores.py` | Cerrado | `9190268` | Sí |
+| `scripts/ccaa_la_rioja.py` | Cerrado | `9190268` | Sí |
+| `scripts/ccaa_valencia_menores.py` | Cerrado (enlace sin texto que da 404: no publicado, no aviso) | `5b6283c` | Sí (la sección real de la Diputación de Alicante del 2026-10-26: 31 ficheros, solo RP-922 oculto) |
 | `scripts/ccaa_castilla_la_mancha.py` | Cerrado | `d015194` | Sí |
 | `scripts/municipios_menores.py` | Cerrado (Palma desde `0f8e56a`) | `0f8e56a` | Sí (errores de origen permanentes en `raw/_fallos_origen.json`: Leganés y Málaga siguen fallando igual el 29-sep; con los datos de producción, los 8 Parquet idénticos byte a byte con el código anterior; Valladolid ya leía su cabecera, los avisos eran de hojas auxiliares; una entrada del registro que no es un objeto se descarta con aviso). Palma, en vivo el 2026-10-26 (solo `--municipio palma`): 39 hojas de cálculo, 33.674 filas 2017-2026 y 52 PDF anotados; el resto de municipios no cambia de código |
 | `scripts/ccaa_asturias.py` | Cerrado | `aefb659` | Sí, en la descarga de producción (2026-09-28): 2019-2024, 375.380 filas; la semilla no añade ninguna; 2025 y 2026 dan 404 en `dataset-contratacion-centralizada-<año>.csv` |
