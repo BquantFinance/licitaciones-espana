@@ -79,8 +79,8 @@ def anonymize_empresas(df_emp: pd.DataFrame) -> pd.DataFrame:
         "fecha_borme", "num_borme", "num_entrada",
         "empresa", "empresa_norm", "provincia", "cod_provincia",
         "tipo_borme", "actos", "actos_detalle", "domicilio", "capital_euros",
-        "fecha_constitucion", "hoja_registral", "tomo", "inscripcion",
-        "fecha_inscripcion", "pdf_filename",
+        "fecha_constitucion", "hoja_registral", "tomo", "libro", "folio", "seccion",
+        "inscripcion", "fecha_inscripcion", "pdf_filename",
     ]
     cols = [c for c in keep_cols + COLUMNAS_CONTROL if c in df_emp.columns]
     # Sin .copy(): no se modifica y la copia duplicaba la tabla (9,6 M de filas con la semilla)

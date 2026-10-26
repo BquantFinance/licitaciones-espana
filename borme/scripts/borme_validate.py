@@ -17,6 +17,30 @@ ENTRY_START_RE = re.compile(r'^(\d{1,7})\s*-\s*', re.MULTILINE)
 _BODY_START_RE = re.compile(r'(?<=\.)\s+(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})')
 _FE_ERRATAS_RE = re.compile(r'\.\s+Fe de erratas')
 
+# Acto pegado al nombre sin punto (como _ACTO_PEGADO_RE del batch parser, mismos actos: un
+# test comprueba que el patrón es el mismo)
+ACTOS = [
+    "Constitución", "Disolución", "Extinción",
+    "Ceses/Dimisiones", "Nombramientos", "Revocaciones", "Reelecciones",
+    "Cancelaciones de oficio de nombramientos", "Nombramiento de administradores",
+    "Modificaciones estatutarias", "Cambio de domicilio social", "Cambio de objeto social",
+    "Cambio de denominación social", "Ampliación del objeto social", "Ampliacion del objeto social",
+    "Ampliación de capital", "Reducción de capital",
+    "Fusión por absorción", "Fusión", "Escisión", "Transformación de sociedad", "Transformación",
+    "Situación concursal", "Auto de declaración de concurso", "Auto de apertura de la fase de liquidación",
+    "Auto de conclusión del concurso", "Revocación de administradores concursales", "Crédito incobrable",
+    "Cierre provisional hoja registral", "Reapertura hoja registral",
+    "Declaración de unipersonalidad", "Pérdida del carácter de unipersonalidad",
+    "Pérdida del caracter de unipersonalidad",
+    "Otros conceptos", "Fe de erratas", "Depósito de cuentas anuales",
+    "Empresario Individual", "Sociedad unipersonal",
+]
+_ACTO_PEGADO_RE = re.compile(
+    r'(?:(?<=\))\s*|(?<=[A-ZÁÉÍÓÚÑÜ0-9])\s+)(?=(?:'
+    + '|'.join(re.escape(a) for a in sorted(ACTOS, key=len, reverse=True))
+    + r'|Datos registrales)[.:](?:\s|$))')
+_TRAS_NUMERO_MINUSCULAS_RE = re.compile(r'[A-ZÁÉÍÓÚÑ][a-záéíóúñ]')
+
 _LEGAL_FORMS = frozenset({
     'Sociedad', 'Limitada', 'Anónima', 'Anonima', 'Cooperativa', 'Profesional',
     'Laboral', 'Deportiva', 'Unipersonal', 'Civil', 'Comanditaria', 'Colectiva',
@@ -75,14 +99,31 @@ def clean(raw):
 def entry_starts(text):
     """Inicios de anuncio (como _entry_starts del batch parser): un número de
     1-3 cifras solo cuenta con formato "N - " y si es el primero o continúa
-    la numeración."""
+    la numeración; uno de 4 o más que no la continúa no cuenta si sigue con una
+    palabra en minúsculas, si la numeración continúa más adelante o si va hacia
+    atrás sin que le siga su número + 1 (códigos CNAE a principio de línea)."""
+    candidatos = list(ENTRY_START_RE.finditer(text))
+    minusculas = [bool(_TRAS_NUMERO_MINUSCULAS_RE.match(text, m.end())) for m in candidatos]
+    posiciones = {}
+    for i, m in enumerate(candidatos):
+        if not minusculas[i]:
+            posiciones.setdefault(int(m.group(1)), []).append(i)
+
+    def despues(numero, i):
+        return any(j > i for j in posiciones.get(numero, ()))
+
     starts = []
-    for m in ENTRY_START_RE.finditer(text):
+    for i, m in enumerate(candidatos):
         num = m.group(1)
-        if len(num) < 4 and (
-                num.startswith("0") or not m.group(0).startswith(num + " ")
-                or (starts and int(num) != int(starts[-1].group(1)) + 1)):
-            continue
+        if len(num) < 4:
+            if (num.startswith("0") or not m.group(0).startswith(num + " ")
+                    or (starts and int(num) != int(starts[-1].group(1)) + 1)):
+                continue
+        elif starts and int(num) != int(starts[-1].group(1)) + 1:
+            sigue = int(starts[-1].group(1)) + 1
+            if (minusculas[i] or despues(sigue, i)
+                    or (int(num) < sigue and not despues(int(num) + 1, i))):
+                continue
         starts.append(m)
     return starts
 
@@ -111,6 +152,10 @@ def find_empresa(block):
     fe = _FE_ERRATAS_RE.search(block)
     if fe:
         body_pos = fe.start() + 1
+
+    pegado = _ACTO_PEGADO_RE.search(block)
+    if pegado and pegado.end() < body_pos:
+        body_pos = pegado.end()
 
     for m in _BODY_START_RE.finditer(block):
         if m.start() + 1 >= body_pos:
