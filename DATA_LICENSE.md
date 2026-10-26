@@ -5,7 +5,7 @@ Los datos de este repositorio y de sus releases tienen tres capas, cada una con 
 | Qué | Licencia |
 |---|---|
 | **El código**: scripts, tests y documentación | [MIT](LICENSE) |
-| **Lo que añade este proyecto a los datos**: columnas de control y marcas (`_primera_descarga`, `_en_ultima_descarga`, `_origen`, `_duplicado`, `_columnas_corridas`…), versiones de la PLACSP (`n_versiones`, `es_ultima_version`, `entrada_repetida`), valores corregidos (`<campo>_corregido`, `correccion_<campo>`), [`calidad/errores_fuente.csv`](calidad/errores_fuente.csv), indicadores de calidad, cruces entre fuentes y el código seudónimo del BORME (`persona_hash`) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es) |
+| **Lo que añade este proyecto a los datos**: columnas de control y marcas (`_primera_descarga`, `_en_ultima_descarga`, `_origen`, `_duplicado`, `_columnas_corridas`, `_nif_enmascarado`, `_suprimido_art21`…), versiones de la PLACSP (`n_versiones`, `es_ultima_version`, `entrada_repetida`), valores corregidos (`<campo>_corregido`, `correccion_<campo>`), [`calidad/errores_fuente.csv`](calidad/errores_fuente.csv), indicadores de calidad, cruces entre fuentes y el código seudónimo del BORME (`persona_hash`) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es) |
 | **Los datos de origen**: los valores tal como los publica cada portal | La licencia o las condiciones de reutilización de cada portal ([tabla](#por-fuente)) |
 
 Para atribuir lo que añade este proyecto: «licitaciones-espana, BQuant Finance, https://github.com/BquantFinance/licitaciones-espana (CC BY 4.0)», o la cita de [`CITATION.cff`](CITATION.cff).
@@ -24,8 +24,13 @@ En España, el marco general es la [Ley 37/2007](https://www.boe.es/buscar/act.p
 ## Datos personales
 
 - Algunas fuentes publican el nombre y el NIF de personas físicas: por ejemplo, autónomos adjudicatarios de contratos menores.
-- Los cargos del BORME se publican **seudonimizados** (`persona_hash`): no es anonimización. El código es el mismo para el mismo nombre, así que se pueden seguir los cargos de una persona cuyo nombre ya se conoce, y junta a los homónimos.
-- Su reutilización está sujeta al RGPD y a la LOPDGDD. El BOE lo exige expresamente en sus condiciones.
+- **Desde la próxima versión de la release (la siguiente a v2026.10)**:
+  - **NIF de personas físicas enmascarado** con el formato de la [disposición adicional séptima de la LOPDGDD](https://www.boe.es/buscar/act.php?id=BOE-A-2018-16673#daseptima) y la orientación de la AEPD y las autoridades autonómicas de protección de datos para aplicarla (marzo de 2019): se publican solo las cifras cuarta a séptima y un asterisco por cada letra y cada cifra que no se publica. Un DNI `12345678X` sale como `***4567**`; un NIE `X1234567L`, como `****4567*`. Se aplica a todo NIF de persona física (DNI, NIE o NIF K, L, M) en cualquier columna de texto, también dentro de identificadores y descripciones. Lo que la fuente ya publica enmascarado se deja como viene. La columna `_nif_enmascarado` marca las filas en que se ha enmascarado algo. El nombre se publica como lo publica la fuente.
+  - **Supresión y oposición** (artículos 17 y 21 del RGPD): quien lo pide sale de los datos; en sus filas, el nombre pasa a `[persona física]` y el NIF queda vacío, con la marca `_suprimido_art21`. Las filas, los importes y las fechas no cambian. Para pedirlo: bquantfinance@gmail.com.
+  - **Cargos del BORME**: `persona_hash` pasa a ser un HMAC-SHA256 con una clave secreta del proyecto, truncado a 16 caracteres hexadecimales. Sigue siendo el mismo para el mismo nombre dentro de una versión, pero ya no se puede calcular a partir de un nombre, y no enlaza con el código de v2026.10.
+- **La versión v2026.10, ya publicada, no se modifica**: lleva los NIF tal como los publica cada fuente y el `persona_hash` anterior (SHA-256 del nombre con una sal que está en el código, truncado), que cualquiera puede calcular a partir de un nombre. Es un dato personal seudonimizado, no anonimizado: no lo uses para seguir a una persona.
+- Los cargos del BORME se publican **seudonimizados** (`persona_hash`): no es anonimización. El código es el mismo para el mismo nombre, así que junta a los homónimos.
+- Su reutilización está sujeta al RGPD y a la LOPDGDD. El BOE lo exige expresamente en sus condiciones. Para ejercer tus derechos sobre los datos de este repositorio: bquantfinance@gmail.com.
 
 ## Por fuente
 

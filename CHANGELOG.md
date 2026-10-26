@@ -4,6 +4,12 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 
 ## [Sin publicar]
 
+### Datos personales (próxima versión de la release)
+
+- **NIF de personas físicas enmascarado** con el formato de la disposición adicional séptima de la LOPDGDD (cifras cuarta a séptima: `***4567**`), en toda columna de texto, con la marca `_nif_enmascarado`. El nombre, como la fuente.
+- **Supresión y oposición** (arts. 17 y 21 del RGPD): quien lo pide sale de los datos (`[persona física]`, sin NIF; marca `_suprimido_art21`). Contacto: bquantfinance@gmail.com.
+- **BORME: `persona_hash` con clave secreta** (HMAC-SHA256): ya no se puede calcular a partir de un nombre ni enlazar con v2026.10. La v2026.10 publicada no cambia. [Detalle](DATA_LICENSE.md#datos-personales).
+
 ### Añadido
 
 - **TED: licitadores y estadísticas de ofertas de cada lote** (`ted/ted_module.py`): dos tablas nuevas desde los XML eForms que ya se guardan, sin pedir nada a TED. `ted_resultados_lote_es.parquet`, una fila por resultado de lote con todas las estadísticas de ofertas recibidas (BT-759/760: de pymes, por tamaño, electrónicas, de otro país del EEE o de fuera, solicitudes de participación, inadmisibles), y `ted_licitadores_es.parquet`, una fila por oferta descrita, gane o no, con su importe, su rango y su licitador (nombre, identificador, país y tamaño). Se rehacen al final de cada `download` o con `python ted/ted_module.py licitadores`. Las filas, las cachés y el consolidado no cambian: con los 101.593 XML de 2023-2026, las filas salen iguales XML a XML. [Ficha](docs/fuentes/ted.md).
