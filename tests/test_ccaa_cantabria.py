@@ -11,7 +11,7 @@ línea. Los NIF son inventados.
 import importlib.util
 import json
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -169,16 +169,44 @@ def test_primera_descarga_un_fichero_por_mes_y_parquet_como_texto(api, tmp_path)
     assert f"MESES SIN CONTRATOS EN LA API (1):\n   - {ANIO}-02" in log
 
 
-def test_segunda_ejecucion_sin_cambios(api, tmp_path):
+def test_segunda_ejecucion_sin_cambios(api, tmp_path, monkeypatch):
+    """Sin cambios en la API, otra ejecución no guarda versión nueva del crudo ni cambia los registros. Las fechas de versión
+    van al segundo: si la comprobación cae en el mismo segundo que la descarga, el Parquet sale idéntico byte a byte; si cae
+    después (la ejecución de la semana siguiente), solo cambia `_ultima_descarga` de los registros reconfirmados
+    (comun.salida.acumular_fichero) y la versión anterior del Parquet va a _historico/. Se fija el reloj (M.ahora) en las
+    dos: antes el resultado dependía de en qué segundo acababa la primera ejecución, y el test fallaba a veces."""
     api.contratos = [contrato(date(ANIO, 1, 5))]
     assert ejecutar(tmp_path, "--desde", mes(ANIO, 1), "--hasta", mes(ANIO, 1)) == 0
-    antes = (tmp_path / "contratos.parquet").read_bytes()
+    crudo = tmp_path / "raw" / "contratos" / str(ANIO) / f"{ANIO}-01.csv"
+    descarga = datetime.fromtimestamp(crudo.stat().st_mtime, timezone.utc)
+    antes_bytes = (tmp_path / "contratos.parquet").read_bytes()
+    antes = parquet(tmp_path)
+
+    def sin_cambios_en_la_ultima():
+        ultima = (tmp_path / "raw" / "descarga_log.txt").read_text(encoding="utf-8").rsplit("Inicio:", 1)[1]
+        assert "DESCARGADOS" not in ultima
+        assert f"SIN CAMBIOS (1):\n   - contratos {ANIO}-01 {ANIO}-01.csv (1 contratos)" in ultima
+        assert not (tmp_path / "raw" / "contratos" / str(ANIO) / "_historico").exists()
+
+    # En el mismo segundo que la descarga: nada cambia
+    monkeypatch.setattr(M, "ahora", lambda: descarga)
     assert ejecutar(tmp_path, "--desde", mes(ANIO, 1), "--hasta", mes(ANIO, 1)) == 0
-    assert (tmp_path / "contratos.parquet").read_bytes() == antes
-    assert not (tmp_path / "raw" / "contratos" / str(ANIO) / "_historico").exists()
-    ultima = (tmp_path / "raw" / "descarga_log.txt").read_text(encoding="utf-8").rsplit("Inicio:", 1)[1]
-    assert "DESCARGADOS" not in ultima
-    assert f"SIN CAMBIOS (1):\n   - contratos {ANIO}-01 {ANIO}-01.csv (1 contratos)" in ultima
+    assert (tmp_path / "contratos.parquet").read_bytes() == antes_bytes
+    assert not (tmp_path / "_historico").exists()
+    sin_cambios_en_la_ultima()
+
+    # Una semana después: los mismos registros; solo _ultima_descarga pasa a la fecha de la comprobación
+    semana = descarga + timedelta(days=7)
+    monkeypatch.setattr(M, "ahora", lambda: semana)
+    assert ejecutar(tmp_path, "--desde", mes(ANIO, 1), "--hasta", mes(ANIO, 1)) == 0
+    sin_cambios_en_la_ultima()
+    despues = parquet(tmp_path)
+    assert manifiesto(tmp_path)[f"contratos/{ANIO}/{ANIO}-01.csv"]["comprobado"] == M.iso(semana)
+    assert despues["_ultima_descarga"].tolist() == [M.iso(semana)] != antes["_ultima_descarga"].tolist()
+    assert despues["_en_ultima_descarga"].all()
+    iguales = [c for c in antes.columns if c != "_ultima_descarga"]
+    pd.testing.assert_frame_equal(despues[iguales], antes[iguales])
+    assert len(list((tmp_path / "_historico").glob("contratos__*.parquet"))) == 1
 
 
 def test_meses_antiguos_solo_con_comprobar_todo(api, tmp_path):
