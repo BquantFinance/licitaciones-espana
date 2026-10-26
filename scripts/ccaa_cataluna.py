@@ -109,6 +109,20 @@ SOCRATA_DATASETS = {
     'x5xm-w9x7': ('07_territorio/municipis_espanya', 'Municipis d\'Espanya'),
 }
 
+# Datasets de la lista que el portal ya no sirve: HTTP 404 en api/views (CSV y metadatos), en
+# resource/ y en /d/, y no están en el catálogo del portal (Discovery API) ni en Wayback
+# (comprobado el 2026-10-26). Nunca se han descargado aquí: dan 404 desde la primera descarga en
+# producción (28-sep-2026) y no están en la release v2026.02. Se siguen pidiendo cada vez, por si
+# vuelven: con 404 se anotan como retirados en origen (no son un fallo de la descarga); si vuelven a
+# responder, se descargan como los demás y se avisa para quitarlos de aquí. Lo más parecido que
+# sirve hoy el portal ya se descarga: ybgg-dgi6 (publicaciones de la PSCP, también las licitaciones
+# en curso) y nn7v-4yxe (adjudicaciones de la Generalitat de los últimos 5 años; 9uy7-wgbh las trae
+# desde 2015, con las mismas columnas salvo cuatro, y no está en la lista).
+SOCRATA_RETIRADOS = {
+    'a23c-d6vp': '2026-09-28',
+    'jxvs-kzbu': '2026-09-28',
+}
+
 # =============================================================================
 # OPEN DATA BARCELONA (CKAN)
 # =============================================================================
@@ -158,7 +172,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__).info
 
-stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0}
+stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0, 'retirados': 0}
 
 # Session con headers
 session = requests.Session()
@@ -181,16 +195,21 @@ def epoch_ckan(valor):
     return fecha.timestamp()
 
 
-def fecha_actualizacion_socrata(dataset_id):
-    """rowsUpdatedAt (epoch) de un dataset Socrata, o None si no se puede saber"""
+def metadatos_socrata(dataset_id):
+    """(código HTTP o None, rowsUpdatedAt en epoch o None) de los metadatos de un dataset Socrata."""
     try:
         r = session.get(f"{SOCRATA_BASE}/api/views/{dataset_id}.json", timeout=30)
         if r.status_code == 200:
             valor = r.json().get('rowsUpdatedAt')
-            return float(valor) if valor else None
+            return 200, (float(valor) if valor else None)
+        return r.status_code, None
     except Exception:
-        pass
-    return None
+        return None, None
+
+
+def fecha_actualizacion_socrata(dataset_id):
+    """rowsUpdatedAt (epoch) de un dataset Socrata, o None si no se puede saber"""
+    return metadatos_socrata(dataset_id)[1]
 
 
 def download_with_progress(url, path, desc="", timeout=600, modificado=None):
@@ -312,7 +331,16 @@ def download_socrata_datasets(output_dir):
         # Descargar CSV
         url_csv = f"{SOCRATA_BASE}/api/views/{dataset_id}/rows.csv?accessType=DOWNLOAD"
         path_csv = Path(str(full_path) + ".csv")
-        modificado = fecha_actualizacion_socrata(dataset_id)
+        codigo, modificado = metadatos_socrata(dataset_id)
+        if dataset_id in SOCRATA_RETIRADOS:
+            if codigo == 404:
+                log(f"   🗄️ Retirado en origen: {dataset_id} da HTTP 404 desde {SOCRATA_RETIRADOS[dataset_id]} "
+                    f"(no es un fallo; se sigue comprobando)")
+                stats['retirados'] += 1
+                time.sleep(1)
+                continue
+            log(f"   ⚠️ {dataset_id} está en SOCRATA_RETIRADOS pero responde (HTTP {codigo}): se descarga; "
+                f"quitarlo de la lista")
         
         if download_with_progress(url_csv, path_csv, descripcion, modificado=modificado):
             n = count_csv_records(path_csv)
@@ -343,6 +371,8 @@ def download_socrata_metadata(output_dir):
             if r.status_code == 200:
                 with open(path, 'w', encoding='utf-8') as f:
                     json.dump(r.json(), f, ensure_ascii=False, indent=2)
+            elif r.status_code == 404 and dataset_id in SOCRATA_RETIRADOS:
+                pass   # retirado en origen: ya consta en la descarga
             else:
                 log(f"   ⚠️ Metadatos {dataset_id}: HTTP {r.status_code}")
         except Exception as e:
@@ -534,6 +564,7 @@ Categorías incluidas:
     log(f"✅ Archivos descargados: {stats['downloaded']}")
     log(f"⏭️ Archivos saltados: {stats['skipped']}")
     log(f"❌ Archivos fallidos: {stats['failed']}")
+    log(f"🗄️ Retirados en origen (HTTP 404, ver SOCRATA_RETIRADOS): {stats['retirados']}")
     log(f"📝 Registros totales: {stats['records']:,}")
     log(f"💾 Tamaño total: {stats['bytes']/1024/1024:.2f} MB")
     log(f"⏱️ Tiempo: {elapsed/60:.1f} minutos")
@@ -550,6 +581,7 @@ Categorías incluidas:
 - Archivos descargados: {stats['downloaded']}
 - Archivos saltados: {stats['skipped']}
 - Archivos fallidos: {stats['failed']}
+- Retirados en origen (HTTP 404): {stats['retirados']}
 - Registros totales: {stats['records']:,}
 - Tamaño total: {stats['bytes']/1024/1024:.2f} MB
 - Tiempo: {elapsed/60:.1f} minutos
@@ -611,14 +643,14 @@ Categorías incluidas:
 #### Contratación Pública ({len([k for k in SOCRATA_DATASETS if '01_contratacion' in SOCRATA_DATASETS[k][0]])} datasets)
 - Registro Público de Contratos (hb6v-jcbf) - PRINCIPAL
 - Publicaciones PSCP (ybgg-dgi6)
-- Licitaciones y adjudicaciones en curso (a23c-d6vp)
+- Licitaciones y adjudicaciones en curso (a23c-d6vp; retirado en origen: 404 desde el 28-sep-2026)
 - Contratación programada (u9d7-egbx)
 - Emergencia COVID-19 (5fq6-4v39)
 - Resoluciones Tribunal (dkrd-id95)
 - Adjudicaciones Generalitat (nn7v-4yxe)
 - Fase ejecución (8idu-wkjv)
 - Contratos menores de la Generalitat (qjue-2pk9; importes en céntimos)
-- Adjudicaciones quincenales (jxvs-kzbu)
+- Adjudicaciones quincenales (jxvs-kzbu; retirado en origen: 404 desde el 28-sep-2026)
 
 #### Subvenciones y Ayudas ({len([k for k in SOCRATA_DATASETS if '02_subvenciones' in SOCRATA_DATASETS[k][0]])} datasets)
 - RAISC Concesiones (s9xt-n979)
