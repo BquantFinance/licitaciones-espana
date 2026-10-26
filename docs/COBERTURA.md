@@ -107,7 +107,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Aragón | ~30 % | = (2024-2025 del Gobierno recuperados) | Registro 99,96 %; Gobierno sin NIF | Ayuntamiento de Zaragoza y DPZ (bloqueados desde el entorno de desarrollo), SALUD pequeños, UZ |
 | C. Valenciana | ~35 % | ~50 % (`scripts/ccaa_valencia_menores.py`: UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV, verificado en vivo) | REGCON 93 %; UV 97,9 %; València 100 %; Diputación, UA y UPV sin NIF | Departamentos de salud, Elche, Castelló y Diputació de València (cortan la conexión desde el entorno de desarrollo), UJI |
 | Canarias | ~30 % | ~30-35 % (`scripts/ccaa_canarias.py`, verificado en vivo el 2026-09-30: CSV del Gobierno, que es su PLACSP; Las Palmas de GC 2016-2026; Cabildo de Tenerife 2019-2025; y los resúmenes del SCS y de los departamentos como denominador) | Gobierno 99,96 %; Las Palmas 100 % en 2025; Tenerife sin NIF | **SCS: 89.340 menores en 2025 según sus propios resúmenes y ~1.500 contrato a contrato (1,7 %)**: pedir el resto por acceso a la información. Los departamentos publican casi todo en la PLACSP |
-| Illes Balears | ~15 % | = | — | Govern e IB-Salut (la CAIB publica ~2 mil/año, copia de PLACSP), Palma (bloqueado), UIB (PDF) |
+| Illes Balears | ~15 % | ~20 % (Palma, `scripts/municipios_menores.py`, 2026-10-26: 2017-2026, ~3 mil al año, ninguno en el 1143) | Palma sin NIF (salvo el 1T de 2024) | Govern e IB-Salut (la CAIB publica ~2 mil/año, copia de PLACSP), UIB (PDF) |
 | Cantabria | parcial | = | — | contratosdecantabria.es congelado en noviembre de 2023; cantabria.es bloqueado desde el entorno de desarrollo |
 | Navarra | ~0 % contrato a contrato | = | — | **La ley foral (art. 102.3 LFCP) solo obliga a publicar la menor cuantía agregada por empresa y trimestre**: 519 documentos en 2024, el 84 % PDF |
 | Ceuta / Melilla | 1143 / ~0 | = | — | Melilla publica en PDF en la pestaña "Documentos" de su perfil |
@@ -283,7 +283,7 @@ Ningún órgano autonómico ni local catalán publica menores en el 1143. En Cat
 | PLACSP 1143 | Consells (Eivissa, Mallorca, Formentera; el de Mallorca remite aquí sus menores), ayuntamientos salvo Palma, IB-Salut (≈ 50 al mes), Govern | ATOM | 2018 en adelante | ≈ 8,4 K | Sí | — | A | |
 | Transparència de la CAIB, "Contractes menors" | Govern y sector público instrumental (IB-Salut 42 %, IBISEC 10 %) | CSV, XLS y ODS | 24-7-2017 a 30-6-2026 | 1,3-2,5 K (16.331 filas en total). CIF, enmascarado en el 11 % | No | Sí: se genera desde PLACSP | A | caib.es/sites/transparencia/ca/contractes_menors/ |
 | Plataforma de contractació de la CAIB (menores 2008-2017) | Govern | HTML | 6-2008 a 23-7-2017 | — | No | No | A | **Retirada**: redirige a una URL rota |
-| Ajuntament de Palma, relación trimestral | Ajuntament | XLSX trimestral | 2023-2026 | — | No | No (0) | M (el sitio corta la conexión desde el entorno de desarrollo) | palma.es/es/contratos-menores |
+| Ajuntament de Palma, relación trimestral | Ajuntament | XLS/XLSX trimestral (2017-) y PDF (2013-) | 2013-2026 | 2,5-5 K (2025: 3.041); sin NIF salvo el 1T de 2024 | Sí (`municipios_menores.py`, 2026-10-26) | No (0) | A | palma.es/es/contratos-menores |
 | UIB | UIB | PDF trimestral | 2019-2023 o más | — | No | No (0) | M | transparencia.uib.cat |
 
 #### Aragón
@@ -310,7 +310,7 @@ Estimación de orden de magnitud (B). La referencia es la tasa per cápita de me
   - Sanidad: los departamentos de salud aportan ≈ 1,6 K al año en el 1143 y ≈ 0,6 K en REGCON.
   - Universidades: la UV publica ≈ 17 K en sus XLSX frente a ≈ 1 K en el 1143; UPV, UA y UMH no aparecen.
   - València, Elche y la Diputación de Alicante.
-- **Illes Balears.** Tenemos ≈ 8,5 K al año de unos 55 K (≈ 15 %). Faltan el Govern e IB-Salut (la CAIB solo publica ≈ 2 K al año), Palma y la UIB.
+- **Illes Balears.** Tenemos ≈ 8,5 K al año de unos 55 K (≈ 15 %). Faltan el Govern e IB-Salut (la CAIB solo publica ≈ 2 K al año) y la UIB. Palma ya está (`scripts/municipios_menores.py`, ~3 K al año desde 2017).
 - **Aragón.** Tenemos ≈ 20 K al año de unos 65 K (≈ 30 %), sumando 1143 y Registro con solapamiento. Faltan el Ayuntamiento de Zaragoza, los municipios del portal de la DPZ, los menores pequeños de SALUD y los de la UZ por debajo de 5.000 € desde 2021.
 
 #### Prioridades (volumen × facilidad × valor antifraude)
@@ -324,7 +324,7 @@ Estimación de orden de magnitud (B). La referencia es la tasa per cápita de me
 | 5 | VAL: buscador de València, un POST por mes (< 500 filas) | 2 K | Sí | 0,5-1 día |
 | 6 | VAL: registro LIGATE de la Diputación de Alicante, 2016-2026 | 1,5 K | No | 0,5 día |
 | 7 | ARA: API `contrato.json` de Zaragoza, desde una red con acceso | 3-8 K (B) | Sí (M) | 1 día |
-| 8 | BAL: XLSX trimestrales de Palma, desde una red con acceso | 2-5 K (B) | — | 0,5 día |
+| 8 | ~~BAL: XLSX trimestrales de Palma~~ (hecho, 2026-10-26: `municipios_menores.py`) | 2,5-5 K | No | — |
 | 9 | ARA: menores del portal provincial de la DPZ | — | — | 1-2 días |
 | 10 | VAL: UPV, UA, UMH y las relaciones trimestrales de los departamentos de salud adjuntas a su perfil en PLACSP | 10-40 K (B) | — | 2-4 días |
 | 11 | BAL: PDF trimestrales de la UIB | — | — | 1-2 días |

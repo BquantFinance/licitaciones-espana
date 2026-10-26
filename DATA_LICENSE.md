@@ -86,6 +86,7 @@ Cada fila dice de dónde descargan los scripts, qué licencia o condiciones publ
 | **Leganés** (`municipios.zip`) | Remite a la Ley 37/2007, pero pide permiso escrito para el uso comercial | [Aviso legal](https://www.leganes.org/w/aviso-legal) |
 | **Málaga** (`municipios.zip`) | Contradictorio: el catálogo da CC BY-SA 4.0 (`by-sa-40`) y el título de la licencia dice CC BY 4.0. Ante la duda, CC BY-SA 4.0 | [Ficha](https://datosabiertos.malaga.eu/dataset/contratos-menores-2o-trimestre-2026-ayuntamiento-de-malaga) |
 | **Córdoba** (`municipios.zip`) | Licencia no especificada | [Ficha](https://datosabiertos.cordoba.es/ckan/dataset/contratos-menores) |
+| **Palma** (aún no en la release; `municipios_menores.py`) | No verificado: la página del aviso legal no muestra su texto sin JavaScript | [Aviso legal](https://www.palma.es/es/aviso-legal) |
 | **Santa Cruz de Tenerife** (`municipios.zip`) | Aviso legal restrictivo: reproducción solo para uso personal y privado | [Aviso legal](https://www.santacruzdetenerife.es/gobiernoabierto/transparencia/aviso-legal) |
 
 ### Lo que calcula el proyecto
@@ -102,6 +103,7 @@ Cada fila dice de dónde descargan los scripts, qué licencia o condiciones publ
   - el portal de contratación de la Comunidad de Madrid, que contradice el aviso general de la Comunidad;
   - los ayuntamientos de Las Palmas de Gran Canaria, Valladolid, Fuenlabrada, Leganés y Santa Cruz de Tenerife.
 - **Sin licencia especificada:** Córdoba.
+- **Sin verificar:** Palma.
 - **Contradictorios:** el Cabildo de Tenerife y Málaga.
 
 Suelen ser avisos pensados para el contenido de la web más que para los datos. Son datos que estas administraciones publican por obligación de transparencia, y el marco general de su reutilización es la Ley 37/2007. Aun así, antes de reutilizarlos, sobre todo con fines comerciales, revisa sus condiciones o pide autorización al organismo.
