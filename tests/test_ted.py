@@ -2948,3 +2948,225 @@ class TestTedAvisosVacios:
                            "tender_id": ["", "", "TEN-0001", "", ""]})
         assert tm._avisos_a_releer(df) == ["1-2024", "2-2024"]
         assert tm._avisos_a_releer(df.iloc[0:0]) == [] and tm._avisos_a_releer(None) == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Licitadores y estadísticas de ofertas de cada resultado de lote (BT-759/760, OPT-320),
+#  desde los XML eForms guardados: construir_licitadores
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _xml_tres_ofertas(estado="selec-w", contratos=("CON-0001",), cita=("TEN-0001",), estadisticas=None):
+    """Aviso de un lote con tres ofertas descritas de tres empresas; el contrato cita `cita`."""
+    estadisticas = estadisticas if estadisticas is not None else [
+        ("tenders", "5"), ("t-sme", "2"), ("t-esubm", "5"), ("t-oth-eea", "1"), ("t-no-eea", "0")]
+    return _eforms(
+        [_resultado("RES-0001", "LOT-0001", ["TEN-0001", "TEN-0002", "TEN-0003"], contratos, estado=estado,
+                    estadisticas=estadisticas)],
+        [_oferta("TEN-0001", "TPA-0001", "LOT-0001", "1000.50"), _oferta("TEN-0002", "TPA-0002", "LOT-0001", "1200"),
+         _oferta("TEN-0003", "TPA-0003", "LOT-0001")],
+        [_contrato(c, list(cita), "2025-03-01+01:00") for c in contratos],
+        [_parte("TPA-0001", ["ORG-0002"]), _parte("TPA-0002", ["ORG-0003", "ORG-0004"], lider="ORG-0004"),
+         _parte("TPA-0003", ["ORG-0005"])],
+        [_organizacion("ORG-0001", "Ayuntamiento de Sevilla", "P4109100J"),
+         _organizacion("ORG-0002", "UNO SL", "B11111111", "sme"),
+         _organizacion("ORG-0003", "DOS SA", "A22222222", "large"),
+         _organizacion("ORG-0004", "TRES SL", "B33333333", "small"),
+         _organizacion("ORG-0005", "CUATRO SL", None, "micro",
+                       ids=[("ID_PLATAFORMA", "123456"), ("NIF", "B44444444")])],
+        [_lote("LOT-0001", "Lote único")])
+
+
+def _comprador_es(xml):
+    """El aviso con su comprador (ORG-0001, España), su tipo, subtipo y fecha de publicación."""
+    texto = xml.decode("utf-8")
+    texto = texto.replace(
+        "</efext:EformsExtension>",
+        '<efac:NoticeSubType><cbc:SubTypeCode listName="notice-subtype">29</cbc:SubTypeCode></efac:NoticeSubType>'
+        '<efac:Publication><efbc:PublicationDate>2025-03-10+01:00</efbc:PublicationDate></efac:Publication>'
+        "</efext:EformsExtension>", 1)
+    texto = texto.replace(
+        '<cbc:Name languageID="SPA">Ayuntamiento de Sevilla</cbc:Name></cac:PartyName>',
+        '<cbc:Name languageID="SPA">Ayuntamiento de Sevilla</cbc:Name></cac:PartyName>'
+        '<cac:PostalAddress><cac:Country><cbc:IdentificationCode>ESP</cbc:IdentificationCode></cac:Country>'
+        '</cac:PostalAddress>', 1)
+    texto = texto.replace(
+        "</ext:UBLExtensions>",
+        '</ext:UBLExtensions><cbc:NoticeTypeCode listName="result">can-standard</cbc:NoticeTypeCode>'
+        '<cac:ContractingParty><cac:Party><cac:PartyIdentification><cbc:ID schemeName="organization">ORG-0001'
+        '</cbc:ID></cac:PartyIdentification></cac:Party></cac:ContractingParty>', 1)
+    return texto.encode("utf-8")
+
+
+def _guardar_xml(carpeta, numero, contenido):
+    anio = numero.rsplit("-", 1)[-1]
+    ruta = Path(carpeta) / "xml" / anio / f"{numero}.xml.gz"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_bytes(gzip.compress(contenido, mtime=0))
+    return ruta
+
+
+def _sin_red(*a, **k):
+    raise AssertionError("construir_licitadores no pide nada a TED")
+
+
+class TestTedLicitadores:
+    def test_estadisticas_de_ofertas_de_cada_resultado(self):
+        # number_offers de las filas es solo 'tenders'; la tabla guarda todas (BT-759/760), y un código
+        # fuera de la lista del SDK va a st_otros tal cual
+        xml = _xml_tres_ofertas(estadisticas=[("tenders", "5"), ("t-sme", "2"), ("t-esubm", "5"),
+                                              ("t-oth-eea", "1"), ("t-no-eea", "0"), ("part-req", "7"),
+                                              ("t-verif-inad-low", "1"), ("raro", "3")])
+        r, = tm._tablas_licitadores_xml(xml, "10-2025")[0]
+        assert (r["st_tenders"], r["st_t_sme"], r["st_t_esubm"], r["st_t_oth_eea"], r["st_t_no_eea"],
+                r["st_part_req"], r["st_t_verif_inad_low"], r["st_t_micro"], r["st_otros"]) == (
+            "5", "2", "5", "1", "0", "7", "1", "", "raro=3")
+        assert (r["ted_notice_id"], r["year"], r["lot_result_id"], r["lot_id"], r["winner_selection_status"],
+                r["n_ofertas_descritas"], r["n_ganadoras"], r["ganadora_por"]) == (
+            "10-2025", "2025", "RES-0001", "LOT-0001", "selec-w", "3", "1", "contrato")
+        assert list(r) == tm._COLUMNAS_RESULTADOS_LOTE
+        assert [c for c in tm._COLUMNAS_RESULTADOS_LOTE if c.startswith("st_")] == [
+            "st_tenders", "st_t_sme", "st_t_micro", "st_t_small", "st_t_med", "st_t_esubm", "st_t_oth_eea",
+            "st_t_no_eea", "st_part_req", "st_t_verif_inad", "st_t_verif_inad_low", "st_t_no_verif", "st_otros"]
+
+    def test_una_fila_por_oferta_descrita_con_su_licitador(self):
+        # Las filas siguen siendo solo la ganadora; la tabla de licitadores trae las tres ofertas descritas,
+        # en su orden, con su importe y su parte licitadora (un grupo en una fila, el líder primero)
+        xml = _xml_tres_ofertas()
+        filas = tm._parse_api_notice(_notice("10-2025"), xml)
+        assert [f["tender_id"] for f in filas] == ["TEN-0001"] and filas[0]["n_ofertas_descritas"] == "3"
+        lic = tm._tablas_licitadores_xml(xml, "10-2025")[1]
+        got = [(f["orden"], f["tender_id"], f["es_ganadora"], f["ganadora_por"], f["tender_value"],
+                f["tender_value_cur"], f["tendering_party_id"], f["n_miembros"], f["tenderer_name"],
+                f["tenderer_nationalid"], f["tenderer_platform_id"], f["tenderer_size"]) for f in lic]
+        assert got == [
+            (1, "TEN-0001", "true", "contrato", "1000.50", "EUR", "TPA-0001", "1", "UNO SL", "B11111111", "", "sme"),
+            (2, "TEN-0002", "false", "", "1200", "EUR", "TPA-0002", "2", "TRES SL---DOS SA", "B33333333---A22222222",
+             "", "small---large"),
+            (3, "TEN-0003", "false", "", "", "", "TPA-0003", "1", "CUATRO SL", "B44444444", "123456", "micro")]
+        assert {(f["number_offers"], f["n_ofertas_descritas"], f["lot_result_id"]) for f in lic} == {
+            ("5", "3", "RES-0001")}
+        assert all(list(f) == tm._COLUMNAS_LICITADORES for f in lic)
+
+    def test_cabecera_del_aviso(self):
+        lic = tm._tablas_licitadores_xml(_comprador_es(_xml_tres_ofertas()), "10-2025")[1]
+        assert {(f["notice_type"], f["notice_subtype"], f["publication_date"], f["buyer_country"]) for f in lic} == {
+            ("can-standard", "29", "2025-03-10+01:00", "ESP")}
+        # Sin esos elementos, vacíos
+        lic = tm._tablas_licitadores_xml(_xml_tres_ofertas(), "10-2025")[1]
+        assert {(f["notice_type"], f["notice_subtype"], f["publication_date"], f["buyer_country"]) for f in lic} == {
+            ("", "", "", "")}
+
+    def test_sin_adjudicar_ninguna_gana(self):
+        # clos-nw: no hay adjudicataria aunque un contrato cite una oferta (como en las filas)
+        res, lic = tm._tablas_licitadores_xml(_xml_tres_ofertas(estado="clos-nw"), "10-2025")
+        assert [f["es_ganadora"] for f in lic] == ["false"] * 3 and res[0]["n_ganadoras"] == "0"
+        assert res[0]["ganadora_por"] == ""
+
+    def test_no_se_sabe_cual_gano(self):
+        # selec-w con tres ofertas descritas y ningún contrato que cite una: es_ganadora vacío
+        res, lic = tm._tablas_licitadores_xml(_xml_tres_ofertas(contratos=()), "10-2025")
+        assert [f["es_ganadora"] for f in lic] == ["", "", ""] and res[0]["n_ganadoras"] == "0"
+        assert tm._parse_api_notice(_notice("10-2025"), _xml_tres_ofertas(contratos=()))[0]["tender_id"] == ""
+
+    def test_misma_ganadora_que_las_filas(self):
+        # 'oferta única del resultado' (sin contrato) y 'contrato del resultado' salen igual en las dos tablas
+        org_p, org_o = _org_simple()
+        unica = _eforms([_resultado("RES-0001", "LOT-0001", ["TEN-0001"])],
+                        [_oferta("TEN-0001", "TPA-0001", "LOT-0001", "50")], [], org_p, org_o)
+        f, = tm._tablas_licitadores_xml(unica, "11-2025")[1]
+        assert (f["es_ganadora"], f["ganadora_por"]) == ("true", "oferta única del resultado")
+        for xml in (unica, _xml_tres_ofertas(), _xml_tres_ofertas(contratos=()), _xml_tres_ofertas(estado="clos-nw"),
+                    *(_xml_real(n) for n in ("538782-2026", "543120-2026", "646040-2026", "515290-2026"))):
+            filas = [f for f in tm._parse_eforms(xml)["filas"] if f.get("tender_id")]
+            ganadoras = [f for f in tm._tablas_licitadores_xml(xml, "12-2025")[1] if f["es_ganadora"] == "true"]
+            assert [(f["lot_result_id"], f["tender_id"], f["ganadora_por"], f["win_nationalid"]) for f in filas] == [
+                (f["lot_result_id"], f["tender_id"], f["ganadora_por"], f["tenderer_nationalid"]) for f in ganadoras]
+
+    def test_aviso_real_748808_2025_con_todos_los_licitadores(self):
+        # Euskadi (EJIE, 6 lotes): describe las 15 ofertas recibidas (4+3+3+3+1+1 = BT-759 del tipo 'tenders') con
+        # empresa, tamaño e importe; el identificador es el número interno del registro de Euskadi, sin
+        # esquema (no es un NIF) y tal cual
+        xml = _xml_real("748808-2025")
+        res, lic = tm._tablas_licitadores_xml(xml, "748808-2025")
+        assert [(r["lot_result_id"], r["st_tenders"], r["st_t_sme"], r["n_ofertas_descritas"]) for r in res] == [
+            ("RES-0001", "4", "2", "4"), ("RES-0002", "3", "1", "3"), ("RES-0003", "3", "2", "3"),
+            ("RES-0004", "3", "1", "3"), ("RES-0005", "1", "1", "1"), ("RES-0006", "1", "1", "1")]
+        assert {(r["notice_type"], r["notice_subtype"], r["publication_date"], r["buyer_country"]) for r in res} == {
+            ("can-standard", "29", "2025-11-12+01:00", "ESP")}
+        lote1 = [(f["orden"], f["es_ganadora"], f["tender_value"], f["tenderer_name"], f["tenderer_nationalid"],
+                  f["tenderer_size"]) for f in lic if f["lot_result_id"] == "RES-0001"]
+        assert lote1 == [
+            (1, "true", "8668.56", "TELEFÓNICA SOLUCIONES DE INFORMÁTICA Y COMUNICACIONES DE ESPAÑA, S.A.U.",
+             "103401.0", "large"),
+            (2, "false", "9162.38", "PROSOL INGENIERIA S L", "66243.0", "sme"),
+            (3, "false", "10509.11", "DEVOTEAM DRAGO S A U", "50754.0", "large"),
+            (4, "false", "9532.08", "TRC BAT, S.L.", "91502.0", "small")]
+        assert len(lic) == 15 and sum(f["es_ganadora"] == "true" for f in lic) == 6
+        # Las ganadoras, las mismas que las filas de la API
+        filas = tm._parse_eforms(xml)["filas"]
+        assert sorted((f["lot_result_id"], f["tender_id"]) for f in filas) == sorted(
+            (f["lot_result_id"], f["tender_id"]) for f in lic if f["es_ganadora"] == "true")
+
+    def test_construir_desde_disco_sin_red_y_con_versiones(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(requests, "post", _sin_red)
+        monkeypatch.setattr(requests, "get", _sin_red)
+        monkeypatch.setattr(tm, "_descargar_xml", _sin_red)
+        assert tm.construir_licitadores()["eforms"] == 0          # sin XML no se escribe nada
+        assert not list(tmp_path.glob("*.parquet"))
+        _guardar_xml(tmp_path, "10-2025", _xml_tres_ofertas())
+        _guardar_xml(tmp_path, "20-2024", _ted_export([_adjudicacion_te(1, "1", "C-1", [("EMP SL", "B1", "SME")], "5")]))
+        (tmp_path / "xml" / "2024" / "21-2024.xml.gz").write_bytes(b"no es gzip")
+        r = tm.construir_licitadores()
+        assert {k: r[k] for k in ("xml", "eforms", "otro_esquema", "ilegibles", "resultados", "licitadores")} == {
+            "xml": 3, "eforms": 1, "otro_esquema": 1, "ilegibles": 1, "resultados": 1, "licitadores": 3}
+        assert r[tm.TEDConfig.RESULTADOS_LOTE] == "nuevo" and r[tm.TEDConfig.LICITADORES] == "nuevo"
+        lic = pd.read_parquet(tmp_path / tm.TEDConfig.LICITADORES)
+        assert list(lic.columns) == tm._COLUMNAS_LICITADORES and lic["orden"].tolist() == [1, 2, 3]
+        assert str(lic["orden"].dtype) == "int64"
+        assert lic["tenderer_nationalid"].tolist() == ["B11111111", "B33333333---A22222222", "B44444444"]
+        res = pd.read_parquet(tmp_path / tm.TEDConfig.RESULTADOS_LOTE)
+        assert list(res.columns) == tm._COLUMNAS_RESULTADOS_LOTE and res["st_t_sme"].tolist() == ["2"]
+        # Sin XML nuevos, nada cambia; con uno nuevo, la versión anterior queda en _historico/
+        foto = _foto(tmp_path)
+        assert tm.construir_licitadores()[tm.TEDConfig.LICITADORES] == "sin_cambios" and _foto(tmp_path) == foto
+        _guardar_xml(tmp_path, "11-2025", _xml_tres_ofertas(estado="clos-nw"))
+        r = tm.construir_licitadores()
+        assert r[tm.TEDConfig.LICITADORES] == "actualizado" and r["licitadores"] == 6
+        assert [h for h in _historico(tmp_path) if h.startswith("ted_licitadores_es__")]
+        assert [h for h in _historico(tmp_path) if h.startswith("ted_resultados_lote_es__")]
+
+    def test_download_las_construye(self, ted_2024, tmp_path):
+        df = tm.download_ted_spain(years=[2024], force_redownload=True)
+        assert not df.attrs.get("licitadores_error")
+        lic = pd.read_parquet(tmp_path / tm.TEDConfig.LICITADORES)
+        assert sorted(lic["ted_notice_id"]) == ["1-2024", "2-2024", "3-2024"]
+        assert set(lic["es_ganadora"]) == {"true"} and len(pd.read_parquet(tmp_path / tm.TEDConfig.RESULTADOS_LOTE)) == 3
+        assert sorted(lic["tenderer_nationalid"]) == sorted(df.loc[df["source"] == "api_v3", "win_nationalid"])
+        # Una segunda ejecución sin cambios no crea versiones
+        antes = _historico(tmp_path)
+        tm.download_ted_spain(years=[2024])
+        assert [h for h in _historico(tmp_path) if h.startswith(("ted_licitadores", "ted_resultados"))] == [
+            h for h in antes if h.startswith(("ted_licitadores", "ted_resultados"))]
+
+    def test_un_fallo_de_las_tablas_no_deshace_el_consolidado_pero_sale_con_1(self, ted_2024, tmp_path,
+                                                                            monkeypatch):
+        def falla():
+            raise RuntimeError("disco lleno")
+        monkeypatch.setattr(tm, "construir_licitadores", falla)
+        monkeypatch.setattr(sys, "argv", ["ted_module.py", "download", "--years", "2024"])
+        with pytest.raises(SystemExit) as salida:
+            tm.main()
+        assert salida.value.code == 1 and (tmp_path / "ted_es_can.parquet").exists()
+
+    def test_cli_licitadores_sin_red(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(tm.TEDConfig, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(requests, "post", _sin_red)
+        monkeypatch.setattr(tm, "_descargar_xml", _sin_red)
+        monkeypatch.setattr(sys, "argv", ["ted_module.py", "licitadores"])
+        with pytest.raises(SystemExit) as salida:   # sin XML eForms guardados
+            tm.main()
+        assert salida.value.code == 1
+        _guardar_xml(tmp_path, "10-2025", _xml_tres_ofertas())
+        tm.main()
+        assert len(pd.read_parquet(tmp_path / tm.TEDConfig.LICITADORES)) == 3
