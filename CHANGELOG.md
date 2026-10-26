@@ -6,6 +6,7 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 
 ### Añadido
 
+- **Palma** en `scripts/municipios_menores.py`: la relación trimestral de contratos menores del Ayuntamiento (XLS/XLSX 2017-2026, 33.674 filas; los PDF de 2013-2016 se anotan sin extraer), del bloque «Documentos» de su página de contratos menores. Ninguno está en el feed 1143 de la PLACSP. El resto de municipios no cambia. [Ficha](docs/fuentes/municipios.md).
 - **Cantabria** (`scripts/ccaa_cantabria.py`): la base de datos de contratos del Portal de Transparencia del Gobierno de Cantabria (2015-2026, 39.661 contratos, menores incluidos) por su API, con la exportación CSV de cada mes tal cual (273 columnas) y un Parquet acumulado. Trae los invitados y las ofertas de los menores, con el NIF de cada licitador, que no publica la PLACSP. [Ficha](docs/fuentes/cantabria.md).
 - Documentación por fuente en [`docs/fuentes/`](docs/fuentes/): una ficha por fuente con todo lo que estaba en el README (qué trae, cómo se descarga, columnas, avisos y errores conocidos de cada versión), ejemplos rehechos sobre la release v2026.10 y fichas nuevas para Aragón, Castilla y León, Castilla-La Mancha, Región de Murcia, Extremadura, La Rioja, Canarias, los menores valencianos, los menores de la Junta de Andalucía y los 8 ayuntamientos.
 - [`docs/REPRODUCIR.md`](docs/REPRODUCIR.md): requisitos, cómo se ejecuta cada script con su semilla, tiempos orientativos y qué ZIP sale de cada uno.

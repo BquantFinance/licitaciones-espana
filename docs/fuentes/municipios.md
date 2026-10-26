@@ -19,6 +19,7 @@ Solo ~30 % de los municipios carga sus contratos menores en el feed 1143 de la [
 | `santa_cruz_tenerife_menores.parquet` | Santa Cruz de Tenerife (38038) | 3.485 | 2023-2024, sin adjudicatario ni NIF |
 | `cordoba_menores.parquet` | Córdoba (14021) | 2.596 | |
 | `leganes_menores.parquet` | Leganés (28074) | 2.019 | Con NIF |
+| `palma_menores.parquet` | Palma (07040) | 33.674 (aún no en la release) | 2017-2026, relación trimestral; sin NIF salvo el 1T de 2024 |
 
 ## Cómo se descarga
 
@@ -41,7 +42,7 @@ Las publicadas, con el nombre que trae cada fichero: **no se unifican entre muni
 
 | Script | Fuente | Descripción |
 |--------|--------|-------------|
-| `scripts/municipios_menores.py` | 8 ayuntamientos | Contratos menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife |
+| `scripts/municipios_menores.py` | 9 ayuntamientos | Contratos menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba, Santa Cruz de Tenerife y Palma (esta última, aún no en la release) |
 
 ---
 

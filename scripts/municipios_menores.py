@@ -21,6 +21,7 @@ Municipios (clave de --municipio, código INE):
     malaga               Málaga (29067)
     cordoba              Córdoba (14021)
     santa_cruz_tenerife  Santa Cruz de Tenerife (38038)
+    palma                Palma (07040)
 
 Salida (por defecto <repo>/municipios_menores/):
     raw/<municipio>/...               ficheros originales con su nombre publicado
@@ -177,6 +178,21 @@ Verificado en vivo el 2026-09-27 (confianza A: código HTTP, formato y filas):
     repetidos; 2025 en PDF, DOCX y ODT (no se extraen). Los resúmenes
     (Resumen_menores_AAAA_CSV.csv, INFORMACION_CONTRATOS_MENORES_2025.*: nº de
     contratos e importe total) no son registros y no se cargan.
+  - Palma: https://www.palma.es/es/contratos-menores (Liferay, como Leganés;
+    verificado el 2026-10-26): relación trimestral de contratos menores en el
+    bloque «Documentos» de la página: 39 XLS/XLSX del 1T de 2017 al 3T de
+    2026, cada uno junto a su PDF; 2013-2016, solo PDF (52 PDF, no se
+    extraen). Una hoja por fichero con cuatro columnas (Fecha/DATA/Data,
+    Importe/IMPORT/Import, EMPRESA ADJUDICATÀRIA, OBJECTE CONTRACTE: el
+    nombre cambia según el año), sin NIF salvo el 1T de 2024 (CIF EMPRESA
+    ADJUDICATÀRIA y C. gestor). 33.674 filas en total; por la fecha del
+    contrato, entre 2.463 (2020) y 5.057 (2018) al año (3.041 en 2025). Los
+    enlaces dicen el periodo en castellano o en catalán ('2n trim', '2on
+    TRIM', '4rt TRIM', '4º trim.'), salvo dos XLS con nombre de sistema
+    (0_144892_1.xls, con fechas de 2021, y 2_150478_1.xls, de 2022: por las
+    fechas, el 3T de 2021 y el 2T de 2022), que quedan sin periodo. Ningún
+    menor del Ayuntamiento está en el feed 1143 de la PLACSP (solo sus
+    licitaciones y los de algunas de sus entidades).
 Otras fuentes conocidas NO incorporadas (inventario del 2026-09-27): Móstoles
 (PDF mensual 2018-), Alcalá de Henares (XLSX 2024 pasado de un informe
 contable en PDF), A Coruña (XLS/ODS trimestral; 403 por ASN desde el entorno de desarrollo).
@@ -242,6 +258,7 @@ URL_LEGANES = "https://www.leganes.org/web/transparencia/contratos-menores"
 URL_CKAN_MALAGA = "https://datosabiertos.malaga.eu/api/3/action/package_search"
 URL_CKAN_CORDOBA = "https://datosabiertos.cordoba.es/api/3/action/package_search"
 URL_SANTA_CRUZ = "https://www.santacruzdetenerife.es/gobiernoabierto/transparencia/contratos"
+URL_PALMA = "https://www.palma.es/es/contratos-menores"
 
 CONSULTA_CKAN = "menores"
 FILAS_CKAN = 100
@@ -266,6 +283,8 @@ MUNICIPIOS = {
                 "descripcion": "CKAN: CSV/XLS/XLSX/ODS 2021- con NIF (el resto en PDF)"},
     "santa_cruz_tenerife": {"nombre": "Santa Cruz de Tenerife", "codigo_ine": "38038",
                             "descripcion": "CSV anual 2023-2024, sin adjudicatario"},
+    "palma": {"nombre": "Palma", "codigo_ine": "07040",
+              "descripcion": "XLS/XLSX trimestral 2017- (PDF 2013-2016), sin NIF"},
 }
 
 SALIDA = Path(__file__).resolve().parent.parent / "municipios_menores"
@@ -1583,6 +1602,41 @@ def descubrir_santa_cruz(resumen):
     return _separar(recursos)
 
 
+def _periodo_palma(texto):
+    """Texto de un enlace de Palma con el ordinal catalán del trimestre ('2n trim', '2on TRIM')
+    escrito como lo lee periodo_de_texto ('2 trim'); '1er', '3r', '4rt' y '4º' ya los lee."""
+    return re.sub(r"(?<![\d])([1-4])\s*o?n(?=[\s.+_-]*trim)", r"\1 ", texto or "", flags=re.I)
+
+
+def descubrir_palma(resumen):
+    """Enlaces a /documents/ (Liferay) del bloque «Documentos» de la página (el menú
+    del sitio enlaza otros documentos, como las retribuciones); el periodo sale del
+    texto del enlace. Sin el bloque, la página no es la de siempre: es un error."""
+    pagina = pedir_texto(URL_PALMA)
+    inicio = pagina.find('class="content_wrapper_documents"')
+    if inicio < 0:
+        raise ErrorPortal("la página no trae el bloque de documentos (content_wrapper_documents)")
+    fin = pagina.find("</section>", inicio)
+    recursos, vistos = [], {}
+    for url, texto in _enlaces(pagina[inicio:fin if fin > 0 else None], URL_PALMA):
+        partes = unquote(urlparse(url).path).split("/")
+        if len(partes) < 5 or partes[1] != "documents":
+            continue
+        clave = _clave_url(url)
+        if clave in vistos:
+            if texto and texto != vistos[clave].titulo:
+                resumen.avisos.append(f"palma: el mismo fichero se enlaza como '{vistos[clave].titulo}' y "
+                                      f"como '{texto}' ({clave})")
+            continue
+        nombre = partes[4]        # /documents/<grupo>/<carpeta>/<nombre>/<uuid>
+        r = _recurso(url, "", titulo=texto or nombre, textos=(_periodo_palma(texto), _periodo_palma(nombre)),
+                     formato=_extension(nombre) or None)
+        r.rel = f"palma/{r.anio or 'sin_anio'}/{_nombre_seguro(nombre)}"
+        vistos[clave] = r
+        recursos.append(r)
+    return _separar(recursos)
+
+
 ADAPTADORES = {
     "gijon": (descubrir_gijon, leer_gijon),
     "vigo": (descubrir_vigo, leer_tabla),
@@ -1592,6 +1646,7 @@ ADAPTADORES = {
     "malaga": (descubrir_malaga, leer_tabla),
     "cordoba": (descubrir_cordoba, leer_tabla),
     "santa_cruz_tenerife": (descubrir_santa_cruz, leer_tabla),
+    "palma": (descubrir_palma, leer_tabla),
 }
 
 

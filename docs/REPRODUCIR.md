@@ -179,7 +179,7 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `scripts/ccaa_extremadura.py` | Junta de Extremadura | Registro de Contratos: menores, mayores e incidencias |
 | `scripts/ccaa_la_rioja.py` | Gobierno de La Rioja | CSV anual de contratos menores |
 | `scripts/ccaa_valencia_menores.py` | UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV | Contratos menores valencianos fuera del REGCON |
-| `scripts/municipios_menores.py` | 8 ayuntamientos | Contratos menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba y Santa Cruz de Tenerife |
+| `scripts/municipios_menores.py` | 9 ayuntamientos | Contratos menores de Gijón, Vigo, Valladolid, Fuenlabrada, Leganés, Málaga, Córdoba, Santa Cruz de Tenerife y Palma |
 | `scripts/ccaa_cataluna.py` | Socrata + CKAN Barcelona | Descarga datos Catalunya |
 | `scripts/ccaa_cataluna_parquet.py` | — | Convierte los CSV de Catalunya a Parquet |
 | `scripts/ccaa_valencia.py` | CKAN | Descarga datos Valencia |

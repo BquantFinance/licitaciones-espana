@@ -264,6 +264,16 @@ SC_2024 = SC + "contratos/CONTRATOS_MENORES_2024_CSV.csv"
 SC_RESUMEN = SC + "contratos/Resumen_menores_2024_CSV.csv"
 SC_PDF = SC + "contratos/CONTRATOS_MENORES_2024.pdf"
 
+P = "https://www.palma.es"
+PAL_3T26 = f"{P}/documents/39028/19784129/Contractes+menors+3r+trim+2026.xlsx+%28108+KB%29.xlsx/c753d5b3?t=1792741767221"
+PAL_3T26_PDF = f"{P}/documents/39028/19784129/Contractes+menors+3r+trim+2026.pdf+%28419+KB%29.pdf/6b9d0cb9?t=1792741768"
+PAL_2T25 = f"{P}/documents/39048/18116062/Contractes+menors+2on+TRIM+2025.xlsx/7311187d?t=1761048831562"
+PAL_2T26 = f"{P}/documents/39028/19784129/Contractes+menors+2n+trim+2026.xlsx+%28112+KB%29.xlsx/7febd2d9?t=1792741771917"
+PAL_3T19 = f"{P}/documents/39048/11934097/Contratos+menores+3er+trim.+2019+%28excel%29.xls/2070163b?t=1678790110914"
+PAL_SIN = f"{P}/documents/39048/11934097/0_144892_1.xls/e7ee2955?t=1678786108185"
+PAL_2014 = f"{P}/documents/39048/11934097/Contratos+menores+2on+trim.2014.pdf/dfe5cf10?t=1678786098462"
+PAL_RETRIBUCIONES = f"{P}/documents/39028/12041063/0_92180_1.pdf/fa04755e?t=1677665562204"
+
 MAL = "https://datosabiertos.malaga.eu/recursos/presidencia/"
 COR = "https://datosabiertos.cordoba.es/dataset/x/resource/"
 
@@ -301,6 +311,33 @@ def pagina_leganes(enlaces):
     return ('<html><body><div class="d-flex flex-wrap">'
             + "".join(_a(url.replace(L, ""), texto) for url, texto in enlaces)
             + '</div><a href="/web/transparencia/buscador">Buscador</a></body></html>').encode("utf-8")
+
+
+ENLACES_PALMA = [(PAL_3T26, "Contractes menors 3r trim 2026.xlsx (108 KB)"),
+                 (PAL_3T26_PDF, "Contractes menors 3r trim 2026.pdf (419 KB)"),
+                 (PAL_2T26, "Contractes menors 2n trim 2026.xlsx (112 KB)"),
+                 (PAL_2T25, "Contractes menors 2on TRIM 2025.xlsx"),
+                 (PAL_3T19, "Contratos menores 3er trim. 2019 (excel)"), (PAL_SIN, "0_144892_1.xls"),
+                 (PAL_2014, "Contratos menores 2on trim.2014")]
+
+
+def pagina_palma(enlaces, bloque=True):
+    """Página de Palma: el menú del sitio (enlaza las retribuciones, también en /documents/) y el
+    bloque «Documentos» con la relación trimestral, como la real."""
+    menu = f'<nav><a class="nav-link" href="{PAL_RETRIBUCIONES}" title="Ir a Retribuciones">Retribuciones</a></nav>'
+    documentos = "".join(f'<a href="{url.replace(P, "")}">\n    {texto}\n</a>' for url, texto in enlaces)
+    cuerpo = (f'<div class="content_wrapper_documents"><h3 class="title_content">Documentos </h3>{documentos}'
+              '</div><p>Fecha última modificación: 23 de octubre de 2026</p></section>') if bloque else documentos
+    return f"<html><body>{menu}<section>{cuerpo}<section><a href=\"/documents/1/2/x.pdf/u\">x</a></section>" \
+           "</body></html>".encode("utf-8")
+
+
+def _palma(trimestre, anio, cabecera=("Data", "Import", "EMPRESA ADJUDICATÀRIA", "OBJECTE CONTRACTE")):
+    """XLSX de Palma: una hoja con las cuatro columnas (nombres inventados)."""
+    return _xlsx({f"Ct Menors {trimestre}T {anio}": [list(cabecera),
+                  [datetime(anio, 3 * trimestre - 2, 1), 363, "EMPRESA INVENTADA, SL", "Servei de prova"],
+                  [datetime(anio, 3 * trimestre - 1, 15), 4912.6, "ALTRA EMPRESA, SA",
+                   "CM SERVEI EXP: GP 15/26 - MEGABANNER"]]})
 
 
 def _recurso_ckan(nombre, formato, url, identificador="r"):
@@ -456,6 +493,13 @@ def _publicar_todo(portal):
                                      + "</body></html>").encode("utf-8")
     portal.urls[SC_2024] = SANTA_CRUZ_2024
     portal.urls[SC_RESUMEN] = b"NUMERO DE CONTRATOS MENORES EN EL EJERCICIO 2024;;;;;;;;;1.267\r\n"
+    portal.urls[M.URL_PALMA] = pagina_palma(ENLACES_PALMA)
+    portal.urls[PAL_3T26] = _palma(3, 2026)
+    portal.urls[PAL_2T26] = _palma(2, 2026)
+    portal.urls[PAL_2T25] = _palma(2, 2025)
+    portal.urls[PAL_3T19] = _palma(3, 2019, cabecera=("DATA", "IMPORT", "EMPRESA ADJUDICATÀRIA", "OBJECTE CONTRACTE"))
+    portal.urls[PAL_SIN] = _palma(3, 2021)
+    portal.urls[PAL_3T26_PDF] = portal.urls[PAL_2014] = portal.urls[PAL_RETRIBUCIONES] = b"%PDF-1.5"
 
 
 @pytest.fixture
@@ -710,6 +754,37 @@ def test_santa_cruz_csv_con_fila_de_titulo(portal, tmp_path):
     assert set(df["_anio"]) == {"2024"} and set(df["_codigo_ine"]) == {"38038"}
     assert portal.pedidas(SC_RESUMEN) == portal.pedidas(SC_PDF) == 0
     assert "santa_cruz_tenerife: 2 ficheros (PDF: 1, resumen (no son registros): 1)" in _log(tmp_path)
+
+
+def test_palma_bloque_de_documentos_y_trimestre_en_catalan(portal, tmp_path):
+    assert _ejecutar(tmp_path, "--municipio", "palma") == 0
+
+    df = _parquet(tmp_path, "palma")
+    assert len(df) == 10 and set(df["_codigo_ine"]) == {"07040"}
+    periodos = dict(zip(df["_archivo_origen"], zip(df["_anio"], df["_trimestre"])))
+    assert periodos["palma/2026/Contractes+menors+3r+trim+2026.xlsx+(108+KB).xlsx"] == ("2026", "3")
+    assert periodos["palma/2026/Contractes+menors+2n+trim+2026.xlsx+(112+KB).xlsx"] == ("2026", "2")
+    assert periodos["palma/2025/Contractes+menors+2on+TRIM+2025.xlsx"] == ("2025", "2")
+    assert periodos["palma/2019/Contratos+menores+3er+trim.+2019+(excel).xls"] == ("2019", "3")
+    assert _v(df.loc[df["_archivo_origen"] == "palma/sin_anio/0_144892_1.xls", "_anio"]) == [None, None]
+    tercero = df[df["_archivo_origen"].str.contains("3r\\+trim\\+2026")]
+    assert tercero["Import"].tolist() == ["363", "4912.6"]                     # el número tal cual
+    assert tercero["EMPRESA ADJUDICATÀRIA"].tolist() == ["EMPRESA INVENTADA, SL", "ALTRA EMPRESA, SA"]
+    assert _v(df.loc[df["_anio"] == "2019", "IMPORT"]) == ["363", "4912.6"]   # otra cabecera
+    assert portal.pedidas(PAL_3T26_PDF) == portal.pedidas(PAL_2014) == 0
+    assert portal.pedidas(PAL_RETRIBUCIONES) == 0                            # el menú no es la relación
+    assert "palma: 2 ficheros (PDF: 2)" in _log(tmp_path)
+
+
+def test_palma_sin_bloque_de_documentos_no_descarga_ni_retira(portal, tmp_path):
+    assert _ejecutar(tmp_path, "--municipio", "palma") == 0
+    portal.urls[M.URL_PALMA] = pagina_palma(ENLACES_PALMA, bloque=False)
+    llamadas = len(portal.llamadas)
+    assert _ejecutar(tmp_path, "--municipio", "palma") == 1
+    assert len(portal.llamadas) == llamadas + 1                              # solo la página
+    assert "palma: no se pudo leer la lista de ficheros (la página no trae el bloque de documentos" in _log(tmp_path)
+    assert all(e.get("publicado", True) for e in _manifiesto(tmp_path).values())
+    assert _parquet(tmp_path, "palma")["_en_ultima_descarga"].all()
 
 
 def test_xls_binario(tmp_path):
