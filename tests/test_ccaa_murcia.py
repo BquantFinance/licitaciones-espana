@@ -9,6 +9,7 @@ import csv
 import importlib.util
 import io
 import json
+import os
 import runpy
 import sys
 import time
@@ -293,7 +294,7 @@ def test_sms_se_toman_los_ficheros_que_enlaza_la_pagina(portal, tmp_path):
     # Antes solo se encontraba 2020 (plantilla Contratos_menores_SMS_{año})
     assert _ejecutar(tmp_path) == 0
     raw = tmp_path / "raw" / "contratos_menores_sms"
-    assert sorted(p.name for p in raw.iterdir() if p.is_file()) == sorted(SMS_PUBLICADOS)
+    assert sorted(p.name for p in raw.iterdir() if p.is_file()) == sorted([*SMS_PUBLICADOS, M.PAGINA_GUARDADA])
     df = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
     assert sorted(df["_anio_fichero"]) == sorted(str(a) for a in SMS_PUBLICADOS.values())
     assert (df["_anio_fichero"] == "2019").sum() == 4          # cuatro trimestres
@@ -314,16 +315,172 @@ def test_sms_se_toman_los_ficheros_que_enlaza_la_pagina(portal, tmp_path):
     assert man["contratos_menores_sms/PT_SMS_4T2019.xlsx"]["publicado"] is False
 
 
-@pytest.mark.parametrize("pagina", [503, b"<html><body>Sin enlaces</body></html>"])
-def test_sms_pagina_caida_o_sin_enlaces_no_retira_nada(portal, tmp_path, pagina):
+SIN_ENLACES = b"<html><body><a href='/web/transparencia/otra'>Sin la tabla del sector p\xc3\xbablico</a></body></html>"
+
+
+@pytest.mark.parametrize("pagina, rc", [(503, 1), (SIN_ENLACES, 0)])
+def test_sms_pagina_caida_o_sin_enlaces_no_retira_nada(portal, tmp_path, pagina, rc):
+    # Caída: error (se reintenta la ejecución). Sin enlaces: se usan los de la última página buena, con aviso
     assert _ejecutar(tmp_path) == 0
     antes = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
     SLEEP_REAL(1.1)
     portal.urls[M.URL_SECTOR_PUBLICO] = pagina
-    assert _ejecutar(tmp_path, "--comprobar-todo") == 1
+    assert _ejecutar(tmp_path, "--comprobar-todo") == rc
     despues = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
     assert len(despues) == len(antes) and despues["_en_ultima_descarga"].all()
     assert "contratos_menores_sms" in _log(tmp_path)
+    man = json.loads((tmp_path / "raw" / "_manifiesto.json").read_text(encoding="utf-8"))
+    assert all(e["publicado"] for k, e in man.items() if k.startswith("contratos_menores_sms/"))
+
+
+# ---------------------------------------------------------------------------
+# SMS: página que llega sin enlaces (el portal la sirve a veces sin el bloque de enlaces)
+# ---------------------------------------------------------------------------
+
+def _raw_sms(salida):
+    return salida / "raw" / "contratos_menores_sms"
+
+
+def _avisos(salida):
+    return _log(salida).rsplit("AVISOS", 1)[-1]
+
+
+def test_sms_pagina_buena_se_guarda(portal, tmp_path):
+    assert _ejecutar(tmp_path) == 0
+    guardada = _raw_sms(tmp_path) / M.PAGINA_GUARDADA
+    assert guardada.read_bytes() == portal.urls[M.URL_SECTOR_PUBLICO]
+    assert not (_raw_sms(tmp_path) / M.PAGINA_SIN_ENLACES).exists()
+    assert portal.pedidas(M.URL_SECTOR_PUBLICO) == 1
+    # Una página distinta deja la anterior en _historico/; una igual solo renueva la fecha
+    SLEEP_REAL(1.1)
+    portal.urls[M.URL_SECTOR_PUBLICO] = pagina_sector_publico([*SMS_PUBLICADOS][::-1])
+    assert _ejecutar(tmp_path) == 0
+    assert len(list((_raw_sms(tmp_path) / "_historico").glob("_pagina__*.html"))) == 1
+    os.utime(guardada, (time.time() - 10 * 86400,) * 2)
+    assert _ejecutar(tmp_path) == 0
+    assert time.time() - guardada.stat().st_mtime < 60
+    assert len(list((_raw_sms(tmp_path) / "_historico").glob("_pagina__*.html"))) == 1
+
+
+def test_sms_pagina_sin_enlaces_usa_la_ultima_buena(portal, tmp_path, monkeypatch):
+    esperas = []
+    assert _ejecutar(tmp_path) == 0
+    portal.llamadas.clear()
+    portal.urls[M.URL_SECTOR_PUBLICO] = SIN_ENLACES
+    monkeypatch.setattr(time, "sleep", esperas.append)
+    assert _ejecutar(tmp_path) == 0
+    # Tres lecturas de la página con su espera; la que llegó sin enlaces queda guardada aparte
+    assert portal.pedidas(M.URL_SECTOR_PUBLICO) == M.INTENTOS_PAGINA
+    assert esperas.count(M.ESPERA_PAGINA) == M.INTENTOS_PAGINA - 1
+    assert (_raw_sms(tmp_path) / M.PAGINA_SIN_ENLACES).read_bytes() == SIN_ENLACES
+    # Se vuelven a pedir los del año en curso y el anterior por su URL conocida
+    assert portal.pedidas(DIR_SMS + "SMS_Contratos_menores_2025.xlsx") == (1 if ANIO - 1 <= 2025 else 0)
+    assert "se usan los 10 enlaces de la última página buena (_pagina.html)" in _avisos(tmp_path)
+    assert "ERRORES" not in _log(tmp_path).rsplit("=" * 70, 1)[-1]
+    df = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
+    assert len(df) == len(SMS_PUBLICADOS) and df["_en_ultima_descarga"].all()
+
+
+def test_sms_pagina_sin_enlaces_y_luego_bien(portal, tmp_path, monkeypatch):
+    assert _ejecutar(tmp_path) == 0
+    respuestas = [SIN_ENLACES, portal.urls[M.URL_SECTOR_PUBLICO]]
+    get = portal.get
+
+    def get_alterno(url, **kw):
+        if url == M.URL_SECTOR_PUBLICO and respuestas:
+            portal.urls[url] = respuestas.pop(0)
+        return get(url, **kw)
+
+    monkeypatch.setattr(requests, "get", get_alterno)
+    portal.llamadas.clear()
+    assert _ejecutar(tmp_path) == 0
+    assert portal.pedidas(M.URL_SECTOR_PUBLICO) == 2
+    assert "llegó sin enlaces a la serie en 1 intento(s) y bien en el 2.º" in _avisos(tmp_path)
+
+
+def test_sms_pagina_sin_enlaces_y_luego_caida_usa_la_ultima_buena(portal, tmp_path, monkeypatch):
+    assert _ejecutar(tmp_path) == 0
+    respuestas = [SIN_ENLACES, 503]
+    get = portal.get
+
+    def get_alterno(url, **kw):
+        if url == M.URL_SECTOR_PUBLICO and respuestas:
+            portal.urls[url] = respuestas.pop(0)
+        return get(url, **kw)
+
+    monkeypatch.setattr(requests, "get", get_alterno)
+    assert _ejecutar(tmp_path) == 0
+    assert "(2 intentos; copia en" in _avisos(tmp_path)
+
+
+def test_sms_sin_pagina_guardada_usa_el_manifiesto(portal, tmp_path):
+    # Como en producción al desplegar: hay manifiesto, pero aún no _pagina.html
+    assert _ejecutar(tmp_path) == 0
+    (_raw_sms(tmp_path) / M.PAGINA_GUARDADA).unlink()
+    portal.urls[M.URL_SECTOR_PUBLICO] = SIN_ENLACES
+    assert _ejecutar(tmp_path) == 0
+    assert "se usan los 10 enlaces de las URL del manifiesto" in _avisos(tmp_path)
+
+
+def test_sms_sin_enlaces_ni_nada_guardado_es_un_error(portal, tmp_path):
+    portal.urls[M.URL_SECTOR_PUBLICO] = SIN_ENLACES
+    assert _ejecutar(tmp_path) == 1
+    errores = _log(tmp_path).split("ERRORES")[-1]
+    assert "no enlaza ningún fichero de la serie (3 intentos" in errores
+    assert "no hay una página buena de los últimos 28 días" in errores
+    assert not (tmp_path / "contratos_menores_sms.parquet").exists()
+
+
+def test_sms_pagina_buena_demasiado_vieja_es_un_error(portal, tmp_path):
+    # Si el portal cambia de verdad (la serie se va a otra página), a las 4 semanas vuelve a ser un error
+    assert _ejecutar(tmp_path) == 0
+    viejo = time.time() - (M.DIAS_PAGINA_GUARDADA + 1) * 86400
+    os.utime(_raw_sms(tmp_path) / M.PAGINA_GUARDADA, (viejo, viejo))
+    portal.urls[M.URL_SECTOR_PUBLICO] = SIN_ENLACES
+    assert _ejecutar(tmp_path) == 1
+    assert "no hay una página buena de los últimos 28 días" in _log(tmp_path).split("ERRORES")[-1]
+
+
+def test_sms_manifiesto_demasiado_viejo_es_un_error(portal, tmp_path):
+    assert _ejecutar(tmp_path) == 0
+    (_raw_sms(tmp_path) / M.PAGINA_GUARDADA).unlink()
+    ruta = tmp_path / "raw" / "_manifiesto.json"
+    man = json.loads(ruta.read_text(encoding="utf-8"))
+    for entrada in man.values():
+        entrada["comprobado"] = "2020-01-01T00:00:00Z"
+    ruta.write_text(json.dumps(man), encoding="utf-8")
+    portal.urls[M.URL_SECTOR_PUBLICO] = SIN_ENLACES
+    assert _ejecutar(tmp_path) == 1
+
+
+def test_sms_lo_retirado_que_vuelve_a_enlazarse_vuelve_a_constar(portal, tmp_path):
+    assert _ejecutar(tmp_path) == 0
+    SLEEP_REAL(1.1)
+    portal.urls[M.URL_SECTOR_PUBLICO] = pagina_sector_publico(
+        [n for n in SMS_PUBLICADOS if n != "PT_SMS_4T2019.xlsx"])
+    assert _ejecutar(tmp_path) == 0
+    man = json.loads((tmp_path / "raw" / "_manifiesto.json").read_text(encoding="utf-8"))
+    assert man["contratos_menores_sms/PT_SMS_4T2019.xlsx"]["publicado"] is False
+    # Vuelve a enlazarse (sin --comprobar-todo): se pide otra vez y sus filas vuelven a la última descarga
+    portal.llamadas.clear()
+    portal.urls[M.URL_SECTOR_PUBLICO] = pagina_sector_publico(SMS_PUBLICADOS)
+    assert _ejecutar(tmp_path) == 0
+    assert portal.pedidas(DIR_SMS + "PT_SMS_4T2019.xlsx") == 1
+    assert portal.pedidas(DIR_SMS + "PT_SMS_3T2019.xlsx") == 0
+    man = json.loads((tmp_path / "raw" / "_manifiesto.json").read_text(encoding="utf-8"))
+    assert man["contratos_menores_sms/PT_SMS_4T2019.xlsx"]["publicado"] is True
+    df = pd.read_parquet(tmp_path / "contratos_menores_sms.parquet")
+    assert df["_en_ultima_descarga"].all()
+
+
+def test_sms_un_enlace_del_catalogo_no_tapa_una_pagina_sin_enlaces(portal, tmp_path):
+    # Antes, una URL del CKAN que casara con la serie hacía que la página «enlazara» algo y se retirara el resto
+    assert _ejecutar(tmp_path) == 0
+    portal.ckan = [{"id": "sms", "name": "sms", "resources": [{"url": url_sms(2020), "name": "SMS 2020"}]}]
+    portal.urls[M.URL_SECTOR_PUBLICO] = SIN_ENLACES
+    assert _ejecutar(tmp_path) == 0
+    man = json.loads((tmp_path / "raw" / "_manifiesto.json").read_text(encoding="utf-8"))
+    assert all(e["publicado"] for k, e in man.items() if k.startswith("contratos_menores_sms/"))
 
 
 def test_hoja_sin_cabecera_conserva_su_primera_fila(portal, tmp_path):

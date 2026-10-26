@@ -18,6 +18,8 @@
 - Cada serie se sondea año a año desde 2010 hasta el año en curso; el catálogo CKAN regional se guarda como inventario y añade los años que enlace.
 - Se completan los años que faltan y se vuelven a pedir el año en curso y el anterior (el fichero de un año sigue creciendo en los primeros meses del siguiente); los antiguos, con `--comprobar-todo`. Si un fichero que se tenía pasa a dar 404, se marca como retirado y sus filas se conservan.
 
+- **SMS:** sus ficheros son los que enlaza la [página de sector público](https://transparencia.carm.es/web/transparencia/contratos-y-convenios-del-sector-publico) (cada año con otro nombre). Cada página que llega bien se guarda en `raw/contratos_menores_sms/_pagina.html` (las anteriores, en `_historico/`). El portal la sirve a veces sin el bloque de enlaces: se vuelve a leer hasta 3 veces (90 s entre lecturas) y, si sigue igual, se guarda en `_pagina_sin_enlaces.html` y se usan los enlaces de la última página buena (o, si aún no hay, las URL del manifiesto) siempre que sea de los últimos 28 días, con aviso y **sin retirar nada**. Más vieja, o sin nada guardado, es un error. Una copia retirada que la página vuelve a enlazar se pide otra vez y vuelve a constar como publicada.
+
 ## Columnas añadidas
 
 `_fuente`, `_dataset`, `_anio_fichero`, `_archivo_origen`, `_hoja`, `_fecha_descarga` y las 3 de control. En los CSV que el portal genera desde JSON, además, `_resto_json` (restos de la lista JSON que no son de ningún campo) y `_<columna>_sin_cortes` (el texto sin los cortes de línea cada 80 caracteres; la columna original se sirve tal cual).
