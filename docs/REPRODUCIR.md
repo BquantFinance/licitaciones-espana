@@ -62,6 +62,7 @@ Los comandos son los de una primera descarga completa en `datos/<fuente>/`. Los 
 | [Aragón](fuentes/aragon.md) | `python scripts/ccaa_aragon.py --salida datos/aragon` | — | 4 min | `aragon.zip` |
 | [Asturias](fuentes/asturias.md) | `python scripts/ccaa_asturias.py --salida datos/asturias --semilla v2026.02/asturias/asturias_contracts_ALL_YEARS.parquet` | `asturias_contracts_ALL_YEARS.parquet` | 3 min | `asturias.zip` |
 | [Canarias](fuentes/canarias.md) | `python scripts/ccaa_canarias.py --salida datos/canarias` | — | 9 min | `canarias.zip` |
+| [Cantabria](fuentes/cantabria.md) | `python scripts/ccaa_cantabria.py --salida datos/cantabria` | — | ~15 min (unas 290 peticiones) | — (aún no en la release) |
 | [Castilla-La Mancha](fuentes/castilla_la_mancha.md) | `python scripts/ccaa_castilla_la_mancha.py --salida datos/castilla_la_mancha` | — | ~1,5 h | `castilla_la_mancha.zip` |
 | [Castilla y León](fuentes/castilla_leon.md) | `python scripts/ccaa_castilla_leon.py --salida datos/castilla_leon` | — | 1 min | `castilla_leon.zip` |
 | [Cataluña](fuentes/catalunya.md) | ver abajo | la carpeta `v2026.02/catalunya` | — | `catalunya.zip` |
@@ -162,6 +163,7 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `nacional/normalizar_placsp.py` | — | Corrige parquets PLACSP ya generados sin eliminar filas: marca versiones, semántica de importes, etiquetas y CPV |
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D y tramos de `idExpediente` (multi-sort con 14 órdenes como reserva) + salida reproducible |
 | `scripts/ccaa_andalucia_menores.py` | CKAN de datos abiertos de la Junta de Andalucía | Contratos menores «Contratación Menor en {año}» (2018-), con el SAS entero; CSV tal cual con versiones y Parquet acumulado |
+| `scripts/ccaa_cantabria.py` | Portal de Transparencia de Cantabria (API) | Contratos del Gobierno de Cantabria y su sector público (2015-), menores incluidos, con invitados y ofertas: la exportación CSV de cada mes tal cual, con versiones, y un Parquet acumulado |
 | `scripts/ccaa_canarias.py` | datos.canarias.es y portales de transparencia de Canarias | Contratos menores de Canarias: CSV de contratos del Gobierno (2020-, copia de la PLACSP), API de Las Palmas de GC (2016-) y del Cabildo de Tenerife (2019-), y los resúmenes agregados del SCS (ODS) y de los departamentos (ODT); ficheros tal cual con versiones y un Parquet acumulado por serie |
 | `Euskadi/ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4 (solo descarga): API REST + XLSX anuales + portales municipales |
 | `Euskadi/consolidacion_euskadi.py` | — | Consolida JSON/XLSX/CSV → 9 tablas Parquet normalizadas |
