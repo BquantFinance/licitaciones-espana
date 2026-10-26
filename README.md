@@ -98,6 +98,7 @@ Cada fuente tiene su ficha en [`docs/fuentes/`](docs/fuentes/): qué trae, cómo
 | [Aragón](docs/fuentes/aragon.md) | [opendata.aragon.es](https://opendata.aragon.es/), OCDS de Zaragoza | `scripts/ccaa_aragon.py` | `aragon.zip` |
 | [Asturias](docs/fuentes/asturias.md) | [sede.asturias.es](https://sede.asturias.es/) | `scripts/ccaa_asturias.py` | `asturias.zip` |
 | [Canarias](docs/fuentes/canarias.md) | [datos.canarias.es](https://datos.canarias.es/) y portales de transparencia | `scripts/ccaa_canarias.py` | `canarias.zip` |
+| [Cantabria](docs/fuentes/cantabria.md) | [transparencia.cantabria.es](https://transparencia.cantabria.es/contratacion-publica) | `scripts/ccaa_cantabria.py` | — (aún no en la release) |
 | [Castilla-La Mancha](docs/fuentes/castilla_la_mancha.md) | [contratacion.castillalamancha.es](https://contratacion.castillalamancha.es/), UCLM | `scripts/ccaa_castilla_la_mancha.py` | `castilla_la_mancha.zip` |
 | [Castilla y León](docs/fuentes/castilla_leon.md) | [datosabiertos.jcyl.es](https://datosabiertos.jcyl.es/) | `scripts/ccaa_castilla_leon.py` | `castilla_leon.zip` |
 | [Cataluña](docs/fuentes/catalunya.md) (RPC, PSCP, Generalitat, Barcelona, COVID, Tribunal) | [analisi.transparenciacatalunya.cat](https://analisi.transparenciacatalunya.cat/), Open Data BCN | `scripts/ccaa_cataluna.py` + `_parquet.py` | `catalunya.zip` |
@@ -124,7 +125,7 @@ La PLACSP cubre a todas las administraciones que publican en ella, en todas las 
 | Aragón | `aragon.zip` (Gobierno y Ayuntamiento de Zaragoza) | 2009-2025 | Parcial (~30 %) | Ayuntamiento de Zaragoza y DPZ, universidad |
 | Asturias | `asturias.zip`; Gijón en `municipios.zip` | 2019-2024 | Sí: el Principado hasta 2024 | 2025-2026, que el Principado aún no publicaba (404) |
 | Canarias | `canarias.zip`; Santa Cruz de Tenerife en `municipios.zip` | 2016-2026 | Parcial (~30-35 %) | El Servicio Canario de la Salud solo publica resúmenes |
-| Cantabria | No: solo la PLACSP | — | Parcial (la PLACSP) | contratosdecantabria.es, congelado desde noviembre de 2023 |
+| Cantabria | No: solo la PLACSP (la base de datos de contratos del Gobierno, `scripts/ccaa_cantabria.py`, aún no está en la release) | — | Parcial (la PLACSP: el 92-96 % de los menores del Gobierno) | Ayuntamientos que no cargan sus menores en la PLACSP; ofertas e invitados de los menores, que solo trae la base de datos del Gobierno |
 | Castilla-La Mancha | `castilla_la_mancha.zip` | 2015-2026 | Parcial (~85 %) | SESCAM (por línea de factura, sin NIF), ayuntamientos |
 | Castilla y León | `castilla_leon.zip`; Valladolid en `municipios.zip` | 2005-2026 | Sí: la Junta (~100 %) | León, Salamanca, Ponferrada, diputaciones de Burgos y Ávila |
 | Cataluña | `catalunya.zip`, `catalunya_menores.zip` | 2014-2026 | Sí (~95 % dentro de la ventana de 5 años del RPC) | Antes de 2021, solo lo guardado; ayuntamientos que solo publican documentos |
