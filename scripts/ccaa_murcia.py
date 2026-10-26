@@ -21,6 +21,9 @@ Salida (por defecto <repo>/ccaa_murcia/):
     raw/catalogo_ckan.json             inventario del catálogo CKAN regional (q=contrat)
     raw/_manifiesto.json               URL, fecha de descarga y última comprobación de cada fichero
     raw/descarga_log.txt               resumen de cada ejecución (se añade al final)
+    raw/contratos_menores_sms/_pagina.html            última página de sector público que enlazaba la
+                                       serie (sus versiones anteriores, en _historico/)
+    raw/contratos_menores_sms/_pagina_sin_enlaces.html  la última que llegó sin ningún enlace a la serie
     <serie>.parquet                    todos los años de la serie (todas las columnas, texto)
     _historico/                        versiones anteriores de los Parquet
 
@@ -61,7 +64,11 @@ Confirmado en páginas oficiales (investigación previa, confianza A):
     SMS_Contratos_Menores_2021, Contratos_Menores_SMS_{2022-2024},
     SMS_Contratos_menores_2025; 748.984 líneas con NIF). Se guardan con su
     nombre publicado y el año del nombre; lo que la página deja de enlazar
-    queda como retirado.
+    queda como retirado. El portal sirve a veces la página sin el bloque de
+    enlaces (cuatro semanas de sept.-oct. de 2026, a horas distintas): se vuelve
+    a leer hasta 3 veces y, si sigue igual, se usan los enlaces de la última
+    página buena guardada (o las URL del manifiesto) si es de los últimos 28
+    días, con aviso y sin retirar nada.
   - Catálogo CKAN: https://datosabiertos.regiondemurcia.es/api/3/action/package_search?q=contrat
 VERIFICAR EN VIVO (el sandbox donde se escribió no llega a los portales):
   - Qué otros años existen en cada serie (el script los sondea y lo anota).
@@ -901,6 +908,13 @@ def descargar_serie(clave, serie, anios, raw, manifiesto, resumen, comprobar_tod
 PATRON_HREF = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 PATRON_ANIO_NOMBRE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 EXTENSIONES_TABLA = (".csv", ".xlsx", ".xls", ".json")
+# Página de una serie sin nombre fijo (SMS): la última que enlazaba la serie y la última que llegó sin
+# enlaces, en raw/<serie>/ (no son tablas: archivos_enlazados no las lee)
+PAGINA_GUARDADA = "_pagina.html"
+PAGINA_SIN_ENLACES = "_pagina_sin_enlaces.html"
+INTENTOS_PAGINA = 3          # lecturas de la página mientras llegue sin enlaces
+ESPERA_PAGINA = 90           # segundos entre ellas
+DIAS_PAGINA_GUARDADA = 28    # con una página buena más vieja, la página sin enlaces vuelve a ser un error
 
 
 def anio_de_nombre(nombre):
@@ -910,19 +924,79 @@ def anio_de_nombre(nombre):
     return int(anios.pop()) if len(anios) == 1 else None
 
 
-def enlaces_serie(serie, extra=()):
-    """{nombre publicado: url} de los ficheros de la serie que enlaza su página
-    (y de las URL del catálogo CKAN que casen, si la página no los enlaza).
-    Lanza ErrorPortal si no se puede leer la página."""
+def enlaces_de_pagina(serie, texto, extra=()):
+    """{nombre publicado: url} de los ficheros de la serie que enlaza el HTML
+    `texto` de su página (y de las URL `extra`, p. ej. del catálogo CKAN, que
+    casen, si la página no los enlaza)."""
     patron = re.compile(serie["enlaces"], re.IGNORECASE)
     urls = [urljoin(serie["pagina"], html.unescape(h).strip())
-            for h in PATRON_HREF.findall(pedir_texto(serie["pagina"]))] + list(extra)
+            for h in PATRON_HREF.findall(texto or "")] + list(extra)
     enlaces = {}
     for url in urls:
         ruta = unquote(urlparse(url).path)
         if patron.search(ruta):
             enlaces.setdefault(Path(ruta).name, url)
     return enlaces
+
+
+def enlaces_serie(serie, extra=()):
+    """enlaces_de_pagina de la página publicada ahora. Lanza ErrorPortal si no se
+    puede leer."""
+    return enlaces_de_pagina(serie, pedir_texto(serie["pagina"]), extra)
+
+
+def leer_pagina_serie(serie, dir_serie):
+    """Lee la página de la serie hasta INTENTOS_PAGINA veces mientras llegue sin
+    ningún enlace a la serie (el portal de la CARM la sirve a veces sin el bloque
+    de enlaces). Si llega bien, se guarda en
+    `_pagina.html` (guardar_version: la anterior pasa a _historico/) y si no, en
+    `_pagina_sin_enlaces.html`, para ver qué sirvió el portal. Devuelve
+    ({nombre: url} de la página, intentos). Lanza ErrorPortal si la primera
+    lectura falla; si falla una de las siguientes, cuenta como sin enlaces."""
+    intento, texto = 1, ""
+    for intento in range(1, INTENTOS_PAGINA + 1):
+        try:
+            texto = pedir_texto(serie["pagina"])
+        except ErrorPortal:
+            if intento == 1:
+                raise
+            break
+        enlaces = enlaces_de_pagina(serie, texto)
+        if enlaces:
+            guardada = Path(dir_serie) / PAGINA_GUARDADA
+            if guardar_version(guardada, texto.encode("utf-8")) == "sin_cambios":
+                os.utime(guardada)   # la fecha de la copia es la de la última vez que llegó bien
+            return enlaces, intento
+        if intento < INTENTOS_PAGINA:
+            time.sleep(ESPERA_PAGINA)
+    guardar_version(Path(dir_serie) / PAGINA_SIN_ENLACES, texto.encode("utf-8"))
+    return {}, intento
+
+
+def enlaces_conocidos(clave, serie, dir_serie, manifiesto):
+    """Enlaces de la última página buena guardada (`_pagina.html`) o, si no hay,
+    las URL del manifiesto de los ficheros de la serie que la página enlazaba. Son
+    rutas /wres/ estables. Devuelve ({nombre: url}, de dónde, fecha ISO de la
+    referencia) o ({}, None, None) si no hay nada o es más viejo que
+    DIAS_PAGINA_GUARDADA (entonces el portal ha cambiado de verdad: es un error)."""
+    limite = ahora().timestamp() - DIAS_PAGINA_GUARDADA * 86400
+    guardada = Path(dir_serie) / PAGINA_GUARDADA
+    if guardada.exists():
+        enlaces = enlaces_de_pagina(serie, guardada.read_text(encoding="utf-8", errors="replace"))
+        if enlaces and guardada.stat().st_mtime >= limite:
+            return enlaces, f"la última página buena ({PAGINA_GUARDADA})", fecha_version(guardada)
+        return {}, None, None
+    enlaces, comprobado = {}, None
+    for rel, entrada in manifiesto.datos.items():
+        if (entrada.get("dataset") != clave or entrada.get("publicado") is False or not entrada.get("url")
+                or not re.search(serie["enlaces"], unquote(urlparse(entrada["url"]).path), re.IGNORECASE)):
+            continue
+        enlaces.setdefault(Path(rel).name, entrada["url"])
+        if entrada.get("comprobado") and (comprobado is None or entrada["comprobado"] > comprobado):
+            comprobado = entrada["comprobado"]
+    if enlaces and comprobado and a_epoch(comprobado) >= limite:
+        return enlaces, "las URL del manifiesto", comprobado
+    return {}, None, None
 
 
 def archivos_enlazados(dir_serie):
@@ -945,14 +1019,28 @@ def descargar_enlazados(clave, serie, raw, manifiesto, resumen, comprobar_todo=F
     anio_actual = ahora().year
     print(f"\n📦 {clave}: {serie['descripcion']}")
     try:
-        enlaces = enlaces_serie(serie, extra)
+        enlaces, intentos = leer_pagina_serie(serie, dir_serie)
     except ErrorPortal as e:
         resumen.fallidos.append(f"{clave}: no se pudo leer {serie['pagina']} ({e}); se conservan las copias")
         return
-    if not enlaces:
-        resumen.fallidos.append(f"{clave}: {serie['pagina']} no enlaza ningún fichero de la serie; "
-                                "no se retira nada")
-        return
+    # Página sin enlaces (degradada): se usan los de la última página buena, sin retirar nada
+    degradada = not enlaces
+    if degradada:
+        enlaces, origen, fecha = enlaces_conocidos(clave, serie, dir_serie, manifiesto)
+        if not enlaces:
+            resumen.fallidos.append(f"{clave}: {serie['pagina']} no enlaza ningún fichero de la serie "
+                                    f"({intentos} intentos; copia en {clave}/{PAGINA_SIN_ENLACES}) y no hay una "
+                                    f"página buena de los últimos {DIAS_PAGINA_GUARDADA} días; no se retira nada")
+            return
+        resumen.avisos.append(f"{clave}: {serie['pagina']} llegó sin enlaces a la serie ({intentos} intentos; "
+                              f"copia en {clave}/{PAGINA_SIN_ENLACES}); se usan los {len(enlaces)} enlaces de "
+                              f"{origen} del {fecha} y no se retira nada")
+        print(f"  ⚠️ página sin enlaces ({intentos} intentos): {len(enlaces)} enlaces de {origen} del {fecha}")
+    elif intentos > 1:
+        resumen.avisos.append(f"{clave}: {serie['pagina']} llegó sin enlaces a la serie en {intentos - 1} "
+                              f"intento(s) y bien en el {intentos}.º")
+    for nombre, url in enlaces_de_pagina(serie, "", extra).items():
+        enlaces.setdefault(nombre, url)
     anios = set()
     for nombre, url in sorted(enlaces.items()):
         anio = anio_de_nombre(nombre)
@@ -961,7 +1049,10 @@ def descargar_enlazados(clave, serie, raw, manifiesto, resumen, comprobar_todo=F
             continue
         anios.add(anio)
         destino = dir_serie / nombre
-        if destino.exists() and not comprobar_todo and anio < anio_actual - 1:
+        # Una copia que se dio por retirada y la página vuelve a enlazar se pide otra vez: así vuelve a constar
+        # como publicada (sus filas, con _en_ultima_descarga=True)
+        retirada = manifiesto.get(manifiesto.rel(destino)).get("publicado") is False
+        if destino.exists() and not comprobar_todo and anio < anio_actual - 1 and not retirada:
             resumen.sin_cambios.append(f"{clave} {nombre} (ya descargado; --comprobar-todo para volver a pedirlo)")
             continue
         estado, detalle = descargar(url, destino, tipo=_tipo(url))
@@ -974,6 +1065,8 @@ def descargar_enlazados(clave, serie, raw, manifiesto, resumen, comprobar_todo=F
             # Enlazado y no se puede bajar: se conserva la copia y se reintenta
             resumen.fallidos.append(f"{clave} {nombre}: {detalle or estado} ({url})")
             print(f"  ❌ {nombre}: {detalle or estado}")
+    if degradada:
+        return
     for ruta in archivos_enlazados(dir_serie):
         if ruta.name not in enlaces and manifiesto.get(manifiesto.rel(ruta)).get("publicado", True):
             manifiesto.retirar(ruta, f"{serie['pagina']} ya no lo enlaza")
