@@ -112,6 +112,7 @@ Cada fuente tiene su ficha en [`docs/fuentes/`](docs/fuentes/): qué trae, cómo
 | [La Rioja](docs/fuentes/la_rioja.md) | [web.larioja.org/dato-abierto](https://web.larioja.org/dato-abierto) | `scripts/ccaa_la_rioja.py` | `la_rioja.zip` |
 | [Comunidad de Madrid](docs/fuentes/comunidad_madrid.md) | [contratos-publicos.comunidad.madrid](https://contratos-publicos.comunidad.madrid/) | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | `comunidad_madrid.zip` |
 | [Ayuntamiento de Madrid](docs/fuentes/madrid_ayuntamiento.md) | [datos.madrid.es](https://datos.madrid.es/) | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | `madrid_ayuntamiento.zip` |
+| [Melilla](docs/fuentes/melilla.md) (menores de la Ciudad Autónoma) | [Perfil del contratante en la PLACSP](https://contrataciondelestado.es/wps/poc?uri=deeplink:perfilContratante&idBp=QOY179oppWwQK2TEfXGy%2BA%3D%3D), pestaña «Documentos» | `melilla/melilla_menores.py` | — (aún no en la release) |
 | [Región de Murcia](docs/fuentes/murcia.md) | [datosabiertos.carm.es](https://datosabiertos.regiondemurcia.es/), [transparencia.carm.es](https://transparencia.carm.es/) | `scripts/ccaa_murcia.py` | `murcia.zip` |
 | [País Vasco](docs/fuentes/euskadi.md) | [contratacion.euskadi.eus](https://www.contratacion.euskadi.eus/), [opendata.euskadi.eus](https://opendata.euskadi.eus/) | `Euskadi/ccaa_euskadi.py` + `consolidacion_euskadi.py` | `euskadi.zip` |
 | [8 ayuntamientos](docs/fuentes/municipios.md) (menores) | Portal de cada ayuntamiento | `scripts/municipios_menores.py` | `municipios.zip` |
@@ -141,7 +142,7 @@ La PLACSP cubre a todas las administraciones que publican en ella, en todas las 
 | País Vasco | `euskadi.zip` | 2011-2026 | Sí, con la API de KontratazioA (~98 %) | Bilbao y Donostia (PDF), Barakaldo |
 | Región de Murcia | `murcia.zip` | 2014-2025 | Parcial (~85-90 %) | UPCT y ayuntamientos |
 | Ceuta | No: solo la PLACSP | — | La PLACSP | — |
-| Melilla | No: solo la PLACSP | — | No (~0 %) | Publica los menores en PDF |
+| Melilla | No: solo la PLACSP (las relaciones trimestrales de menores de la Ciudad, `melilla/melilla_menores.py`, aún no están en la release) | 2019-2026 | No (~0 %): la Ciudad publica sus menores como relaciones trimestrales en XLS (y PDF hasta 2021) en la pestaña «Documentos» de su perfil | Los entes y empresas de la Ciudad que no publican en esas relaciones |
 
 **No hay cobertura del 100 % de los menores:** estimamos entre el 55 y el 65 % de los publicados en España, y no existe un denominador oficial completo. Veredicto, inventario de fuentes y plan por comunidad: [`docs/COBERTURA.md`](docs/COBERTURA.md).
 

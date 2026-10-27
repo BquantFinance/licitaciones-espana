@@ -61,6 +61,7 @@ Los registros y tamaños de cada fuente son los de v2026.10; no cuentan los fich
 | Canarias | https://datos.canarias.es/ · https://www.gobiernodecanarias.org/transparencia/ |
 | Cantabria | https://transparencia.cantabria.es/contratacion-publica · https://aplicacionesweb.cantabria.es/transparencia/actuaciones/contratos-sector-publico |
 | Aragón | https://opendata.aragon.es/ · https://www.zaragoza.es/ |
+| Melilla | https://contrataciondelestado.es/wps/poc?uri=deeplink:perfilContratante&idBp=QOY179oppWwQK2TEfXGy%2BA%3D%3D (pestaña «Documentos») |
 | Castilla y León | https://datosabiertos.jcyl.es/ |
 | Castilla-La Mancha | https://contratacion.castillalamancha.es/ · https://contratos.apps.uclm.es/ |
 | Región de Murcia | https://datosabiertos.regiondemurcia.es/ · https://transparencia.carm.es/ |
@@ -81,7 +82,8 @@ Los registros y tamaños de cada fuente son los de v2026.10; no cuentan los fich
 - [x] Castilla-La Mancha: `scripts/ccaa_castilla_la_mancha.py`, los ficheros de transparencia de la Junta (menores, caja pagadora, SESCAM por línea de factura, sector público 2015-2018) y la UCLM 2017-2026, verificado en vivo el 2026-09-28. Los RAR necesitan `rarfile` con `unrar` o `libarchive-c`
 - [x] Canarias: `scripts/ccaa_canarias.py` (CSV de contratos del Gobierno, que es su PLACSP; Las Palmas de GC 2016-2026 y Cabildo de Tenerife 2019-2025 por las API de sus portales; resúmenes del SCS y de los departamentos), verificado en vivo el 2026-09-30. El SCS solo publica totales: 89.340 menores en 2025 y ~1.500 contrato a contrato ([`docs/COBERTURA.md`](../COBERTURA.md) §5.2)
 - [x] Cantabria: `scripts/ccaa_cantabria.py`, la base de datos de contratos del Gobierno y su sector público (2015-2026, 39.661 contratos, menores incluidos, con los invitados y las ofertas de los menores), por su API; verificado en vivo el 2026-10-26 con el 1T de 2024. El 92-96 % de los menores ya está en el 1143 ([ficha](cantabria.md))
-- [ ] Illes Balears, Ceuta y Melilla
+- [x] Melilla: `melilla/melilla_menores.py`, las relaciones trimestrales de contratos menores de la Ciudad Autónoma (2019-T1 a 2026-T2, 18.471 filas) y sus tres anuales, de la pestaña «Documentos» de su perfil en la PLACSP, verificado el 2026-10-27; casi ninguno está en el 1143 ([ficha](melilla.md))
+- [ ] Illes Balears y Ceuta
 - Navarra: su ley foral de contratos (art. 102.3) solo obliga a publicar la menor cuantía agregada por empresa y trimestre; no hay fuente contrato a contrato
 
 **Contratos menores:** no hay cobertura del 100 %. Estimamos el 55-65 % de los menores publicados y no existe un denominador oficial completo (el RCSP es una cota inferior). Veredicto por comunidad, inventario de fuentes y plan: [`docs/COBERTURA.md`](../COBERTURA.md) (§0.1 y §5).
