@@ -142,8 +142,12 @@ FUENTES (verificado en vivo el 2026-09-27)
    - Sin NIF: solo el nombre del tercero. El título de cada hoja (versión, fuente,
      cobertura) se guarda en _titulo_hoja.
    - La sección enlaza varias veces, sin texto, RP-922-Adjudic-a-31-12-2024-cas.xlsx,
-     que da 404 (enlace roto: aviso). La página valenciana enlaza las versiones "val"
-     de 2025 y 2026 (diputacion_alicante_va) y el resto en castellano.
+     que da 404 desde la primera descarga (28-sep-2026; tampoco está en la raíz de
+     wp-content/uploads/). Un enlace sin texto no se ve en la página: no es un
+     documento publicado y va a "NO PUBLICADOS EN EL PORTAL", no a los avisos (se
+     sigue pidiendo: si vuelve, se descarga). 2024 entero viene en RP-1076 (relación
+     anual). La página valenciana enlaza las versiones "val" de 2025 y 2026
+     (diputacion_alicante_va) y el resto en castellano.
 4. Universidad de Alicante (UA)
    https://sctr.ua.es/es/01-presentacion/7-transparencia/contratos-menores/contratos-menores.html
    - XLSX trimestrales (un h3 por año, 2018-2026). Sin NIF (proveedor, objeto,
@@ -1142,6 +1146,8 @@ def extraer_enlaces(serie, contenido):
                 avisos.append(f"enlace a un fichero no tabular ({extension}): {url}")
             continue                      # páginas (.html, .php...) y otros ficheros
         propio = _texto(ancla)
+        # Sin texto ni imagen el enlace no se ve en la página (p. ej. <a href="…"></a>)
+        oculto = not propio and ancla.find(["img", "svg", "picture", "i"]) is None
         propio = "" if TEXTO_GENERICO.match(propio) else propio
         contexto = ancla.find_parent(["tr", "li", "p"])
         fila = ""
@@ -1156,10 +1162,13 @@ def extraer_enlaces(serie, contenido):
         enlace = {"url": url, "tipo": tipo, "rel": ruta_local(url, serie.get("base")),
                   "descripcion": descripcion, "anio": anio,
                   "trimestre": trimestre_de(propio, fila, nombre),
-                  "categoria": categoria_de(propio, fila, nombre) or "contratos menores"}
+                  "categoria": categoria_de(propio, fila, nombre) or "contratos menores",
+                  "oculto": oculto}
         previo = enlaces.get(url)
         if previo is None or (propio and previo["descripcion"] == Path(nombre).stem):
             enlaces[url] = enlace          # el mismo fichero enlazado dos veces: el que tiene texto
+        if previo is not None:
+            enlaces[url]["oculto"] = previo["oculto"] and oculto   # oculto solo si no se ve en ninguno
     return enlaces, avisos
 
 
@@ -1264,6 +1273,11 @@ def descargar_enlazados(clave, serie, raw, manifiesto, resumen, comprobar_todo=F
                 resumen.retirados.append(f"{clave} {previo[0]}: la página lo enlaza pero da {detalle}; "
                                          "se conservan sus filas")
                 print(f"  🗑️ {enlace['rel']}: {detalle}")
+            elif enlace.get("oculto"):
+                # Un enlace que no se ve en la página no es un documento publicado: no es un aviso
+                resumen.no_publicado(f"{clave}, enlaces sin texto (no se ven en la página) que dan {detalle}",
+                                     enlace["rel"])
+                print(f"  · {enlace['rel']}: enlace sin texto en la página, da {detalle} (no es un documento publicado)")
             else:
                 resumen.avisos.append(f"{clave}: enlace roto ({detalle}): {enlace['descripcion']} ({url})")
                 print(f"  ⚠️ {enlace['rel']}: enlace roto ({detalle})")

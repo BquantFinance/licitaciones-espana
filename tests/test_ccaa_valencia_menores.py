@@ -8,6 +8,7 @@ caché de una tabla dinámica, como los de gastos menores de la UV), XLS y CSV s
 generan en el propio test.
 """
 
+import gzip
 import html
 import importlib.util
 import io
@@ -651,14 +652,19 @@ def test_uv_pagina_caida_o_sin_enlaces_no_retira_nada(portal, tmp_path, pagina):
 def test_diputacion_solo_la_seccion_de_menores(portal, tmp_path):
     publicar_diputacion(portal)
     portal.urls[M.DIPA_PAGINA_VA] = pagina_diputacion().replace(b"CONTRATOS MENORES", b"CONTRACTES MENORS")
-    assert _ejecutar(tmp_path, "alicante") == 0      # el enlace roto (404) es un aviso, no un error
+    assert _ejecutar(tmp_path, "alicante") == 0      # el enlace sin texto que da 404 no es un error
 
     assert portal.pedidas(DIPA + "RP-1447-Contratos-No-Menores-gestionados-por-Diputacion-2025-CAS.xlsx") == 0
     assert portal.pedidas(DIPA + "CAS-Contratos-arrendam-INMUEBLES-anualidad-2022.xlsx") == 0
     assert portal.pedidas(DIPA + "2016-Contratos-Menores-Primer-Trimestre-Vers26112018.pdf") == 0
     assert portal.pedidas(DIPA + "1CORPORACION20232027/Eco-Presup/Contratos/RP-922-Adjudic-a-31-12-2024-cas.xlsx") == 1
     log = _log(tmp_path)
-    assert "enlace roto (HTTP 404)" in log and "RP-922-Adjudic-a-31-12-2024-cas" in log
+    # RP-922 solo se enlaza sin texto (no se ve en la página): no publicado, no un aviso
+    assert "enlace roto" not in log
+    no_publicados = log.split("NO PUBLICADOS EN EL PORTAL (404 / sin fichero):")[1].split("\n\n")[0]
+    assert ("diputacion_alicante, enlaces sin texto (no se ven en la página) que dan HTTP 404: "
+            "1CORPORACION20232027/Eco-Presup/Contratos/RP-922-Adjudic-a-31-12-2024-cas.xlsx") in no_publicados
+    assert "RP-922" not in log.split("AVISOS")[1]
     assert "PDF sin hoja de cálculo del mismo nombre" in log and "Instruccion-contratos-menores.pdf" in log
 
     df = pd.read_parquet(tmp_path / "diputacion_alicante.parquet")
@@ -674,6 +680,32 @@ def test_diputacion_solo_la_seccion_de_menores(portal, tmp_path):
     assert t16["Fecha"].tolist() == ["2016-02-19"]
     # La página valenciana enlaza los mismos ficheros: su serie no tiene nada
     assert not (tmp_path / "diputacion_alicante_va.parquet").exists()
+
+
+def test_diputacion_enlace_con_texto_que_da_404_sigue_siendo_aviso(portal, tmp_path):
+    # Un enlace que sí se ve (con texto) y da 404 es un enlace roto del portal: aviso
+    publicar_diputacion(portal)
+    portal.urls[M.DIPA_PAGINA_VA] = pagina_diputacion().replace(b"CONTRATOS MENORES", b"CONTRACTES MENORS")
+    del portal.urls[portal._clave(DIPA + "Contratos-adjudicados-LIGATE-a-31-de-diciembre-de-2021-2.xlsx")]
+    assert _ejecutar(tmp_path, "alicante") == 0
+    log = _log(tmp_path)
+    assert ("diputacion_alicante: enlace roto (HTTP 404): Contratos menores adjudicados a 31 de diciembre de 2021 "
+            "(LIGATE)") in log
+    assert "enlaces sin texto (no se ven en la página) que dan HTTP 404" in log      # RP-922, igual que antes
+
+
+def test_diputacion_pagina_real_solo_rp922_esta_oculto():
+    # La sección CONTRATOS MENORES de la página real (26-oct-2026, recortada): 31 ficheros y solo
+    # RP-922 sin texto (cuatro anclas vacías); el 2024 entero es RP-1076, con texto
+    ruta = REPO_ROOT / "tests" / "fixtures" / "valencia_menores" / "diputacion_alicante_contratacion_20261026.html.gz"
+    with gzip.open(ruta, "rb") as f:
+        contenido = f.read()
+    enlaces, avisos = M.extraer_enlaces(M.SERIES_PAGINA["diputacion_alicante"], contenido)
+    assert len(enlaces) == 31 and avisos == []
+    ocultos = [e["rel"] for e in enlaces.values() if e["oculto"]]
+    assert ocultos == ["1CORPORACION20232027/Eco-Presup/Contratos/RP-922-Adjudic-a-31-12-2024-cas.xlsx"]
+    rp1076 = enlaces[DIPA + "RP-1076-Relacion-Contratos-Menores-2024-CAS.xlsx"]
+    assert not rp1076["oculto"] and rp1076["anio"] == 2024
 
 
 def test_umh_documento_de_la_placsp_sin_extension(portal, tmp_path):

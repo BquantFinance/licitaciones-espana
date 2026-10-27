@@ -94,6 +94,7 @@ Cada fuente tiene su ficha en [`docs/fuentes/`](docs/fuentes/): qué trae, cómo
 | [TED](docs/fuentes/ted.md) (Unión Europea, avisos de España) | [ted.europa.eu](https://ted.europa.eu/), [data.europa.eu](https://data.europa.eu/data/datasets/ted-csv) | `ted/ted_module.py` | `ted.zip` |
 | [BORME](docs/fuentes/borme.md) | [boe.es](https://www.boe.es/diario_borme/) | `borme/scripts/` | `borme.zip` |
 | [BOE, sección III](docs/fuentes/boe_otras_disposiciones.md) (convenios) | [boe.es](https://www.boe.es/datosabiertos/) | `boe/boe_otras_disposiciones.py` | — (aún no en la release) |
+| [GLEIF](docs/fuentes/gleif.md) (LEI y grupos empresariales) | [gleif.org](https://www.gleif.org/en/lei-data/gleif-golden-copy) | `gleif/gleif_espana.py` | — (aún no en la release) |
 | [Andalucía](docs/fuentes/andalucia.md) | Buscador de contratación de la Junta | `scripts/ccaa_andalucia.py` | `andalucia.zip` |
 | [Andalucía, menores](docs/fuentes/andalucia_menores.md) | [CKAN de la Junta](https://www.juntadeandalucia.es/datosabiertos/portal.html) | `scripts/ccaa_andalucia_menores.py` | `andalucia_menores.zip` |
 | [Aragón](docs/fuentes/aragon.md) | [opendata.aragon.es](https://opendata.aragon.es/), OCDS de Zaragoza | `scripts/ccaa_aragon.py` | `aragon.zip` |
