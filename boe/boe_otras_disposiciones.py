@@ -53,13 +53,17 @@ Sesgo del superviviente (docs/PRINCIPIOS.md; comun/historico.py):
   del sumario de un día que se vuelve a pedir sigue con _en_ultima_descarga=False.
 
 Qué se pide en cada ejecución (una petición por día, con PAUSA entre ellas):
-- Los días que faltan desde --desde (por defecto, PRIMER_DIA o el día
-  siguiente al último que se tiene) hasta --hasta (por defecto, hoy), y los
-  últimos DIAS_REPASO días ya descargados, por si el sumario cambió; todos los
-  ya descargados solo con --comprobar-todo. Los domingos no hay BOE y no se
-  piden. Un año entero son unas 310 peticiones; 2016-10-02 a hoy, unas 3.100.
-- Un 404 es un día sin BOE (se anota y no se vuelve a pedir). 403 o 429 paran la
-  ejecución. Sale con 1 si algún día no se pudo descargar o leer.
+- Los días que faltan desde --desde (por defecto, PRIMER_DIA o 2 × DIAS_REPASO
+  días antes del último que se tiene) hasta --hasta (por defecto, hoy en UTC), y
+  los últimos DIAS_REPASO días ya descargados, por si el sumario cambió; todos
+  los ya descargados solo con --comprobar-todo. Los domingos no se piden: solo
+  hay ediciones extraordinarias, raras y casi siempre de la sección I (la del
+  15-mar-2020 trae solo la I). Un año entero son unas 310 peticiones;
+  2016-10-02 a hoy, unas 3.100.
+- Un 404 es un día sin BOE (se anota y no se vuelve a pedir). Por eso no se
+  debe pedir el día en curso antes de que salga el BOE: con --hasta por defecto
+  y de madrugada en España, la fecha UTC aún es la del día anterior. 403 o 429
+  paran la ejecución. Sale con 1 si algún día no se pudo descargar o leer.
 
 FUENTES
 -------
