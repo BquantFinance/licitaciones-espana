@@ -4,7 +4,7 @@ Una ficha por fuente: qué trae la release, cómo lo descarga su script, sus col
 
 - **Nacional y Unión Europea:** [PLACSP](placsp.md) · [TED](ted.md) · [BORME](borme.md) · [BOE, sección III (convenios)](boe_otras_disposiciones.md) · [Calidad](calidad.md)
 - **Nacional y Unión Europea:** [PLACSP](placsp.md) · [TED](ted.md) · [BORME](borme.md) · [Calidad](calidad.md) · [GLEIF (grupos empresariales)](gleif.md)
-- **Comunidades autónomas:** [Andalucía](andalucia.md) y [sus menores](andalucia_menores.md) · [Aragón](aragon.md) · [Asturias](asturias.md) · [Canarias](canarias.md) · [Castilla-La Mancha](castilla_la_mancha.md) · [Castilla y León](castilla_leon.md) · [Cataluña](catalunya.md) · [Comunitat Valenciana](valencia.md) y [sus menores](valencia_menores.md) · [Extremadura](extremadura.md) · [Galicia](galicia.md) · [La Rioja](la_rioja.md) · [Comunidad de Madrid](comunidad_madrid.md) · [Región de Murcia](murcia.md) · [País Vasco](euskadi.md)
+- **Comunidades autónomas:** [Andalucía](andalucia.md) y [sus menores](andalucia_menores.md) · [Aragón](aragon.md) · [Asturias](asturias.md) · [Canarias](canarias.md) · [Castilla-La Mancha](castilla_la_mancha.md) · [Castilla y León](castilla_leon.md) · [Cataluña](catalunya.md) y [sus prohibiciones de contratar (RELIC)](relic.md) · [Comunitat Valenciana](valencia.md), [sus menores](valencia_menores.md) y [sus grupos de interés (REGIA)](regia.md) · [Extremadura](extremadura.md) · [Galicia](galicia.md) · [La Rioja](la_rioja.md) · [Comunidad de Madrid](comunidad_madrid.md) · [Región de Murcia](murcia.md) · [País Vasco](euskadi.md)
 - **Ayuntamientos:** [Madrid](madrid_ayuntamiento.md) · [8 ayuntamientos grandes, menores](municipios.md)
 
 ## Resumen de la release v2026.10

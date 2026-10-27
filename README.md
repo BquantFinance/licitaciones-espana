@@ -105,8 +105,10 @@ Cada fuente tiene su ficha en [`docs/fuentes/`](docs/fuentes/): qué trae, cómo
 | [Castilla y León](docs/fuentes/castilla_leon.md) | [datosabiertos.jcyl.es](https://datosabiertos.jcyl.es/) | `scripts/ccaa_castilla_leon.py` | `castilla_leon.zip` |
 | [Cataluña](docs/fuentes/catalunya.md) (RPC, PSCP, Generalitat, Barcelona, COVID, Tribunal) | [analisi.transparenciacatalunya.cat](https://analisi.transparenciacatalunya.cat/), Open Data BCN | `scripts/ccaa_cataluna.py` + `_parquet.py` | `catalunya.zip` |
 | [Cataluña, menores de la PSCP](docs/fuentes/catalunya.md#contratos-menores-de-la-pscp) | [contractaciopublica.cat](https://contractaciopublica.cat) | `scripts/ccaa_cataluna_contratosmenores.py` | `catalunya_menores.zip` |
+| [Cataluña, RELIC](docs/fuentes/relic.md) (prohibiciones de contratar) | [analisi.transparenciacatalunya.cat](https://analisi.transparenciacatalunya.cat/d/t3wj-j4pu) | `relic/relic_cataluna.py` | — (aún no en la release) |
 | [C. Valenciana](docs/fuentes/valencia.md) (REGCON) | [dadesobertes.gva.es](https://dadesobertes.gva.es/) | `scripts/ccaa_valencia.py` + `_parquet.py` | `valencia.zip` |
 | [C. Valenciana, menores](docs/fuentes/valencia_menores.md) | UV, Ajuntament de València, Diputación de Alicante, UA, UMH y UPV | `scripts/ccaa_valencia_menores.py` | `valencia_menores.zip` |
+| [C. Valenciana, REGIA](docs/fuentes/regia.md) (grupos de interés y reuniones) | [dadesobertes.gva.es](https://dadesobertes.gva.es/) | `regia/regia_valencia.py` | — (aún no en la release) |
 | [Extremadura](docs/fuentes/extremadura.md) | [juntaex.es](https://www.juntaex.es/) | `scripts/ccaa_extremadura.py` | `extremadura.zip` |
 | [Galicia](docs/fuentes/galicia.md) | [contratosdegalicia.gal](https://www.contratosdegalicia.gal/) | `galicia/scraper_galicia.py` | `contratos_galicia.zip` |
 | [La Rioja](docs/fuentes/la_rioja.md) | [web.larioja.org/dato-abierto](https://web.larioja.org/dato-abierto) | `scripts/ccaa_la_rioja.py` | `la_rioja.zip` |
