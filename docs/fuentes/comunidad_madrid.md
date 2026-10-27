@@ -60,6 +60,18 @@ El portal de la Comunidad de Madrid usa un módulo antibot de Drupal y tiene res
 - **Subdivisión recursiva**: Las entidades con >50K registros (hospitales grandes) se subdividen automáticamente por **rango de presupuesto de licitación**, partiendo rangos por la mitad recursivamente hasta que cada segmento queda por debajo del límite de truncamiento.
 - **Otros tipos** (licitaciones, adjudicaciones, etc.): Se descargan por **mes + tipo de publicación** con filtros de fecha, que sí funcionan para estos tipos.
 
+## Fichas de los menores (modo `fichas`, opcional)
+
+El CSV del buscador solo trae el «Importe de adjudicación» **con IVA**. La ficha de cada menor (`/contrato/<Referencia>`, la que enlaza el buscador) trae además el **importe sin IVA**, el **código DIR3** de la entidad adjudicadora (no en todas) y la **duración**. `python descarga_contratacion_comunidad_madrid_v1.py fichas` las pide para los menores de la tabla consolidada:
+
+- solo los presentes en la última descarga, con Referencia y con una Referencia que no comparte otra entidad (la URL de la ficha es la Referencia sola);
+- filtros: `fichas 2019 2025` (años de «Fecha del contrato») y `--franjas`, que pide solo los de importe con IVA entre el umbral menos 500 € y el umbral con el 21 % (14.500-18.150, 39.000-48.400 y 49.500-60.500 €): los únicos en los que el importe sin IVA decide si el menor llega al umbral o cae justo por debajo;
+- ritmo: `--pausa` segundos entre peticiones (1 por defecto) y `--hilos` (1); `--max-fichas N` para una pasada parcial. Para a la primera respuesta 403 o 429;
+- caché `fichas_menores.sqlite3`: la ficha de cada Referencia con su HTML comprimido; una ficha buena nunca se sustituye por un error ni por una página sin importes y, si el portal la cambia, la anterior queda en `fichas_historico`. Una nueva pasada solo pide lo que falta (las que fallan, hasta 4 intentos; `--reintentar` para más);
+- salida `fichas_menores.parquet` (con `guardar_version`): `Referencia`, `Entidad Adjudicadora` (las de la tabla), `estado`, los importes como se publican (`importe_sin_iva_texto`, `importe_con_iva_texto`) y en número, `codigo_entidad`, `duracion`, `num_ofertas_ficha`, `fecha_descarga` y, si la ficha trae varias adjudicaciones, `importes_json` con todas.
+
+Ninguna otra fase la lanza: `todo` no la incluye.
+
 ## Entidades incluidas (125)
 
 Todas las consejerías, organismos autónomos, empresas públicas y fundaciones de la CAM, incluyendo:

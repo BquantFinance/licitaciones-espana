@@ -38,7 +38,7 @@ ccaa_cataluna = _load("ccaa_cataluna")
 cat_parquet = _load("ccaa_cataluna_parquet")
 cat_menores = _load("ccaa_cataluna_contratosmenores")
 
-STATS_VACIAS = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0}
+STATS_VACIAS = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0, 'retirados': 0}
 
 
 # =============================================================================
@@ -243,6 +243,56 @@ class DescargaCatalunyaTests(unittest.TestCase):
         self.assertEqual(ccaa_cataluna.epoch_ckan('1970-01-02T00:00:00Z'), 86400.0)
         self.assertIsNone(ccaa_cataluna.epoch_ckan(None))
         self.assertIsNone(ccaa_cataluna.epoch_ckan('no es fecha'))
+
+    def _socrata_con_404(self, ids_404, datasets):
+        """download_socrata_datasets + metadatos con los ids_404 dando el 404 real del portal
+        (tests/fixtures/catalunya_socrata/retirados_404.json) y los demás como siempre."""
+        reales = json.loads((REPO_ROOT / "tests" / "fixtures" / "catalunya_socrata" / "retirados_404.json")
+                            .read_text(encoding="utf-8"))
+        cuerpo = reales['respuestas'][0]['json']
+        normal = _fake_get_factory([])
+        urls = []
+
+        def get(url, timeout=None, stream=False, **kwargs):
+            urls.append(url)
+            if any(f"/api/views/{d}" in url for d in ids_404):
+                return _resp(status=404, json_data=cuerpo)
+            return normal(url, timeout=timeout, stream=stream, **kwargs)
+
+        with patch.object(ccaa_cataluna, "SOCRATA_DATASETS", datasets), \
+                patch.object(ccaa_cataluna.session, "get", side_effect=get), \
+                patch.object(ccaa_cataluna.time, "sleep"), \
+                self.assertLogs(level="INFO") as logs:
+            ccaa_cataluna.download_socrata_datasets(self.dir)
+            ccaa_cataluna.download_socrata_metadata(self.dir)
+        return logs.output, urls
+
+    def test_datasets_retirados_en_origen_no_cuentan_como_fallo(self):
+        # a23c-d6vp y jxvs-kzbu dan 404 (respuesta real guardada): retirados, no fallos, y se
+        # siguen pidiendo. Un dataset que no está en SOCRATA_RETIRADOS y da 404 sigue siendo un fallo
+        self.assertEqual(set(ccaa_cataluna.SOCRATA_RETIRADOS), {'a23c-d6vp', 'jxvs-kzbu'})
+        self.assertTrue(set(ccaa_cataluna.SOCRATA_RETIRADOS) <= set(ccaa_cataluna.SOCRATA_DATASETS))
+        datasets = {k: ccaa_cataluna.SOCRATA_DATASETS[k] for k in ('a23c-d6vp', 'jxvs-kzbu', 'hb6v-jcbf')}
+        datasets['zzzz-0000'] = ('01_contratacion/otro', 'Otro')
+        logs, urls = self._socrata_con_404({'a23c-d6vp', 'jxvs-kzbu', 'zzzz-0000'}, datasets)
+        self.assertEqual((ccaa_cataluna.stats['retirados'], ccaa_cataluna.stats['failed'],
+                          ccaa_cataluna.stats['downloaded']), (2, 1, 1))
+        for d in ('a23c-d6vp', 'jxvs-kzbu'):
+            self.assertTrue(any("Retirado en origen" in m and d in m and "2026-09-28" in m for m in logs), logs)
+            self.assertFalse(any(d in m and ("❌" in m or "Metadatos" in m) for m in logs), logs)
+            self.assertIn(f"{ccaa_cataluna.SOCRATA_BASE}/api/views/{d}.json", urls)
+        self.assertTrue(any("❌ Error Otro" in m for m in logs), logs)
+        self.assertTrue(any("Metadatos zzzz-0000: HTTP 404" in m for m in logs), logs)
+        contratacion = self.dir / "01_transparencia_catalunya" / "01_contratacion"
+        self.assertEqual(sorted(p.name for p in contratacion.iterdir()), ['registro_publico_contratos.csv'])
+
+    def test_dataset_retirado_que_vuelve_se_descarga_y_avisa(self):
+        datasets = {'a23c-d6vp': ccaa_cataluna.SOCRATA_DATASETS['a23c-d6vp']}
+        logs, _ = self._socrata_con_404(set(), datasets)
+        self.assertEqual((ccaa_cataluna.stats['retirados'], ccaa_cataluna.stats['downloaded']), (0, 1))
+        self.assertTrue(any("quitarlo de la lista" in m for m in logs), logs)
+        self.assertTrue((self.dir / "01_transparencia_catalunya" / "01_contratacion"
+                         / "licitaciones_adjudicaciones_curso.csv").exists())
 
     def test_metadatos_fallidos_se_registran(self):
         with patch.object(ccaa_cataluna, "SOCRATA_DATASETS", {'hb6v-jcbf': ('01_contratacion/registro', 'x')}), \

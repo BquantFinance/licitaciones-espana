@@ -1,0 +1,55 @@
+{
+ "medido": "2026-10-26",
+ "portal": "https://analisi.transparenciacatalunya.cat",
+ "nota": "Respuestas reales (HTTP 404) de los dos datasets retirados, a /api/views/<id>.json y a /resource/<id>.json; /d/<id> y /api/views/<id>/rows.csv también dan 404.",
+ "respuestas": [
+  {
+   "url": "api/views/a23c-d6vp.json",
+   "status": 404,
+   "json": {
+    "code": "not_found",
+    "error": true,
+    "message": "Not found",
+    "data": {
+     "id": "a23c-d6vp"
+    }
+   }
+  },
+  {
+   "url": "resource/a23c-d6vp.json?$limit=1",
+   "status": 404,
+   "json": {
+    "code": "dataset.missing",
+    "error": true,
+    "message": "Not found",
+    "data": {
+     "id": "a23c-d6vp"
+    }
+   }
+  },
+  {
+   "url": "api/views/jxvs-kzbu.json",
+   "status": 404,
+   "json": {
+    "code": "not_found",
+    "error": true,
+    "message": "Not found",
+    "data": {
+     "id": "jxvs-kzbu"
+    }
+   }
+  },
+  {
+   "url": "resource/jxvs-kzbu.json?$limit=1",
+   "status": 404,
+   "json": {
+    "code": "dataset.missing",
+    "error": true,
+    "message": "Not found",
+    "data": {
+     "id": "jxvs-kzbu"
+    }
+   }
+  }
+ ]
+}

@@ -70,6 +70,7 @@ Los comandos son los de una primera descarga completa en `datos/<fuente>/`. Los 
 | [C. Valenciana](fuentes/valencia.md) | ver abajo | — | ~20 min | `valencia.zip` |
 | [C. Valenciana, menores](fuentes/valencia_menores.md) | `python scripts/ccaa_valencia_menores.py --salida datos/valencia_menores` | — | 12 min | `valencia_menores.zip` |
 | [Extremadura](fuentes/extremadura.md) | `python scripts/ccaa_extremadura.py --salida datos/extremadura` | — | 2 min | `extremadura.zip` |
+| [GLEIF](fuentes/gleif.md) | `python gleif/gleif_espana.py --salida datos/gleif_espana` | — | ~5 min (4 peticiones, 566 MB) | — (aún no en la release) |
 | [Galicia](fuentes/galicia.md) | ver abajo | `v2026.02/galicia/contratos_galicia.parquet` (etiqueta `datos-lfs-v2026.02`) | 9 h | `contratos_galicia.zip` |
 | [La Rioja](fuentes/la_rioja.md) | `python scripts/ccaa_la_rioja.py --salida datos/la_rioja` | — | 1 min | `la_rioja.zip` |
 | [Comunidad de Madrid](fuentes/comunidad_madrid.md) | ver abajo | `contratacion_comunidad_madrid_completo.parquet` | 4 h 20 min | `comunidad_madrid.zip` |
@@ -170,6 +171,7 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica los CSV de actividad contractual (9 categorías, 11 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | contractaciopublica.cat | Descarga contratos menores Catalunya (todas las fases, API del portal) |
+| `gleif/gleif_espana.py` | Golden Copy de GLEIF (API) | Entidades españolas con LEI, las enlazadas por relaciones de nivel 2 (matriz directa y última) y las excepciones de matriz; sin empresarios individuales |
 | `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
 | `scripts/ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias → `ccaa_asturias/` |
 | `scripts/ccaa_aragon.py` | Aragón Open Data + Ayuntamiento de Zaragoza (OCDS) | Contratos del Gobierno de Aragón, Registro de Contratos, anuncios del perfil y OCDS de Zaragoza |

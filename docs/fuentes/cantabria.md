@@ -19,10 +19,14 @@ Lo que no está en el feed 1143 de la [PLACSP](placsp.md): en una muestra de tre
 
 - **Para no contar dos veces**, cruza con el 1143 antes de sumar: los no menores llevan el `Número PLACSP` (o `Nº PLACSP` en los bloques de acuerdo marco y sistema dinámico); los menores, no.
 - **Nombres repetidos:** la exportación repite el nombre de las columnas en cada bloque; el segundo `Sin lotes` es `Sin lotes.1`, como los pone pandas. Cada contrato rellena solo su bloque.
-- **Los detalles van en una columna:** `Ofertas (detalle)` es «1- cif/nif: … razon: … sin_iva: … iva: …; 2- …». Los importes de las ofertas vienen a menudo a cero.
+- **Los detalles van en una columna:** `Ofertas (detalle)` es «1- cif/nif: … razon: … sin_iva: … iva: …; 2- …».
+- **La relación de ofertas no trae a la adjudicataria** (descarga completa del 2026-10-26): en los contratos generales, el `Nº licitadores` es el de la relación más uno en 650 de los 670 que la publican, y la adjudicataria está en la relación en 13. En los menores está en 927 de 8.053. Para tener todas las ofertas de un contrato, la de la adjudicataria es el importe de adjudicación del contrato.
+- **Ofertas de los menores sin importe:** 5.638 de las 8.053 relaciones de menores traen todos los importes a 0,00 € y otras 781, todos de 1 € o menos. En los contratos generales, todas las ofertas de la relación traen importe (4 relaciones, de 1 € o menos).
+- **Un menor con lotes** no rellena el adjudicatario de su bloque: el de cada lote va en `Lotes (detalle)`, y el contrato sale casi siempre en una fila por lote, iguales salvo, a veces, el objeto (312 filas de 96 contratos).
 - **225 contratos sin fecha de formalización** (39.661 en la API y 39.436 en las ventanas): la API no deja pedirlos por ventana. El script lo avisa en cada ejecución.
 - **Importes y fechas como texto:** '7.825,00 €', '11-02-2026'. El CSV se sirve como ISO-8859-1, pero es Windows-1252 (el euro en 0x80).
 - **NIF de personas físicas enmascarado** ('***8328**').
+- **Una ejecución sin cambios** no guarda versión nueva del crudo. En el Parquet solo cambia `_ultima_descarga` de los meses que se han vuelto a comprobar (el año en curso y el anterior), y la versión anterior del Parquet pasa a `_historico/`.
 
 ## Columnas añadidas
 

@@ -2,7 +2,7 @@
 
 Una ficha por fuente: qué trae la release, cómo lo descarga su script, sus columnas, cómo usarla sin contar dos veces y los errores conocidos de cada versión. Las columnas y los tipos de cada fichero están en [`docs/esquema/`](../esquema/README.md), y las marcas `_…` comunes, en [`docs/ESQUEMA.md`](../ESQUEMA.md). El código de cada script, con su docstring, es la referencia completa; su estado (cerrado y desde qué commit) está en [`docs/ESTADO_SCRAPERS.md`](../ESTADO_SCRAPERS.md), y cómo se ejecuta, en [`docs/REPRODUCIR.md`](../REPRODUCIR.md).
 
-- **Nacional y Unión Europea:** [PLACSP](placsp.md) · [TED](ted.md) · [BORME](borme.md) · [Calidad](calidad.md)
+- **Nacional y Unión Europea:** [PLACSP](placsp.md) · [TED](ted.md) · [BORME](borme.md) · [Calidad](calidad.md) · [GLEIF (grupos empresariales)](gleif.md)
 - **Comunidades autónomas:** [Andalucía](andalucia.md) y [sus menores](andalucia_menores.md) · [Aragón](aragon.md) · [Asturias](asturias.md) · [Canarias](canarias.md) · [Castilla-La Mancha](castilla_la_mancha.md) · [Castilla y León](castilla_leon.md) · [Cataluña](catalunya.md) · [Comunitat Valenciana](valencia.md) y [sus menores](valencia_menores.md) · [Extremadura](extremadura.md) · [Galicia](galicia.md) · [La Rioja](la_rioja.md) · [Comunidad de Madrid](comunidad_madrid.md) · [Región de Murcia](murcia.md) · [País Vasco](euskadi.md)
 - **Ayuntamientos:** [Madrid](madrid_ayuntamiento.md) · [8 ayuntamientos grandes, menores](municipios.md)
 
