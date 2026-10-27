@@ -226,7 +226,7 @@ python -m pytest -q -p no:cacheprovider     # sin red: los portales se simulan
 - **Código:** [MIT](LICENSE).
 - **Lo que añade este proyecto a los datos** (columnas `_…`, versiones de la PLACSP, valores `<campo>_corregido`, indicadores de calidad, `persona_hash`…): [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es).
 - **Los datos de origen** conservan la licencia o las condiciones de reutilización de cada portal, casi siempre con la obligación de citar la fuente. [`DATA_LICENSE.md`](DATA_LICENSE.md) las recoge fuente a fuente, con el enlace a cada una, e incluye los portales que no publican licencia para sus datos.
-- **Datos personales.** Algunas fuentes publican nombres y NIF de personas físicas, y los cargos del BORME van **seudonimizados**, no anonimizados ([ficha del BORME](docs/fuentes/borme.md)). Su reutilización está sujeta al RGPD.
+- **Datos personales.** Algunas fuentes publican nombres y NIF de personas físicas, y los cargos del BORME van **seudonimizados**, no anonimizados ([ficha del BORME](docs/fuentes/borme.md)). Desde la próxima versión de la release, el NIF de las personas físicas va enmascarado (disposición adicional séptima de la LOPDGDD: `***4567**`) y `persona_hash`, con clave secreta ([detalle](DATA_LICENSE.md#datos-personales)). Su reutilización está sujeta al RGPD.
 
 ## Cómo citar
 

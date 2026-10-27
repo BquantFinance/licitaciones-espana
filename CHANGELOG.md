@@ -4,6 +4,12 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 
 ## [Sin publicar]
 
+### Datos personales (próxima versión de la release)
+
+- **NIF de personas físicas enmascarado** con el formato de la disposición adicional séptima de la LOPDGDD (cifras cuarta a séptima: `***4567**`), en toda columna de texto, con la marca `_nif_enmascarado`. El nombre, como la fuente.
+- **Supresión y oposición** (arts. 17 y 21 del RGPD): quien lo pide sale de los datos (`[persona física]`, sin NIF; marca `_suprimido_art21`). Contacto: bquantfinance@gmail.com.
+- **BORME: `persona_hash` con clave secreta** (HMAC-SHA256): ya no se puede calcular a partir de un nombre ni enlazar con v2026.10. La v2026.10 publicada no cambia. [Detalle](DATA_LICENSE.md#datos-personales).
+
 ### Añadido
 
 - **BOE, sección III «Otras disposiciones»** (`boe/boe_otras_disposiciones.py`): una fila por disposición, día a día, por la API de datos abiertos del BOE: los convenios de la Administración General del Estado (que desde la Ley 40/2015 solo son eficaces publicados aquí), sus adendas, protocolos, encargos y los convenios colectivos, con una marca `_tipo`. 29.477 disposiciones de 2024-01-01 a 2026-10-24. Los nombres de personas físicas del título se sustituyen por «[persona física]». [Ficha](docs/fuentes/boe_otras_disposiciones.md).
