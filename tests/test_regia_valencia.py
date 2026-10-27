@@ -114,7 +114,9 @@ def todo_el_texto(salida):
 @pytest.mark.parametrize("nif, tipo, nombre, esperado", [
     ("*********", "Otros", "Otros", True), ("12345678Z", "", "X", True), ("X1234567L", "", "X", True),
     ("", "Empresario individual", "Empresario individual", True), ("G00000001", "Asociación", "ASOCIACION", False),
-    ("B00000002", "Sociedad", "EMPRESA SL", False), ("", "Plataforma o red sin personalidad jurídica", "PLATAFORMA", False)])
+    ("B00000002", "Sociedad", "EMPRESA SL", False), ("", "Plataforma o red sin personalidad jurídica", "PLATAFORMA", False),
+    ("B20000003", "Empresario individual", "SOCIEDAD INSCRITA COMO INDIVIDUAL S.L.", False),
+    ("", "Empresario individual", "Nombre comercial de una persona", True)])
 def test_es_persona_fisica(nif, tipo, nombre, esperado):
     assert M.es_persona_fisica(nif, tipo, nombre) is esperado
 

@@ -25,7 +25,8 @@ Salida (por defecto <repo>/regia_valencia/):
 
 Personas físicas, fuera siempre: el portal enmascara a los empresarios
 individuales (nombre «Empresario individual» u «Otros», NIF «*********»), pero
-publica su dirección y su correo. Esas filas no se escriben, ni las reuniones
+publica su dirección y su correo. Esas filas no se escriben (tampoco las de tipo
+«Empresario individual» sin el NIF de una persona jurídica), ni las reuniones
 que las citan como grupo (la reunión sí, con sus otros grupos y cargos). Las
 columnas «direccion» y «email» no se guardan de ningún grupo (el correo suele
 ser el de una persona). En «asuntos_tratados», un nombre con tratamiento
@@ -92,6 +93,7 @@ COLUMNAS_FUERA = ("direccion", "email")
 METADATOS_ORIGEN = ("_fecha_descarga",)
 ENMASCARADO = re.compile(r"^\*+$")
 DNI_NIE = re.compile(r"^(?:\d{8}[A-Z]|[XYZKLM]\d{7}[A-Z])$")
+CIF = re.compile(r"^[ABCDEFGHJNPQRSUVW]\d{7}[0-9A-J]$")       # NIF de persona jurídica
 MAYUS = "A-ZÁÉÍÓÚÜÑÀÈÒÏÇ"
 PALABRA = rf"(?:[{MAYUS}][\w{MAYUS}áéíóúüñàèòïç'-]+|[{MAYUS}]\.)"
 TRATAMIENTO = r"(?:don|doña|D\.|Dña\.|Dª|Sr\.|Sra\.|senyor|senyora)"
@@ -105,10 +107,13 @@ def ahora():
 
 
 def es_persona_fisica(nif, tipo_org=None, nombre=None):
-    """NIF enmascarado o de DNI/NIE, o el grupo es un empresario individual."""
+    """NIF enmascarado o de DNI/NIE, o un empresario individual sin NIF de persona jurídica (dos sociedades limitadas
+    inscritas como «Empresario individual» con su CIF se conservan)."""
     n = re.sub(r"[^0-9A-Za-z*]", "", nif or "").upper()
-    return bool(ENMASCARADO.match(n) or DNI_NIE.match(n) or (tipo_org or "").strip().lower() == "empresario individual"
-                or (nombre or "").strip().lower() == "empresario individual")
+    if ENMASCARADO.match(n) or DNI_NIE.match(n):
+        return True
+    individual = "empresario individual" in ((tipo_org or "").strip().lower(), (nombre or "").strip().lower())
+    return individual and not CIF.match(n)
 
 
 def sin_personas(texto):
