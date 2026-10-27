@@ -11,12 +11,12 @@ El REGIA es el registro de grupos de interés de la Generalitat Valenciana (Ley 
 
 | Fichero | Contenido | Filas (2026-10-27) |
 |---|---|--:|
-| `grupos.parquet` | Grupo inscrito: nombre, nº REGIA, NIF, fecha de inscripción, categoría, subcategoría, tipo de organización y los ámbitos de actuación e interés (`S`/`N`) | 2.177 (de 2.210) |
+| `grupos.parquet` | Grupo inscrito: nombre, nº REGIA, NIF, fecha de inscripción, categoría, subcategoría, tipo de organización y los ámbitos de actuación e interés (`S`/`N`) | 2.176 (de 2.210) |
 | `reuniones.parquet` | Actividad de influencia: `id_reunion`, tipo, asuntos tratados, fecha, huella normativa | 2.550 |
 | `reuniones_grupos.parquet` | Grupo de cada reunión (`id_reunion`, nombre, NIF, nº REGIA) | 2.682 (de 2.706) |
-| `reuniones_cargos.parquet` | Cargo de la Generalitat de cada reunión (`id_reunion`, cargo) | 2.893 |
+| `reuniones_cargos.parquet` | Cargo de la Generalitat de cada reunión (`id_reunion`, cargo) | 3.816 |
 
-**Sin personas físicas ni contactos:** el portal enmascara a los empresarios individuales (nombre «Empresario individual» u «Otros», NIF `*********`) pero publica su dirección y su correo: esas filas no se guardan, ni las filas reunión-grupo que los citan (la reunión sí). La dirección y el correo no se guardan de ningún grupo. En los asuntos, un nombre con tratamiento («don», «D.», «Sra.», «senyor»…) se sustituye por «[persona física]».
+**Sin personas físicas ni contactos:** el portal enmascara a los empresarios individuales (nombre «Empresario individual» u «Otros», NIF `*********`) pero publica su dirección y su correo: esas filas no se guardan, ni las filas reunión-grupo que los citan (la reunión sí). Tampoco las de tipo «Empresario individual» sin el NIF de una persona jurídica (dos sociedades limitadas inscritas con ese tipo y su CIF se conservan). La dirección y el correo no se guardan de ningún grupo. En los asuntos, un nombre con tratamiento («don», «D.», «Sra.», «senyor»…) se sustituye por «[persona física]».
 
 **Versiones:** los cuatro CSV se guardan depurados con versiones y los Parquet acumulan: un grupo que se da de baja o una reunión que se retira sigue con `_en_ultima_descarga = False`. Se ejecuta cada mes.
 
