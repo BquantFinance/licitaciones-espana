@@ -56,6 +56,7 @@ Los comandos son los de una primera descarga completa en `datos/<fuente>/`. Los 
 |---|---|---|---|---|
 | [PLACSP](fuentes/placsp.md) | ver abajo | `v2026.02/nacional/licitaciones_espana.parquet` y `licitaciones_completo_2012_2026.parquet` | 1 h 5 min | `nacional_*.zip` |
 | [TED](fuentes/ted.md) | `python ted/ted_module.py download --semilla v2026.02/ted/ted_es_can.parquet` | `ted_es_can.parquet` | ~10 h la primera vez (ver abajo) | `ted.zip` |
+| [BOE, sección III](fuentes/boe_otras_disposiciones.md) | `python boe/boe_otras_disposiciones.py --salida datos/boe_otras_disposiciones` | — | ~4,5 h desde 2016-10-02 (una petición por día, unas 3.100); ~5 min a la semana | — (aún no en la release) |
 | [BORME](fuentes/borme.md) | ver abajo | `borme_empresas_pub.parquet` y `borme_cargos_pub.parquet` | horas (~126.000 PDF) | `borme.zip` |
 | [Andalucía](fuentes/andalucia.md) | `python scripts/ccaa_andalucia.py scrape --salida datos/andalucia --semilla v2026.02/andalucia/licitaciones_andalucia.parquet` | `licitaciones_andalucia.parquet` | 2 h | `andalucia.zip` |
 | [Andalucía, menores](fuentes/andalucia_menores.md) | `python scripts/ccaa_andalucia_menores.py --salida datos/andalucia_menores` | — | 6 min | `andalucia_menores.zip` |
@@ -171,6 +172,7 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py` | contratos-publicos.comunidad.madrid | Web scraping con antibot bypass + subdivisión recursiva por importe |
 | `comunidad_madrid/ccaa_madrid_ayuntamiento.py` | datos.madrid.es | Descarga y unifica los CSV de actividad contractual (9 categorías, 11 estructuras) |
 | `scripts/ccaa_cataluna_contratosmenores.py` | contractaciopublica.cat | Descarga contratos menores Catalunya (todas las fases, API del portal) |
+| `boe/boe_otras_disposiciones.py` | API de datos abiertos del BOE (sumarios) | Sección III del BOE día a día: convenios, adendas, protocolos, encargos y convenios colectivos, sin nombres de personas físicas |
 | `gleif/gleif_espana.py` | Golden Copy de GLEIF (API) | Entidades españolas con LEI, las enlazadas por relaciones de nivel 2 (matriz directa y última) y las excepciones de matriz; sin empresarios individuales |
 | `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
 | `scripts/ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias → `ccaa_asturias/` |
