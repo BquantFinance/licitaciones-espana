@@ -2177,6 +2177,292 @@ def unificar_csvs(semillas=(), origen=ORIGEN_SEMILLA):
     return {"filas": filas, "retiradas": retiradas, "salidas": estados, "semillas": informes, "via_fecha": via_fecha}
 
 
+
+# ---------------------------------------------------------------------------
+# FICHAS DE LOS MENORES (modo «fichas», opcional: ninguna otra fase lo lanza)
+# ---------------------------------------------------------------------------
+# El CSV del buscador solo trae el «Importe de adjudicación» con IVA. La ficha de
+# cada menor (/contrato/<Referencia>, la que enlaza el buscador) trae además el
+# importe sin IVA, el código DIR3 de la entidad adjudicadora y la duración. Una
+# petición por menor: por eso es una fase aparte, con caché incremental, ritmo
+# prudente por defecto y filtros por año y por franjas de importe.
+FICHA_URL = f"{BASE_URL}/contrato/"
+FICHAS_DB = "fichas_menores.sqlite3"
+SALIDA_FICHAS = "fichas_menores.parquet"
+FICHAS_PAUSA = 1.0          # segundos entre peticiones de cada hilo
+FICHAS_HILOS = 1
+FICHAS_MAX_INTENTOS = 4     # una ficha que falla tantas veces no se vuelve a pedir (salvo --reintentar)
+# Franjas del importe con IVA en las que el importe sin IVA decide si un menor
+# llega al umbral (15.000 €, 40.000 € de obras y 50.000 € de la DA 54.ª de la
+# LCSP) o cae justo por debajo: entre el umbral menos 500 € y el umbral con el
+# 21 % de IVA. Fuera de ellas, el importe con IVA ya basta para saberlo.
+FRANJAS_CON_IVA = ((14500.0, 18150.0), (39000.0, 48400.0), (49500.0, 60500.0))
+ESTADOS_PARADA = (403, 429)
+# Etiquetas de la ficha (div.field__label) → campo
+ETIQUETAS_FICHA = {
+    "Tipo de publicación": "tipo_publicacion",
+    "Referencia": "referencia_ficha",
+    "Código de la entidad adjudicadora": "codigo_entidad",
+    "Entidad adjudicadora": "entidad_ficha",
+    "Nº Ofertas": "num_ofertas_ficha",
+    "Fecha del contrato": "fecha_contrato_ficha",
+    "Importe adjudicación (sin IVA)": "importe_sin_iva_texto",
+    "Importe adjudicación (con IVA)": "importe_con_iva_texto",
+    "Duración del contrato": "duracion",
+}
+COLUMNAS_FICHAS = ["Referencia", "Entidad Adjudicadora", "estado", "intentos", "http", "error", "fecha_descarga",
+                   "sha256", "referencia_ficha", "entidad_ficha", "codigo_entidad", "tipo_publicacion",
+                   "fecha_contrato_ficha", "num_ofertas_ficha", "importe_sin_iva_texto", "importe_sin_iva",
+                   "importe_con_iva_texto", "importe_con_iva", "duracion", "n_importes", "importes_json"]
+
+
+class ParadaPortal(Exception):
+    """El portal responde 403 o 429: la fase para sin pedir más fichas."""
+
+
+def importe_ficha(texto):
+    """'12.806,00' → 12806.0; lo que no es un importe español, None."""
+    t = (texto or "").replace("€", "").replace("\xa0", "").strip()
+    if not re.fullmatch(r"-?\d{1,3}(\.\d{3})*(,\d+)?|-?\d+(,\d+)?", t):
+        return None
+    return float(t.replace(".", "").replace(",", "."))
+
+
+def parsear_ficha(html):
+    """Los pares etiqueta/valor de la ficha (li con div.field__label y
+    div.field__item) y los campos de ETIQUETAS_FICHA. Si una etiqueta se repite
+    (varios adjudicatarios o lotes), el campo es el de la primera y los pares
+    de importes van todos en importes_json; n_importes los cuenta."""
+    soup = BeautifulSoup(html, "html.parser")
+    pares = []
+    for etiqueta in soup.select("div.field__label"):
+        valor = etiqueta.find_next_sibling("div", class_="field__item")
+        if valor is None:
+            continue
+        pares.append((" ".join(etiqueta.get_text(" ", strip=True).split()),
+                      " ".join(valor.get_text(" ", strip=True).split())))
+    campos = {c: None for c in ETIQUETAS_FICHA.values()}
+    importes = []
+    for etiqueta, valor in pares:
+        campo = ETIQUETAS_FICHA.get(etiqueta)
+        if campo and campos[campo] is None:
+            campos[campo] = valor
+        if etiqueta == "Importe adjudicación (sin IVA)":
+            importes.append({"sin_iva": valor})
+        elif etiqueta == "Importe adjudicación (con IVA)":
+            if importes and "con_iva" not in importes[-1]:
+                importes[-1]["con_iva"] = valor
+            else:
+                importes.append({"con_iva": valor})
+    campos["importe_sin_iva"] = importe_ficha(campos["importe_sin_iva_texto"])
+    campos["importe_con_iva"] = importe_ficha(campos["importe_con_iva_texto"])
+    campos["n_importes"] = len(importes)
+    campos["importes_json"] = json.dumps(importes, ensure_ascii=False) if len(importes) > 1 else None
+    return {"pares": pares, "campos": campos}
+
+
+def _anio_contrato(serie):
+    """Año de 'Fecha del contrato' ('19 de mayo del 2023' → 2023), o NaN."""
+    return pd.to_numeric(serie.astype("string").str.extract(r"(\d{4})\s*$", expand=False), errors="coerce")
+
+
+def menores_para_fichas(ruta_tabla, anios=None, franjas=None):
+    """Menores vigentes de la tabla consolidada cuya ficha se puede pedir: con
+    Referencia, presentes en la última descarga y con una Referencia que no
+    comparte otra entidad (la URL de la ficha es solo la Referencia). anios
+    (desde, hasta): por el año de 'Fecha del contrato'. franjas: solo los de
+    importe con IVA dentro de alguna. Devuelve (DataFrame con Referencia,
+    Entidad Adjudicadora, anio e importe_con_iva; {'menores', 'compartidas',
+    'fuera_de_filtro'})."""
+    columnas = ["Tipo de Publicación", "Referencia", "Entidad Adjudicadora", "Fecha del contrato",
+                "Importe de adjudicación", "_en_ultima_descarga"]
+    t = pd.read_parquet(ruta_tabla, columns=columnas)
+    m = t[(t["Tipo de Publicación"] == MENORES) & t["Referencia"].notna()
+          & t["_en_ultima_descarga"].fillna(True).astype(bool)].copy()
+    entidades = m.groupby("Referencia")["Entidad Adjudicadora"].nunique()
+    compartidas = set(entidades[entidades > 1].index)
+    m = m[~m["Referencia"].isin(compartidas)].drop_duplicates("Referencia")
+    m["anio"] = _anio_contrato(m["Fecha del contrato"])
+    m["importe_con_iva"] = m["Importe de adjudicación"].map(importe_ficha)
+    dentro = pd.Series(True, index=m.index)
+    if anios is not None:
+        dentro &= m["anio"].between(anios[0], anios[1])
+    if franjas:
+        en_franja = pd.Series(False, index=m.index)
+        for desde, hasta in franjas:
+            en_franja |= m["importe_con_iva"].between(desde, hasta)
+        dentro &= en_franja
+    elegidos = m[dentro][["Referencia", "Entidad Adjudicadora", "anio", "importe_con_iva"]].reset_index(drop=True)
+    return elegidos, {"menores": int(len(m)), "compartidas": len(compartidas), "fuera_de_filtro": int((~dentro).sum())}
+
+
+def abrir_fichas_db(ruta):
+    """Caché de fichas (SQLite): la última de cada Referencia en `fichas` y, si
+    el portal la cambia, la anterior en `fichas_historico`. Nunca se borra."""
+    import sqlite3
+    conn = sqlite3.connect(ruta, check_same_thread=False)
+    columnas = ("referencia TEXT, entidad TEXT, estado TEXT, intentos INTEGER, http INTEGER, error TEXT, "
+                "fecha_descarga TEXT, sha256 TEXT, campos_json TEXT, html_gzip BLOB")
+    conn.execute(f"CREATE TABLE IF NOT EXISTS fichas ({columnas}, PRIMARY KEY (referencia))")
+    conn.execute(f"CREATE TABLE IF NOT EXISTS fichas_historico ({columnas})")
+    conn.commit()
+    return conn
+
+
+def guardar_ficha(conn, r):
+    """Guarda el resultado `r` de una petición. Una ficha buena ('ok') nunca se
+    sustituye por un error ni por una vacía: solo cuenta el intento. Si llega
+    otra buena distinta (otro sha256), la anterior pasa a fichas_historico."""
+    previa = conn.execute("SELECT estado, intentos, sha256 FROM fichas WHERE referencia = ?",
+                          (r["referencia"],)).fetchone()
+    intentos = (previa[1] if previa else 0) + 1
+    if previa and previa[0] == "ok" and r["estado"] != "ok":
+        conn.execute("UPDATE fichas SET intentos = ? WHERE referencia = ?", (intentos, r["referencia"]))
+        conn.commit()
+        return "conservada"
+    if previa and previa[0] == "ok" and previa[2] == r["sha256"]:
+        conn.execute("UPDATE fichas SET intentos = ?, fecha_descarga = ? WHERE referencia = ?",
+                     (intentos, r["fecha_descarga"], r["referencia"]))
+        conn.commit()
+        return "sin_cambios"
+    if previa and previa[0] == "ok":
+        conn.execute("INSERT INTO fichas_historico SELECT * FROM fichas WHERE referencia = ?", (r["referencia"],))
+    conn.execute("INSERT OR REPLACE INTO fichas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (r["referencia"], r["entidad"], r["estado"], intentos, r.get("http"), r.get("error"),
+                  r["fecha_descarga"], r.get("sha256"), r.get("campos_json"), r.get("html_gzip")))
+    conn.commit()
+    return "guardada"
+
+
+def pedir_ficha(sesion, referencia, entidad):
+    """Una petición: el resultado para guardar_ficha. 403 y 429 paran la fase
+    (ParadaPortal), sin guardar nada."""
+    import gzip
+    import hashlib
+    ahora = iso_utc(time.time())
+    base = {"referencia": referencia, "entidad": entidad, "fecha_descarga": ahora}
+    try:
+        resp = sesion.get(FICHA_URL + str(referencia), timeout=60)
+    except requests.RequestException as e:
+        return {**base, "estado": "error", "error": f"{type(e).__name__}: {e}"[:300]}
+    if resp.status_code in ESTADOS_PARADA:
+        raise ParadaPortal(f"HTTP {resp.status_code} en la ficha {referencia}")
+    if resp.status_code != 200:
+        return {**base, "estado": "error", "http": resp.status_code, "error": f"HTTP {resp.status_code}"}
+    ficha = parsear_ficha(resp.text)
+    campos = ficha["campos"]
+    if campos["importe_sin_iva_texto"] is None and campos["importe_con_iva_texto"] is None:
+        return {**base, "estado": "vacia", "http": 200, "error": "la página no trae los importes de la adjudicación"}
+    contenido = resp.text.encode("utf-8")
+    return {**base, "estado": "ok", "http": 200, "sha256": hashlib.sha256(contenido).hexdigest(),
+            "campos_json": json.dumps(campos, ensure_ascii=False), "html_gzip": gzip.compress(contenido)}
+
+
+def descargar_fichas(sesion, pendientes, conn, pausa=FICHAS_PAUSA, hilos=FICHAS_HILOS, max_fichas=None,
+                     dormir=time.sleep):
+    """Pide las fichas de `pendientes` (Referencia, Entidad Adjudicadora) con
+    `pausa` segundos entre peticiones de cada hilo. Para a la primera 403/429.
+    Devuelve {'pedidas', 'ok', 'errores', 'conservadas', 'parada'}."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    filas = list(pendientes.itertuples(index=False))
+    if max_fichas is not None:
+        filas = filas[:max_fichas]
+    cuenta = Counter()
+    parada = threading.Event()
+    motivo = []
+    cerrojo = threading.Lock()
+
+    def trabajar(trozo):
+        for i, fila in enumerate(trozo):
+            if parada.is_set():
+                return
+            if i:
+                dormir(pausa)
+            try:
+                r = pedir_ficha(sesion, fila[0], fila[1])
+            except ParadaPortal as e:
+                parada.set()
+                motivo.append(str(e))
+                return
+            with cerrojo:
+                guardado = guardar_ficha(conn, r)
+                cuenta["pedidas"] += 1
+                cuenta["ok" if r["estado"] == "ok" else "errores"] += 1
+                cuenta["conservadas"] += guardado == "conservada"
+
+    trozos = [filas[k::max(1, hilos)] for k in range(max(1, hilos))]
+    if len(trozos) == 1:
+        trabajar(trozos[0])
+    else:
+        with ThreadPoolExecutor(max_workers=len(trozos)) as pool:
+            list(pool.map(trabajar, trozos))
+    return {"pedidas": cuenta["pedidas"], "ok": cuenta["ok"], "errores": cuenta["errores"],
+            "conservadas": cuenta["conservadas"], "parada": motivo[0] if motivo else None}
+
+
+def pendientes_de_ficha(conn, candidatos, reintentar=False):
+    """Los candidatos sin ficha buena en la caché y con menos de
+    FICHAS_MAX_INTENTOS intentos (con reintentar, aunque los tengan)."""
+    hechas = {ref: (estado, intentos) for ref, estado, intentos in
+              conn.execute("SELECT referencia, estado, intentos FROM fichas").fetchall()}
+
+    def falta(ref):
+        estado, intentos = hechas.get(ref, (None, 0))
+        return estado != "ok" and (reintentar or intentos < FICHAS_MAX_INTENTOS)
+    return candidatos[candidatos["Referencia"].map(falta)].reset_index(drop=True)
+
+
+def escribir_fichas(conn, destino):
+    """fichas_menores.parquet (texto, salvo los importes en número e intentos y
+    http en entero) desde la caché, con guardar_version: la anterior pasa a
+    _historico/ y, si no cambia, no se toca. Devuelve el estado o None si la
+    caché está vacía (no se escribe nada)."""
+    filas = []
+    for ref, ent, estado, intentos, http, error, fecha, sha, campos_json in conn.execute(
+            "SELECT referencia, entidad, estado, intentos, http, error, fecha_descarga, sha256, campos_json "
+            "FROM fichas ORDER BY referencia"):
+        campos = json.loads(campos_json) if campos_json else {}
+        filas.append({"Referencia": ref, "Entidad Adjudicadora": ent, "estado": estado, "intentos": intentos,
+                      "http": http, "error": error, "fecha_descarga": fecha, "sha256": sha, **campos})
+    if not filas:
+        return None
+    df = pd.DataFrame(filas).reindex(columns=COLUMNAS_FICHAS)
+    tipos = {"importe_sin_iva": pa.float64(), "importe_con_iva": pa.float64(), "intentos": pa.int64(),
+             "http": pa.int64(), "n_importes": pa.int64()}
+    esquema = pa.schema([(c, tipos.get(c, pa.string())) for c in COLUMNAS_FICHAS])
+    tabla = pa.Table.from_pandas(df, schema=esquema, preserve_index=False)
+    return _escribir(Path(destino), lambda tmp: pq.write_table(tabla, tmp, compression="snappy"))
+
+
+def fase_fichas(anios=None, franjas=False, pausa=FICHAS_PAUSA, hilos=FICHAS_HILOS, max_fichas=None,
+                reintentar=False, sesion=None, carpeta=None):
+    """Modo «fichas»: lee la tabla consolidada, elige los menores (filtros por
+    año y por FRANJAS_CON_IVA), pide las fichas que faltan en la caché y escribe
+    fichas_menores.parquet. Devuelve un resumen."""
+    carpeta = Path(carpeta or OUTPUT_DIR)
+    tabla = carpeta / SALIDA_PARQUET
+    if not tabla.exists():
+        log.error(f"No existe {tabla}: primero hay que descargar y unificar")
+        return None
+    candidatos, info = menores_para_fichas(tabla, anios, FRANJAS_CON_IVA if franjas else None)
+    conn = abrir_fichas_db(carpeta / FICHAS_DB)
+    pendientes = pendientes_de_ficha(conn, candidatos, reintentar)
+    log.info(f"Fichas: {info['menores']:,} menores vigentes con Referencia propia ({info['compartidas']:,} "
+             f"referencias compartidas entre entidades, sin ficha); {len(candidatos):,} en el filtro; "
+             f"{len(pendientes):,} por pedir (pausa {pausa} s, {hilos} hilo(s))")
+    if sesion is None:
+        sesion = requests.Session()
+        sesion.headers.update(HEADERS)
+    resultado = descargar_fichas(sesion, pendientes, conn, pausa, hilos, max_fichas)
+    if resultado["parada"]:
+        log.warning(f"  Parada: {resultado['parada']}")
+    estado = escribir_fichas(conn, carpeta / SALIDA_FICHAS)
+    conn.close()
+    log.info(f"  Pedidas {resultado['pedidas']:,}: {resultado['ok']:,} buenas, {resultado['errores']:,} con error "
+             f"({resultado['conservadas']:,} buenas conservadas); {SALIDA_FICHAS}: {estado}")
+    return {**info, "candidatos": len(candidatos), "pendientes": len(pendientes), **resultado, "salida": estado}
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -2200,6 +2486,15 @@ Uso:
                                     → Además, lo que tenía el publicado (release
                                       v2026.02) y ya no está (por Referencia +
                                       Entidad Adjudicadora); repetible
+  python script.py fichas [desde hasta] [--franjas] [--pausa 1] [--hilos 1]
+                          [--max-fichas N] [--reintentar]
+                                    → Opcional: la ficha de cada menor vigente de la
+                                      tabla consolidada (importe sin IVA, código
+                                      DIR3 de la entidad y duración), con caché en
+                                      fichas_menores.sqlite3 y salida en
+                                      fichas_menores.parquet. Una petición por
+                                      menor: --franjas pide solo las de importe
+                                      con IVA cerca de los umbrales del menor
 
 Estrategia:
   Contratos menores: por entidad adjudicadora (126), sin fechas, y por ventanas
@@ -2218,6 +2513,11 @@ if __name__ == "__main__":
     parser.add_argument("modo", nargs="?", default="")
     parser.add_argument("anios", nargs="*", type=int)
     parser.add_argument("--semilla", action="append", type=Path, default=[])
+    parser.add_argument("--franjas", action="store_true")
+    parser.add_argument("--pausa", type=float, default=FICHAS_PAUSA)
+    parser.add_argument("--hilos", type=int, default=FICHAS_HILOS)
+    parser.add_argument("--max-fichas", type=int, default=None)
+    parser.add_argument("--reintentar", action="store_true")
     args = parser.parse_args()
     if args.semilla and args.modo != "unificar":
         parser.error("--semilla solo se usa con unificar")
@@ -2241,6 +2541,11 @@ if __name__ == "__main__":
 
     elif args.modo == "unificar":
         if unificar_csvs(args.semilla) is None:
+            sys.exit(1)
+
+    elif args.modo == "fichas":
+        anios = (args.anios[0], args.anios[1]) if len(args.anios) == 2 else None
+        if fase_fichas(anios, args.franjas, args.pausa, args.hilos, args.max_fichas, args.reintentar) is None:
             sys.exit(1)
 
     else:
