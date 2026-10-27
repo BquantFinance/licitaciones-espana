@@ -67,9 +67,11 @@ Los comandos son los de una primera descarga completa en `datos/<fuente>/`. Los 
 | [Castilla-La Mancha](fuentes/castilla_la_mancha.md) | `python scripts/ccaa_castilla_la_mancha.py --salida datos/castilla_la_mancha` | — | ~1,5 h | `castilla_la_mancha.zip` |
 | [Castilla y León](fuentes/castilla_leon.md) | `python scripts/ccaa_castilla_leon.py --salida datos/castilla_leon` | — | 1 min | `castilla_leon.zip` |
 | [Cataluña](fuentes/catalunya.md) | ver abajo | la carpeta `v2026.02/catalunya` | — | `catalunya.zip` |
+| [Cataluña, RELIC](fuentes/relic.md) | `python relic/relic_cataluna.py --salida datos/relic_cataluna` | — | segundos (1 petición, ~3,5 MB) | — (aún no en la release) |
 | [Cataluña, menores de la PSCP](fuentes/catalunya.md#contratos-menores-de-la-pscp) | `python scripts/ccaa_cataluna_contratosmenores.py --output datos/catalunya_menores/contractacio_menors.parquet --resume --semilla v2026.02/catalunya/contratacion/contractacio_menors.parquet` | `contractacio_menors.parquet` | ~3 h | `catalunya_menores.zip` |
 | [C. Valenciana](fuentes/valencia.md) | ver abajo | — | ~20 min | `valencia.zip` |
 | [C. Valenciana, menores](fuentes/valencia_menores.md) | `python scripts/ccaa_valencia_menores.py --salida datos/valencia_menores` | — | 12 min | `valencia_menores.zip` |
+| [C. Valenciana, REGIA](fuentes/regia.md) | `python regia/regia_valencia.py --salida datos/regia_valencia` | — | ~1 min (4 peticiones a 11 s) | — (aún no en la release) |
 | [Extremadura](fuentes/extremadura.md) | `python scripts/ccaa_extremadura.py --salida datos/extremadura` | — | 2 min | `extremadura.zip` |
 | [GLEIF](fuentes/gleif.md) | `python gleif/gleif_espana.py --salida datos/gleif_espana` | — | ~5 min (4 peticiones, 566 MB) | — (aún no en la release) |
 | [Galicia](fuentes/galicia.md) | ver abajo | `v2026.02/galicia/contratos_galicia.parquet` (etiqueta `datos-lfs-v2026.02`) | 9 h | `contratos_galicia.zip` |
@@ -176,6 +178,8 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `scripts/ccaa_cataluna_contratosmenores.py` | contractaciopublica.cat | Descarga contratos menores Catalunya (todas las fases, API del portal) |
 | `boe/boe_otras_disposiciones.py` | API de datos abiertos del BOE (sumarios) | Sección III del BOE día a día: convenios, adendas, protocolos, encargos y convenios colectivos, sin nombres de personas físicas |
 | `gleif/gleif_espana.py` | Golden Copy de GLEIF (API) | Entidades españolas con LEI, las enlazadas por relaciones de nivel 2 (matriz directa y última) y las excepciones de matriz; sin empresarios individuales |
+| `relic/relic_cataluna.py` | Socrata de la Generalitat de Catalunya (`t3wj-j4pu`) | Inscripciones y prohibiciones de contratar del RELIC, solo personas jurídicas; se ejecuta cada semana para guardar las prohibiciones que caducan |
+| `regia/regia_valencia.py` | dadesobertes.gva.es | Grupos de interés del REGIA y sus actividades de influencia (reuniones, grupos y cargos), sin personas físicas ni datos de contacto |
 | `galicia/scraper_galicia.py` | contratosdegalicia.gal | Pipeline base + detalle HTML + merge, con discovery automático, barrido CM 3 meses, caché SQLite y `--resume` |
 | `scripts/ccaa_asturias.py` | Principado de Asturias | Descarga contratación centralizada Asturias → `ccaa_asturias/` |
 | `scripts/ccaa_aragon.py` | Aragón Open Data + Ayuntamiento de Zaragoza (OCDS) | Contratos del Gobierno de Aragón, Registro de Contratos, anuncios del perfil y OCDS de Zaragoza |
