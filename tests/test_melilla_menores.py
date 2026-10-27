@@ -257,6 +257,9 @@ def test_formulario_documentos():
                       ("viewns_Z7_X_:perfilComp:linkPrepDocs", "Documentos")]
     with pytest.raises(ValueError, match="botón «Documentos»"):
         M.formulario_documentos(pagina_perfil(con_boton=False), URL_FINAL)
+    # Con los rótulos en otro idioma, el submit se encuentra por su name
+    accion, campos = M.formulario_documentos(pagina_perfil().replace('value="Documentos"', 'value="Documents"'), URL_FINAL)
+    assert campos[-1] == ("viewns_Z7_X_:perfilComp:linkPrepDocs", "Documents")
 
 
 def test_leer_lista():
@@ -628,6 +631,9 @@ def test_pagina_sin_epigrafe_es_un_error(tmp_path, docs):
     rc, _ = correr(tmp_path, portal)
     assert rc == 1 and "no trae el epígrafe" in log(tmp_path)
     assert not (tmp_path / "salida" / M.PARQUET).exists()
+    # la página se guarda para verla
+    assert (tmp_path / "salida" / "raw" / "_pagina_sin_lista.html").read_text(encoding="utf-8") == portal.html_lista
+    assert "guardada en raw/_pagina_sin_lista.html" in log(tmp_path)
 
 
 def test_respuesta_html_en_vez_del_documento(tmp_path, docs):
@@ -756,7 +762,7 @@ def test_pausa_entre_peticiones_y_reintentos():
     assert c.pedir("GET", "u").content == b"a"
     assert c.pedir("GET", "u").content == b"b"
     assert reloj.dormido == [M.PAUSA, M.ESPERAS[0], M.ESPERAS[1]] and c.peticiones == 4
-    assert "User-Agent" in s.headers
+    assert "User-Agent" in s.headers and s.headers["Accept-Language"].startswith("es")
 
 
 def test_bloqueo_y_4xx_sin_reintento():

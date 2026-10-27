@@ -179,7 +179,10 @@ import comun.salida  # noqa: E402
 URL_PERFIL = ("https://contrataciondelestado.es/wps/poc?uri=deeplink:perfilContratante"
               "&idBp=QOY179oppWwQK2TEfXGy%2BA%3D%3D")
 EPIGRAFE = "publicidad de la contratacion menor"   # título del epígrafe, normalizado (normalizar)
-BOTON_DOCUMENTOS = "Documentos"                    # valor del submit de la pestaña
+BOTON_DOCUMENTOS = "Documentos"                    # valor del submit de la pestaña (en español)
+BOTON_DOCUMENTOS_NOMBRE = ":linkPrepDocs"          # final del name de ese submit (el mismo en cualquier idioma)
+# El portal WPS localiza los rótulos por la cabecera Accept-Language: se piden en español
+CABECERAS_PORTAL = dict(CABECERAS, **{"Accept-Language": "es-ES,es;q=0.9"})
 PAUSA = 5.0               # segundos entre peticiones (como mínimo)
 INTENTOS = 3              # red y 5xx; un 403 o un 429 no se reintenta
 ESPERAS = (15.0, 60.0)    # antes del 2.º y del 3.er intento
@@ -273,7 +276,7 @@ class Cliente:
 
     def __init__(self, sesion=None, pausa=PAUSA, dormir=time.sleep, reloj=time.monotonic):
         self.sesion = sesion if sesion is not None else requests.Session()
-        self.sesion.headers.update(CABECERAS)
+        self.sesion.headers.update(CABECERAS_PORTAL)
         self.pausa = pausa
         self.dormir = dormir
         self.reloj = reloj
@@ -330,12 +333,14 @@ class Cliente:
 
 def formulario_documentos(pagina, base):
     """(acción, campos) del POST que abre la pestaña «Documentos»: los campos ocultos del formulario que
-    contiene el submit de valor «Documentos», más ese submit. ValueError si la página no lo trae."""
+    contiene el submit de valor «Documentos» (o cuyo name acaba en ':linkPrepDocs'), más ese submit. ValueError
+    si la página no lo trae."""
     from bs4 import BeautifulSoup
 
     sopa = BeautifulSoup(pagina, "html.parser")
-    boton = next((b for b in sopa.find_all("input", attrs={"type": "submit"})
-                  if (b.get("value") or "").strip() == BOTON_DOCUMENTOS and b.get("name")), None)
+    botones = [b for b in sopa.find_all("input", attrs={"type": "submit"}) if b.get("name")]
+    boton = next((b for b in botones if (b.get("value") or "").strip() == BOTON_DOCUMENTOS),
+                 next((b for b in botones if b["name"].endswith(BOTON_DOCUMENTOS_NOMBRE)), None))
     if boton is None:
         raise ValueError("el perfil no trae el botón «Documentos» (¿otra página o un bloqueo?)")
     form = boton.find_parent("form")
@@ -343,7 +348,7 @@ def formulario_documentos(pagina, base):
         raise ValueError("el botón «Documentos» no está en un formulario con acción")
     campos = [(i["name"], i.get("value") or "") for i in form.find_all("input", attrs={"type": "hidden"})
               if i.get("name")]
-    campos.append((boton["name"], boton["value"]))
+    campos.append((boton["name"], boton.get("value") or ""))
     return urljoin(base, html_mod.unescape(form["action"])), campos
 
 
@@ -988,10 +993,11 @@ def descargar(salida, manifiesto, resumen, cliente, comprobar_todo=False, max_de
     manifiesto qué sigue publicado. Sin lista no se retira nada."""
     raw = Path(salida) / "raw"
     carpeta = raw / "documentos"
+    ultima = None
     try:
-        perfil = cliente.pedir("GET", URL_PERFIL)
+        ultima = perfil = cliente.pedir("GET", URL_PERFIL)
         accion, campos = formulario_documentos(perfil.text, perfil.url or URL_PERFIL)
-        pagina = cliente.pedir("POST", accion, campos)
+        ultima = pagina = cliente.pedir("POST", accion, campos)
         lista = leer_lista(pagina.text)
     except Bloqueo as e:
         resumen.fallidos.append(f"contrataciondelestado.es: {e}; se para sin pedir nada más")
@@ -1000,7 +1006,12 @@ def descargar(salida, manifiesto, resumen, cliente, comprobar_todo=False, max_de
         resumen.fallidos.append(f"contrataciondelestado.es (lista de documentos): {e}")
         return
     except ValueError as e:
-        resumen.fallidos.append(f"contrataciondelestado.es (lista de documentos): {e}")
+        # La página que no se entiende se guarda para verla (raw/_pagina_sin_lista.html, con sus versiones)
+        detalle = ""
+        if ultima is not None:
+            guardar_version(raw / "_pagina_sin_lista.html", ultima.content or b"")
+            detalle = f" (HTTP {ultima.status_code}, {ultima.url}; guardada en raw/_pagina_sin_lista.html)"
+        resumen.fallidos.append(f"contrataciondelestado.es (lista de documentos): {e}{detalle}")
         return
     if not lista:
         resumen.fallidos.append("contrataciondelestado.es: el epígrafe no trae ningún documento; no se retira nada")
