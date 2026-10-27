@@ -110,7 +110,7 @@ En negrita, lo que casi no está en PLACSP. Ahí los menores solo se publican en
 | Illes Balears | ~15 % | ~20 % (Palma, `scripts/municipios_menores.py`, 2026-10-26: 2017-2026, ~3 mil al año, ninguno en el 1143) | Palma sin NIF (salvo el 1T de 2024) | Govern e IB-Salut (la CAIB publica ~2 mil/año, copia de PLACSP), UIB (PDF) |
 | Cantabria | parcial | = en volumen: la base de datos de contratos del Gobierno (`scripts/ccaa_cantabria.py`, 2026-10-26) trae los menores del Gobierno, y el 92-96 % ya está en el 1143; añade sus invitados y ofertas | NIF salvo personas físicas (enmascarado) | Ayuntamientos fuera del 1143 (Santander publica relaciones trimestrales), hospitales del SCS; contratosdecantabria.es congelado en noviembre de 2023 |
 | Navarra | ~0 % contrato a contrato | = | — | **La ley foral (art. 102.3 LFCP) solo obliga a publicar la menor cuantía agregada por empresa y trimestre**: 519 documentos en 2024, el 84 % PDF |
-| Ceuta / Melilla | 1143 / ~0 | = | — | Melilla publica en PDF en la pestaña "Documentos" de su perfil |
+| Ceuta / Melilla | 1143 / ~0 | 1143 / casi todo: las relaciones trimestrales de la Ciudad (`melilla/melilla_menores.py`, 2026-10-27: 2019-T1 a 2026-T2, ≈ 2.500 menores al año; 1 en el 1143) | Melilla: NIF salvo personas físicas (fuera) | Ceuta: lo que no está en el 1143; Melilla: entes y empresas de la Ciudad que no van en las relaciones |
 
 **Hueco estructural: los entes locales.**
 - Solo ~2.350 de los ~8.100 municipios publican menores en el 1143 (30 %). Municipio: el código INE del DIR3 `L01` o la ruta `dependencia` del órgano; publicado v2026.02:
@@ -191,7 +191,7 @@ Antes de raspar pliegos en HTML/PDF, el XML CODICE de cada entrada ATOM trae muc
 | **Canarias** | Perfiles en PLACSP | Verificado el 2026-09-30 (A): los menores del SCS (ODS trimestral 2021-2026) y los de los departamentos del Gobierno (ODT trimestral, 3T 2023-) son **resúmenes agregados** (número e importe por órgano y tipo), no contratos. Contrato a contrato: el CSV «Contratos adjudicados y formalizados» del Gobierno en datos.canarias.es (copia de la PLACSP), la API de transparencia de Las Palmas de GC (2016-) y la del Cabildo de Tenerife (2019-). El perfil antiguo «apipublica» da 404 (el Wayback Machine solo guarda anuncios de licitación) | CSV + API JSON + ODS/ODT — `scripts/ccaa_canarias.py` (**hecho**, 2026-09-30; §5.2) | 1 día |
 | **Cantabria** | Perfiles en PLACSP desde 2018 | Base de datos de contratos del Portal de Transparencia desde 2015 con menores: API pública con exportación CSV de hasta 1.000 contratos por consulta (A, 2026-10-26); CSV de contratosdecantabria.es (terceros, CC BY) (M) | `scripts/ccaa_cantabria.py` (**hecho**, 2026-10-26: un mes por exportación) | — |
 | **Illes Balears** | Govern e IB-Salut en PLACSP desde 2017-18 | Socrata `anss-9wx4` (derivado de PLACSP, con modificaciones y prórrogas) (M); menores del Ajuntament de Palma (B) | Solo lo que no está en PLACSP | 1-3 días |
-| **Ceuta / Melilla** | Ceuta bien cubierta; Melilla sin menores | Relación de menores de Melilla (probablemente PDF) (B) | Prioridad baja | — |
+| **Ceuta / Melilla** | Ceuta bien cubierta; Melilla sin menores en el 1143 | Relaciones trimestrales de menores de Melilla en XLS (y PDF hasta 2021) en la pestaña «Documentos» de su perfil (A, 2026-10-27) | `melilla/melilla_menores.py` (**hecho**, 2026-10-27) | — |
 
 Descartados: rendiciondecuentas.es y el Registro de Contratos del Sector Público de Hacienda (no publican contrato a contrato).
 
@@ -454,7 +454,7 @@ Verificado en vivo el 2026-09-30 (`scripts/ccaa_canarias.py`; confianza A salvo 
 - **CSV del Gobierno:** '_U' («no consta») y '_Z' («no aplica») se quedan como texto (574.014 celdas); 2.250 registros llevan un LF y 873 un CRLF dentro de un campo. Mismo expediente, NIF (99,8 %), fecha (99,95 %) e importe sin IVA (99,8 %) que la PLACSP.
 - **Resúmenes, tal como se publican:** en 6 ODT de 2026 hay 19 tablas con «Órgano de contratación: » sin nombre; las cabeceras cambian entre ficheros («Importe (Eur)» e «Importe », «Importe (EUR) » con espacio en el ICCA y el ICIA), así que el mismo dato queda en columnas distintas; y el ODS del SCS de 2025 guarda un importe como texto «2.972.340.35».
 
-**Melilla**: desde 2019 publica los menores en PDF en la pestaña "Documentos" del perfil de Hacienda en PLACSP, no en el 1143 (A, `melilla.es/…contenido=29689`). **Ceuta**: solo el 1143.
+**Melilla**: desde 2019 publica la relación trimestral de sus menores (XLS; también PDF hasta 2021-T3) en la pestaña "Documentos" del perfil de Hacienda en PLACSP, no en el 1143 (A, `melilla.es/…contenido=29689`): `melilla/melilla_menores.py` (2026-10-27). **Ceuta**: solo el 1143.
 
 #### Huecos (estimación de lo que no tenemos hoy)
 
@@ -463,7 +463,7 @@ Verificado en vivo el 2026-09-30 (`scripts/ccaa_canarias.py`; confianza A salvo 
 - **Murcia, ~55 %.** Sobre todo el SMS de 2019 y 2021-2025, por el fallo de nombres del scraper; también la UPCT y 14 ayuntamientos.
 - **Castilla-La Mancha, 35-50 %.** La UCLM (~27K), la caja pagadora (~33K), el SESCAM y 469 ayuntamientos.
 - **Andalucía, 15-25 %.** Seis universidades, Sevilla y Granada capital, las diputaciones de Granada y Huelva y 340 ayuntamientos. ~~Los ~41K del SAS~~: cubiertos con el CKAN (2026-09-29).
-- **Melilla**: casi todo.
+- ~~**Melilla**: casi todo~~: cubierta con sus relaciones trimestrales (`melilla/melilla_menores.py`, 2026-10-27).
 - **Patrón común:** muchos órganos cumplen el art. 63.4 con listados en la pestaña "Documentos" de PLACSP, que no llegan al 1143.
 
 Correcciones: los menores del SCS son agregados (también los de §3, que decían «ODS/CSV trimestral»); el registro de Extremadura es XLSX; la Plataforma de la Junta no incluye universidades ni diputaciones.
@@ -477,7 +477,7 @@ Correcciones: los menores del SCS son agregados (también los de §3, que decía
 3. **UCLM 2017-2026**: un postback por año. **0,5-1 día.**
 4. **Ficheros de la JCCM**: 57 enlaces en XLS, XLSX, ZIP y RAR (caja pagadora, 2015-2018, UCLM 2019-2023). **1 día.**
 5. ~~**CKAN de menores de la Junta de Andalucía**~~: hecho (`scripts/ccaa_andalucia_menores.py`, verificado en la descarga de producción el 2026-09-29; medición arriba).
-6. **Pestaña "Documentos" de PLACSP** (UGR, Diputación de Granada, Melilla): navegar el portal WPS y extraer tablas de PDF. **3-5 días.**
+6. **Pestaña "Documentos" de PLACSP** (UGR, Diputación de Granada; ~~Melilla~~: hecho, `melilla/melilla_menores.py`): navegar el portal WPS y extraer tablas de PDF. **3-5 días.**
 7. **Portales municipales**: Málaga, Córdoba, Santa Cruz de Tenerife, Lorca y Cáceres. Poco volumen, sirven para el histórico. **0,5 día cada uno.**
 8. **SCS**: solicitud de acceso a la información, con el total por órgano y trimestre que ya publica (`scs_resumen` de `scripts/ccaa_canarias.py`) para comprobar que llega entero.
 

@@ -78,6 +78,7 @@ Los comandos son los de una primera descarga completa en `datos/<fuente>/`. Los 
 | [La Rioja](fuentes/la_rioja.md) | `python scripts/ccaa_la_rioja.py --salida datos/la_rioja` | — | 1 min | `la_rioja.zip` |
 | [Comunidad de Madrid](fuentes/comunidad_madrid.md) | ver abajo | `contratacion_comunidad_madrid_completo.parquet` | 4 h 20 min | `comunidad_madrid.zip` |
 | [Ayuntamiento de Madrid](fuentes/madrid_ayuntamiento.md) | `python comunidad_madrid/ccaa_madrid_ayuntamiento.py --output-dir datos/madrid_ayuntamiento` | — | 8 min | `madrid_ayuntamiento.zip` |
+| [Melilla](fuentes/melilla.md) | `python melilla/melilla_menores.py --salida datos/melilla_menores` | — | ~10 min (49 peticiones a 5 s y el cotejo de los 13 PDF) | — (aún no en la release) |
 | [Región de Murcia](fuentes/murcia.md) | `python scripts/ccaa_murcia.py --salida datos/murcia` | — | 2 min | `murcia.zip` |
 | [País Vasco](fuentes/euskadi.md) | `python Euskadi/ccaa_euskadi.py --salida datos/euskadi/crudo && python Euskadi/consolidacion_euskadi.py --entrada datos/euskadi/crudo --salida datos/euskadi/parquet` | — | 13 h 30 min | `euskadi.zip` |
 | [8 ayuntamientos](fuentes/municipios.md) | `python scripts/municipios_menores.py --salida datos/municipios` | — | 7 min | `municipios.zip` |
@@ -168,6 +169,7 @@ python comunidad_madrid/descarga_contratacion_comunidad_madrid_v1.py unificar \
 | `scripts/ccaa_andalucia.py` | Junta de Andalucía | Scraper ES proxy con subdivisión 8D y tramos de `idExpediente` (multi-sort con 14 órdenes como reserva) + salida reproducible |
 | `scripts/ccaa_andalucia_menores.py` | CKAN de datos abiertos de la Junta de Andalucía | Contratos menores «Contratación Menor en {año}» (2018-), con el SAS entero; CSV tal cual con versiones y Parquet acumulado |
 | `scripts/ccaa_cantabria.py` | Portal de Transparencia de Cantabria (API) | Contratos del Gobierno de Cantabria y su sector público (2015-), menores incluidos, con invitados y ofertas: la exportación CSV de cada mes tal cual, con versiones, y un Parquet acumulado |
+| `melilla/melilla_menores.py` | PLACSP, pestaña «Documentos» del perfil de la Ciudad Autónoma de Melilla | Relaciones trimestrales y anuales de contratos menores de la Ciudad (2019-): XLS y PDF tal cual con versiones, cotejo XLS-PDF y un Parquet acumulado, sin nombre ni NIF de las personas físicas |
 | `scripts/ccaa_canarias.py` | datos.canarias.es y portales de transparencia de Canarias | Contratos menores de Canarias: CSV de contratos del Gobierno (2020-, copia de la PLACSP), API de Las Palmas de GC (2016-) y del Cabildo de Tenerife (2019-), y los resúmenes agregados del SCS (ODS) y de los departamentos (ODT); ficheros tal cual con versiones y un Parquet acumulado por serie |
 | `Euskadi/ccaa_euskadi.py` | KontratazioA + Open Data Euskadi | Scraper v4 (solo descarga): API REST + XLSX anuales + portales municipales |
 | `Euskadi/consolidacion_euskadi.py` | — | Consolida JSON/XLSX/CSV → 9 tablas Parquet normalizadas |
