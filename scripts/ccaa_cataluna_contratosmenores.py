@@ -2,6 +2,17 @@
 Contractació Pública de Catalunya - Complete Scraper v4
 Bypasses the 10k limit using multi-dimensional segmentation.
 
+Tramos de fecha (scrape_por_fechas): cada fase se parte por la fecha de la última
+publicación (el filtro «Interval» de la búsqueda avanzada del portal) hasta que cada
+tramo tiene menos de 10.000 registros, el máximo que sirve la API por consulta; un
+día que sigue llegando a 10.000 se parte por ámbito, tipo, procedimiento y órgano
+(scrape_with_segmentation). Antes se partía solo por esas cuatro listas, y los
+segmentos que seguían en el tope se leían en los dos órdenes (20.000 como mucho): el
+20-oct-2026 quedaban así 55 segmentos (las fases 900 y 1000 no tienen procedimiento,
+y los órganos grandes pasan de 20.000) y los registros con un valor fuera de las
+listas se perdían sin aviso cuando el segmento sumaba igualmente 10.000 o más. Las
+páginas son de 2.000 (TAMANO_PAGINA).
+
 Changes in v4:
 - Saves FULL JSON (pd.json_normalize) - no field filtering
 - Does NOT auto-delete incremental files
@@ -61,7 +72,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -97,7 +108,24 @@ PROCEDIMENTS = [401, 419, 1000008, 402, 404, 421, 405, 1000010, 1000011, 403, 10
 # totalElements tampoco pasa de 10.000 (comprobado en vivo el 2026-09-28: sin filtros
 # da 10.000): un recuento de 10.000 significa "10.000 o más"
 VENTANA_API = 10000
-TAMANO_PAGINA = 100
+# Registros por página: la API sirve como mucho 2.000 (en vivo el 2026-10-26: con size=2500 o
+# 10000 devuelve 2.000 y "size": 2000; la página 5 de 2.000 ya da HTTP 500). Con páginas de 100,
+# las líneas de una publicación agregada (misma dataUltimaPublicacio) cambiaban de orden entre
+# páginas: un segmento de 699 salía con 100 copias y 100 sin leer; en una sola página, las 699.
+TAMANO_PAGINA = 2000
+
+# Filtro por fecha de la última publicación (el «Interval» de la búsqueda avanzada): días
+# AAAA-MM-DD, los dos incluidos, y se puede omitir uno de los dos (en vivo el 2026-10-26: las dos
+# mitades de 2024 suman lo mismo que 2024 entero, y «hasta 2019» + «desde 2020» lo mismo que la
+# fase sin filtro). Así un tramo sin límites es la consulta sin filtro de fecha.
+FILTRO_TRAMO = 'dataUltimaPublicacio'
+INTERVALO = 3
+DESDE = 'intervalIniciUltimaPublicacio'
+HASTA = 'intervalFiUltimaPublicacio'
+# Solo para partir el primer tramo, que no tiene fecha de inicio (no filtra nada)
+FECHA_REFERENCIA = date(2008, 1, 1)
+# Tramos partidos uno dentro de otro como mucho (de 2008 a hoy, un día está a unos 13)
+PROFUNDIDAD_TRAMOS = 40
 
 # Clave estable de una publicación para la semilla (sembrar): id de la publicación y
 # expedientId (en las agregadas, "<uuid>;<n>" distingue cada contrato de la relación).
@@ -136,6 +164,10 @@ class ScraperStats:
     errors: list = field(default_factory=list)
     # Segmentos que no se han podido leer enteros: {'params': filtros, 'motivo': texto}
     huecos: list = field(default_factory=list)
+    # Registros que anuncia la API en los tramos leídos (control de cobertura de cada fase) y
+    # tramos de un día cuyo recuento está en el tope (entonces la suma es un mínimo)
+    anunciados: int = 0
+    anunciados_en_tope: int = 0
     start_time: float = field(default_factory=time.time)
 
 
@@ -249,9 +281,15 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
     """Registros de un segmento (sin copias). Si ningún orden llega al final de los
     resultados (se para en el tope de la ventana de la API) y los dos órdenes no se
     solapan, lo que queda entre las dos ventanas no se ha leído: el segmento se anota
-    en stats.huecos (y no se retira nada de él, ver calcular_ambito)."""
+    en stats.huecos (y no se retira nada de él, ver calcular_ambito).
+
+    El tamaño de página es el que dice la respuesta ("size"): si la API sirviera páginas más
+    pequeñas que TAMANO_PAGINA, una página llena no se tomaría por la última, y las páginas
+    que caben en la ventana se cuentan con ese tamaño (pasar de la ventana da HTTP 500)."""
+    pedido = min(TAMANO_PAGINA, VENTANA_API)
+    ventana_paginas = max_pages is None
     if max_pages is None:
-        max_pages = VENTANA_API // TAMANO_PAGINA
+        max_pages = VENTANA_API // pedido
     records = []
     seen_keys = set()
     claves_por_orden = {}
@@ -269,7 +307,7 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
             query_params = {
                 **params,
                 'page': page,
-                'size': TAMANO_PAGINA,
+                'size': pedido,
                 'inclourePublicacionsPlacsp': INCLOURE_PLACSP,
                 'sortField': 'dataUltimaPublicacio',
                 'sortOrder': order
@@ -288,6 +326,10 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
             
             consecutive_failures = 0
             content = data['content']
+            tamano = data.get('size')
+            tamano = tamano if isinstance(tamano, int) and 0 < tamano <= pedido else pedido
+            if ventana_paginas and page == 0:
+                max_pages = VENTANA_API // tamano
 
             if not content:
                 agotado = True
@@ -300,7 +342,7 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
                     seen_keys.add(key)
                     records.append(r)
 
-            if len(content) < TAMANO_PAGINA:
+            if len(content) < tamano:
                 agotado = True
                 break
 
@@ -317,6 +359,19 @@ async def scrape_segment(session: aiohttp.ClientSession, params: dict, stats: Sc
             stats.huecos.append({'params': dict(params),
                                  'motivo': f'ventana de la API: {len(records)} registros leídos'})
     return records
+
+
+async def comprobar_filtro_fecha(session: aiohttp.ClientSession, stats: ScraperStats,
+                                 hoy: Optional[date] = None):
+    """El filtro de fecha tiene que filtrar: si la API lo ignorara, cada tramo daría lo mismo que el
+    segmento entero y partirlo no acabaría (scrape_por_fechas). Dentro de diez años no hay nada
+    publicado: si la API anuncia algo, se para antes de descargar nada."""
+    hoy = hoy or date.today()
+    futuro = await get_count(session, con_tramo({}, hoy + timedelta(days=3650), None), stats)
+    if futuro:
+        raise RuntimeError(f"El filtro de fecha de la API no filtra: anuncia {futuro:,} registros publicados "
+                           f"dentro de diez años. Sin él no se puede pasar del tope de {VENTANA_API:,}: "
+                           f"no se descarga nada")
 
 
 async def get_organs_for_ambit(session: aiohttp.ClientSession, ambit_id: int, stats: ScraperStats) -> list:
@@ -341,14 +396,114 @@ async def get_organs_for_ambit(session: aiohttp.ClientSession, ambit_id: int, st
     return organs
 
 
-async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: dict, 
-                                   stats: ScraperStats, depth: int = 0, 
-                                   organs_cache: dict = None) -> list:
+def con_tramo(params: dict, desde: Optional[date], hasta: Optional[date]) -> dict:
+    """params con el filtro de fecha de la última publicación del tramo [desde, hasta] (días
+    incluidos; None: sin ese límite). Un tramo sin ningún límite es la consulta sin filtro."""
+    p = {k: v for k, v in params.items() if k not in (FILTRO_TRAMO, DESDE, HASTA)}
+    if desde is not None or hasta is not None:
+        p[FILTRO_TRAMO] = INTERVALO
+        if desde is not None:
+            p[DESDE] = desde.isoformat()
+        if hasta is not None:
+            p[HASTA] = hasta.isoformat()
+    return p
+
+
+def partir_tramo(desde: Optional[date], hasta: Optional[date], hoy: Optional[date] = None) -> tuple:
+    """Las dos mitades de un tramo de más de un día, sin hueco ni solape entre ellas y la más
+    antigua primero: ((desde, mitad), (mitad + 1 día, hasta)). Un extremo abierto sigue abierto
+    (nada queda fuera); para calcular la mitad, el inicio abierto es FECHA_REFERENCIA (o diez
+    años antes del final) y el final abierto, hoy (o diez años después del inicio)."""
+    hoy = hoy or date.today()
+    diez_anios = timedelta(days=3650)
+    if hasta is not None:
+        fin = hasta
+    elif desde is not None and desde >= hoy:
+        fin = desde + diez_anios
+    else:
+        fin = hoy
+    if desde is not None:
+        inicio = desde
+    elif fin > FECHA_REFERENCIA:
+        inicio = FECHA_REFERENCIA
+    else:
+        inicio = fin - diez_anios
+    mitad = inicio + (fin - inicio) // 2
+    return (desde, mitad), (mitad + timedelta(days=1), hasta)
+
+
+def unir_registros(*listas) -> list:
+    """Los registros de varias lecturas, sin copias (clave_registro), en el orden en que llegan."""
+    vistos, unidos = set(), []
+    for lista in listas:
+        for r in lista:
+            clave = clave_registro(r)
+            if clave not in vistos:
+                vistos.add(clave)
+                unidos.append(r)
+    return unidos
+
+
+async def scrape_por_fechas(session: aiohttp.ClientSession, params: dict, stats: ScraperStats,
+                            organs_cache: Optional[dict] = None, count: Optional[int] = None,
+                            desde: Optional[date] = None, hasta: Optional[date] = None,
+                            depth: int = 0) -> list:
+    """Registros de un segmento (p. ej. {'faseVigent': 50}) leídos por tramos de la fecha de su
+    última publicación, sin el tope de 10.000 de la API.
+
+    Un tramo con menos de VENTANA_API registros se lee entero; si no, se parte en dos
+    (partir_tramo) y se leen las dos mitades, la más antigua primero: una publicación que cambia
+    durante la descarga pasa a la fecha de hoy, a un tramo que aún no se ha leído. Cada tramo se
+    comprueba con su propio recuento, exacto por debajo del tope: si devuelve menos registros de
+    los que anuncia (las publicaciones con la misma fecha cambian de orden entre páginas), se
+    vuelve a leer partido. Un día que sigue en el tope (o que se queda corto) se lee con
+    scrape_with_segmentation: ámbito, tipo, procedimiento y órgano, y los dos órdenes; lo que no
+    se pueda leer entero queda en stats.huecos, como antes."""
     if organs_cache is None:
         organs_cache = {}
-    
-    count = await get_count(session, base_params, stats)
-    
+    p = con_tramo(params, desde, hasta)
+    if count is None:
+        count = await get_count(session, p, stats)
+    if count == 0:
+        return []
+    un_dia = desde is not None and desde == hasta
+    tramo = f"{desde or '…'}..{hasta or '…'}"
+    leidos = []
+    if count < VENTANA_API:
+        leidos = await scrape_segment(session, p, stats, f"tramo {tramo}")
+        if len(leidos) >= count:
+            stats.anunciados += count
+            return leidos
+        logger.info(f"   Tramo {tramo}: {len(leidos)} de {count} registros, se lee partido: {params}")
+    if un_dia or depth >= PROFUNDIDAD_TRAMOS:
+        if count >= VENTANA_API:
+            stats.anunciados_en_tope += 1
+            logger.info(f"   Tramo {tramo} con {count:,} o más registros: por ámbito, tipo, procedimiento y "
+                        f"órgano {params}")
+        stats.anunciados += count
+        registros = await scrape_with_segmentation(session, p, stats, depth + 1, organs_cache, count=count)
+        return unir_registros(leidos, registros) if leidos else registros
+    (desde_1, hasta_1), (desde_2, hasta_2) = partir_tramo(desde, hasta)
+    antiguos = await scrape_por_fechas(session, params, stats, organs_cache, None, desde_1, hasta_1, depth + 1)
+    recientes = await scrape_por_fechas(session, params, stats, organs_cache, None, desde_2, hasta_2, depth + 1)
+    # Dos tramos no se solapan: solo hay copias que quitar si el tramo ya se había leído (corto). Sin
+    # copiar ni comparar las dos mitades, una fase de 1,9 M de registros no pide memoria de más (la
+    # copia de un registro que cambia de tramo durante la descarga se quita, como siempre, al unir el crudo)
+    return unir_registros(leidos, antiguos, recientes) if leidos else antiguos + recientes
+
+
+async def scrape_with_segmentation(session: aiohttp.ClientSession, base_params: dict,
+                                   stats: ScraperStats, depth: int = 0,
+                                   organs_cache: dict = None, count: Optional[int] = None) -> list:
+    """Registros de un segmento partido por ámbito, tipo, procedimiento y órgano (listas fijas y
+    la de órganos de la API); en el último nivel, en los dos órdenes. Desde scrape_por_fechas
+    solo se usa para un día (count: su recuento, ya pedido)."""
+    if organs_cache is None:
+        organs_cache = {}
+
+    if count is None:
+        count = await get_count(session, base_params, stats)
+
     if count == 0:
         return []
     
@@ -437,33 +592,38 @@ async def recuperar_hueco(session: aiohttp.ClientSession, base_params: dict, sta
 
     Son los que tienen un valor que no está en las listas fijas (tipus o
     procediment vacío o nuevo, órgano que /organs/noms no lista...):
-    - si el segmento cabe en dos ventanas de la API (<= 20.000), se pide entero
-      en orden descendente y ascendente;
-    - si no y se había segmentado por una lista fija (tipus/procediment), se
-      vuelve a pedir segmentando por órgano (lista que da la propia API).
+    - si el segmento llega a la ventana de la API (su recuento no dice cuántos
+      tiene) y se había segmentado por una lista fija (tipus/procediment), se
+      vuelve a pedir segmentando por órgano (lista que da la propia API): así se
+      leen las fases 900 y 1000, que no tienen procedimiento;
+    - si sigue faltando algo y el segmento cabe en dos ventanas (<= 20.000), se
+      pide entero en orden descendente y ascendente.
+    Antes el órgano solo se probaba con más de 20.000 anunciados, que la API no
+    anuncia nunca (el total se queda en 10.000).
     Solo se añaden los registros que faltaban (sin copias). Si aun así faltan, el
     segmento queda anotado en stats.huecos: no se retira nada de él.
     """
-    extra = []
-    if count <= 2 * VENTANA_API and dimension != 'ambos_ordenes':
-        extra = await scrape_segment(session, base_params, stats, "gap", both_orders=True)
-    elif (dimension in ('tipusContracte', 'procedimentAdjudicacio')
-          and base_params.get('ambit') and 'organ' not in base_params):
+    vistos = {clave_registro(r) for r in records}
+    nuevos = []
+
+    def anadir(extra):
+        for r in extra:
+            clave = clave_registro(r)
+            if clave not in vistos:
+                vistos.add(clave)
+                nuevos.append(r)
+
+    if (count >= VENTANA_API and dimension in ('tipusContracte', 'procedimentAdjudicacio')
+            and base_params.get('ambit') and 'organ' not in base_params):
         ambit_id = base_params['ambit']
         logger.info(f"   Gap recovery by organ for {base_params}")
         if ambit_id not in organs_cache:
             organs_cache[ambit_id] = await get_organs_for_ambit(session, ambit_id, stats)
         for organ in organs_cache[ambit_id]:
             params = {**base_params, 'organ': organ['id']}
-            extra.extend(await scrape_with_segmentation(session, params, stats, depth + 1, organs_cache))
-
-    vistos = {clave_registro(r) for r in records}
-    nuevos = []
-    for r in extra:
-        clave = clave_registro(r)
-        if clave not in vistos:
-            vistos.add(clave)
-            nuevos.append(r)
+            anadir(await scrape_with_segmentation(session, params, stats, depth + 1, organs_cache))
+    if len(records) + len(nuevos) < count and count <= 2 * VENTANA_API and dimension != 'ambos_ordenes':
+        anadir(await scrape_segment(session, base_params, stats, "gap", both_orders=True))
     if nuevos:
         logger.info(f"   ✅ Gap recovery: +{len(nuevos)} records for {base_params}")
     completos = records + nuevos
@@ -1079,6 +1239,9 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
         logger.info(f"   Auto-cleanup: {cleanup}")
     
     total_api = None
+    organs_cache = {}
+    # Por fase: registros que anuncia la API, sumando los recuentos de los tramos (scrape_por_fechas)
+    anunciados_fase = {}
     async with aiohttp.ClientSession(trust_env=True) as session:  # usa HTTPS_PROXY si existe
         # Total que anuncia la API sin filtro de fase: control de cobertura final
         # (registros cuya fase vigente no está en FASES_ALL no salen en ninguna consulta)
@@ -1088,14 +1251,26 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
         except RuntimeError as e:
             logger.warning(f"⚠️ Could not get the API total without phase filter: {e}")
 
+        if remaining_fases:
+            await comprobar_filtro_fecha(session, stats)
+
         for fase in tqdm(remaining_fases, desc="Fases"):
             logger.info(f"\n{'='*60}")
             logger.info(f"📁 Processing faseVigent={fase}")
             
             try:
                 inicio_huecos = len(stats.huecos)
-                records = await scrape_with_segmentation(session, {'faseVigent': fase}, stats)
+                stats.anunciados = stats.anunciados_en_tope = 0
+                records = await scrape_por_fechas(session, {'faseVigent': fase}, stats, organs_cache)
                 huecos_fase = stats.huecos[inicio_huecos:]
+                anunciados_fase[str(fase)] = {'anunciados': stats.anunciados,
+                                              'dias_en_tope': stats.anunciados_en_tope}
+                if stats.anunciados_en_tope:
+                    logger.info(f"   Fase {fase}: la API anuncia al menos {stats.anunciados:,} registros "
+                                f"({stats.anunciados_en_tope} días con 10.000 o más); leídos {len(records):,}")
+                else:
+                    logger.info(f"   Fase {fase}: la API anuncia {stats.anunciados:,} registros; "
+                                f"leídos {len(records):,}")
                 if not records:
                     # Una fase que vuelve vacía cuando la última descarga tenía filas puede ser
                     # un fallo del portal: en esta ejecución no se retira nada de su grupo
@@ -1247,6 +1422,8 @@ async def main(output_path: str, output_format: str = 'parquet', include_agregad
     
     analysis['fecha_descarga'] = fecha
     analysis['filas_por_fase'] = filas_por_fase
+    # De las fases leídas en esta ejecución (con --resume, solo las que quedaban)
+    analysis['anunciados_por_fase'] = anunciados_fase
     analysis['fases_incompletas'] = {
         str(f): checkpoint.huecos.get(str(f), [{'motivo': 'sin información de huecos'}])
         for f in fases_leidas if checkpoint.huecos.get(str(f)) != []}

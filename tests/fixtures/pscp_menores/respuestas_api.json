@@ -1,0 +1,913 @@
+{
+ "medido": "2026-10-26",
+ "portal": "https://contractaciopublica.cat/portal-api/cerca-avancada",
+ "respuestas": [
+  {
+   "desc": "recuento fase 900 sin procedimiento (tope)",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [
+     {
+      "id": 300917555,
+      "titol": "Basats en AM 3r trimestre 2026",
+      "fasesVigents": {
+       "ADJUDICACIO": {
+        "lotsActius": 0,
+        "dataPublicacio": "2026-10-26T14:30:07.000Z",
+        "idPublicacio": 300917555
+       }
+      },
+      "esPlacsp": false,
+      "esAgregatContractes": true,
+      "esAgregatEncarrecs": null,
+      "nomPublicacioAgregada": "Basats en AM 3r trimestre 2026",
+      "descripcio": "Servei de missatgeria per enviament de mostres des de la Unitat d' Investigació Clinica UIC-ICO de Girona fins al Centre Mèdic",
+      "pressupostLicitacio": null,
+      "pressupostAdjudicacio": 6.28,
+      "organ": "Institut d'Investigació Biomèdica de Girona (IDIBGI)",
+      "idOrgan": 4547719,
+      "codiExpedient": "ICO.BOLSAS-2026/95",
+      "expedientId": "0edd7e61-8c0c-4ec2-ac2b-7d414cf471da;319139185"
+     }
+    ],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 10000,
+    "totalElements": 10000,
+    "last": false,
+    "numberOfElements": 1,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": false,
+    "_nota": "content recortado a 1 de 1 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 401",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 401,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 419",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 419,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 1000008",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 1000008,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 402",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 402,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 404",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 404,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 421",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 421,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 405",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 405,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 1000010",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 1000010,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "sorted": false,
+      "unsorted": true,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "sorted": false,
+     "unsorted": true,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 1000011",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 1000011,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "sorted": false,
+      "unsorted": true,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "sorted": false,
+     "unsorted": true,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 403",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 403,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 1000012",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 1000012,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento fase 900 procedimiento 1008211",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "procedimentAdjudicacio": 1008211,
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "sorted": false,
+      "unsorted": true,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 0,
+    "totalElements": 0,
+    "last": true,
+    "numberOfElements": 0,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "sorted": false,
+     "unsorted": true,
+     "empty": true
+    },
+    "first": true,
+    "empty": true,
+    "_nota": "content recortado a 1 de 0 registros"
+   }
+  },
+  {
+   "desc": "recuento tramo 2024-01-01..2024-06-30",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "dataUltimaPublicacio": 3,
+    "intervalIniciUltimaPublicacio": "2024-01-01",
+    "intervalFiUltimaPublicacio": "2024-06-30",
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [
+     {
+      "id": 300066980,
+      "titol": "Contractes basats en acord marc 1T 2024",
+      "fasesVigents": {
+       "ADJUDICACIO": {
+        "lotsActius": 0,
+        "dataPublicacio": "2024-06-21T09:01:10.000Z",
+        "idPublicacio": 300066980
+       }
+      },
+      "esPlacsp": false,
+      "esAgregatContractes": true,
+      "esAgregatEncarrecs": null,
+      "nomPublicacioAgregada": "Contractes basats en acord marc 1T 2024",
+      "descripcio": "Viatge avió a las Palmas investigador projecte PITHIA-NRF (GA-101007599)",
+      "pressupostLicitacio": null,
+      "pressupostAdjudicacio": 315.61,
+      "organ": "Fundació Observatori de l'Ebre",
+      "idOrgan": 32948665,
+      "codiExpedient": "01-2024",
+      "expedientId": "5cee7046-adc6-4bcc-9da0-ec3a7125c7c4;303586488"
+     }
+    ],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 3706,
+    "totalElements": 3706,
+    "last": false,
+    "numberOfElements": 1,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": false,
+    "_nota": "content recortado a 1 de 1 registros"
+   }
+  },
+  {
+   "desc": "recuento tramo 2024-07-01..2024-12-31",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "dataUltimaPublicacio": 3,
+    "intervalIniciUltimaPublicacio": "2024-07-01",
+    "intervalFiUltimaPublicacio": "2024-12-31",
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [
+     {
+      "id": 300341115,
+      "titol": "Publicació agregada BAMs ED 2T 2024",
+      "fasesVigents": {
+       "ADJUDICACIO": {
+        "lotsActius": 0,
+        "dataPublicacio": "2024-12-30T13:00:16.000Z",
+        "idPublicacio": 300341115
+       }
+      },
+      "esPlacsp": false,
+      "esAgregatContractes": true,
+      "esAgregatEncarrecs": null,
+      "nomPublicacioAgregada": "Publicació agregada BAMs ED 2T 2024",
+      "descripcio": "Serveis de missatgeria per a l'ATC 2024",
+      "pressupostLicitacio": null,
+      "pressupostAdjudicacio": 6000.0,
+      "organ": "Agència Tributària de Catalunya",
+      "idOrgan": 239971,
+      "codiExpedient": "ATC-2024-23",
+      "expedientId": "58688f41-f2cf-4d7c-812f-54842aa4f554;306342986"
+     }
+    ],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 3860,
+    "totalElements": 3860,
+    "last": false,
+    "numberOfElements": 1,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": false,
+    "_nota": "content recortado a 1 de 1 registros"
+   }
+  },
+  {
+   "desc": "recuento tramo 2024-01-01..2024-12-31",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "dataUltimaPublicacio": 3,
+    "intervalIniciUltimaPublicacio": "2024-01-01",
+    "intervalFiUltimaPublicacio": "2024-12-31",
+    "page": 0,
+    "size": 1,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [
+     {
+      "id": 300341115,
+      "titol": "Publicació agregada BAMs ED 2T 2024",
+      "fasesVigents": {
+       "ADJUDICACIO": {
+        "lotsActius": 0,
+        "dataPublicacio": "2024-12-30T13:00:16.000Z",
+        "idPublicacio": 300341115
+       }
+      },
+      "esPlacsp": false,
+      "esAgregatContractes": true,
+      "esAgregatEncarrecs": null,
+      "nomPublicacioAgregada": "Publicació agregada BAMs ED 2T 2024",
+      "descripcio": "Serveis de missatgeria per a l'ATC 2024",
+      "pressupostLicitacio": null,
+      "pressupostAdjudicacio": 6000.0,
+      "organ": "Agència Tributària de Catalunya",
+      "idOrgan": 239971,
+      "codiExpedient": "ATC-2024-23",
+      "expedientId": "58688f41-f2cf-4d7c-812f-54842aa4f554;306342986"
+     }
+    ],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 1,
+     "sort": {
+      "sorted": false,
+      "unsorted": true,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 7566,
+    "totalElements": 7566,
+    "last": false,
+    "numberOfElements": 1,
+    "size": 1,
+    "number": 0,
+    "sort": {
+     "sorted": false,
+     "unsorted": true,
+     "empty": true
+    },
+    "first": true,
+    "empty": false,
+    "_nota": "content recortado a 1 de 1 registros"
+   }
+  },
+  {
+   "desc": "página pedida de 2500: sirve 2000",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "page": 0,
+    "size": 2500,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 200,
+   "json": {
+    "content": [
+     {
+      "id": 300917555,
+      "titol": "Basats en AM 3r trimestre 2026",
+      "fasesVigents": {
+       "ADJUDICACIO": {
+        "lotsActius": 0,
+        "dataPublicacio": "2026-10-26T14:30:07.000Z",
+        "idPublicacio": 300917555
+       }
+      },
+      "esPlacsp": false,
+      "esAgregatContractes": true,
+      "esAgregatEncarrecs": null,
+      "nomPublicacioAgregada": "Basats en AM 3r trimestre 2026",
+      "descripcio": "Servei de missatgeria per enviament de mostres des de la Unitat d' Investigació Clinica UIC-ICO de Girona fins al Centre Mèdic",
+      "pressupostLicitacio": null,
+      "pressupostAdjudicacio": 6.28,
+      "organ": "Institut d'Investigació Biomèdica de Girona (IDIBGI)",
+      "idOrgan": 4547719,
+      "codiExpedient": "ICO.BOLSAS-2026/95",
+      "expedientId": "0edd7e61-8c0c-4ec2-ac2b-7d414cf471da;319139185"
+     },
+     {
+      "id": 300917555,
+      "titol": "Basats en AM 3r trimestre 2026",
+      "fasesVigents": {
+       "ADJUDICACIO": {
+        "lotsActius": 0,
+        "dataPublicacio": "2026-10-26T14:30:07.000Z",
+        "idPublicacio": 300917555
+       }
+      },
+      "esPlacsp": false,
+      "esAgregatContractes": true,
+      "esAgregatEncarrecs": null,
+      "nomPublicacioAgregada": "Basats en AM 3r trimestre 2026",
+      "descripcio": "Servei de missatgeria per enviament de mostres des de l' IDIBELL fins al Hospital General Dr. Balmis",
+      "pressupostLicitacio": null,
+      "pressupostAdjudicacio": 12.45,
+      "organ": "Institut d'Investigació Biomèdica de Girona (IDIBGI)",
+      "idOrgan": 4547719,
+      "codiExpedient": "ICO.BOLSAS-2026/96",
+      "expedientId": "0edd7e61-8c0c-4ec2-ac2b-7d414cf471da;319139186"
+     }
+    ],
+    "pageable": {
+     "pageNumber": 0,
+     "pageSize": 2000,
+     "sort": {
+      "unsorted": true,
+      "sorted": false,
+      "empty": true
+     },
+     "offset": 0,
+     "paged": true,
+     "unpaged": false
+    },
+    "totalPages": 5,
+    "totalElements": 10000,
+    "last": false,
+    "numberOfElements": 2000,
+    "size": 2000,
+    "number": 0,
+    "sort": {
+     "unsorted": true,
+     "sorted": false,
+     "empty": true
+    },
+    "first": true,
+    "empty": false,
+    "_nota": "content recortado a 2 de 2000 registros"
+   }
+  },
+  {
+   "desc": "página 5 de 2000: fuera de la ventana",
+   "params": {
+    "faseVigent": 900,
+    "ambit": 1500001,
+    "tipusContracte": 393,
+    "page": 5,
+    "size": 2000,
+    "inclourePublicacionsPlacsp": "false",
+    "sortField": "dataUltimaPublicacio",
+    "sortOrder": "desc"
+   },
+   "status": 500,
+   "json": {
+    "errorData": "ZGF0YSA9IDI2LTEwLTIwMjYgMTc6MzA6MDMuMjc3"
+   }
+  }
+ ],
+ "nota": "Respuestas reales de cerca-avancada (contenido recortado a 1-2 registros donde se indica): recuentos de la fase 900 por procedimiento (todos 0) y sin él (tope de 10.000), recuentos por tramos de fecha (las dos mitades de 2024 suman el año) y el tamaño de página (pide 2.500, sirve 2.000; la página 5 de 2.000 da HTTP 500)."
+}
