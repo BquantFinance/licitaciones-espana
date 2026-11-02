@@ -4,6 +4,12 @@ Las versiones son las releases de datos (`vAAAA.MM`). Cada una lleva su nota com
 
 ## [Sin publicar]
 
+### Datos personales (próxima versión de la release)
+
+- **NIF de personas físicas enmascarado** con el formato de la disposición adicional séptima de la LOPDGDD (cifras cuarta a séptima: `***4567**`), en toda columna de texto, con la marca `_nif_enmascarado`. El nombre, como la fuente.
+- **Supresión y oposición** (arts. 17 y 21 del RGPD): quien lo pide sale de los datos (`[persona física]`, sin NIF; marca `_suprimido_art21`). Contacto: bquantfinance@gmail.com.
+- **BORME: `persona_hash` con clave secreta** (HMAC-SHA256): ya no se puede calcular a partir de un nombre ni enlazar con v2026.10. La v2026.10 publicada no cambia. [Detalle](DATA_LICENSE.md#datos-personales).
+
 ### Añadido
 
 - **Melilla, contratos menores de la Ciudad Autónoma** (`melilla/melilla_menores.py`): las relaciones trimestrales que la Ciudad publica en la pestaña «Documentos» de su perfil en la PLACSP (2019-T1 a 2026-T2, 18.471 filas, ≈ 2.500 menores al año) y sus tres relaciones anuales, en XLS y PDF tal cual, con el cotejo de las dos versiones donde están las dos y un Parquet acumulado. Casi ninguno está en el feed 1143. Sin nombre ni NIF de las personas físicas. [Ficha](docs/fuentes/melilla.md).

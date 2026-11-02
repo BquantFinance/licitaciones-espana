@@ -14,6 +14,8 @@ Datos del [Boletín Oficial del Registro Mercantil](https://www.boe.es/diario_bo
 
 > ⚠️ Los PDFs originales no se redistribuyen porque contienen nombres de personas físicas protegidos por el RGPD. Se publica el scraper para descargarlos directamente desde boe.es y los datos derivados con las personas **seudonimizadas**: solo se sustituye el nombre de cada persona de los cargos por un código, `persona_hash` (SHA-256 del nombre con una sal, truncado a 16 caracteres hexadecimales); empresa, domicilio social y actos se publican tal como aparecen en el BORME.
 >
+> **Desde la próxima versión de la release** (la siguiente a v2026.10), `persona_hash` es un HMAC-SHA256 con una clave secreta del proyecto (truncado a 16 caracteres hexadecimales) calculado sobre el código anterior: el mismo para el mismo nombre dentro de una versión, pero ya no se puede obtener a partir de un nombre ni enlazar con el de v2026.10. Esa versión, ya publicada, no se modifica. Detalle en [`DATA_LICENSE.md`](../../DATA_LICENSE.md#datos-personales).
+
 > **Seudonimizado no es anonimizado.**
 > - El código es el mismo para el mismo nombre, en cualquier fecha y empresa: es lo que permite seguir a un administrador entre empresas.
 > - Por eso **junta a los homónimos**: dos personas que se llaman igual comparten código y cuentan como una sola. Y al revés: una misma persona escrita de dos formas (con o sin tilde, en otro orden) tiene dos códigos. Los 3.92M códigos de persona de la tabla no son 3.92M personas.
