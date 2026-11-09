@@ -71,7 +71,7 @@ La PLACSP publica una entrada nueva cada vez que se actualiza una licitación. S
 |---|---|---|
 | `n_versiones` | Versiones distintas del mismo `id` (valores distintos de `fecha_updated`) | |
 | `es_ultima_version` | `True` en una fila por `id`: la de `fecha_updated` más reciente | **Para contar o sumar licitaciones: `df[df.es_ultima_version]`.** En v2026.02, que no la tenía, sumar sin filtrar multiplicaba la adjudicación por 4,7 |
-| `entrada_repetida` | La misma versión publicada más de una vez: se conserva y se marca | |
+| `entrada_repetida` | La misma versión publicada más de una vez (dos veces o en otro ZIP): se conserva y se marca. Sus copias en versiones antiguas del mismo ZIP no se escriben | |
 
 Las tablas de detalle (`_resultados`, `_adjudicatarios`, `_lotes`, `_criterios`, `_modificaciones` y las de la ampliación del CODICE: `_ampliado`, `_condiciones`, `_anuncios`, `_documentos`) llevan las mismas
 marcas y se cruzan con la principal por `id` + `fecha_updated`.

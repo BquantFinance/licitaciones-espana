@@ -29,8 +29,10 @@ Descarga (sin perder nada de lo publicado):
     si el ZIP cambió, la copia previa pasa a <conjunto>/_historico/
     (comun/historico.py). El procesado lee todas las versiones de cada ZIP y,
     de un año con ZIP anual y mensuales, todos: ninguna entrada publicada
-    alguna vez se pierde aunque el ZIP nuevo ya no la traiga (las copias quedan
-    marcadas con entrada_repetida). Al terminar se imprime un informe de 404 por
+    alguna vez se pierde aunque el ZIP nuevo ya no la traiga. De las versiones
+    antiguas solo se escriben las entradas que no se han leído antes (las que
+    la copia actual ya no trae): sus entrada_repetida no se escriben, ni su
+    detalle (filas_a_escribir). Al terminar se imprime un informe de 404 por
     conjunto/año y, por ZIP, entradas leídas, filas y descartes por motivo.
 
 Procesado por lotes (memoria acotada):
@@ -115,8 +117,7 @@ Procedencia (tabla principal, detrás de COLUMNAS_NUEVAS; después solo las que 
     _origen             nulo = leída de los ZIP; si no, la semilla de la que viene
                         ('release v2026.02' o --origen-semilla)
     _en_ultima_descarga True si la entrada (id, fecha_updated) está en la copia
-                        actual de algún ZIP leído (también sus copias repetidas
-                        de versiones antiguas); False si solo está en versiones
+                        actual de algún ZIP leído; False si solo está en versiones
                         antiguas de _historico/ (la PLACSP ya no la sirve) o
                         viene de una semilla. Sin id o sin fecha, si la fila es
                         de una copia actual.
@@ -165,7 +166,8 @@ Versiones (tabla principal):
     n_versiones       = versiones distintas del id (pares id / atom:updated distintos)
     es_ultima_version = una fila por id: la de atom:updated más reciente
     entrada_repetida  = la misma entrada (id y atom:updated) ya se había leído:
-                        publicada dos veces, en otro ZIP o en otra versión del ZIP
+                        publicada dos veces o en otro ZIP (las de otra versión del
+                        mismo ZIP, en _historico/, no se escriben: filas_a_escribir)
 
 Importes (cac:ProcurementProject/cac:BudgetAmount):
     valor_estimado_contrato = EstimatedOverallContractAmount (valor estimado, incluye prórrogas/modificaciones)
@@ -199,8 +201,9 @@ Columnas añadidas a la tabla principal (al final, sin mover las anteriores):
                                 "resultados[1].importe_adjudicacion": "1.234,56"}. Las fechas
                                 (también atom:updated) fuera de 1677-2262 (años mal escritos)
                                 son nulas con pandas 2 y 3
-    zip_historico               versión antigua del ZIP (en _historico/) de la que se leyó;
-                                vacío = la copia actual
+    zip_historico               versión antigua del ZIP (en _historico/) de la que se leyó
+                                (solo las entradas que no se habían leído antes: ver
+                                filas_a_escribir); vacío = la copia actual
     entrada_repetida            ver Versiones
 
 Columnas añadidas a _resultados (al final): orden_resultado, n_adjudicatarios,
@@ -2019,6 +2022,31 @@ def marcas_version(ids, fechas_updated=None):
     n_versiones = ids.map(distintas).fillna(1).astype('int64').to_numpy()
     return ultima, n_versiones, repetida
 
+def filas_a_escribir(repetida, de_version_antigua):
+    """Máscara de las filas que se escriben: todas menos las leídas de una versión
+    antigua de un ZIP (_historico/) que son entrada_repetida.
+
+    La PLACSP vuelve a publicar entero el ZIP anual del año en curso y cada copia
+    anterior se guarda en _historico/: sin esto, cada semana se volverían a
+    escribir todas las entradas de todas sus copias. Se lee primero la copia
+    actual y luego las antiguas, de la más reciente a la más antigua
+    (copias_conjunto), así que la primera aparición de cada entrada (id,
+    fecha_updated), la que no es entrada_repetida, siempre se escribe: la de la
+    copia actual o, si la PLACSP ya no la sirve, la de la copia antigua más
+    reciente que la trae. Ninguna entrada publicada se pierde. Las marcas de
+    versión (n_versiones, es_ultima_version, entrada_repetida) y
+    _en_ultima_descarga se calculan antes, sobre todas las filas leídas, y no
+    cambian en las que se escriben: son las que saldrían de las filas escritas
+    (es_ultima_version nunca es una entrada_repetida). Se siguen escribiendo las
+    repeticiones de las copias actuales (la misma entrada en dos ZIP, o dos
+    veces en uno) y las filas sin id o sin fecha (nunca son entrada_repetida).
+    """
+    return ~(np.asarray(repetida, dtype=bool) & np.asarray(de_version_antigua, dtype=bool))
+
+def _filtrar(tabla, conservar):
+    """Filas de la tabla Arrow con `conservar` True (la misma tabla si son todas)."""
+    return tabla if conservar.all() else tabla.filter(pa.array(conservar))
+
 def info_versiones(ids, fechas_updated=None):
     """(es_ultima_version, n_versiones) de cada fila, sin eliminar ninguna (ver marcas_version)."""
     ultima, n_versiones, _ = marcas_version(ids, fechas_updated)
@@ -2440,6 +2468,13 @@ def _leer_columna(tabla, columna, tipo):
         return pa.chunked_array([pa.nulls(tabla['filas'], tipo)], type=tipo)
     leida = pq.read_table(tabla['ruta'], columns=[columna]).column(0)
     return _convertir(leida, tipo) if leida.type != tipo else leida
+
+def _de_version_antigua(tabla):
+    """Filas de la parte `tabla` (descripción) leídas de una versión antigua de un ZIP (con zip_historico)."""
+    if 'zip_historico' not in tabla['tipos']:
+        return np.zeros(tabla['filas'], dtype=bool)
+    zh = pq.read_table(tabla['ruta'], columns=['zip_historico']).column(0)
+    return zh.is_valid().to_numpy(zero_copy_only=False)
 
 def _instantes(columna):
     """Columna Arrow de fechas de actualización como timestamp[ns, UTC] (texto: ISO 8601)."""
@@ -3061,8 +3096,8 @@ class ExportacionPlacsp:
             # tablas de ejecuciones distintas no se podrían cruzar
             print("\n⚠️ No se encontraron registros: no se escribe ninguna tabla y la salida anterior no se toca")
             return resumen
-        fechas, ultima, repetida = self._escribir_principal(principales, escritas, resumen)
-        self._escribir_detalle(principales, fechas, ultima, repetida, escritas)
+        fechas, ultima, repetida, conservar = self._escribir_principal(principales, escritas, resumen)
+        self._escribir_detalle(principales, fechas, ultima, repetida, conservar, escritas)
         self._escribir_borrados(escritas)
         self._escribir_semilla_contenido(escritas)
         self._publicar(escritas, resumen)
@@ -3089,14 +3124,11 @@ class ExportacionPlacsp:
 
         # _en_ultima_descarga: la entrada (id, fecha_updated) está en la copia
         # actual de algún ZIP; sin id o sin fecha, si la fila es de una copia actual
-        actual = np.zeros(len(ids), dtype=bool)
-        for t, inicio in zip(principales, desde[:-1]):
-            if 'zip_historico' in t['tipos']:
-                zh = pq.read_table(t['ruta'], columns=['zip_historico']).column(0)
-                actual[inicio:inicio + t['filas']] = zh.is_null().to_numpy(zero_copy_only=False)
-            else:
-                actual[inicio:inicio + t['filas']] = True
-        actual &= ~es_semilla
+        antigua = np.concatenate([_de_version_antigua(t) for t in principales])
+        # Filas que no se escriben (filas_a_escribir): las de una versión antigua del ZIP
+        # (_historico/) que repiten una entrada ya leída. Las marcas se calculan antes sobre todas
+        conservar = filas_a_escribir(repetida, antigua & ~es_semilla)
+        actual = ~antigua & ~es_semilla
         vacia = pd.Series([], dtype='Int64')
         pares = [(_enteros(ids), vacia)]
         if serie_fechas is not None:
@@ -3106,12 +3138,17 @@ class ExportacionPlacsp:
         en_ultima &= ~es_semilla
         del clave, pares, actual
 
+        descartadas = len(ids) - int(conservar.sum())
         print(f"   ℹ {len(ids):,} entradas de {int(ultima.sum()):,} licitaciones distintas "
               f"(es_ultima_version marca la más reciente de cada una); "
               f"{int(repetida.sum()):,} repiten una entrada ya leída (entrada_repetida)")
-        if es_semilla.any() or not en_ultima.all():
-            print(f"   ℹ {int((~en_ultima).sum()):,} filas no están en la última descarga (_en_ultima_descarga=False): "
-                  f"{int(es_semilla.sum()):,} de semillas y {int((~en_ultima & ~es_semilla).sum()):,} "
+        if descartadas:
+            print(f"   ℹ {descartadas:,} de ellas son de versiones antiguas de ZIP (_historico/) y no se escriben "
+                  f"(ni su detalle): quedan {int(conservar.sum()):,} filas")
+        fuera = ~en_ultima & conservar
+        if es_semilla.any() or fuera.any():
+            print(f"   ℹ {int(fuera.sum()):,} filas no están en la última descarga (_en_ultima_descarga=False): "
+                  f"{int(es_semilla.sum()):,} de semillas y {int((fuera & ~es_semilla).sum()):,} "
                   f"solo en versiones antiguas de ZIP (_historico/)")
         del ids
 
@@ -3132,7 +3169,7 @@ class ExportacionPlacsp:
                         columnas.append(_convertir(parte.column(campo.name), campo.type))
                     else:
                         columnas.append(pa.nulls(parte.num_rows, campo.type))
-                tabla = pa.Table.from_arrays(columnas, schema=esquema)
+                tabla = _filtrar(pa.Table.from_arrays(columnas, schema=esquema), conservar[inicio:fin])
                 escritor.escribir(tabla)
                 cuentas.anadir(tabla)
         finally:
@@ -3140,10 +3177,10 @@ class ExportacionPlacsp:
         escritas['principal'] = rutas
         _borrar_partes(principales)
         resumen.update(filas=escritor.filas, cuentas=cuentas, ultimas=int(ultima.sum()),
-                       semilla=int(es_semilla.sum()), fuera=int((~en_ultima).sum()))
-        return fechas, ultima, repetida
+                       semilla=int(es_semilla.sum()), fuera=int(fuera.sum()), descartadas=descartadas)
+        return fechas, ultima, repetida, conservar
 
-    def _escribir_detalle(self, principales, fechas, ultima, repetida, escritas):
+    def _escribir_detalle(self, principales, fechas, ultima, repetida, conservar, escritas):
         desde = dict(zip((id(t) for t in principales), np.cumsum([0] + [t['filas'] for t in principales])))
         for nombre in TABLAS_DETALLE:
             partes = [(p['tablas'][nombre], desde[id(p['tablas']['principal'])])
@@ -3180,7 +3217,8 @@ class ExportacionPlacsp:
                             columnas_t.append(_convertir(parte.column(campo.name), campo.type))
                         else:
                             columnas_t.append(pa.nulls(parte.num_rows, campo.type))
-                    escritor.escribir(pa.Table.from_arrays(columnas_t, schema=esquema))
+                    # El detalle de una fila que no se escribe tampoco (se cruzan por id + fecha_updated)
+                    escritor.escribir(_filtrar(pa.Table.from_arrays(columnas_t, schema=esquema), conservar[idx]))
             finally:
                 escritor.cerrar()
             escritas[nombre] = rutas
@@ -3203,22 +3241,25 @@ class ExportacionPlacsp:
         repetida = (claves.duplicated(['id', 'fecha_borrado']).to_numpy()
                     & claves['id'].notna().to_numpy() & claves['fecha_borrado'].notna().to_numpy())
         del claves
+        # Como en la tabla principal: no se escriben las de una versión antigua del ZIP que repiten una ya leída
+        conservar = filas_a_escribir(repetida, np.concatenate([_de_version_antigua(t) for t in tablas]))
         rutas = self._rutas_temporales('borrados')
         escritor = _EscritorTabla(esquema, rutas[0], rutas[1], self.filas_grupo)
         inicio = 0
         try:
             for t in tablas:
                 parte = pq.read_table(t['ruta'])
+                fin = inicio + parte.num_rows
                 columnas_t = []
                 for campo in esquema:
                     if campo.name == 'entrada_repetida':
-                        columnas_t.append(pa.array(repetida[inicio:inicio + parte.num_rows]))
+                        columnas_t.append(pa.array(repetida[inicio:fin]))
                     elif campo.name in parte.column_names:
                         columnas_t.append(_convertir(parte.column(campo.name), campo.type))
                     else:
                         columnas_t.append(pa.nulls(parte.num_rows, campo.type))
-                escritor.escribir(pa.Table.from_arrays(columnas_t, schema=esquema))
-                inicio += parte.num_rows
+                escritor.escribir(_filtrar(pa.Table.from_arrays(columnas_t, schema=esquema), conservar[inicio:fin]))
+                inicio = fin
         finally:
             escritor.cerrar()
         escritas['borrados'] = rutas
@@ -3276,7 +3317,8 @@ class ExportacionPlacsp:
                     ahora = pq.ParquetFile(parquet).metadata.num_rows
                     if ahora < antes:
                         print(f"   ⚠ {destino.name}: {antes - ahora:,} filas menos que la versión anterior "
-                              f"({antes:,} → {ahora:,}; la anterior queda en _historico/). ¿Faltan ZIP en disco?")
+                              f"({antes:,} → {ahora:,}; la anterior queda en _historico/). ¿Faltan ZIP en disco? "
+                              f"(o la anterior traía las entrada_repetida de las versiones antiguas de ZIP)")
                 estado = hist.guardar_version(destino, desde=parquet)
                 if estado == 'nuevo' and destino_csv.exists():
                     # Un CSV sin su parquet (p.ej. de una versión antigua del

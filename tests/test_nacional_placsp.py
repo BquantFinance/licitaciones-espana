@@ -889,15 +889,18 @@ class TestVersionesDeZip:
 
         informes, avisos = [], []
         lics = lic.procesar_conjunto("encargos", 2025, 2025, informes=informes, avisos=avisos)
+        assert [x["id"] for x in lics] == ["urn:5001", "urn:5001", "urn:5001", "urn:5002"]   # se leen todas
         df = lic.exportar_datos(lics, "prueba")
-        assert df["id"].tolist() == ["urn:5001", "urn:5001", "urn:5001", "urn:5002"]
-        # Primero la copia actual: sus filas son las canónicas
+        # Primero la copia actual: sus filas son las canónicas. De la antigua solo se escribe lo que
+        # la actual ya no trae (5002); su copia de la 1ª versión de 5001 es entrada_repetida y no se escribe
+        assert df["id"].tolist() == ["urn:5001", "urn:5001", "urn:5002"]
         assert df["zip_historico"].isna().tolist()[:2] == [True, True]  # nulo (None en pandas 2, NaN en pandas 3)
-        assert df["zip_historico"].tolist()[2:] == ["EMP_SectorPublico_2025__20250601T100000Z.zip"] * 2
+        assert df["zip_historico"].tolist()[2:] == ["EMP_SectorPublico_2025__20250601T100000Z.zip"]
         assert df["archivo_origen"].unique().tolist() == ["EMP_SectorPublico_2025.zip"]
-        assert df["entrada_repetida"].tolist() == [False, False, True, False]
-        assert df["n_versiones"].tolist() == [2, 2, 2, 1]
-        assert df["es_ultima_version"].tolist() == [False, True, False, True]
+        assert df["entrada_repetida"].tolist() == [False, False, False]
+        assert df["n_versiones"].tolist() == [2, 2, 1]
+        assert df["es_ultima_version"].tolist() == [False, True, True]
+        assert df["_en_ultima_descarga"].tolist() == [True, True, False]
         assert [i["zip_historico"] for i in informes] == [None, "EMP_SectorPublico_2025__20250601T100000Z.zip"]
         assert any("20200101T000000Z.zip (en _historico/) no es un ZIP válido" in a for a in avisos)
 
@@ -1037,7 +1040,11 @@ def _leer_como_antes(data_dir, conjuntos, ano_inicio, ano_fin):
 def _exportar_referencia(licitaciones, destino, nombre_base, borrados=None):
     """exportar_datos antes de la exportación por lotes (commit 25769f2), sin los
     resúmenes: un único DataFrame con todas las entradas. Es el oráculo con el
-    que se comparan las tablas escritas por lotes."""
+    que se comparan las tablas escritas por lotes. Como la exportación, no
+    escribe las entrada_repetida de las versiones antiguas de ZIP (zip_historico)
+    ni su detalle; las marcas y los tipos de cada columna salen de todas las filas
+    leídas (con pandas 2, una columna de texto que se queda sin valores no pasa a
+    tipo nulo)."""
     detalle = lic.separar_detalle(licitaciones)
     df = pd.DataFrame(licitaciones)
     for col in lic.FECHAS:
@@ -1048,28 +1055,34 @@ def _exportar_referencia(licitaciones, destino, nombre_base, borrados=None):
     df["ano"] = df["fecha_publicacion"].dt.year
     lic.marcar_versiones(df)
     df = lic.mover_al_final(df, lic.COLUMNAS_NUEVAS)
+    quedan = df.loc[~(df["zip_historico"].notna() & df["entrada_repetida"]), "_n"]
     marcas = df[["_n", "fecha_updated", "es_ultima_version", "entrada_repetida"]]
-    tablas = {}
+    completas = {}
     for nombre, filas in detalle.items():
         if not filas:
             continue
         # Las tablas de la ampliación llevan sus fechas y sus textos_originales (tabla_ampliacion)
         crear = lic.tabla_ampliacion if nombre in lic.TABLAS_AMPLIACION else pd.DataFrame
-        tabla = crear(filas).merge(marcas, on="_n", how="left").drop(columns="_n")
+        tabla = crear(filas).merge(marcas, on="_n", how="left")
         for col in lic.FECHAS_DETALLE:
             if col in tabla.columns:
                 tabla[col] = lic.parsear_fechas(tabla[col])
         if nombre == "resultados":
             tabla = lic.mover_al_final(tabla, lic.COLUMNAS_NUEVAS_RESULTADOS)
-        tablas[nombre] = tabla
-    tablas = {"principal": df.drop(columns="_n"), **tablas}
+        completas[nombre] = (tabla.drop(columns="_n"), tabla["_n"].isin(quedan).to_numpy())
+    completas = {"principal": (df.drop(columns="_n"), df["_n"].isin(quedan).to_numpy()), **completas}
     if borrados:
-        tablas["borrados"] = lic.tabla_borrados(borrados)
+        borr = lic.tabla_borrados(borrados)
+        completas["borrados"] = (borr, ~(borr["zip_historico"].notna() & borr["entrada_repetida"]).to_numpy())
     destino.mkdir(parents=True, exist_ok=True)
-    for nombre, tabla in tablas.items():
+    tablas = {}
+    for nombre, (completa, conservar) in completas.items():
+        tabla = tablas[nombre] = completa[conservar].reset_index(drop=True)
         base = nombre_base if nombre == "principal" else f"{nombre_base}_{nombre}"
         tabla.to_csv(destino / f"{base}.csv", index=False, encoding="utf-8-sig")
-        tabla.to_parquet(destino / f"{base}.parquet", index=False, compression="snappy")
+        esquema = pa.Schema.from_pandas(completa, preserve_index=False)
+        pq.write_table(pa.Table.from_pandas(tabla, schema=esquema, preserve_index=False),
+                       destino / f"{base}.parquet", compression="snappy")
     return tablas
 
 
@@ -1300,6 +1313,115 @@ class TestExportacionPorLotes:
         assert not list((tmp_path / "main").glob(".*partes*"))
 
 
+class TestRepetidasDeVersionesAntiguas:
+    """Las entrada_repetida leídas de una versión antigua de un ZIP (_historico/) no se
+    escriben, ni su detalle; todo lo demás sale igual que si se escribieran todas."""
+
+    def _exportar(self, tmp_path, nombre, conjuntos, lote=2):
+        copias = [(c, copia, origen) for c in conjuntos for copia, origen in lic.copias_conjunto(c, 2012, 2026)]
+        destino = tmp_path / nombre
+        with lic.ExportacionPlacsp(nombre, destino, lote=lote, csv=False) as exportacion:
+            lic.procesar_copias(copias, exportacion)
+            exportacion.cerrar()
+        return {t: pd.read_parquet(f) for t, f in _tablas(destino, nombre).items()}
+
+    def _todas(self, monkeypatch):
+        """Como antes: se escriben todas las filas leídas."""
+        monkeypatch.setattr(lic, "filas_a_escribir", lambda repetida, antigua: np.ones(len(repetida), dtype=bool))
+
+    @staticmethod
+    def _distintas(df, quitar):
+        return set(df.drop(columns=[c for c in quitar if c in df.columns]).astype(str).itertuples(index=False))
+
+    def test_filas_a_escribir(self):
+        rep = np.array([False, True, True, False])
+        antigua = np.array([False, False, True, True])
+        assert lic.filas_a_escribir(rep, antigua).tolist() == [True, True, False, True]
+        vacio = np.array([], dtype=bool)
+        assert lic.filas_a_escribir(vacio, vacio).tolist() == []
+
+    def test_lo_unico_que_cambia_son_las_repetidas_de_versiones_antiguas(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        conjuntos = _escenario(tmp_path / "zips")
+        nuevo = self._exportar(tmp_path, "nuevo", conjuntos)
+        texto = capsys.readouterr().out
+        self._todas(monkeypatch)
+        antes = self._exportar(tmp_path, "antes", conjuntos)
+        assert sorted(nuevo) == sorted(antes)
+        # Principal y _borrados: exactamente las de antes sin las repetidas de versiones antiguas
+        for tabla in ("principal", "borrados"):
+            a = antes[tabla]
+            quitar = a["zip_historico"].notna() & a["entrada_repetida"]
+            assert quitar.any(), tabla
+            pd.testing.assert_frame_equal(nuevo[tabla], a[~quitar].reset_index(drop=True), check_index_type=False)
+        assert "repiten una entrada ya leída" in texto and "versiones antiguas de ZIP (_historico/) y no se escriben" in texto
+        # Siguen las repetidas de las copias actuales (L5 en el anual y en el mensual de 2025)
+        assert nuevo["principal"].loc[nuevo["principal"]["entrada_repetida"], "id"].tolist() == ["urn:L5"]
+        claves_p = set(zip(nuevo["principal"]["id"], nuevo["principal"]["fecha_updated"]))
+        perdidas = 0
+        assert len([t for t in lic.TABLAS_DETALLE if t in antes]) >= 6
+        for tabla in [t for t in lic.TABLAS_DETALLE if t in antes]:
+            a, n = antes[tabla], nuevo[tabla]
+            # Ninguna fila única cambia ni se pierde (las mismas, en el mismo orden)
+            pd.testing.assert_frame_equal(n[~n["entrada_repetida"]].reset_index(drop=True),
+                                          a[~a["entrada_repetida"]].reset_index(drop=True), check_index_type=False)
+            # Ninguna huérfana: toda fila de detalle cruza con una de la principal por id + fecha_updated
+            assert set(zip(n["id"], n["fecha_updated"])) <= claves_p, tabla
+            # Lo que se deja de escribir es copia de lo que queda (mismo contenido)
+            assert self._distintas(n, ["entrada_repetida"]) == self._distintas(a, ["entrada_repetida"]), tabla
+            perdidas += len(a) - len(n)
+        assert perdidas > 0
+        quitar = ["zip_historico", "entrada_repetida", "_en_ultima_descarga"]
+        assert self._distintas(nuevo["principal"], quitar) == self._distintas(antes["principal"], quitar)
+        # Lo que solo está en la versión antigua (L3, retirada) se sigue escribiendo
+        solo_antigua = nuevo["principal"][nuevo["principal"]["zip_historico"].notna()]
+        assert solo_antigua["id"].tolist() == ["urn:L3"] and not solo_antigua["entrada_repetida"].any()
+
+    def test_sin_versiones_antiguas_no_cambia_nada(self, tmp_path, monkeypatch, capsys):
+        """Cero copias en _historico/ (y repetidas entre el anual y el mensual): la misma salida, byte a byte."""
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        conjuntos = _escenario(tmp_path / "zips")
+        for carpeta in (tmp_path / "zips").glob(f"*/{historico.HISTORICO}"):
+            shutil.rmtree(carpeta)
+        assert all(o == c.name for k in conjuntos for c, o in lic.copias_conjunto(k, 2012, 2026))
+        nuevo = self._exportar(tmp_path, "t", conjuntos)
+        assert "no se escriben" not in capsys.readouterr().out
+        assert nuevo["principal"]["entrada_repetida"].any() and nuevo["borrados"]["entrada_repetida"].any()
+        bytes_nuevo = {f.name: f.read_bytes() for f in (tmp_path / "t").glob("t*.parquet")}
+        shutil.rmtree(tmp_path / "t")
+        self._todas(monkeypatch)
+        self._exportar(tmp_path, "t", conjuntos)
+        assert bytes_nuevo == {f.name: f.read_bytes() for f in (tmp_path / "t").glob("t*.parquet")}
+        assert {"t.parquet", "t_borrados.parquet", "t_resultados.parquet"} <= set(bytes_nuevo)
+
+    def test_entrada_solo_en_versiones_antiguas_se_escribe_una_vez(self, tmp_path, monkeypatch):
+        """Una entrada que la PLACSP ya no sirve, en dos versiones antiguas: se escribe la de la más
+        reciente, con su detalle, y no la de la otra."""
+        monkeypatch.setattr(lic, "DATA_DIR", tmp_path / "zips")
+        actual = tmp_path / "zips" / "encargos" / "EMP_SectorPublico_2025.zip"
+        retirada = _xml("urn:R1", "2025-02-01T00:00:00Z", "ADJ", adj="7.5", lotes=2, criterios=1)
+        sigue = _xml("urn:R2", "2025-01-01T00:00:00Z", "PUB", lotes=1)
+        # La más antigua trae R1 y R2; la siguiente, solo R1; la actual, solo R2
+        for dia, cuerpo in ((1, [retirada, sigue]), (2, [retirada]), (None, [sigue])):
+            historico.guardar_version(actual, _zip_contenido({"a.atom": _atom(cuerpo)}))
+            if dia:
+                _mtime(actual, datetime(2025, 6, dia, 10, tzinfo=timezone.utc))
+        assert len(lic.copias_conjunto("encargos", 2025, 2025)) == 3
+        tablas = self._exportar(tmp_path, "t", ["encargos"])
+        p = tablas["principal"]
+        assert p["id"].tolist() == ["urn:R2", "urn:R1"] and not p["entrada_repetida"].any()
+        assert p["zip_historico"].isna().tolist() == [True, False]
+        assert p["zip_historico"].iloc[1] == "EMP_SectorPublico_2025__20250602T100000Z.zip"
+        assert p["_en_ultima_descarga"].tolist() == [True, False] and p["es_ultima_version"].all()
+        assert tablas["lotes"]["id"].tolist() == ["urn:R2", "urn:R1", "urn:R1"]
+        assert tablas["criterios"]["id"].tolist() == ["urn:R1", "urn:R1"]
+        assert tablas["resultados"]["id"].tolist() == ["urn:R1"]
+        assert tablas["ampliado"]["id"].tolist() == ["urn:R2", "urn:R1"]
+        for tabla in lic.TABLAS_DETALLE:
+            if tabla in tablas:
+                assert not tablas[tabla]["entrada_repetida"].any(), tabla
+
+
 # ─────────────────────────────────────────────────────────────
 # --semilla: el release publicado como la instantánea más antigua
 # ─────────────────────────────────────────────────────────────
@@ -1490,9 +1612,10 @@ class TestProcedenciaYEscritura:
                   df[["id", "zip_historico", "_en_ultima_descarga"]].itertuples(index=False)}
         # L3 solo está en la versión antigua del ZIP: retirada
         assert estado[("urn:L3", False)] is False
-        # La 1ª versión de L1 sigue en la copia actual: su copia antigua también cuenta como publicada
-        viejas_l1 = df[(df["id"] == "urn:L1") & df["zip_historico"].notna()]
-        assert viejas_l1["_en_ultima_descarga"].all() and viejas_l1["entrada_repetida"].all()
+        # La 1ª versión de L1 sigue en la copia actual: su copia antigua (entrada_repetida) no se escribe
+        assert df.loc[df["zip_historico"].notna(), "id"].tolist() == ["urn:L3"]
+        l1 = df[df["id"] == "urn:L1"]
+        assert len(l1) == 2 and l1["_en_ultima_descarga"].all() and not l1["entrada_repetida"].any()
         # Todo lo de las copias actuales (también sin fecha: urn:L2), en la última descarga
         assert df.loc[df["zip_historico"].isna(), "_en_ultima_descarga"].all()
         assert df["_origen"].isna().all()
