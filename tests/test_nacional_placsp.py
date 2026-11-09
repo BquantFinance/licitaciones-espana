@@ -1042,7 +1042,9 @@ def _exportar_referencia(licitaciones, destino, nombre_base, borrados=None):
     resúmenes: un único DataFrame con todas las entradas. Es el oráculo con el
     que se comparan las tablas escritas por lotes. Como la exportación, no
     escribe las entrada_repetida de las versiones antiguas de ZIP (zip_historico)
-    ni su detalle; las marcas se calculan antes, con todas las filas."""
+    ni su detalle; las marcas y los tipos de cada columna salen de todas las filas
+    leídas (con pandas 2, una columna de texto que se queda sin valores no pasa a
+    tipo nulo)."""
     detalle = lic.separar_detalle(licitaciones)
     df = pd.DataFrame(licitaciones)
     for col in lic.FECHAS:
@@ -1053,32 +1055,34 @@ def _exportar_referencia(licitaciones, destino, nombre_base, borrados=None):
     df["ano"] = df["fecha_publicacion"].dt.year
     lic.marcar_versiones(df)
     df = lic.mover_al_final(df, lic.COLUMNAS_NUEVAS)
-    df = df[~(df["zip_historico"].notna() & df["entrada_repetida"])].reset_index(drop=True)
+    quedan = df.loc[~(df["zip_historico"].notna() & df["entrada_repetida"]), "_n"]
     marcas = df[["_n", "fecha_updated", "es_ultima_version", "entrada_repetida"]]
-    tablas = {}
+    completas = {}
     for nombre, filas in detalle.items():
         if not filas:
             continue
         # Las tablas de la ampliación llevan sus fechas y sus textos_originales (tabla_ampliacion)
         crear = lic.tabla_ampliacion if nombre in lic.TABLAS_AMPLIACION else pd.DataFrame
-        tabla = crear(filas)
-        tabla = (tabla[tabla["_n"].isin(marcas["_n"])].reset_index(drop=True)
-                 .merge(marcas, on="_n", how="left").drop(columns="_n"))
+        tabla = crear(filas).merge(marcas, on="_n", how="left")
         for col in lic.FECHAS_DETALLE:
             if col in tabla.columns:
                 tabla[col] = lic.parsear_fechas(tabla[col])
         if nombre == "resultados":
             tabla = lic.mover_al_final(tabla, lic.COLUMNAS_NUEVAS_RESULTADOS)
-        tablas[nombre] = tabla
-    tablas = {"principal": df.drop(columns="_n"), **tablas}
+        completas[nombre] = (tabla.drop(columns="_n"), tabla["_n"].isin(quedan).to_numpy())
+    completas = {"principal": (df.drop(columns="_n"), df["_n"].isin(quedan).to_numpy()), **completas}
     if borrados:
         borr = lic.tabla_borrados(borrados)
-        tablas["borrados"] = borr[~(borr["zip_historico"].notna() & borr["entrada_repetida"])].reset_index(drop=True)
+        completas["borrados"] = (borr, ~(borr["zip_historico"].notna() & borr["entrada_repetida"]).to_numpy())
     destino.mkdir(parents=True, exist_ok=True)
-    for nombre, tabla in tablas.items():
+    tablas = {}
+    for nombre, (completa, conservar) in completas.items():
+        tabla = tablas[nombre] = completa[conservar].reset_index(drop=True)
         base = nombre_base if nombre == "principal" else f"{nombre_base}_{nombre}"
         tabla.to_csv(destino / f"{base}.csv", index=False, encoding="utf-8-sig")
-        tabla.to_parquet(destino / f"{base}.parquet", index=False, compression="snappy")
+        esquema = pa.Schema.from_pandas(completa, preserve_index=False)
+        pq.write_table(pa.Table.from_pandas(tabla, schema=esquema, preserve_index=False),
+                       destino / f"{base}.parquet", compression="snappy")
     return tablas
 
 
