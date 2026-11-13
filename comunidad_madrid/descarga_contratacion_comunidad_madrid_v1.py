@@ -247,8 +247,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import (ANADIDA, COLUMNAS_META, FUERA_AMBITO, HISTORICO, ORIGEN_SEMILLA,  # noqa: E402
-                             acumular, archivar, guardar_version, imprimir_informe_semilla,
-                             informe_semilla, seleccionar_semilla, versiones)
+                             abrir_version, acumular, archivar, guardar_version, imprimir_informe_semilla,
+                             informe_semilla, nombre_version, seleccionar_semilla, versiones)
 from comun.lectura_csv import registros_csv  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -1508,7 +1508,7 @@ def fecha_version(ruta):
     su sello cuando se archive (la fecha de una versión no cambia)."""
     ruta = Path(ruta)
     if ruta.parent.name == HISTORICO:
-        m = PATRON_VERSION.fullmatch(ruta.stem)
+        m = PATRON_VERSION.fullmatch(nombre_version(ruta).stem)   # .csv.gz: comun.historico regla 6
         if m:
             return datetime.strptime(m.group("sello"), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
     return iso_utc(ruta.stat().st_mtime)
@@ -1523,10 +1523,12 @@ def ficheros_crudos(raiz=None):
     nombres = {p.name for p in raiz.glob("*.csv") if not p.name.startswith(".")}
     carpeta = raiz / HISTORICO
     if carpeta.is_dir():
-        for p in carpeta.glob("*.csv"):
-            m = PATRON_VERSION.fullmatch(p.stem)
+        # una versión archivada puede estar comprimida (<nombre>__<sello>.csv.gz, comun.historico regla 6)
+        for p in [*carpeta.glob("*.csv"), *carpeta.glob("*.csv.gz")]:
+            v = nombre_version(p)
+            m = PATRON_VERSION.fullmatch(v.stem)
             if m:
-                nombres.add(m.group("base") + p.suffix)
+                nombres.add(m.group("base") + v.suffix)
     salida = {}
     for nombre in sorted(nombres):
         destino = raiz / nombre
@@ -1536,7 +1538,7 @@ def ficheros_crudos(raiz=None):
                 lista.append((ruta, fecha_version(ruta), True))
                 continue
             # el glob 'X__*' de versiones() casaría también con las de 'X__algo'
-            m = PATRON_VERSION.fullmatch(ruta.stem)
+            m = PATRON_VERSION.fullmatch(nombre_version(ruta).stem)
             if m and m.group("base") == destino.stem:
                 lista.append((ruta, fecha_version(ruta), False))
         if lista:
@@ -1578,7 +1580,7 @@ def leer_csv(ruta):
         return pd.DataFrame(), []
     except (pd.errors.ParserError, pd.errors.ParserWarning):
         pass
-    with open(ruta, encoding='utf-8-sig', newline='') as f:
+    with abrir_version(ruta, 'r', encoding='utf-8-sig', newline='') as f:   # .csv.gz de _historico/: descomprime
         filas, literales = registros_csv(f.read(), ';')
     if not filas:
         return pd.DataFrame(), []
