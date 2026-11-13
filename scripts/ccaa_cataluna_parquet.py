@@ -46,8 +46,8 @@ import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from comun.historico import (  # noqa: E402
-    ANADIDA, COLUMNAS_META, COLUMNAS_SEMILLA, IGNORAR_POR_DEFECTO, ORIGEN_SEMILLA, _armonizar, acumular,
-    imprimir_informe_semilla, informe_semilla, seleccionar_semilla, sembrar, versiones,
+    ANADIDA, COLUMNAS_META, COLUMNAS_SEMILLA, IGNORAR_POR_DEFECTO, ORIGEN_SEMILLA, _armonizar, abrir_version,
+    acumular, imprimir_informe_semilla, informe_semilla, nombre_version, seleccionar_semilla, sembrar, versiones,
 )
 
 # =============================================================================
@@ -299,7 +299,7 @@ def _separadores(path):
     en algún nombre de columna se aceptaría con ',' y se leería desalineado."""
     separators = [',', ';', '\t']
     try:
-        with open(path, 'rb') as f:
+        with abrir_version(path, 'rb') as f:   # una versión de _historico/ puede estar comprimida (.gz)
             cabecera = f.readline(1024 * 1024).decode('latin-1')
         separators.sort(key=lambda s: -cabecera.count(s))
     except OSError:
@@ -337,7 +337,9 @@ SELLO = re.compile(r"(\d{8})T(\d{2})(\d{2})(\d{2})Z(_\d+)?")
 
 def versiones_csv(csv_path):
     """[(ruta, fecha)] de las versiones del CSV, de la más antigua a la vigente.
-    fecha: sello de la versión en _historico/ o mtime del CSV vigente (UTC)."""
+    fecha: sello de la versión en _historico/ o mtime del CSV vigente (UTC). Una versión
+    archivada puede estar comprimida (<nombre>__<sello>.csv.gz, comun.historico regla 6):
+    el sello se lee de su nombre sin comprimir y pandas la descomprime al leerla."""
     csv_path = Path(csv_path)
     salida = []
     for v in versiones(csv_path):
@@ -346,7 +348,7 @@ def versiones_csv(csv_path):
             salida.append((v, momento.strftime("%Y-%m-%dT%H:%M:%SZ")))
             continue
         # glob 'X__*' también casaría con las versiones de otro 'X__algo.csv'
-        m = SELLO.fullmatch(v.stem[len(csv_path.stem) + 2:])
+        m = SELLO.fullmatch(nombre_version(v).stem[len(csv_path.stem) + 2:])
         if m:
             d, hh, mm, ss = m.group(1), m.group(2), m.group(3), m.group(4)
             salida.append((v, f"{d[:4]}-{d[4:6]}-{d[6:]}T{hh}:{mm}:{ss}Z"))

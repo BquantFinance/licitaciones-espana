@@ -8,6 +8,7 @@ se generan en tmp_path imitando la estructura de los ficheros reales
 2011-2013, CSV de Bilbao, páginas de la API KontratazioA).
 """
 
+import gzip
 import importlib.util
 import io
 import json
@@ -841,6 +842,29 @@ def test_api_completa_reejecucion_no_repite_ni_machaca_ventanas_completas(api_co
     g8 = df[df["id"] == "G-008$X"].set_index("awardAmount")["_en_ultima_descarga"]
     assert g8.to_dict() == {1008.0: False, 9999.0: True}
     assert df.loc[df["id"] != "G-008$X", "_en_ultima_descarga"].all()
+
+
+def test_api_completa_versiones_comprimidas_dan_la_misma_consolidacion(api_completa, entrada):
+    # Las páginas de una versión archivada de una ventana pueden estar comprimidas (<página>.json.gz,
+    # comun.historico regla 6): la consolidación es idéntica, también _archivo_origen
+    api = ApiVentanas(CONTRATOS)
+    d, _ = api_completa(api)
+    api.items = CONTRATOS[:7] + [dict(CONTRATOS[7], awardAmount=9999.0)] + CONTRATOS[8:] + [contrato(13, "2025-02-14")]
+    d, _ = api_completa(api)
+    paginas = sorted((d / "_historico").glob("*/*_p[0-9]*.json"))
+    assert paginas
+    cons.consolidar_A1_api_contratos()
+    plano = pd.read_parquet(cons.OUTPUT_DIR / "api_contratos.parquet")
+    for p in paginas:
+        p.with_name(p.name + ".gz").write_bytes(gzip.compress(p.read_bytes()))
+        p.unlink()
+    assert not list((d / "_historico").glob("*/*_p[0-9]*.json"))
+    assert all((v / "_ventana.json").exists() for v in (d / "_historico").iterdir())   # el manifiesto no se toca
+    info = cons.consolidar_A1_api_contratos()
+    gz = pd.read_parquet(cons.OUTPUT_DIR / "api_contratos.parquet")
+    pd.testing.assert_frame_equal(plano, gz)
+    assert info["registros"] == len(gz) == 14
+    assert gz["_archivo_origen"].str.contains("__").any() and not gz["_archivo_origen"].str.endswith(".gz").any()
 
 
 def test_api_completa_filas_repetidas_por_la_api_no_la_dejan_incompleta(api_completa, entrada):

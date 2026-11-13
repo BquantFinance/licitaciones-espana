@@ -45,9 +45,19 @@ compatible con el actual (si no, las mismas filas no casarían).
    y solo si quien la escribe lo pide de forma explícita (hoy, la salida de
    nacional/licitaciones.py con --conservar-versiones). La capa cruda no se
    poda nunca y la versión vigente nunca se toca.
+
+6. Versiones comprimidas (VERSIONES_COMPRIMIDAS): una versión archivada de
+   la capa cruda se puede guardar comprimida con gzip, sin perder un byte,
+   como <nombre>__<AAAAMMDDTHHMMSSZ><ext>.gz (el contenido descomprimido es
+   el original, con su sha256). versiones() la lista en su sitio, en el
+   mismo orden que sin comprimir; quien la lee usa nombre_version() para el
+   sello y la extensión y abrir_version() para abrirla (pandas y pyarrow
+   descomprimen solos una ruta que acaba en .gz). Si están las dos copias
+   (la comprimida y la original), cuenta la original.
 """
 
 import glob
+import gzip
 import hashlib
 import os
 import re
@@ -58,6 +68,8 @@ import numpy as np
 import pandas as pd
 
 HISTORICO = "_historico"
+# Sufijos de una versión archivada comprimida (regla 6): <nombre>__<sello><ext>.gz
+VERSIONES_COMPRIMIDAS = (".gz",)
 COLUMNAS_META = ("_primera_descarga", "_ultima_descarga", "_en_ultima_descarga")
 # Columnas que cambian en cada descarga sin que cambie el registro
 IGNORAR_POR_DEFECTO = ("_fecha_descarga",)
@@ -145,21 +157,54 @@ def archivar(destino):
     archivo = ruta_historica(destino, previo)
     archivo.parent.mkdir(exist_ok=True)
     n = 1
-    while archivo.exists():   # dos versiones con el mismo sello: no pisar ninguna
+    # dos versiones con el mismo sello (también si una ya está comprimida, regla 6): no pisar ninguna
+    while archivo.exists() or any(archivo.with_name(archivo.name + c).exists() for c in VERSIONES_COMPRIMIDAS):
         archivo = archivo.with_name(f"{archivo.stem}_{n}{archivo.suffix}")
         n += 1
     os.replace(destino, archivo)
     return archivo
 
 
+def nombre_version(ruta):
+    """La ruta de una versión sin el sufijo de compresión (regla 6): con ella se leen el
+    sello y la extensión. Una ruta sin comprimir se devuelve tal cual."""
+    ruta = Path(ruta)
+    for sufijo in VERSIONES_COMPRIMIDAS:
+        if ruta.name.endswith(sufijo):
+            return ruta.with_name(ruta.name[:-len(sufijo)])
+    return ruta
+
+
+def abrir_version(ruta, modo="rb", **kwargs):
+    """open() de una versión, comprimida (regla 6) o no; mismos argumentos que open()
+    ('rt' o 'r' con encoding/newline para texto)."""
+    ruta = Path(ruta)
+    if ruta.name.endswith(".gz"):
+        return gzip.open(ruta, modo if "b" in modo or "t" in modo else modo + "t", **kwargs)
+    return open(ruta, modo, **kwargs)
+
+
 def versiones(destino):
     """Versiones guardadas de `destino`, de la más antigua a la actual. El nombre se busca
     escapado: unos corchetes en el nombre publicado ('CM_2021[1].ods') no pueden dejar
-    fuera sus versiones ni colar las de otro fichero."""
+    fuera sus versiones ni colar las de otro fichero. Una versión comprimida (regla 6,
+    <nombre>__<sello><ext>.gz) va en su sitio, ordenada por su nombre sin comprimir; si
+    está también sin comprimir, solo cuenta esa. Un `destino` que ya es un .gz no busca
+    versiones comprimidas otra vez."""
     destino = Path(destino)
     carpeta = destino.parent / HISTORICO
+    if not carpeta.is_dir():
+        return [destino] if destino.exists() else []
     patron = f"{glob.escape(destino.stem)}__*{glob.escape(destino.suffix)}"
-    antiguas = sorted(carpeta.glob(patron)) if carpeta.is_dir() else []
+    antiguas = list(carpeta.glob(patron))
+    if not destino.name.endswith(VERSIONES_COMPRIMIDAS):
+        presentes = {p.name for p in antiguas}
+        for sufijo in VERSIONES_COMPRIMIDAS:
+            antiguas += [p for p in carpeta.glob(patron + glob.escape(sufijo))
+                         if nombre_version(p).name not in presentes]
+        antiguas.sort(key=lambda p: nombre_version(p).name)
+    else:
+        antiguas.sort()
     return antiguas + ([destino] if destino.exists() else [])
 
 

@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from comun.historico import COLUMNAS_META, HISTORICO, acumular, versiones  # noqa: E402
+from comun.historico import COLUMNAS_META, HISTORICO, abrir_version, acumular, nombre_version, versiones  # noqa: E402
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
@@ -1036,6 +1036,16 @@ def _tipar_json(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _paginas_ventana(carpeta: Path) -> list:
+    """Páginas de una versión de ventana, en orden de nombre. Las de una versión archivada
+    pueden estar comprimidas (<página>.json.gz, comun.historico regla 6): cuentan con su
+    nombre sin comprimir (también en _archivo_origen) y, si están las dos, la original."""
+    planas = {p.name: p for p in carpeta.glob("*_p[0-9]*.json")}
+    for p in carpeta.glob("*_p[0-9]*.json.gz"):
+        planas.setdefault(nombre_version(p).name, p)
+    return [planas[n] for n in sorted(planas)]
+
+
 def _items_ventana(carpeta: Path, clave: str) -> pd.DataFrame:
     """
     Items de las páginas de una versión de ventana. Un mismo item en varias
@@ -1045,16 +1055,18 @@ def _items_ventana(carpeta: Path, clave: str) -> pd.DataFrame:
     copias (se marcan luego en _duplicado).
     """
     filas, claves, paginas = [], [], []
-    for f in sorted(carpeta.glob("*_p[0-9]*.json")):
+    for f in _paginas_ventana(carpeta):
+        nombre = nombre_version(f).name   # una página archivada puede estar comprimida (.json.gz)
         try:
-            data = json.loads(f.read_bytes())
-        except ValueError as e:
+            with abrir_version(f, "rb") as fh:
+                data = json.loads(fh.read())
+        except ValueError as e:   # un .gz roto (OSError/EOFError) no se salta: perdería sus items en silencio
             log.warning("  Error leyendo %s/%s: %s", carpeta.name, f.name, e)
             continue
         for it in data.get("items") or []:
             filas.append(it)
             claves.append(json.dumps(it, sort_keys=True, ensure_ascii=False))
-            paginas.append(f.name)
+            paginas.append(nombre)
     if not filas:
         return pd.DataFrame()
     k = pd.Series(claves)
