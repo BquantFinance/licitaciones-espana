@@ -30,6 +30,7 @@ formato_contenido, leer_csv o _leer_xlsx.
 """
 
 import codecs
+import csv
 import datetime as dt
 import json
 import math
@@ -111,6 +112,47 @@ def _lineas_de_datos(ruta):
         return max(sum(1 for linea in f if linea.strip()) - 1, 0)
 
 
+def cuadre_de_lineas(ruta, sep, codificacion, filas):
+    """¿Las líneas de más son texto cortado dentro de campos entrecomillados?
+
+    Algunos portales cortan el texto largo en varias líneas dentro de las comillas (el exportador
+    de la CARM, cada 80 caracteres): el fichero tiene casi el doble de líneas que de registros y
+    no falta nada. Cuadra si el módulo csv cuenta los mismos registros no vacíos que se han leído
+    (`filas`) y ningún trozo de texto tras un salto dentro de un campo tiene forma de registro
+    entero (tantos separadores como la cabecera: lo que dejaría una comilla desparejada que se
+    traga los registros siguientes). Devuelve (cuadra, registros del módulo csv, trozos con
+    forma de registro)."""
+    with open(ruta, encoding=codificacion, newline="") as f:
+        lector = csv.reader(f, delimiter=sep)
+        cabecera = next((fila for fila in lector if fila), None)
+        if cabecera is None:
+            return filas == 0, 0, 0
+        separadores = len(cabecera) - 1
+        registros = con_forma = 0
+        for fila in lector:
+            if not fila or all(v.strip() == "" for v in fila) and len(fila) == 1:
+                continue
+            registros += 1
+            for valor in fila:
+                if "\n" in valor or "\r" in valor:
+                    con_forma += sum(1 for trozo in valor.splitlines()[1:]
+                                     if separadores and trozo.count(sep) >= separadores)
+    return registros == filas and con_forma == 0, registros, con_forma
+
+
+def aviso_de_lineas(nombre, filas, lineas, cuadre):
+    """El aviso de «filas leídas frente a líneas de datos»: informativo si cuadre_de_lineas cuadra
+    (el texto viene cortado en varias líneas y no falta nada), «revisar» si no."""
+    cuadra, registros, con_forma = cuadre
+    if cuadra:
+        return (f"{nombre}: {filas:,} filas en {lineas:,} líneas de datos: las {lineas - filas:,} de más son "
+                "texto cortado dentro de campos entrecomillados (el módulo csv cuenta los mismos registros "
+                "y ningún trozo cortado tiene forma de registro)")
+    return (f"{nombre}: {filas:,} filas leídas de {lineas:,} líneas de datos (campos entrecomillados con "
+            f"saltos de línea o comillas desparejadas; el módulo csv cuenta {registros:,} registros y "
+            f"{con_forma:,} trozos de texto con forma de registro): revisar")
+
+
 def _nombres_columnas(cabecera):
     """Nombres únicos como los pone pandas: vacíos -> 'Unnamed: i', repetidos -> 'X.1'."""
     nombres, vistos = [], set()
@@ -187,8 +229,8 @@ def leer_csv(ruta):
                                   "los campos de más se conservan en columnas _columna_extra_N")
                 df = tolerante
         if lineas != len(df):
-            avisos.append(f"{ruta.name}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
-                          "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")
+            avisos.append(aviso_de_lineas(ruta.name, len(df), lineas,
+                                          cuadre_de_lineas(ruta, sep, codificacion, len(df))))
     return df, avisos
 
 

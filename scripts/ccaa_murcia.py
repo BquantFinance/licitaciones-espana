@@ -102,7 +102,8 @@ from comun.historico import HISTORICO, acumular, guardar_version, leer_registros
 # Lectura común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.lectura
 from comun.lectura import (  # noqa: E402, F401
     formato_contenido, _detectar_separador, _lineas_de_datos, _nombres_columnas, _leer_csv_tolerante,
-    _celda_texto, PATRON_DATO, _parece_registro, _hoja_a_df, _leer_xlsx, _leer_xls, _buscar_registros)
+    _celda_texto, PATRON_DATO, _parece_registro, _hoja_a_df, _leer_xlsx, _leer_xls, _buscar_registros,
+    cuadre_de_lineas, aviso_de_lineas)
 from comun.lectura_csv import registros_csv  # noqa: E402, F401
 # Red común: los mismos nombres que tenía este script, aunque alguno ya solo lo lea comun.red
 from comun.red import (  # noqa: E402, F401
@@ -689,8 +690,10 @@ def leer_csv(ruta):
                                   "los campos de más se conservan en columnas _columna_extra_N")
                 df = tolerante
         if lineas != len(df):
-            avisos.append(f"{ruta.name}: {len(df):,} filas leídas de {lineas:,} líneas de datos "
-                          "(campos entrecomillados con saltos de línea o comillas desparejadas): revisar")
+            # El exportador de la CARM corta el texto cada 80 caracteres dentro de las comillas (2024
+            # y 2025): casi el doble de líneas que de registros sin que falte ninguno
+            avisos.append(aviso_de_lineas(ruta.name, len(df), lineas,
+                                          cuadre_de_lineas(ruta, sep, codificacion, len(df))))
     if texto is not None:
         # Los menores de 2023: escapes de JSON sin interpretar, pero las comillas se doblan ('""')
         df = _anadir_sin_cortes(df, texto, ruta.name, avisos)
