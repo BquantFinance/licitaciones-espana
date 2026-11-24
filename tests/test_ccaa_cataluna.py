@@ -38,7 +38,8 @@ ccaa_cataluna = _load("ccaa_cataluna")
 cat_parquet = _load("ccaa_cataluna_parquet")
 cat_menores = _load("ccaa_cataluna_contratosmenores")
 
-STATS_VACIAS = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0, 'retirados': 0}
+STATS_VACIAS = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0, 'retirados': 0,
+                'sin_fecha': 0, 'sin_fecha_saltados': 0}
 
 
 # =============================================================================
@@ -221,10 +222,44 @@ class DescargaCatalunyaTests(unittest.TestCase):
         self.assertEqual(historico[0].read_bytes(), b"id,nom\n1,vell\n")
         self.assertTrue(historico[0].name.startswith("registro__") and historico[0].suffix == ".csv")
 
-        # Sin fecha en los metadatos se mantiene el comportamiento anterior (no se descarga)
+        # Sin fecha en los metadatos: por defecto se conserva la copia, pero se avisa y se cuenta
         os.utime(csv, (1_000_000, 1_000_000))
-        pedidas = self._socrata_con_fecha(None, contenido=b"id,nom\n1,otro\n")
+        with self.assertLogs(level="INFO") as registro:
+            pedidas = self._socrata_con_fecha(None, contenido=b"id,nom\n1,otro\n")
         self.assertEqual(csv.read_bytes(), b"id,nom\n1,nou\n")
+        self.assertFalse(any("rows.csv" in u for u in pedidas))
+        self.assertTrue(any("⚠️ Sin fecha: registro.csv" in m for m in registro.output), registro.output)
+        self.assertTrue(any("Metadatos de hb6v-jcbf sin fecha" in m for m in registro.output), registro.output)
+        self.assertEqual(ccaa_cataluna.stats['sin_fecha'], 1)
+        self.assertEqual(ccaa_cataluna.stats['sin_fecha_saltados'], 1)
+
+    def test_socrata_sin_fecha_con_la_bandera_se_vuelve_a_descargar(self):
+        csv = self.dir / "01_transparencia_catalunya" / "01_contratacion" / "registro.csv"
+        csv.parent.mkdir(parents=True)
+        csv.write_bytes(b"id,nom\n1,vell\n")
+        with patch.object(ccaa_cataluna, "DESCARGAR_SIN_FECHA", True), self.assertLogs(level="INFO") as registro:
+            pedidas = self._socrata_con_fecha(None)
+        self.assertTrue(any("rows.csv" in u for u in pedidas))
+        self.assertEqual(csv.read_bytes(), b"id,nom\n1,nou\n")
+        self.assertTrue(any("se vuelve a descargar" in m and "Sin fecha" in m for m in registro.output))
+        self.assertEqual(ccaa_cataluna.stats['sin_fecha'], 1)
+        self.assertEqual(ccaa_cataluna.stats['sin_fecha_saltados'], 0)
+
+    def test_sin_fecha_por_defecto_no_descarga_y_la_bandera_del_entorno(self):
+        self.assertEqual(os.environ.get("CATALUNA_DESCARGAR_SIN_FECHA", "0") == "1",
+                         ccaa_cataluna.DESCARGAR_SIN_FECHA)
+        self.assertTrue(ccaa_cataluna.argumentos(["--descargar-sin-fecha"]).descargar_sin_fecha)
+        self.assertFalse(ccaa_cataluna.argumentos([]).descargar_sin_fecha)
+
+    def test_metadatos_con_fecha_no_avisan(self):
+        csv = self.dir / "01_transparencia_catalunya" / "01_contratacion" / "registro.csv"
+        csv.parent.mkdir(parents=True)
+        csv.write_bytes(b"id,nom\n1,vell\n")
+        os.utime(csv, (1_000_000, 1_000_000))
+        with self.assertLogs(level="INFO") as registro:
+            self._socrata_con_fecha(500_000)
+        self.assertFalse(any("Sin fecha" in m or "sin fecha" in m for m in registro.output))
+        self.assertEqual(ccaa_cataluna.stats['sin_fecha'], 0)
 
     def test_bcn_recurso_modificado_se_vuelve_a_descargar(self):
         carpeta = self.dir / "02_barcelona" / "contratos_menores"

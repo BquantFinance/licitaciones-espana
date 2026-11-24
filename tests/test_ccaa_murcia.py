@@ -600,6 +600,64 @@ def test_comilla_literal_no_se_traga_registros(tmp_path):
     assert any("comillas literales" in a for a in avisos)
 
 
+def _menores_cortados(tmp_path):
+    """Como CONTRA_ContratosMenores_2024/2025.csv de la CARM: el exportador corta cada 80 caracteres
+    el texto entrecomillado (un salto de línea real dentro de las comillas), sin escapes de JSON."""
+    cabecera = "CODEXPEDIENTE,OBJETO_CONTRATO_MENOR,UNIDADCODIGO,CPVDESCRIPCION,IMPORTECONTABPAGO"
+    filas = [
+        '2024/066612,Articulos navidad,51,"INSTRUMENTOS MUSICALES, ARTÍCULOS DEPORTIVOS, JUEGOS, JUGUETES, ARTÍCULOS DE ART\n'
+        'ESANÍA, MATERIALES ARTÍSTICOS Y ACCESORIOS",559.3',
+        '2024/039926,"Análisis para determinación de nutrientes por empresa externa para el CIFEA de T\n'
+        'orre Pacheco",17,SERVICIOS DE ENSAYO,181.5',
+        '2025/010223,"Reposicion de manivelas y picaportes en puertas e instalacion de cerraduras CSPM\n'
+        ' Cartagena III",51,SERVICIOS DE REPARACIÓN,459.99',
+        "2024/016563,Mantenimiento de aire acondicionado.,12,SERVICIOS DE REPARACIÓN,1685.53",
+    ]
+    ruta = tmp_path / "CONTRA_ContratosMenores_2024.csv"
+    ruta.write_bytes(("\ufeff" + cabecera + "\n" + "\n".join(filas) + "\n").encode("utf-8"))
+    return ruta
+
+
+def test_menores_con_texto_cortado_cada_80_caracteres_cuadran(tmp_path):
+    """2024 y 2025: 21.452 y 20.987 registros en 41.858 y 40.944 líneas. No falta ninguno (el módulo
+    csv cuenta los mismos): el aviso lo dice y no pide revisar."""
+    df, avisos = M.leer_tabla(_menores_cortados(tmp_path))
+    assert df["CODEXPEDIENTE"].tolist() == ["2024/066612", "2024/039926", "2025/010223", "2024/016563"]
+    assert df["IMPORTECONTABPAGO"].tolist() == ["559.3", "181.5", "459.99", "1685.53"]
+    assert df.loc[1, "OBJETO_CONTRATO_MENOR"].endswith("T\norre Pacheco")
+    lineas = [a for a in avisos if "líneas de datos" in a]
+    assert len(lineas) == 1, avisos
+    assert "4 filas en 7 líneas de datos" in lineas[0] and "las 3 de más son texto cortado" in lineas[0]
+    assert "revisar" not in lineas[0]
+
+
+def test_comilla_desparejada_que_se_traga_registros_sigue_pidiendo_revisar(tmp_path):
+    """Una comilla que se abre y se cierra registros más abajo deja dentro del campo líneas con forma de
+    registro entero. leer_csv ya la lee como literal (no se traga nada); si pandas se los tragara, el
+    módulo csv contaría lo mismo, pero los trozos con forma de registro hacen que el aviso diga «revisar»."""
+    cabecera = "c0,c1,c2,c3"
+    ruta = tmp_path / "CONTRA_ContratosMenores_2025.csv"
+    ruta.write_bytes((f'{cabecera}\n1,"Obra A,org,10\n2,Obra B,org,20\n3,Obra C",org,30\n4,Obra D,org,40\n')
+                     .encode("utf-8"))
+    df, avisos = M.leer_tabla(ruta)
+    assert df["c0"].tolist() == ["1", "2", "3", "4"]
+    tragado = pd.read_csv(ruta, dtype=str)                       # pandas solo: se traga dos registros
+    assert len(tragado) == 2
+    cuadre = M.cuadre_de_lineas(ruta, ",", "utf-8", len(tragado))
+    assert cuadre == (False, 2, 1)                # «2,Obra B,org,20»: un registro entero dentro
+    aviso = M.aviso_de_lineas(ruta.name, len(tragado), 4, cuadre)
+    assert "revisar" in aviso and "1 trozos de texto con forma de registro" in aviso
+
+
+def test_cuadre_de_lineas_cero_registros(tmp_path):
+    ruta = tmp_path / "vacio.csv"
+    ruta.write_bytes(b"c0,c1\n")
+    assert M.cuadre_de_lineas(ruta, ",", "utf-8", 0) == (True, 0, 0)
+    ruta.write_bytes(b"")
+    assert M.cuadre_de_lineas(ruta, ",", "utf-8", 0) == (True, 0, 0)
+    assert M.cuadre_de_lineas(ruta, ",", "utf-8", 1)[0] is False
+
+
 @pytest.mark.parametrize("texto, codificacion, esperada", [
     # contratosOD 2014-2018 de la CARM: cp850 ('Ó' = 0xE0); leído como cp1252 daba 'NEGOCIACIàN'
     ("COD;PROCEDIMIENTO;ORGANO\n1;NEGOCIACIÓN SIN PUBLICIDAD;ÁREA DE SALUD IX\n2;ADJUDICACIÓN;CONSEJERÍA\n",

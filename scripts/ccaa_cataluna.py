@@ -34,6 +34,10 @@ from comun.historico import guardar_version  # noqa: E402
 
 OUTPUT_DIR = "catalunya_datos_completos"
 FORCE_DOWNLOAD = False
+# Sin fecha de actualización en el portal (metadatos de Socrata o de CKAN que no llegan o no la
+# traen) no se sabe si la copia local está al día. Por defecto se conserva y se avisa en el log y en
+# el resumen; con CATALUNA_DESCARGAR_SIN_FECHA=1 (o --descargar-sin-fecha) se vuelve a descargar.
+DESCARGAR_SIN_FECHA = os.environ.get("CATALUNA_DESCARGAR_SIN_FECHA", "0") == "1"
 
 # =============================================================================
 # PORTAL TRANSPARENCIA CATALUNYA (Socrata)
@@ -172,7 +176,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__).info
 
-stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0, 'retirados': 0}
+stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'bytes': 0, 'records': 0, 'retirados': 0,
+         'sin_fecha': 0, 'sin_fecha_saltados': 0}
 
 # Session con headers
 session = requests.Session()
@@ -218,6 +223,8 @@ def download_with_progress(url, path, desc="", timeout=600, modificado=None):
     modificado: fecha (epoch) de la última actualización en el portal. Si la copia
     local es anterior se vuelve a descargar (antes un archivo ya descargado no se
     actualizaba nunca y los datasets que crecen se quedaban congelados).
+    Si el portal no da la fecha (None) la copia local no se salta en silencio: se avisa
+    («⚠️ Sin fecha») y se cuenta en el resumen; con DESCARGAR_SIN_FECHA se vuelve a descargar.
     La copia anterior no se machaca: guardar_version la deja en _historico/ si
     el contenido cambió (el RPC y los menores de la Generalitat son ventanas
     móviles de 5 años: lo que sale de la ventana solo queda en esas versiones).
@@ -225,11 +232,23 @@ def download_with_progress(url, path, desc="", timeout=600, modificado=None):
     global stats
     
     if not FORCE_DOWNLOAD and path.exists() and path.stat().st_size > 0:
-        if modificado is None or path.stat().st_mtime >= modificado:
+        if modificado is None:
+            stats['sin_fecha'] += 1
+            copia = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime('%Y-%m-%d')
+            if not DESCARGAR_SIN_FECHA:
+                log(f"⚠️ Sin fecha: {path.name}: el portal no da la fecha de actualización; se conserva la copia "
+                    f"local del {copia} sin saber si el origen cambió (CATALUNA_DESCARGAR_SIN_FECHA=1 la descarga)")
+                stats['skipped'] += 1
+                stats['sin_fecha_saltados'] += 1
+                return True
+            log(f"⚠️ Sin fecha: {path.name}: el portal no da la fecha de actualización; se vuelve a descargar "
+                f"(copia local del {copia})")
+        elif path.stat().st_mtime >= modificado:
             log(f"⏭️ Skip: {path.name}")
             stats['skipped'] += 1
             return True
-        log(f"🔄 {path.name}: actualizado en el portal después de la copia local, se vuelve a descargar")
+        else:
+            log(f"🔄 {path.name}: actualizado en el portal después de la copia local, se vuelve a descargar")
     
     path.parent.mkdir(parents=True, exist_ok=True)
     # Descargar a un temporal: un archivo cortado no debe quedar como "ya descargado"
@@ -332,6 +351,9 @@ def download_socrata_datasets(output_dir):
         url_csv = f"{SOCRATA_BASE}/api/views/{dataset_id}/rows.csv?accessType=DOWNLOAD"
         path_csv = Path(str(full_path) + ".csv")
         codigo, modificado = metadatos_socrata(dataset_id)
+        if modificado is None and dataset_id not in SOCRATA_RETIRADOS:
+            log(f"   ⚠️ Metadatos de {dataset_id} sin fecha (rowsUpdatedAt): "
+                f"{'sin respuesta' if codigo is None else f'HTTP {codigo}'}")
         if dataset_id in SOCRATA_RETIRADOS:
             if codigo == 404:
                 log(f"   🗄️ Retirado en origen: {dataset_id} da HTTP 404 desde {SOCRATA_RETIRADOS[dataset_id]} "
@@ -507,6 +529,9 @@ def argumentos(argv):
     parser = argparse.ArgumentParser(description="Descarga los datos públicos de contratación de Catalunya")
     parser.add_argument("--salida", default=None,
                         help=f"carpeta de descarga (por defecto {OUTPUT_DIR}, relativa al directorio actual)")
+    parser.add_argument("--descargar-sin-fecha", action="store_true",
+                        help="vuelve a descargar los archivos cuyo portal no da la fecha de actualización "
+                             "(como CATALUNA_DESCARGAR_SIN_FECHA=1); por defecto se conservan y se avisa")
     parser.add_argument("--categorias", default=None,
                         type=lambda s: _lista_categorias(s, CATEGORIAS_DISPONIBLES),
                         help=f"solo estas categorías, separadas por comas ({', '.join(CATEGORIAS_DISPONIBLES)}); "
@@ -515,8 +540,10 @@ def argumentos(argv):
 
 
 def main(argv=()):
-    global OUTPUT_DIR, CATEGORIAS
+    global OUTPUT_DIR, CATEGORIAS, DESCARGAR_SIN_FECHA
     args = argumentos(argv)
+    if args.descargar_sin_fecha:
+        DESCARGAR_SIN_FECHA = True
     if args.salida is not None:
         OUTPUT_DIR = str(args.salida)
     CATEGORIAS = args.categorias
@@ -565,6 +592,9 @@ Categorías incluidas:
     log(f"⏭️ Archivos saltados: {stats['skipped']}")
     log(f"❌ Archivos fallidos: {stats['failed']}")
     log(f"🗄️ Retirados en origen (HTTP 404, ver SOCRATA_RETIRADOS): {stats['retirados']}")
+    if stats['sin_fecha']:
+        log(f"⚠️ Sin fecha del portal: {stats['sin_fecha']} archivos ya descargados "
+            f"({stats['sin_fecha_saltados']} se conservan sin saber si el origen cambió)")
     log(f"📝 Registros totales: {stats['records']:,}")
     log(f"💾 Tamaño total: {stats['bytes']/1024/1024:.2f} MB")
     log(f"⏱️ Tiempo: {elapsed/60:.1f} minutos")
@@ -582,6 +612,7 @@ Categorías incluidas:
 - Archivos saltados: {stats['skipped']}
 - Archivos fallidos: {stats['failed']}
 - Retirados en origen (HTTP 404): {stats['retirados']}
+- Sin fecha del portal: {stats['sin_fecha']} (se conservan sin saber si el origen cambió: {stats['sin_fecha_saltados']})
 - Registros totales: {stats['records']:,}
 - Tamaño total: {stats['bytes']/1024/1024:.2f} MB
 - Tiempo: {elapsed/60:.1f} minutos
