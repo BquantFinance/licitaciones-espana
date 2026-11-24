@@ -644,9 +644,9 @@ def test_comilla_desparejada_que_se_traga_registros_sigue_pidiendo_revisar(tmp_p
     tragado = pd.read_csv(ruta, dtype=str)                       # pandas solo: se traga dos registros
     assert len(tragado) == 2
     cuadre = M.cuadre_de_lineas(ruta, ",", "utf-8", len(tragado))
-    assert cuadre == (False, 2, 2)
+    assert cuadre == (False, 2, 1)                # «2,Obra B,org,20»: un registro entero dentro
     aviso = M.aviso_de_lineas(ruta.name, len(tragado), 4, cuadre)
-    assert "revisar" in aviso and "2 trozos de texto con forma de registro" in aviso
+    assert "revisar" in aviso and "1 trozos de texto con forma de registro" in aviso
 
 
 def test_cuadre_de_lineas_cero_registros(tmp_path):
